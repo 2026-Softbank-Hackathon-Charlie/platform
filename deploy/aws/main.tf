@@ -36,10 +36,14 @@ locals {
   prefix = "/hopcharlie"
   # sslip.io resolves api.1-2-3-4.sslip.io to 1.2.3.4, so Caddy can get a
   # Let's Encrypt certificate before the team's Cloudflare domain exists.
-  ip_dashed = replace(aws_eip.host.public_ip, ".", "-")
-  api_host  = "api.${local.ip_dashed}.sslip.io"
-  app_host  = "app.${local.ip_dashed}.sslip.io"
-  image     = "${aws_ecr_repository.platform.repository_url}:${var.image_tag}"
+  ip_dashed     = replace(aws_eip.host.public_ip, ".", "-")
+  api_host      = "api.${local.ip_dashed}.sslip.io"
+  app_host      = "app.${local.ip_dashed}.sslip.io"
+  console_host  = "console.${local.ip_dashed}.sslip.io"
+  image         = "${aws_ecr_repository.platform.repository_url}:${var.image_tag}"
+  console_image = "${aws_ecr_repository.console.repository_url}:${var.console_image_tag}"
+  # The console on this host always calls the API from its own origin.
+  cors_origins = join(",", distinct(compact(concat(split(",", var.cors_origins), ["https://${local.console_host}"]))))
 }
 
 # --- image registry ---
@@ -64,6 +68,21 @@ resource "aws_ecr_lifecycle_policy" "platform" {
       action       = { type = "expire" }
     }]
   })
+}
+
+resource "aws_ecr_repository" "console" {
+  name                 = "${local.name}/console"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "console" {
+  repository = aws_ecr_repository.console.name
+  policy     = aws_ecr_lifecycle_policy.platform.policy
 }
 
 # --- secrets: generated here, stored as SSM SecureString, read by the host at boot ---
@@ -117,6 +136,62 @@ resource "aws_ssm_parameter" "platform_tokens" {
   name  = "${local.prefix}/platform-tokens"
   type  = "SecureString"
   value = local.platform_tokens
+}
+
+# --- host settings: files host/sync.sh copies to /opt/hopcharlie ---
+#
+# The host reads these on every ./redeploy.sh, so changing them never replaces
+# the instance (user_data is ignored after the first boot).
+
+locals {
+  # Line endings are normalized so a Windows checkout (CRLF) and a Linux one
+  # produce the same parameters, and plan shows no change between them.
+  host_files = {
+    "compose.yaml"           = replace(file("${path.module}/host/compose.yaml"), "\r\n", "\n")
+    "compose.tailscale.yaml" = replace(file("${path.module}/host/compose.tailscale.yaml"), "\r\n", "\n")
+    "Caddyfile"              = replace(file("${path.module}/host/Caddyfile"), "\r\n", "\n")
+    "sync.sh"                = replace(file("${path.module}/host/sync.sh"), "\r\n", "\n")
+    "envs.yaml"              = replace(file("${path.module}/../../examples/envs.yaml"), "\r\n", "\n")
+    "apps.yaml"              = replace(file("${path.module}/../../examples/apps.yaml"), "\r\n", "\n")
+    # Non-secret values for /opt/hopcharlie/.env; sync.sh adds the secrets.
+    "settings.env" = join("\n", [
+      "IMAGE=${local.image}",
+      "CONSOLE_IMAGE=${local.console_image}",
+      "REGISTRY=${split("/", aws_ecr_repository.platform.repository_url)[0]}",
+      "AWS_REGION=${var.region}",
+      "API_HOST=${local.api_host}",
+      "APP_HOST=${local.app_host}",
+      "CONSOLE_HOST=${local.console_host}",
+      "GATEWAY_BACKENDS=${var.gateway_backends}",
+      "CORS_ORIGINS=${local.cors_origins}",
+      "DSN_HOST_SUFFIXES=${var.dsn_host_suffixes}",
+    ])
+  }
+}
+
+resource "aws_ssm_parameter" "host_file" {
+  for_each       = local.host_files
+  name           = "${local.prefix}/host/${each.key}"
+  type           = "String"
+  tier           = "Intelligent-Tiering" # compose.yaml can pass the 4 KB standard limit
+  insecure_value = each.value
+}
+
+# Team-managed secrets: Terraform only creates them. Set the real values with
+# aws ssm put-parameter --overwrite (deploy/aws/README.md); apply never resets them.
+resource "aws_ssm_parameter" "team_secret" {
+  for_each = {
+    "db-passwords" = "# Database passwords plans reference, one KEY=value per line:\n# SRC_PGPASSWORD=...\n# GKE_MOIMROOM_PGPASSWORD=...\n"
+    "rclone-env"   = "# rclone remotes, one KEY=value per line:\n# RCLONE_CONFIG_GCS_TYPE=google cloud storage\n"
+  }
+  name  = "${local.prefix}/${each.key}"
+  type  = "SecureString"
+  tier  = "Intelligent-Tiering"
+  value = each.value
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
 # --- instance identity: SSM Session Manager instead of SSH, ECR pull, its own parameters ---
@@ -187,7 +262,7 @@ resource "aws_iam_role_policy" "own_parameters" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:GetParameters"]
+        Action   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
         Resource = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.me.account_id}:parameter${local.prefix}/*"
       },
       {
@@ -257,32 +332,24 @@ resource "aws_instance" "host" {
     encrypted   = true
   }
 
-  # The security view reads internal/security.DefaultAWSRegion (ap-northeast-2)
-  # unless PLATFORM_AWS_REGION is set. It is left out of user_data on purpose:
-  # any user_data change replaces the host and its Postgres volume. If var.region
-  # ever differs, add PLATFORM_AWS_REGION to the api service when rebuilding.
+  # First boot only: installs Docker and runs host/sync.sh from SSM. Settings
+  # change through SSM and ./redeploy.sh, so user_data is ignored afterwards
+  # and editing it never replaces the host (and its PostgreSQL volume).
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    region            = var.region
-    prefix            = local.prefix
-    image             = local.image
-    registry          = split("/", aws_ecr_repository.platform.repository_url)[0]
-    api_host          = local.api_host
-    app_host          = local.app_host
-    backends          = var.gateway_backends
-    cors_origins      = var.cors_origins
-    dsn_host_suffixes = var.dsn_host_suffixes
-    envs_yaml         = file("${path.module}/../../examples/envs.yaml")
-    compose_plugin    = "v5.6.1"
+    region         = var.region
+    prefix         = local.prefix
+    compose_plugin = "v5.6.1"
   })
-  user_data_replace_on_change = true
+  user_data_replace_on_change = false
 
   tags = { Name = "${local.name}-management-host" }
 
   lifecycle {
-    ignore_changes = [ami] # a newer AL2023 AMI must not replace the host mid-demo
+    # A newer AL2023 AMI or a new bootstrap script must not replace the host mid-demo.
+    ignore_changes = [ami, user_data]
   }
 
-  depends_on = [aws_ssm_parameter.db_password, aws_ssm_parameter.gateway_token, aws_ssm_parameter.platform_tokens]
+  depends_on = [aws_ssm_parameter.db_password, aws_ssm_parameter.gateway_token, aws_ssm_parameter.platform_tokens, aws_ssm_parameter.host_file, aws_ssm_parameter.team_secret]
 }
 
 resource "aws_eip_association" "host" {

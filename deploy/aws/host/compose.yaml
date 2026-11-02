@@ -1,0 +1,87 @@
+# The management host's services. sync.sh copies this file to
+# /opt/hopcharlie/compose.yaml; every ${VAR} comes from /opt/hopcharlie/.env,
+# which sync.sh writes from SSM (settings.env plus the secrets).
+name: hopcharlie
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: charlie
+      POSTGRES_DB: charlie
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "charlie"]
+      interval: 5s
+      retries: 30
+
+  gateway:
+    image: ${IMAGE}
+    restart: unless-stopped
+    command: ["hopcharlie-gateway", "-listen", ":8000", "-admin-addr", ":9901", "-state-file", "/data/gateway-state.json"]
+    environment:
+      GATEWAY_ADMIN_TOKEN: ${GATEWAY_TOKEN}
+      GATEWAY_BACKENDS: ${GATEWAY_BACKENDS}
+    volumes:
+      - gwdata:/data
+
+  api:
+    image: ${IMAGE}
+    restart: unless-stopped
+    command: ["hopcharlie-api", "-addr", ":8080", "-state-dir", "/data/runs"]
+    # Database passwords that plans reference (SRC_PGPASSWORD, <APP>_PGPASSWORD)
+    # and rclone remotes (RCLONE_CONFIG_<REMOTE>_*). Both files are 0600 and
+    # come from SSM SecureString parameters; see deploy/aws/README.md.
+    env_file:
+      - db-passwords.env
+      - rclone.env
+    environment:
+      PLATFORM_DATABASE_URL: postgres://charlie:${DB_PASSWORD}@postgres:5432/charlie?sslmode=disable
+      PLATFORM_TOKENS: ${PLATFORM_TOKENS}
+      PLATFORM_ENVS_FILE: /etc/hopcharlie/envs.yaml
+      PLATFORM_APPS_FILE: /etc/hopcharlie/apps.yaml
+      PLATFORM_GATEWAY_URL: http://gateway:9901
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN}
+      PLATFORM_CORS_ORIGINS: ${CORS_ORIGINS}
+      PLATFORM_DSN_HOST_SUFFIXES: ${DSN_HOST_SUFFIXES}
+      PLATFORM_AWS_REGION: ${AWS_REGION}
+      # One kubeconfig file per cluster, merged by client-go.
+      KUBECONFIG: ${KUBECONFIG_FILES:-/home/app/.kube/config}
+    volumes:
+      - apidata:/data
+      - /opt/hopcharlie/envs.yaml:/etc/hopcharlie/envs.yaml:ro
+      - /opt/hopcharlie/apps.yaml:/etc/hopcharlie/apps.yaml:ro
+      - /opt/hopcharlie/kube:/home/app/.kube:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+
+  console:
+    image: ${CONSOLE_IMAGE}
+    restart: unless-stopped
+    command: ["caddy", "file-server", "--root", "/srv", "--listen", ":80"]
+
+  caddy:
+    image: caddy:2.11.7-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      API_HOST: ${API_HOST}
+      APP_HOST: ${APP_HOST}
+      CONSOLE_HOST: ${CONSOLE_HOST}
+    volumes:
+      - /opt/hopcharlie/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [api, gateway, console]
+
+volumes:
+  pgdata: {}
+  gwdata: {}
+  apidata: {}
+  caddy_data: {}
+  caddy_config: {}
