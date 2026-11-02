@@ -1,0 +1,25 @@
+# Target replica for moimroom. The driver uploads it as the plan attachment
+# target.yaml and the engine applies it. It uses the source's app Secret so
+# the app password does not change on promotion.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: { name: moimroom-dst-db, namespace: moimroom }
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.11
+  smartShutdownTimeout: 5
+  storage: { size: 1Gi }
+  bootstrap:
+    pg_basebackup: { source: moimroom-src-db, database: app, owner: app, secret: { name: moimroom-src-db-app } }
+  replica: { self: moimroom-dst-db, primary: moimroom-src-db, source: moimroom-src-db }
+  externalClusters:
+    - name: moimroom-src-db
+      connectionParameters: { host: moimroom-src-db-rw.moimroom.svc, user: streaming_replica, dbname: postgres, sslmode: verify-full }
+      sslKey: { name: moimroom-src-db-replication, key: tls.key }
+      sslCert: { name: moimroom-src-db-replication, key: tls.crt }
+      sslRootCert: { name: moimroom-src-db-ca, key: ca.crt }
+    - name: moimroom-dst-db
+      connectionParameters: { host: moimroom-dst-db-rw.moimroom.svc, user: streaming_replica, dbname: postgres, sslmode: verify-full }
+      sslKey: { name: moimroom-dst-db-replication, key: tls.key }
+      sslCert: { name: moimroom-dst-db-replication, key: tls.crt }
+      sslRootCert: { name: moimroom-dst-db-ca, key: ca.crt }

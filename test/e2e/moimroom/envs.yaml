@@ -1,0 +1,10 @@
+# PLATFORM_ENVS_FILE for the moimroom E2E: both environments are the same kind cluster.
+environments:
+  - name: src
+    provider: onprem
+    displayName: moimroom source
+    kubeContext: kind-hop-moimroom
+  - name: dst
+    provider: onprem
+    displayName: moimroom target
+    kubeContext: kind-hop-moimroom

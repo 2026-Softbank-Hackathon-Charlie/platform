@@ -1,0 +1,34 @@
+{
+  "id": "moimroom-src-to-dst",
+  "source": {
+    "env": "src",
+    "context": "kind-hop-moimroom",
+    "namespace": "moimroom",
+    "cluster": "moimroom-src-db",
+    "dsn": "postgres://app:${SRC_PGPASSWORD}@127.0.0.1:55742/app?sslmode=require"
+  },
+  "target": {
+    "env": "dst",
+    "context": "kind-hop-moimroom",
+    "namespace": "moimroom",
+    "cluster": "moimroom-dst-db",
+    "dsn": "postgres://app:${DST_PGPASSWORD}@127.0.0.1:55743/app?sslmode=require"
+  },
+  "gateway": {
+    "mode": "http",
+    "url": "http://127.0.0.1:19902",
+    "token": "${GATEWAY_TOKEN}",
+    "sourceBackend": "src",
+    "targetBackend": "dst"
+  },
+  "verify": { "schemas": ["app"] },
+  "decommission": {
+    "selector": "app.kubernetes.io/instance=moimroom-src",
+    "observe": "20s",
+    "smokeUrl": "http://127.0.0.1:18200",
+    "smoke": [
+      { "method": "GET", "path": "/api/spaces" },
+      { "method": "GET", "path": "/readyz" }
+    ]
+  }
+}

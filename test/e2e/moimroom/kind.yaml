@@ -1,0 +1,14 @@
+# One kind cluster for the moimroom E2E. Host ports reach the databases, the
+# object stores and the two app releases (see lib.sh).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: hop-moimroom
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - { containerPort: 30742, hostPort: 55742, listenAddress: "127.0.0.1" }
+      - { containerPort: 30743, hostPort: 55743, listenAddress: "127.0.0.1" }
+      - { containerPort: 30762, hostPort: 55762, listenAddress: "127.0.0.1" }
+      - { containerPort: 30763, hostPort: 55763, listenAddress: "127.0.0.1" }
+      - { containerPort: 30201, hostPort: 18201, listenAddress: "127.0.0.1" }
+      - { containerPort: 30202, hostPort: 18202, listenAddress: "127.0.0.1" }
