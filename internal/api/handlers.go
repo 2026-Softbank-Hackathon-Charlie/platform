@@ -199,6 +199,7 @@ func (s *Server) startMigration(w http.ResponseWriter, r *http.Request) {
 		Actor:      actor(r),
 		AutoSwitch: req.AutoSwitch != nil && *req.AutoSwitch,
 		Canary:     req.Canary,
+		Observe:    req.Observe,
 		RollbackOf: res.RollbackOf, // a rollback plan started by hand is still that run's rollback
 	})
 	if err != nil {
@@ -217,6 +218,7 @@ func (s *Server) startMigration(w http.ResponseWriter, r *http.Request) {
 	noteAudit(r, "runId", run.RunId)
 	noteAudit(r, "autoSwitch", run.AutoSwitch)
 	noteAudit(r, "canary", req.Canary != nil)
+	noteAudit(r, "observe", req.Observe != nil)
 	w.Header().Set("Location", "/v1/migrations/"+run.RunId)
 	writeJSON(w, http.StatusAccepted, startResponse(run.RunId, req.PlanRef))
 }

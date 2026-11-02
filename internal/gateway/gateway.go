@@ -251,10 +251,146 @@ func (g *Gateway) serveProxy(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) serveRead(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	b := g.pickReadLocked()
+	var alt *backend
+	if retryableRead(r) {
+		alt = g.retryTargetLocked(b)
+	}
 	g.mu.Unlock()
 	g.inflightReads.Add(1)
 	defer g.inflightReads.Add(-1)
-	g.forward(w, r, b, classRead)
+	if alt == nil {
+		g.forward(w, r, b, classRead, nil)
+		return
+	}
+	// A backend answers 5xx or not at all for a few seconds while its
+	// database is demoted or restarts during a cutover. The read is sent once
+	// more to alt, and the client only sees the second answer.
+	rw := &retryWriter{w: w, header: http.Header{}}
+	g.forward(rw, r, b, classRead, rw)
+	if !rw.failed || r.Context().Err() != nil {
+		return
+	}
+	g.metrics.readRetries.WithLabelValues(b.name).Inc()
+	g.forward(w, r, alt, classRead, nil)
+}
+
+// retryableRead: a read the gateway may send twice. Only GET and HEAD
+// without a body, and never a protocol upgrade, whose connection is handed
+// over to the backend.
+func retryableRead(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if r.Header.Get("Upgrade") != "" {
+		return false
+	}
+	return r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0
+}
+
+// retryTargetLocked picks where a read that fails on `failed` goes once more,
+// or nil when there is nowhere to send it (then the first answer reaches the
+// client unchanged). First another backend that takes reads now, then the
+// write backend. While writes are held for a cutover, also any other healthy
+// backend: both environments hold the same data then, and one of them is
+// being demoted or restarted. At other times a backend with no read weight
+// may not have the data yet, so reads never fall back to it.
+func (g *Gateway) retryTargetLocked(failed *backend) *backend {
+	var best *backend
+	for _, b := range g.backends {
+		if b == failed || !b.healthy.Load() {
+			continue
+		}
+		if w := g.readWeights[b.name]; w > 0 && (best == nil || w > g.readWeights[best.name]) {
+			best = b
+		}
+	}
+	if best != nil {
+		return best
+	}
+	if wb := g.byName[g.writeBackend]; wb != failed && wb.healthy.Load() {
+		return wb
+	}
+	if g.held {
+		for _, b := range g.backends {
+			if b != failed && b.healthy.Load() {
+				return b
+			}
+		}
+	}
+	return nil
+}
+
+// retryableStatus are the answers a read is retried after.
+func retryableStatus(code int) bool {
+	switch code {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// retryWriter holds back a read's first answer until its status is known.
+// A retryable failure is discarded (headers and body) so the read can be sent
+// again; any other answer passes through as it comes, streaming included.
+type retryWriter struct {
+	w      http.ResponseWriter
+	header http.Header // headers set before the status is known
+	failed bool        // the answer was a retryable failure and was discarded
+	passed bool        // the answer is going to the client
+}
+
+func (rw *retryWriter) Header() http.Header {
+	if rw.passed {
+		return rw.w.Header()
+	}
+	return rw.header
+}
+
+func (rw *retryWriter) WriteHeader(code int) {
+	switch {
+	case rw.failed:
+		return
+	case rw.passed:
+		rw.w.WriteHeader(code)
+		return
+	case code < 200: // informational; the final status follows
+		copyHeader(rw.w.Header(), rw.header)
+		rw.w.WriteHeader(code)
+		return
+	case retryableStatus(code):
+		rw.failed = true
+		return
+	}
+	copyHeader(rw.w.Header(), rw.header)
+	rw.passed = true
+	rw.w.WriteHeader(code)
+}
+
+func (rw *retryWriter) Write(p []byte) (int, error) {
+	if rw.failed {
+		return len(p), nil
+	}
+	if !rw.passed {
+		rw.WriteHeader(http.StatusOK)
+	}
+	return rw.w.Write(p)
+}
+
+// FlushError flushes only an answer that is going to the client; flushing a
+// discarded one would commit an empty 200.
+func (rw *retryWriter) FlushError() error {
+	if !rw.passed {
+		return nil
+	}
+	return http.NewResponseController(rw.w).Flush()
+}
+
+func (rw *retryWriter) Unwrap() http.ResponseWriter { return rw.w }
+
+func copyHeader(dst, src http.Header) {
+	for k, v := range src {
+		dst[k] = v
+	}
 }
 
 // pickReadLocked picks a read backend by weight among healthy backends and
@@ -325,14 +461,14 @@ func (g *Gateway) serveWrite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer g.writeDone()
-		g.forward(w, r, b, classWrite)
+		g.forward(w, r, b, classWrite, nil)
 		return
 	}
 	b := g.byName[g.writeBackend]
 	g.inflightWrites++
 	g.mu.Unlock()
 	defer g.writeDone()
-	g.forward(w, r, b, classWrite)
+	g.forward(w, r, b, classWrite, nil)
 }
 
 // bufferBody reads a held write's body into memory. Go notices a client
@@ -533,7 +669,10 @@ type clientCtxKey struct{}
 
 var errWriteTimeout = errors.New("write timeout")
 
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b *backend, class string) {
+// forward proxies r to b. retry is the retryWriter of a first read attempt
+// (nil otherwise): when it discarded the answer, the attempt is counted as
+// retried, not as a failure the client saw.
+func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b *backend, class string, retry *retryWriter) {
 	if class == classWrite {
 		// A write stays in flight until the backend answers, even when its
 		// client leaves: the backend may still commit it, and hold must wait
@@ -549,7 +688,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b *backend, cl
 	defer func() {
 		d := time.Since(start)
 		code := sw.status()
-		b.stats.record(time.Now(), d, code >= 500)
+		b.stats.record(time.Now(), d, code >= 500, retry != nil && retry.failed)
 		g.metrics.requests.WithLabelValues(b.name, class, strconv.Itoa(code)).Inc()
 		g.metrics.duration.WithLabelValues(b.name, class).Observe(d.Seconds())
 	}()

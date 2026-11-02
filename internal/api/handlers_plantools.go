@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -182,25 +183,71 @@ func (s *Server) rollbackMigration(w http.ResponseWriter, r *http.Request) {
 
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
-
-	orig, err := s.d.Runs.Get(ctx, id)
-	if err != nil {
-		s.runError(w, r, err)
+	res, f := s.startRollback(ctx, id, actor(r), deref(req.Reason), req.AutoSwitch == nil || *req.AutoSwitch)
+	if res.ref != "" {
+		noteAudit(r, "planRef", res.ref)
+		noteAudit(r, "reusedPlan", res.reused)
+	}
+	if f != nil {
+		switch f.kind {
+		case failRun:
+			s.runError(w, r, f.err)
+		case failPlan:
+			s.planError(w, r, f.err)
+		case failConflict:
+			s.fail(w, r, http.StatusConflict, "run_state_conflict", f.Error())
+		default:
+			s.internal(w, r, f.err)
+		}
 		return
 	}
+	noteAudit(r, "runId", res.run.RunId)
+	noteAudit(r, "autoSwitch", res.run.AutoSwitch)
+	w.Header().Set("Location", "/v1/migrations/"+res.run.RunId)
+	writeJSON(w, http.StatusAccepted, startResponse(res.run.RunId, res.ref))
+}
+
+// Kinds of rollback failures, mapped to responses by the handler.
+const (
+	failRun = iota + 1
+	failPlan
+	failConflict
+	failInternal
+)
+
+type rollbackFailure struct {
+	kind int
+	err  error
+}
+
+func (f *rollbackFailure) Error() string { return f.err.Error() }
+func (f *rollbackFailure) Unwrap() error { return f.err }
+
+type rollbackStarted struct {
+	run    apiv1.Run
+	ref    string
+	reused bool
+}
+
+// startRollback builds (or reuses) the reverse plan of a succeeded run and
+// starts it. Callers hold startMu. The handler and the observe phase's
+// automatic rollback both use it, so they follow the same rules.
+func (s *Server) startRollback(ctx context.Context, id, who, reason string, autoSwitch bool) (rollbackStarted, *rollbackFailure) {
+	var out rollbackStarted
+	orig, err := s.d.Runs.Get(ctx, id)
+	if err != nil {
+		return out, &rollbackFailure{failRun, err}
+	}
 	if orig.Status != apiv1.RunStatusSucceeded {
-		s.fail(w, r, http.StatusConflict, "run_state_conflict", fmt.Sprintf("run is %s; only a succeeded run can be rolled back", orig.Status))
-		return
+		return out, &rollbackFailure{failConflict, fmt.Errorf("run is %s; only a succeeded run can be rolled back", orig.Status)}
 	}
 	list, err := s.d.Runs.List(ctx)
 	if err != nil {
-		s.internal(w, r, err)
-		return
+		return out, &rollbackFailure{failInternal, err}
 	}
 	for _, run := range list {
 		if run.RollbackOf != nil && *run.RollbackOf == id {
-			s.fail(w, r, http.StatusConflict, "run_state_conflict", "run "+run.RunId+" already rolls back this run; resume or watch it instead")
-			return
+			return out, &rollbackFailure{failConflict, fmt.Errorf("run %s already rolls back this run; resume or watch it instead", run.RunId)}
 		}
 	}
 
@@ -209,52 +256,82 @@ func (s *Server) rollbackMigration(w http.ResponseWriter, r *http.Request) {
 	// creating another one next to it.
 	prev, found, err := s.d.Plans.FindRollback(ctx, id)
 	if err != nil {
-		s.internal(w, r, err)
-		return
+		return out, &rollbackFailure{failInternal, err}
 	}
 	if found && prev.Status == apiv1.PlanStatusStarted {
-		s.fail(w, r, http.StatusConflict, "run_state_conflict", "run "+deref(prev.RunId)+" already rolls back this run; resume or watch it instead")
-		return
+		return out, &rollbackFailure{failConflict, fmt.Errorf("run %s already rolls back this run; resume or watch it instead", deref(prev.RunId))}
 	}
 	ref := prev.Ref
 	if !found {
 		comment := "rollback of run " + id
-		if reason := deref(req.Reason); reason != "" {
+		if reason != "" {
 			comment += ": " + reason
 		}
-		rec, err := s.d.Plans.Rollback(ctx, id, orig.PlanRef, actor(r), comment)
+		rec, err := s.d.Plans.Rollback(ctx, id, orig.PlanRef, who, comment)
 		if err != nil {
-			s.planError(w, r, err)
-			return
+			return out, &rollbackFailure{failPlan, err}
 		}
 		ref = rec.Ref
 	}
-	noteAudit(r, "planRef", ref)
-	noteAudit(r, "reusedPlan", found)
+	out.ref, out.reused = ref, found
 	res, err := s.d.Plans.Reserve(ctx, ref)
 	if err != nil {
-		s.planError(w, r, err)
-		return
+		return out, &rollbackFailure{failPlan, err}
 	}
 	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
 		PlanRef:    ref,
 		Plan:       res.Plan,
 		Source:     res.Summary.Source,
 		Target:     res.Summary.Target,
-		Actor:      actor(r),
-		AutoSwitch: req.AutoSwitch == nil || *req.AutoSwitch,
+		Actor:      who,
+		AutoSwitch: autoSwitch,
 		RollbackOf: id,
 	})
 	if err != nil {
 		s.d.Plans.Release(ctx, ref) // stays approved; the next rollback call starts it again
-		s.runError(w, r, err)
-		return
+		return out, &rollbackFailure{failRun, err}
 	}
 	if err := s.d.Plans.Started(ctx, ref, run.RunId); err != nil {
 		s.cfg.Log.Error("link plan to run", "plan", ref, "run", run.RunId, "err", err)
 	}
-	noteAudit(r, "runId", run.RunId)
-	noteAudit(r, "autoSwitch", run.AutoSwitch)
-	w.Header().Set("Location", "/v1/migrations/"+run.RunId)
-	writeJSON(w, http.StatusAccepted, startResponse(run.RunId, ref))
+	out.run = run
+	return out, nil
+}
+
+// autoRollback is the observe phase's rollback after an SLO violation
+// (runs.AutoRollbackFunc). It is recorded in the audit log like an operator's
+// call, with the actor slo-guard.
+func (s *Server) autoRollback(ctx context.Context, id, reason string) (string, error) {
+	s.startMu.Lock()
+	res, f := s.startRollback(ctx, id, runs.AutoRollbackActor, reason, true)
+	s.startMu.Unlock()
+
+	note := map[string]any{"fromRun": id, "reason": reason, "automatic": true}
+	status := http.StatusAccepted
+	if res.ref != "" {
+		note["planRef"], note["reusedPlan"] = res.ref, res.reused
+	}
+	if f != nil {
+		status = http.StatusInternalServerError
+		if f.kind == failConflict {
+			status = http.StatusConflict
+		}
+		note["error"] = f.Error()
+	} else {
+		note["runId"] = res.run.RunId
+	}
+	detail, _ := json.Marshal(note)
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := s.d.Store.AppendAudit(actx, store.Audit{
+		Time: time.Now().UTC(), Actor: runs.AutoRollbackActor, Role: "system",
+		Action: "POST /v1/migrations/{runId}/rollback", Target: "/v1/migrations/" + id + "/rollback",
+		Status: status, Detail: detail,
+	}); err != nil {
+		s.cfg.Log.Error("audit log write failed", "err", err, "action", "automatic rollback", "run", id)
+	}
+	if f != nil {
+		return "", f
+	}
+	return res.run.RunId, nil
 }

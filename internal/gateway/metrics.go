@@ -10,6 +10,7 @@ type metrics struct {
 	duration    *prometheus.HistogramVec
 	holdExpired prometheus.Counter
 	heldDropped prometheus.Counter
+	readRetries *prometheus.CounterVec
 }
 
 func newMetrics(g *Gateway) *metrics {
@@ -36,8 +37,12 @@ func newMetrics(g *Gateway) *metrics {
 			Name: "charlie_gateway_held_dropped_total",
 			Help: "Held writes dropped because the client went away before release.",
 		}),
+		readRetries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "charlie_gateway_read_retries_total",
+			Help: "Reads that failed on a backend (5xx or no answer) and were sent once more to another backend, by the backend that failed.",
+		}, []string{"backend"}),
 	}
-	m.reg.MustRegister(m.requests, m.duration, m.holdExpired, m.heldDropped, stateCollector{g})
+	m.reg.MustRegister(m.requests, m.duration, m.holdExpired, m.heldDropped, m.readRetries, stateCollector{g})
 	return m
 }
 

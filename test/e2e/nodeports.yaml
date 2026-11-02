@@ -1,0 +1,17 @@
+# Lets the engine (in the platform API) and the test apps on the host reach
+# each cluster's single instance.
+apiVersion: v1
+kind: Service
+metadata: { name: pg-src-host, namespace: hop }
+spec:
+  type: NodePort
+  selector: { cnpg.io/cluster: pg-src }
+  ports: [{ port: 5432, targetPort: 5432, nodePort: 30432 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: pg-dst-host, namespace: hop }
+spec:
+  type: NodePort
+  selector: { cnpg.io/cluster: pg-dst }
+  ports: [{ port: 5432, targetPort: 5432, nodePort: 30433 }]

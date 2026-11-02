@@ -13,7 +13,7 @@ platform/
 │   ├── api/           HTTP 핸들러, 역할 검사, 감사 로그, SSE
 │   ├── auth/          토큰과 역할
 │   ├── plans/         Plan 검증, 보안 정책, 승인과 거절
-│   ├── runs/          이전 실행 단계 (동기화, 카나리, 전환 승인, 전환), 이벤트 저장
+│   ├── runs/          이전 실행 단계 (동기화, 카나리, 전환 승인, 전환, 관찰), 이벤트 저장
 │   ├── envs/          환경 등록, 클러스터 실시간 상태
 │   ├── gateway/       게이트웨이 본체와 관리 API 클라이언트
 │   └── store/         PostgreSQL 저장소
@@ -51,6 +51,7 @@ sequenceDiagram
 4. 카나리를 켜면 읽기 요청 일부를 대상으로 보내고, 대상의 오류율과 p95로 게이트를 판정합니다. 실패하면 읽기를 원본으로 돌리고 끝냅니다.
 5. 데이터가 따라잡히면 `awaiting_switch`에서 운영자 승인을 기다립니다. `autoSwitch`를 켜면 기다리지 않습니다.
 6. 전환 단계는 엔진이 실행합니다. 대상 승격을 요청하기 전에 실패하면 원본으로 자동 원복하고, 그 뒤에 실패하면 멈추고 사람을 기다립니다.
+7. `observe`를 켜면 전환 뒤에도 대상의 오류율과 p95를 관찰합니다. 위반하면 기록하고, `autoRollback`이면 `slo-guard`가 1클릭 롤백과 같은 경로로 되돌립니다. 요청이 부족하거나 게이트웨이에 닿지 않는 구간은 위반으로 보지 않습니다 (ADR 0009).
 
 자세한 이유는 [docs/adr](docs/adr)에 있습니다.
 
@@ -169,6 +170,10 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 
 - 쓰기(GET, HEAD, OPTIONS가 아닌 요청)는 항상 `writeBackend` 한 곳으로 갑니다.
 - 읽기는 `readWeights` 비율대로 나뉘고, 헬스 체크가 실패한 환경은 건너뜁니다.
+- 본문 없는 GET과 HEAD가 500, 502, 503, 504를 받거나 환경이 답하지 않으면, 다른 환경으로 한 번 더 보냅니다. 사용자는 두 번째 응답만 받습니다. 전환 중에 원본 DB의 demote나 대상 DB의 재시작 때문에 몇 초 동안 나는 읽기 실패를 사용자에게 보이지 않기 위해서입니다.
+  - 다시 보낼 곳은 읽기 비율이 있는 다른 환경, 없으면 `writeBackend`입니다. 쓰기를 붙잡고 있는 동안에는 읽기 비율이 0인 다른 정상 환경도 됩니다. 그 밖의 때에 비율 0인 환경은 아직 데이터가 없을 수 있으므로 보내지 않습니다.
+  - 다시 보낼 곳이 없으면 첫 응답을 그대로 돌려줍니다. 쓰기와 프로토콜 업그레이드는 다시 보내지 않습니다.
+  - `/v1/state`의 `stats`(구간 통계, 카나리 게이트가 씀)에는 첫 실패도 오류로 들어갑니다. `totals`(run의 실패 요청 수가 씀)에는 사용자가 받은 결과만 들어가고, 다시 보낸 첫 시도는 `retried`로 따로 셉니다. Prometheus에는 `charlie_gateway_read_retries_total`이 있습니다.
 - 응답에는 처리한 환경 이름이 `X-Charlie-Backend` 헤더로 붙습니다.
 - cloudflared가 보낸 `X-Forwarded-Proto`(보통 `https`)는 바꾸지 않고 환경에 넘깁니다.
 - 쓰기는 사용자가 연결을 끊어도 취소하지 않습니다. 환경이 답할 때까지(최대 `-write-timeout`) 처리 중으로 세므로, hold는 환경이 실제로 끝낸 뒤에 200을 돌려줍니다.
@@ -213,6 +218,14 @@ PLATFORM_TEST_DATABASE_URL='postgres://charlie:charlie@localhost:55432/charlie?s
 - API 테스트는 모든 응답과 SSE 메시지를 `api/openapi.yaml`로 검증합니다. 명세와 구현이 어긋나면 실패합니다.
 - 저장소 구현은 `storetest.Conformance`를 통과해야 합니다. 메모리 저장소(`storetest.NewMemory`)는 테스트에서만 씁니다.
 - `api/openapi.yaml`을 고친 뒤에는 `go generate ./pkg/apiv1`로 타입을 다시 만듭니다.
+
+### 부하 중 이전 E2E
+
+kind 안의 CNPG 클러스터 두 개를 게이트웨이 부하 속에서 플랫폼 API만으로 이전합니다(카나리, 운영자 전환 승인, 쓰기 기록 검증). docker, kubectl, go가 있으면 한 명령으로 돌고, 끝나면 만든 것을 모두 지웁니다. 자세한 내용은 [test/e2e/README.md](test/e2e/README.md)에 있습니다.
+
+```bash
+test/e2e/run.sh          # KEEP=1이면 끝난 뒤에도 남기고, test/e2e/down.sh로 지움
+```
 
 ## 알려진 한계
 

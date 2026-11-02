@@ -1,0 +1,29 @@
+# Target replica, uploaded as the plan attachment target.yaml. The engine applies
+# it in prepare, since the cluster does not exist yet.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: { name: pg-dst, namespace: hop }
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.4 # the default of CNPG 1.25.1, pinned
+  # CNPG restarts a newly promoted primary in place with a smart shutdown, which
+  # waits for every client session (app connection pools) up to this many seconds.
+  # The default 180 would keep the new primary down for minutes after a switchover.
+  smartShutdownTimeout: 5
+  storage: { size: 1Gi }
+  bootstrap:
+    # Use the source's app credentials. Otherwise CNPG generates pg-dst-app and
+    # changes the app password when the target is promoted.
+    pg_basebackup: { source: pg-src, database: app, owner: app, secret: { name: pg-src-app } }
+  replica: { self: pg-dst, primary: pg-src, source: pg-src }
+  externalClusters:
+    - name: pg-src
+      connectionParameters: { host: pg-src-rw.hop.svc, user: streaming_replica, dbname: postgres, sslmode: verify-full }
+      sslKey: { name: pg-src-replication, key: tls.key }
+      sslCert: { name: pg-src-replication, key: tls.crt }
+      sslRootCert: { name: pg-src-ca, key: ca.crt }
+    - name: pg-dst
+      connectionParameters: { host: pg-dst-rw.hop.svc, user: streaming_replica, dbname: postgres, sslmode: verify-full }
+      sslKey: { name: pg-dst-replication, key: tls.key }
+      sslCert: { name: pg-dst-replication, key: tls.crt }
+      sslRootCert: { name: pg-dst-ca, key: ca.crt }

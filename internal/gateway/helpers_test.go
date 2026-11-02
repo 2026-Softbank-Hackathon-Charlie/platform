@@ -24,6 +24,8 @@ type fakeBackend struct {
 	healthStatus atomic.Int32
 	activeWrites atomic.Int64
 	reads        atomic.Int64
+	readStatus   atomic.Int32 // non-zero: reads answer this status
+	dropReads    atomic.Bool  // reads drop the connection without answering
 	// marked flips when the test wants to know whether writes still arrive
 	// (e.g. after hold returned); markedWrites counts those.
 	marked       atomic.Bool
@@ -59,6 +61,21 @@ func (fb *fakeBackend) serve(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(time.Duration(fb.delay.Load()))
 		if r.URL.Path == "/fail" {
 			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		if fb.dropReads.Load() {
+			panic(http.ErrAbortHandler) // like a backend whose database just went away
+		}
+		if code := fb.readStatus.Load(); code != 0 {
+			w.Header().Set("X-Failed-Backend", fb.name)
+			http.Error(w, "boom-"+fb.name, int(code))
+			return
+		}
+		if r.URL.Path == "/stream" {
+			_, _ = io.WriteString(w, fb.name+"-1;")
+			http.NewResponseController(w).Flush()
+			time.Sleep(20 * time.Millisecond)
+			_, _ = io.WriteString(w, fb.name+"-2")
 			return
 		}
 		_, _ = io.WriteString(w, fb.name)

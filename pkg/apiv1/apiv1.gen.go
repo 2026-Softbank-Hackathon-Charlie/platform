@@ -133,6 +133,27 @@ func (e EnginePlanGatewayMode) Valid() bool {
 	}
 }
 
+// Defines values for ObserveStepVerdict.
+const (
+	ObserveStepVerdictInconclusive ObserveStepVerdict = "inconclusive"
+	ObserveStepVerdictOk           ObserveStepVerdict = "ok"
+	ObserveStepVerdictViolated     ObserveStepVerdict = "violated"
+)
+
+// Valid indicates whether the value is a known member of the ObserveStepVerdict enum.
+func (e ObserveStepVerdict) Valid() bool {
+	switch e {
+	case ObserveStepVerdictInconclusive:
+		return true
+	case ObserveStepVerdictOk:
+		return true
+	case ObserveStepVerdictViolated:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PlanStatus.
 const (
 	PlanStatusApproved        PlanStatus = "approved"
@@ -208,6 +229,7 @@ const (
 	RunPhaseCanary         RunPhase = "canary"
 	RunPhaseCutover        RunPhase = "cutover"
 	RunPhaseDone           RunPhase = "done"
+	RunPhaseObserve        RunPhase = "observe"
 	RunPhaseSync           RunPhase = "sync"
 	RunPhaseVerify         RunPhase = "verify"
 )
@@ -222,6 +244,8 @@ func (e RunPhase) Valid() bool {
 	case RunPhaseCutover:
 		return true
 	case RunPhaseDone:
+		return true
+	case RunPhaseObserve:
 		return true
 	case RunPhaseSync:
 		return true
@@ -608,10 +632,14 @@ type BackendStats struct {
 	WindowSeconds int     `json:"windowSeconds"`
 }
 
-// BackendTotals defines model for BackendTotals.
+// BackendTotals What clients received from this backend since the gateway started. A read that failed here (5xx or no answer) and that the gateway sent once more to another backend is counted in retried, not in requests or errors; the retry is counted on the backend that answered it. Windowed stats (BackendStats) count every answer, retried ones included, so canary gates still see a failing backend.
 type BackendTotals struct {
+	// Errors answers with status 500 or above that reached the client
 	Errors   int64 `json:"errors"`
 	Requests int64 `json:"requests"`
+
+	// Retried failed reads sent once more to another backend
+	Retried *int64 `json:"retried,omitempty"`
 }
 
 // CanaryOptions Before cutover, send this share of read requests (GET, HEAD, OPTIONS) to
@@ -886,6 +914,73 @@ type NodeSummary struct {
 	Total         int      `json:"total"`
 }
 
+// ObserveOptions After a successful cutover, keep watching the target at the gateway
+// before the run ends. Each step evaluates the gate over that step's
+// requests to the target. A step with fewer than `gate.minRequests`
+// requests, or without gateway data, is inconclusive: it is recorded but
+// is not a violation, because a rollback is a full migration back and is
+// started only on a measured breach. The first violated step ends the
+// observation. The run still ends `succeeded` (the data moved) with the
+// violation in `observe` and `statusReason`. With `autoRollback` the
+// server then starts this run's rollback (as POST
+// /v1/migrations/{runId}/rollback does) as actor `slo-guard`; without it
+// an operator decides. Needs gateway mode http.
+type ObserveOptions struct {
+	AutoRollback *bool `json:"autoRollback,omitempty"`
+
+	// Duration total observation time, from 10s to 30m
+	Duration *string         `json:"duration,omitempty"`
+	Gate     *GateThresholds `json:"gate,omitempty"`
+
+	// StepDuration each gate evaluation covers this window
+	StepDuration *string `json:"stepDuration,omitempty"`
+}
+
+// ObserveResult defines model for ObserveResult.
+type ObserveResult struct {
+	// Options After a successful cutover, keep watching the target at the gateway
+	// before the run ends. Each step evaluates the gate over that step's
+	// requests to the target. A step with fewer than `gate.minRequests`
+	// requests, or without gateway data, is inconclusive: it is recorded but
+	// is not a violation, because a rollback is a full migration back and is
+	// started only on a measured breach. The first violated step ends the
+	// observation. The run still ends `succeeded` (the data moved) with the
+	// violation in `observe` and `statusReason`. With `autoRollback` the
+	// server then starts this run's rollback (as POST
+	// /v1/migrations/{runId}/rollback does) as actor `slo-guard`; without it
+	// an operator decides. Needs gateway mode http.
+	Options ObserveOptions `json:"options"`
+
+	// Passed true: the whole duration was observed, no step violated the gate and
+	// at least one step was conclusive. false: a step violated the gate.
+	// Absent: still observing, stopped early, or nothing conclusive was measured.
+	Passed *bool `json:"passed,omitempty"`
+
+	// RollbackError why the automatic rollback could not start
+	RollbackError *string `json:"rollbackError,omitempty"`
+
+	// RollbackRunId the automatic rollback's run (its rollbackOf is this run)
+	RollbackRunId *string       `json:"rollbackRunId,omitempty"`
+	Steps         []ObserveStep `json:"steps"`
+
+	// StoppedReason why the observation ended before its duration
+	StoppedReason *string `json:"stoppedReason,omitempty"`
+
+	// Violation the violated gate's reason
+	Violation *string `json:"violation,omitempty"`
+}
+
+// ObserveStep defines model for ObserveStep.
+type ObserveStep struct {
+	EndedAt   *time.Time         `json:"endedAt,omitempty"`
+	Gate      *GateResult        `json:"gate,omitempty"`
+	StartedAt time.Time          `json:"startedAt"`
+	Verdict   ObserveStepVerdict `json:"verdict"`
+}
+
+// ObserveStepVerdict defines model for ObserveStep.Verdict.
+type ObserveStepVerdict string
+
 // PlanAttachment defines model for PlanAttachment.
 type PlanAttachment struct {
 	// Name Example: target.yaml
@@ -1018,13 +1113,16 @@ type Run struct {
 	EndedAt     *time.Time    `json:"endedAt,omitempty"`
 
 	// Engine The migration engine's persisted run state (migration-engine/pkg/engine.State).
-	Engine EngineState `json:"engine"`
+	Engine  EngineState    `json:"engine"`
+	Observe *ObserveResult `json:"observe,omitempty"`
 
 	// Phase sync: precheck, prepare, presync, delta.
 	// canary: read traffic share on the target.
 	// awaiting_switch: waiting for /switch.
 	// cutover: fence, switchover, cutover (writes are held here).
 	// verify: verify, finalize.
+	// observe: optional; the cutover succeeded and the target's traffic is
+	//   watched against the gate before the run ends (ObserveOptions).
 	// done: the run ended.
 	Phase   RunPhase `json:"phase"`
 	PlanId  string   `json:"planId"`
@@ -1064,7 +1162,8 @@ type Run struct {
 
 // RunEvent Engine kinds: step_started, step_succeeded, step_failed, step_skipped,
 // log, metric, rollback, halt, done.
-// Platform kinds: status_changed, canary_step, gate_result.
+// Platform kinds: status_changed, canary_step, gate_result, observe_step,
+// observe_rollback.
 //
 // `data` by kind (other keys may appear):
 // - step_succeeded: `durationMillis` (integer), `evidence` (object).
@@ -1073,6 +1172,8 @@ type Run struct {
 // - status_changed: `status` (RunStatus), `phase` (RunPhase), `reason` (string, may be empty).
 // - canary_step: `weight` (integer; 0 means all reads are back on the source), `readWeights` (object of integers).
 // - gate_result: `weight` (integer), `gate` (GateResult).
+// - observe_step: `verdict` (ok, violated or inconclusive), `gate` (GateResult).
+// - observe_rollback: `rollbackRunId` (string) or `error` (string). Recorded after the run ended.
 type RunEvent struct {
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Kind    string                  `json:"kind"`
@@ -1093,6 +1194,10 @@ type RunList struct {
 // awaiting_switch: waiting for /switch.
 // cutover: fence, switchover, cutover (writes are held here).
 // verify: verify, finalize.
+// observe: optional; the cutover succeeded and the target's traffic is
+//
+//	watched against the gate before the run ends (ObserveOptions).
+//
 // done: the run ended.
 type RunPhase string
 
@@ -1256,8 +1361,21 @@ type StartMigrationRequest struct {
 	// gate checks the target's requests over the step. A failed gate puts all
 	// reads back on the source and ends the run as `rolled_back`. Needs
 	// gateway mode http.
-	Canary  *CanaryOptions `json:"canary,omitempty"`
-	PlanRef string         `json:"planRef"`
+	Canary *CanaryOptions `json:"canary,omitempty"`
+
+	// Observe After a successful cutover, keep watching the target at the gateway
+	// before the run ends. Each step evaluates the gate over that step's
+	// requests to the target. A step with fewer than `gate.minRequests`
+	// requests, or without gateway data, is inconclusive: it is recorded but
+	// is not a violation, because a rollback is a full migration back and is
+	// started only on a measured breach. The first violated step ends the
+	// observation. The run still ends `succeeded` (the data moved) with the
+	// violation in `observe` and `statusReason`. With `autoRollback` the
+	// server then starts this run's rollback (as POST
+	// /v1/migrations/{runId}/rollback does) as actor `slo-guard`; without it
+	// an operator decides. Needs gateway mode http.
+	Observe *ObserveOptions `json:"observe,omitempty"`
+	PlanRef string          `json:"planRef"`
 }
 
 // StartMigrationResponse defines model for StartMigrationResponse.
