@@ -218,15 +218,13 @@ resource "aws_iam_role_policy_attachment" "ecr_read" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
-# Exactly the read calls the AWS collector of GET /v1/security makes
-# (internal/security/aws.go), and nothing else: no write action, and none of
-# the other reads the managed SecurityAudit policy would add. These actions
-# take no resource-level permissions, so the resource is "*".
-# s3control GetPublicAccessBlock is the IAM action s3:GetAccountPublicAccessBlock.
-resource "aws_iam_role_policy" "security_read" {
-  name = "read-security-configuration"
-  role = aws_iam_role.host.id
-  policy = jsonencode({
+locals {
+  # Exactly the read calls the AWS collector of GET /v1/security makes
+  # (internal/security/aws.go), and nothing else: no write action, and none of
+  # the other reads the managed SecurityAudit policy would add. These actions
+  # take no resource-level permissions, so the resource is "*".
+  # s3control GetPublicAccessBlock is the IAM action s3:GetAccountPublicAccessBlock.
+  security_read_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect = "Allow"
@@ -252,12 +250,8 @@ resource "aws_iam_role_policy" "security_read" {
       Resource = "*"
     }]
   })
-}
 
-resource "aws_iam_role_policy" "own_parameters" {
-  name = "read-hopcharlie-parameters"
-  role = aws_iam_role.host.id
-  policy = jsonencode({
+  own_parameters_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
@@ -273,6 +267,18 @@ resource "aws_iam_role_policy" "own_parameters" {
       },
     ]
   })
+}
+
+resource "aws_iam_role_policy" "security_read" {
+  name   = "read-security-configuration"
+  role   = aws_iam_role.host.id
+  policy = local.security_read_policy
+}
+
+resource "aws_iam_role_policy" "own_parameters" {
+  name   = "read-hopcharlie-parameters"
+  role   = aws_iam_role.host.id
+  policy = local.own_parameters_policy
 }
 
 resource "aws_iam_instance_profile" "host" {

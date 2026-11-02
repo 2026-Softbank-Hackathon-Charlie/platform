@@ -47,3 +47,8 @@ output "viewer_token" {
   value       = random_password.viewer.result
   sensitive   = true
 }
+
+output "platform_pod_role_arn" {
+  description = "AWS role of the platform's pods on the management EKS cluster (Pod Identity)."
+  value       = aws_iam_role.platform_pod.arn
+}
