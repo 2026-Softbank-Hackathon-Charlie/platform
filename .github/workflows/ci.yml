@@ -1,0 +1,99 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.11-alpine
+        env:
+          POSTGRES_USER: charlie
+          POSTGRES_PASSWORD: charlie
+          POSTGRES_DB: charlie
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U charlie"
+          --health-interval 5s
+          --health-retries 20
+    env:
+      GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
+      # The PostgreSQL store tests run only when this is set.
+      PLATFORM_TEST_DATABASE_URL: postgres://charlie:charlie@localhost:5432/charlie?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+
+      # migration-engine is a private module. MODULE_READ_TOKEN is a repository
+      # secret: a fine-grained token with Contents read on migration-engine.
+      - name: Private modules
+        env:
+          TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Repository secret MODULE_READ_TOKEN is not set (read access to migration-engine)."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build and vet
+        run: |
+          go build ./...
+          go vet ./...
+
+      - name: Formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Generated API types match api/openapi.yaml
+        run: |
+          go generate ./pkg/apiv1/...
+          git diff --exit-code -- pkg/apiv1
+
+      - name: Test (race, PostgreSQL)
+        run: go test -race -count=1 ./...
+
+  terraform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.1
+      - name: Format and validate (no backend, no AWS)
+        run: |
+          terraform fmt -check -recursive deploy/aws
+          for dir in deploy/aws deploy/aws/state; do
+            terraform -chdir="$dir" init -backend=false -input=false >/dev/null
+            terraform -chdir="$dir" validate
+          done
+
+  shell:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: bash -n
+        run: |
+          for f in $(git ls-files '*.sh' '*.tftpl'); do
+            bash -n "$f" || exit 1
+          done
