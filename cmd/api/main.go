@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
@@ -23,6 +24,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -135,6 +137,16 @@ func main() {
 	if gw != nil {
 		deps.Traffic = gw
 	}
+	// The security view reads every cluster, the AWS account and our own audit
+	// log; GCP and Cloudflare are reported as not connected.
+	deps.Security = security.New(security.Collectors(security.Config{
+		Environments:      envCfg.Environments,
+		AWSRegion:         os.Getenv("PLATFORM_AWS_REGION"),
+		Audit:             st,
+		DSNHostSuffixes:   policy.DSNHostSuffixes,
+		GatewayConfigured: gw != nil,
+	}), security.Options{Log: log})
+	deps.Agents = agentlog.New(st)
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{

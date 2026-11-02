@@ -143,6 +143,14 @@ resource "aws_iam_role_policy_attachment" "ecr_read" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# Read-only access to security configuration (IAM, EC2, CloudTrail, GuardDuty,
+# Security Hub, S3) for GET /v1/security. AWS managed, no cost; it grants no
+# write action.
+resource "aws_iam_role_policy_attachment" "security_audit" {
+  role       = aws_iam_role.host.name
+  policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
+}
+
 resource "aws_iam_role_policy" "own_parameters" {
   name = "read-hopcharlie-parameters"
   role = aws_iam_role.host.id

@@ -32,6 +32,7 @@ type memory struct {
 	auditID int64
 
 	tools memoryPlanTools // written records and plan attachments (memory_written.go)
+	agent agentMemory     // agent sessions and events (memory_agent.go)
 }
 
 // NewMemory returns an empty in-memory store with the same semantics as the

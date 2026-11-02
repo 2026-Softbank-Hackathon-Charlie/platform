@@ -237,3 +237,40 @@ Plan은 서버의 파일을 경로 대신 이름으로 가리킵니다. 정책�
 - run 하나는 한 번만 롤백합니다. 새 run에는 `rollbackOf`가 붙습니다.
 
 CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks --stream moimroom-demo --submit`, `charlie plan attach REF --name target.yaml -f target.yaml`, `charlie written-records moimroom-demo`, `charlie migrate rollback RUNID --watch`를 씁니다.
+## 보안 거버넌스 뷰와 에이전트 활동 기록
+
+### `GET /v1/security` (viewer)
+
+여러 환경의 보안 신호를 한 형식(`SecurityFinding`)으로 모아 보여 줍니다. 항목마다 환경, 공급자, 소스, 분류(identity, network, workload, data, logging, threat), 심각도(critical, high, medium, low, info), 대상, 설명, 권고가 있습니다. `id`는 환경, 소스, 검사, 대상으로 만든 해시라서 다시 읽어도 같습니다.
+
+| 소스 | 환경 | 읽는 것 |
+| --- | --- | --- |
+| `kubernetes` | 등록된 환경마다 | privileged, hostNetwork, hostPID, hostPath, runAsNonRoot 미설정, limits 없음, NetworkPolicy 없는 네임스페이스, cluster-admin 바인딩, NodePort와 LoadBalancer 서비스. kube-system과 GKE, EKS 관리 네임스페이스는 뺍니다 |
+| `aws-iam`, `aws-ec2`, `aws-cloudtrail`, `aws-guardduty`, `aws-securityhub`, `aws-s3` | `aws-account` | 루트 MFA와 키, MFA 없는 콘솔 사용자, 90일 넘은 액세스 키, 인터넷에 열린 보안 그룹, EBS 기본 암호화, 로깅 중인 trail, GuardDuty와 그 탐지 결과, Security Hub와 그 결과, S3 계정 퍼블릭 액세스 차단 |
+| `platform-audit`, `platform-config` | `platform` | 지난 24시간 동안 401, 403으로 막힌 요청(누가 무엇을 몇 번), DB 호스트 제한과 게이트웨이 설정 |
+| `gcp-scc`, `cloudflare` | `gcp-project`, `cloudflare-account` | 아직 연결하지 않았습니다. `not_configured`와 무엇이 없는지를 보여 줍니다 |
+
+- 읽지 못한 소스는 `sources`에 `unavailable`(응답 없음), `not_configured`(설정이나 자격 증명 없음), `error`(권한 부족 등)와 이유로 표시하고, 항목을 지어내지 않습니다.
+- 결과는 60초 동안 캐시합니다. `?refresh=true`는 다시 읽지만 10초에 한 번까지입니다. `?environment=gke`, `?severity=high`(그 이상만)로 거릅니다.
+- 수집기는 소스마다 하나이고 동시에 실행하며, 하나가 느려도 25초에서 끊습니다. 새 공급자는 `security.Collector` 구현 하나를 추가하면 됩니다.
+- AWS는 SDK 기본 자격 증명 체인(환경 변수, `AWS_PROFILE`, 인스턴스 역할)을 쓰고 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) 한 리전을 읽습니다. Describe, List, Get 호출만 하며 아무것도 켜거나 바꾸지 않습니다. 관리 호스트 역할에는 Terraform이 `SecurityAudit` 정책을 붙입니다.
+- Kubernetes는 `GET /v1/envs`와 같은 kubeconfig와 컨텍스트를 씁니다. 서버 계정에 모든 네임스페이스의 pods, services, networkpolicies 목록과 clusterrolebindings 목록 권한이 필요합니다.
+- 실제 계정 점검을 다시 해 보려면 `PLATFORM_TEST_AWS_LIVE=1 AWS_PROFILE=hopcharlie go test -run TestAWSLive -v ./internal/security`를 실행합니다.
+
+### 에이전트 활동 기록 `/v1/agent/sessions`
+
+AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을 만들고, 도구 호출과 결과를 이벤트로 남깁니다. 콘솔과 CLI는 SSE로 실시간으로 봅니다.
+
+| 요청 | 역할 | 설명 |
+| --- | --- | --- |
+| `POST /v1/agent/sessions` | agent | `{kind, title, planRef?, runId?, model?}`. 201, 상태 `running`, actor는 토큰 이름 |
+| `POST /v1/agent/sessions/{id}/events` | agent | `{type, tool?, input?, output?, status?, durationMillis?, usage?}`. 201, `seq`가 붙은 이벤트 |
+| `POST /v1/agent/sessions/{id}/finish` | agent | `{status: succeeded, failed, cancelled, summary?}` |
+| `GET /v1/agent/sessions` | viewer | 최신순. `?planRef=`, `?runId=`, `?limit=`로 거름 |
+| `GET /v1/agent/sessions/{id}` | viewer | 이벤트 수, 도구 호출 수, 토큰, 소요 시간 합계 포함 |
+| `GET /v1/agent/sessions/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속). `?format=json`은 목록 |
+
+- 이벤트와 종료는 세션을 만든 토큰이나 operator만 쓸 수 있습니다. 끝난 세션에 쓰면 409 `agent_session_finished`입니다.
+- `input`, `output`은 아무 JSON 값이고 각각 64 KiB까지입니다. 키 이름이 password, secret, token, authorization, api key 꼴이면 값을 `"[redacted]"`로 바꿔 저장합니다.
+- 쓰기 요청은 모두 감사 로그에 남습니다. 감사 로그에는 세션 id, 이벤트 종류, 도구 이름만 남고 내용은 남기지 않습니다.
+- 테이블은 마이그레이션 `0003_agent_activity.sql`이 만듭니다.

@@ -431,6 +431,236 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /:
+    get:
+      tags: [system]
+      operationId: getRoot
+      security: []
+      description: Names the service and links to the contract, so a browser pointed at the API host gets an answer.
+      responses:
+        "200":
+          description: Service information.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ServiceInfo" }
+
+  /v1/security:
+    get:
+      tags: [security]
+      operationId: getSecurity
+      description: |
+        The security and governance state of every environment in one view.
+        Kubernetes clusters, the AWS account (IAM, EC2, CloudTrail, GuardDuty,
+        Security Hub, S3) and the platform's own audit log and configuration
+        are read and normalised into `SecurityFinding`s.
+
+        Every finding comes from a real read. A source that could not be read
+        is listed in `sources` with its status and a message and contributes no
+        findings; nothing is filled in for it. Results are cached for 60
+        seconds; `refresh=true` collects again, at most once every 10 seconds
+        (a refresh within that window gets the latest result).
+
+        The filters apply to `findings`, to the counts in `sources` and to
+        `summary`. Error codes: invalid_request (400), security_not_configured (503).
+      parameters:
+        - name: environment
+          in: query
+          required: false
+          description: Only this environment, e.g. `gke`, `aws-account` or `platform`. Unknown names are a 400.
+          schema: { type: string }
+        - name: severity
+          in: query
+          required: false
+          description: Minimum severity; `high` returns critical and high findings.
+          schema: { $ref: "#/components/schemas/SecuritySeverity" }
+        - name: refresh
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Findings, sources and counts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/agent/sessions:
+    post:
+      tags: [agent]
+      operationId: createAgentSession
+      description: |
+        Start an activity log for one task of the AI agent (planning a
+        migration, a sandbox rehearsal, a diagnosis). The session starts as
+        `running`; its actor is the token's name. Roles: agent, operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAgentSessionRequest" }
+      responses:
+        "201":
+          description: The new session.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSession" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+    get:
+      tags: [agent]
+      operationId: listAgentSessions
+      parameters:
+        - name: planRef
+          in: query
+          required: false
+          schema: { type: string }
+        - name: runId
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Sessions, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSessionList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/agent/sessions/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [agent]
+      operationId: getAgentSession
+      responses:
+        "200":
+          description: The session with its totals.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/agent/sessions/{id}/events:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [agent]
+      operationId: appendAgentEvent
+      description: |
+        Record one tool call, tool result, message, blocked action, decision or
+        error. Only the session's actor or an operator may append. `input` and
+        `output` are any JSON value up to 64 KiB each; values of keys that look
+        like credentials (password, secret, token, authorization, api key) are
+        stored as `"[redacted]"`. Error codes: agent_session_not_found (404),
+        agent_session_finished (409), too_large (413).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentEventRequest" }
+      responses:
+        "201":
+          description: The stored event, with its seq.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentEvent" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+    get:
+      tags: [agent]
+      operationId: streamAgentEvents
+      description: |
+        Server-Sent Events, with the same contract as a run's events.
+
+        - The first message is `snapshot` (data: `AgentSession`). Snapshots
+          carry no SSE id.
+        - Then every `AgentEvent`, with the event `type` as the SSE event name
+          and the event `seq` as the SSE id.
+        - When the session finishes: a final `snapshot`, then the stream closes.
+          While it runs the stream stays open, with `: keep-alive` comments.
+
+        Reconnect with `Last-Event-ID` (or `?after=`) to replay the events you
+        missed. `format=json` returns the stored events as one `AgentEventList`
+        instead of a stream.
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: string }
+        - name: after
+          in: query
+          required: false
+          description: Replay events with seq greater than this. Same as Last-Event-ID.
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [sse, json], default: sse }
+      responses:
+        "200":
+          description: An event stream, or the event list with `format=json`.
+          content:
+            text/event-stream:
+              schema: { type: string }
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentEventList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/agent/sessions/{id}/finish:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [agent]
+      operationId: finishAgentSession
+      description: |
+        End a running session. Only the session's actor or an operator may
+        finish it. Error codes: agent_session_not_found (404),
+        agent_session_finished (409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FinishAgentSessionRequest" }
+      responses:
+        "200":
+          description: The finished session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSession" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
   /v1/written-records/{stream}:
     parameters:
       - name: stream
@@ -1253,6 +1483,216 @@ components:
           type: array
           items: { $ref: "#/components/schemas/AuditEntry" }
         nextBefore: { type: integer, format: int64, description: pass as `before` for the next page }
+
+    # ---------- service info ----------
+
+    ServiceInfo:
+      type: object
+      required: [name, links]
+      properties:
+        name: { type: string, example: hopcharlie-platform }
+        links:
+          type: object
+          required: [openapi, health]
+          properties:
+            openapi: { type: string, example: /openapi.yaml }
+            health: { type: string, example: /healthz }
+
+    # ---------- security and governance ----------
+
+    SecurityProvider:
+      type: string
+      enum: [aws, gcp, onprem, cloudflare, platform]
+
+    SecuritySeverity:
+      type: string
+      enum: [critical, high, medium, low, info]
+
+    SecurityCategory:
+      type: string
+      enum: [identity, network, workload, data, logging, threat]
+
+    SecuritySourceStatus:
+      description: |
+        - ok: read completely.
+        - unavailable: the source did not answer (e.g. the cluster is unreachable).
+        - not_configured: this server has no credentials or settings for the source; the message says what is missing.
+        - error: the source answered but some or all reads failed (e.g. access denied); findings read before the failure are kept.
+      type: string
+      enum: [ok, unavailable, not_configured, error]
+
+    SecurityFinding:
+      description: One security or governance signal, normalised across vendors.
+      type: object
+      required: [id, environment, provider, source, check, category, severity, title, resource, detail, recommendation, observedAt]
+      properties:
+        id: { type: string, description: "stable across collections: a hash of environment, source, check and resource" }
+        environment: { type: string, description: "an environment name, or aws-account, or platform", example: gke }
+        provider: { $ref: "#/components/schemas/SecurityProvider" }
+        source: { type: string, example: aws-guardduty, description: "kubernetes, aws-iam, aws-ec2, aws-cloudtrail, aws-guardduty, aws-securityhub, aws-s3, platform-audit, platform-config" }
+        check: { type: string, example: k8s.privileged, description: the rule that produced the finding }
+        category: { $ref: "#/components/schemas/SecurityCategory" }
+        severity: { $ref: "#/components/schemas/SecuritySeverity" }
+        title: { type: string }
+        resource: { type: string, description: "what the finding is about, e.g. shop/Deployment/web/app/app or an ARN" }
+        detail: { type: string }
+        recommendation: { type: string }
+        observedAt: { type: string, format: date-time, description: "when the source reported it, or when it was read" }
+
+    SecuritySource:
+      type: object
+      required: [name, provider, environment, status, checkedAt, findings]
+      properties:
+        name: { type: string, example: aws-guardduty }
+        provider: { $ref: "#/components/schemas/SecurityProvider" }
+        environment: { type: string }
+        status: { $ref: "#/components/schemas/SecuritySourceStatus" }
+        message: { type: string, description: "why the status is not ok, or what was read" }
+        checkedAt: { type: string, format: date-time }
+        findings: { type: integer, description: findings from this source in this response }
+
+    SeverityCounts:
+      type: object
+      required: [total, critical, high, medium, low, info]
+      properties:
+        total: { type: integer }
+        critical: { type: integer }
+        high: { type: integer }
+        medium: { type: integer }
+        low: { type: integer }
+        info: { type: integer }
+
+    SecuritySummary:
+      type: object
+      required: [bySeverity, byEnvironment]
+      properties:
+        bySeverity: { $ref: "#/components/schemas/SeverityCounts" }
+        byEnvironment:
+          description: Counts per environment; every environment with a source appears, even with no findings.
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/SeverityCounts" }
+
+    SecurityReport:
+      type: object
+      required: [generatedAt, summary, sources, findings]
+      properties:
+        generatedAt: { type: string, format: date-time, description: when the sources were read }
+        summary: { $ref: "#/components/schemas/SecuritySummary" }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/SecuritySource" }
+        findings:
+          description: Most severe first.
+          type: array
+          items: { $ref: "#/components/schemas/SecurityFinding" }
+
+    # ---------- agent activity ----------
+
+    AgentSessionKind:
+      type: string
+      enum: [plan, rehearsal, diagnose, explain, other]
+
+    AgentSessionStatus:
+      type: string
+      enum: [running, succeeded, failed, cancelled]
+
+    AgentEventType:
+      type: string
+      enum: [tool_call, tool_result, message, blocked, decision, error]
+
+    CreateAgentSessionRequest:
+      type: object
+      required: [kind, title]
+      properties:
+        kind: { $ref: "#/components/schemas/AgentSessionKind" }
+        title: { type: string, maxLength: 200 }
+        planRef: { type: string }
+        runId: { type: string }
+        model: { type: string, example: claude-opus-4-5 }
+
+    AgentSessionTotals:
+      type: object
+      required: [events, toolCalls, inputTokens, outputTokens, durationMillis]
+      properties:
+        events: { type: integer, format: int64 }
+        toolCalls: { type: integer, format: int64 }
+        inputTokens: { type: integer, format: int64 }
+        outputTokens: { type: integer, format: int64 }
+        durationMillis: { type: integer, format: int64, description: "sum of the events' durationMillis; wall-clock time is endedAt - createdAt" }
+
+    AgentSession:
+      type: object
+      required: [id, kind, title, actor, status, createdAt, totals]
+      properties:
+        id: { type: string, example: ags_3f9c1a0b2d4e }
+        kind: { $ref: "#/components/schemas/AgentSessionKind" }
+        title: { type: string }
+        actor: { type: string, description: the token name that started the session }
+        planRef: { type: string }
+        runId: { type: string }
+        model: { type: string }
+        status: { $ref: "#/components/schemas/AgentSessionStatus" }
+        summary: { type: string }
+        createdAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        totals: { $ref: "#/components/schemas/AgentSessionTotals" }
+
+    AgentSessionList:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items: { $ref: "#/components/schemas/AgentSession" }
+
+    TokenUsage:
+      type: object
+      required: [inputTokens, outputTokens]
+      properties:
+        inputTokens: { type: integer, format: int64, minimum: 0 }
+        outputTokens: { type: integer, format: int64, minimum: 0 }
+
+    AgentEventRequest:
+      type: object
+      required: [type]
+      properties:
+        type: { $ref: "#/components/schemas/AgentEventType" }
+        tool: { type: string, maxLength: 200, description: "the tool name for tool_call, tool_result and blocked" }
+        input: { description: "any JSON value, up to 64 KiB" }
+        output: { description: "any JSON value, up to 64 KiB" }
+        status: { type: string, maxLength: 64, example: ok }
+        durationMillis: { type: integer, format: int64, minimum: 0 }
+        usage: { $ref: "#/components/schemas/TokenUsage" }
+
+    AgentEvent:
+      type: object
+      required: [seq, sessionId, time, type]
+      properties:
+        seq: { type: integer, format: int64 }
+        sessionId: { type: string }
+        time: { type: string, format: date-time }
+        type: { $ref: "#/components/schemas/AgentEventType" }
+        tool: { type: string }
+        input: { description: 'any JSON value; credential-like values are "[redacted]"' }
+        output: { description: 'any JSON value; credential-like values are "[redacted]"' }
+        status: { type: string }
+        durationMillis: { type: integer, format: int64 }
+        usage: { $ref: "#/components/schemas/TokenUsage" }
+
+    AgentEventList:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/AgentEvent" }
+
+    FinishAgentSessionRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: "#/components/schemas/AgentSessionStatus" }
+        summary: { type: string, maxLength: 4000 }
 
     # ---------- plan tools: written records, attachments, apps, drafts, rollback ----------
 
