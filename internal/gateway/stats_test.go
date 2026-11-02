@@ -13,10 +13,10 @@ func TestStatsPercentiles(t *testing.T) {
 	var s backendStats
 	// 90 requests at 10ms land in (7,10]; 10 at 100ms land in (75,100].
 	for i := range 90 {
-		s.record(now, 10*time.Millisecond, i < 5)
+		s.record(now, 10*time.Millisecond, i < 5, false)
 	}
 	for range 10 {
-		s.record(now.Add(-3*time.Second), 100*time.Millisecond, false)
+		s.record(now.Add(-3*time.Second), 100*time.Millisecond, false, false)
 	}
 	st := s.window(now, 10)
 	if st.Requests != 100 || st.Errors != 5 || !near(st.ErrorRate, 0.05) || !near(st.Rps, 10) || st.WindowSeconds != 10 {
@@ -44,13 +44,13 @@ func TestStatsRingAndEdges(t *testing.T) {
 		t.Fatalf("empty: %+v", st)
 	}
 	// Same ring slot, one ring apart: the old second must not leak into the new one.
-	s.record(now.Add(-time.Duration(len(s.ring))*time.Second), time.Millisecond, true)
-	s.record(now, time.Millisecond, false)
+	s.record(now.Add(-time.Duration(len(s.ring))*time.Second), time.Millisecond, true, false)
+	s.record(now, time.Millisecond, false, false)
 	if st := s.window(now, statsKeepSeconds); st.Requests != 1 || st.Errors != 0 {
 		t.Fatalf("stale bucket leaked: %+v", st)
 	}
 	// Above the largest bound there is nothing to interpolate towards.
-	s.record(now, time.Minute, false)
+	s.record(now, time.Minute, false, false)
 	if st := s.window(now, 1); st.P99Millis != 30000 {
 		t.Fatalf("overflow p99 = %v", st.P99Millis)
 	}
@@ -72,11 +72,11 @@ func TestStatsWindowSpan(t *testing.T) {
 	var s backendStats
 	for back := 1; back <= statsKeepSeconds; back++ {
 		for i := range rate {
-			s.record(now.Add(-time.Duration(back)*time.Second), time.Millisecond, i == 0)
+			s.record(now.Add(-time.Duration(back)*time.Second), time.Millisecond, i == 0, false)
 		}
 	}
 	for i := range rate / 2 { // half of the current second
-		s.record(now, time.Millisecond, i == 0)
+		s.record(now, time.Millisecond, i == 0, false)
 	}
 	for _, secs := range []int{1, 10, statsKeepSeconds} {
 		st := s.window(now, secs)

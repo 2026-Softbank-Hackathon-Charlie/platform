@@ -35,13 +35,19 @@ type backendStats struct {
 	ring          [statsKeepSeconds + 1]statsBucket
 	totalRequests int64
 	totalErrors   int64
+	totalRetried  int64
 }
 
 func latencyBucket(ms float64) int {
 	return sort.SearchFloat64s(latencyBoundsMs[:], ms) // first bound >= ms
 }
 
-func (s *backendStats) record(now time.Time, d time.Duration, isErr bool) {
+// record counts one answer of this backend. The per-second buckets (windows,
+// which canary gates read) count every answer, so a failing backend shows its
+// errors even when a retry hid them from the client. The totals count what
+// clients received: a failed read the gateway retried elsewhere (retried) is
+// kept apart, and the retry is counted on the backend that answered it.
+func (s *backendStats) record(now time.Time, d time.Duration, isErr, retried bool) {
 	sec := now.Unix()
 	ms := float64(d) / float64(time.Millisecond)
 	s.mu.Lock()
@@ -52,10 +58,17 @@ func (s *backendStats) record(now time.Time, d time.Duration, isErr bool) {
 	}
 	b.requests++
 	b.latency[latencyBucket(ms)]++
-	s.totalRequests++
 	if isErr {
 		b.errors++
+	}
+	switch {
+	case retried:
+		s.totalRetried++
+	case isErr:
+		s.totalRequests++
 		s.totalErrors++
+	default:
+		s.totalRequests++
 	}
 }
 
@@ -98,7 +111,8 @@ func (s *backendStats) window(now time.Time, seconds int) apiv1.BackendStats {
 func (s *backendStats) totals() apiv1.BackendTotals {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return apiv1.BackendTotals{Requests: s.totalRequests, Errors: s.totalErrors}
+	retried := s.totalRetried
+	return apiv1.BackendTotals{Requests: s.totalRequests, Errors: s.totalErrors, Retried: &retried}
 }
 
 // percentile estimates the q-quantile in ms, interpolating linearly inside

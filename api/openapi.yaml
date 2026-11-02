@@ -1464,10 +1464,18 @@ components:
 
     BackendTotals:
       type: object
+      description: >-
+        What clients received from this backend since the gateway started.
+        A read that failed here (5xx or no answer) and that the gateway sent
+        once more to another backend is counted in retried, not in requests or
+        errors; the retry is counted on the backend that answered it. Windowed
+        stats (BackendStats) count every answer, retried ones included, so
+        canary gates still see a failing backend.
       required: [requests, errors]
       properties:
         requests: { type: integer, format: int64 }
-        errors: { type: integer, format: int64 }
+        errors: { type: integer, format: int64, description: answers with status 500 or above that reached the client }
+        retried: { type: integer, format: int64, description: failed reads sent once more to another backend }
 
     RouteRequest:
       type: object
