@@ -2,7 +2,7 @@
 .hopcharlie/
 *.exe
 /deploy/docker/bin/
-/deploy/aws/.terraform/
-/deploy/aws/*.tfstate
-/deploy/aws/*.tfstate.*
+/deploy/aws/**/.terraform/
+/deploy/aws/**/*.tfstate
+/deploy/aws/**/*.tfstate.*
 /deploy/aws/tfplan

@@ -34,14 +34,38 @@
 
 계정의 EC2 vCPU 할당량 5개 중 2개를 씁니다.
 
-## 배포
+## 준비
 
-필요한 것은 Go, Docker, AWS CLI, 그리고 `hopcharlie` 프로필(해커톤 계정 525091405886)입니다. Terraform은 설치하지 않아도 됩니다. `tf.sh`가 공식 Docker 이미지로 실행하고, 이 프로필의 키만 컨테이너에 넘깁니다.
+팀원 누구나 같은 상태로 계획하고 적용합니다. 필요한 것은 다음과 같습니다.
+
+- Docker, Go, AWS CLI v2.9 이상
+- 해커톤 계정(525091405886)용 AWS CLI 프로필. 액세스 키, `aws login`, SSO 중 무엇이든 됩니다.
+
+Terraform은 설치하지 않아도 됩니다. `tf.sh`가 공식 Docker 이미지로 실행하고, 지정한 프로필의 자격 증명만 컨테이너에 넘깁니다. 프로필이 다른 계정을 가리키면 Terraform을 실행하기 전에 멈춥니다. 프로필 이름이 `hopcharlie`가 아니면 `AWS_PROFILE`로 지정합니다.
 
 ```bash
 cd deploy/aws
+export AWS_PROFILE=<내 해커톤 프로필>   # 기본값 hopcharlie
 ./tf.sh init
-./tf.sh apply -target=aws_ecr_repository.platform   # 이미지 저장소 먼저
+./tf.sh plan
+```
+
+## 상태 파일
+
+| 상태 | 위치 |
+| --- | --- |
+| 관리 호스트 (이 폴더) | `s3://hopcharlie-tfstate-525091405886-apne2/platform/management-host/terraform.tfstate` |
+| 상태 버킷 자체 (`state/`) | `s3://hopcharlie-tfstate-525091405886-apne2/state/terraform.tfstate` |
+
+- 버킷은 버전 관리, 암호화, 공개 차단, HTTPS 전용 정책이 걸려 있고, 실수로 지워지지 않게 `prevent_destroy`로 막아 두었습니다. 지난 버전은 90일 동안 남습니다.
+- 잠금은 S3 잠금 파일(`use_lockfile`)로 합니다. 두 사람이 동시에 apply하면 나중 사람은 `Error acquiring the state lock`과 함께 잠금을 가진 사람(`Who:`)을 보게 됩니다. 그 사람의 작업이 끝난 뒤 다시 실행합니다. 강제로 푸는 `force-unlock`은 상대가 확실히 멈춘 경우에만 씁니다.
+- 상태에는 생성한 토큰과 DB 비밀번호가 들어 있습니다. 로컬에 내려받거나 다른 곳에 복사하지 않습니다.
+- 버킷 스택을 처음부터 다시 만들어야 하면 `state/backend.tf`의 주석을 따릅니다.
+
+## 배포
+
+```bash
+./tf.sh apply -target=aws_ecr_repository.platform   # 이미지 저장소 먼저 (처음 한 번)
 ./push-image.sh                                       # 이미지 빌드, 푸시
 ./tf.sh apply                                         # 나머지 전부
 ./tf.sh output api_url
@@ -51,7 +75,7 @@ cd deploy/aws
 
 ## 토큰
 
-토큰은 Terraform이 만들고, 상태 파일(`terraform.tfstate`)과 SSM에만 있습니다. 상태 파일은 git에 올리지 않습니다.
+토큰은 Terraform이 만들고, 원격 상태와 SSM에만 있습니다.
 
 ```bash
 ./tf.sh output -json operator_tokens   # 사람마다 operator 토큰 하나
@@ -92,3 +116,5 @@ docker compose exec gateway sh -c 'wget -qO- --header "Authorization: Bearer $GA
 ```
 
 ECR 이미지, Elastic IP, SSM 파라미터까지 모두 지웁니다. PostgreSQL 데이터도 함께 사라집니다.
+
+상태 버킷은 `prevent_destroy`로 막혀 있습니다. 해커톤이 끝나고 정말 지울 때만 `state/main.tf`의 `prevent_destroy`를 풀고, 버킷 안의 모든 객체 버전을 비운 뒤 `./tf.sh -chdir=state destroy`를 실행합니다. 관리 호스트를 먼저 destroy해야 합니다.
