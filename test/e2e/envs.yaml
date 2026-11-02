@@ -1,0 +1,11 @@
+# PLATFORM_ENVS_FILE for the E2E test: both environments are the same kind
+# cluster; the gateway backend of each environment is its name.
+environments:
+  - name: src
+    provider: onprem
+    displayName: E2E source
+    kubeContext: kind-hop-e2e
+  - name: dst
+    provider: onprem
+    displayName: E2E target
+    kubeContext: kind-hop-e2e

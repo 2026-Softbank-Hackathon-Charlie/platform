@@ -214,6 +214,14 @@ PLATFORM_TEST_DATABASE_URL='postgres://charlie:charlie@localhost:55432/charlie?s
 - 저장소 구현은 `storetest.Conformance`를 통과해야 합니다. 메모리 저장소(`storetest.NewMemory`)는 테스트에서만 씁니다.
 - `api/openapi.yaml`을 고친 뒤에는 `go generate ./pkg/apiv1`로 타입을 다시 만듭니다.
 
+### 부하 중 이전 E2E
+
+kind 안의 CNPG 클러스터 두 개를 게이트웨이 부하 속에서 플랫폼 API만으로 이전합니다(카나리, 운영자 전환 승인, 쓰기 기록 검증). docker, kubectl, go가 있으면 한 명령으로 돌고, 끝나면 만든 것을 모두 지웁니다. 자세한 내용은 [test/e2e/README.md](test/e2e/README.md)에 있습니다.
+
+```bash
+test/e2e/run.sh          # KEEP=1이면 끝난 뒤에도 남기고, test/e2e/down.sh로 지움
+```
+
 ## 알려진 한계
 
 - 게이트웨이는 한 대뿐이라 단일 장애점입니다. 상태 파일 기반이라 두 대로 늘리는 것은 가능하지만 아직 하지 않았습니다.
