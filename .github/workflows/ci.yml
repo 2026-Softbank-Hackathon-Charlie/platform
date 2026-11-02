@@ -129,12 +129,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .terraform-plugins
-          key: tf-${{ runner.os }}-${{ hashFiles('deploy/aws/.terraform.lock.hcl', 'deploy/aws/state/.terraform.lock.hcl') }}
+          key: tf-${{ runner.os }}-${{ hashFiles('deploy/aws/.terraform.lock.hcl', 'deploy/aws/state/.terraform.lock.hcl', 'deploy/aws/dns/.terraform.lock.hcl') }}
       - name: Format and validate (no backend, no AWS)
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           terraform fmt -check -recursive deploy/aws
-          for dir in deploy/aws deploy/aws/state; do
+          for dir in deploy/aws deploy/aws/state deploy/aws/dns; do
             terraform -chdir="$dir" init -backend=false -input=false >/dev/null
             terraform -chdir="$dir" validate
           done

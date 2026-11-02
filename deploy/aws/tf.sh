@@ -2,6 +2,7 @@
 # Runs Terraform from the official image, so nothing has to be installed.
 #   ./tf.sh init | plan | apply | destroy | output ...
 #   ./tf.sh -chdir=state plan        (the state bucket stack)
+#   ./tf.sh -chdir=dns plan          (certificate and Cloudflare records; needs CLOUDFLARE_API_TOKEN)
 # Credentials come from the AWS CLI profile in AWS_PROFILE (default: hopcharlie).
 # Any profile type works (access keys, aws login, SSO), as long as it belongs
 # to the hackathon account; anything else is refused before Terraform runs.
@@ -34,5 +35,6 @@ who="$(whoami 2>/dev/null || echo user)-$(hostname 2>/dev/null || echo host)"
 MSYS_NO_PATHCONV=1 exec docker run --rm -i --hostname "${who//[^A-Za-z0-9-]/-}" \
   -v "${root}:/repo" -w /repo/deploy/aws \
   -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+  -e CLOUDFLARE_API_TOKEN \
   -e TF_IN_AUTOMATION=1 \
   hashicorp/terraform:1.17.1 "$@"

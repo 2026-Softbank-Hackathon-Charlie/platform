@@ -2,6 +2,35 @@
 
 플랫폼 API, 트래픽 게이트웨이, PostgreSQL, Caddy를 EC2 한 대에 Docker Compose로 띄웁니다. Notion에서 정한 "AWS 관리 호스트"를 Terraform으로 만든 것입니다.
 
+## 관리 EKS로 옮기는 중
+
+2026-11-02 팀 회의에서 플랫폼을 infra 레포의 관리 EKS(`charlie-dev-management`)로 옮기기로 했습니다. 클러스터와 그 위의 pod는 infra 레포가 Argo CD로 배포합니다(infra `docs/adr/0014`, `helm/charts/hopcharlie-platform`). 이 폴더는 플랫폼 전용 AWS 리소스를 계속 맡습니다.
+
+| 파일 | 내용 |
+| --- | --- |
+| `eks.tf` | pod용 IAM 역할과 Pod Identity 연결 (`charlie-platform/hopcharlie-platform`). 권한은 호스트 역할과 같다 |
+| `dns/` | `*.hopcharlie.dev` ACM 인증서와 Cloudflare 레코드. Cloudflare 토큰이 있는 사람만 실행한다 |
+
+pod는 지금과 같은 SSM 파라미터(`/hopcharlie/*`)를 init 컨테이너에서 읽습니다. 그래서 토큰과 비밀값은 그대로이고, 값을 바꾸는 방법도 같습니다(put-parameter 후 pod 재시작).
+
+옮기는 순서는 다음과 같습니다. 각 단계는 apply 전에 팀 승인을 받습니다.
+
+1. `./tf.sh apply`로 pod 역할과 Pod Identity 연결을 만든다.
+2. infra PR을 merge하면 Argo CD가 플랫폼을 배포한다. pod가 Ready인지 확인한다.
+3. `hopcharlie.dev`의 네임서버가 Cloudflare로 바뀌면 인증서를 발급한다.
+   ```bash
+   export CLOUDFLARE_API_TOKEN=...   # Zone.DNS:Edit 권한
+   ./tf.sh -chdir=dns init
+   ./tf.sh -chdir=dns apply -var cloudflare_zone_id=<영역 ID>
+   ./tf.sh -chdir=dns output -raw certificate_arn
+   ```
+4. infra에서 baseline `externalAlb`(인증서 ARN)와 플랫폼 `ingress.enabled`를 켜는 PR을 올린다. ALB가 생기면 레코드를 연결한다.
+   ```bash
+   ./tf.sh -chdir=dns apply -var cloudflare_zone_id=<영역 ID> -var alb_name=charlie-management-external
+   API_URL=https://api.hopcharlie.dev ./push-console.sh
+   ```
+5. 새 콘솔 이미지의 digest를 infra values에 반영하고, `charlie login --server https://api.hopcharlie.dev`로 확인한 뒤 EC2 호스트를 정리한다.
+
 ## 만드는 것
 
 | 리소스 | 내용 |

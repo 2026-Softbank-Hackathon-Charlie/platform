@@ -49,3 +49,9 @@ variable "console_image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "management_cluster" {
+  description = "Management EKS cluster (infra repo) whose charlie-platform/hopcharlie-platform ServiceAccount gets the platform's AWS role."
+  type        = string
+  default     = "charlie-dev-management"
+}
