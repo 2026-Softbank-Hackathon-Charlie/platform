@@ -134,6 +134,11 @@ func New(cfg Config, environments []envs.EnvConfig, gatewayURL string) (*Catalog
 			if err := plans.CheckPasswordEnv(e.PasswordEnv); err != nil {
 				return nil, fmt.Errorf("app %q in %s: passwordEnv: %w", a.Name, name, err)
 			}
+			if e.Bucket != "" {
+				if err := plans.CheckBucket(e.Bucket); err != nil {
+					return nil, fmt.Errorf("app %q in %s: %w", a.Name, name, err)
+				}
+			}
 			if e.DBPort == 0 {
 				e.DBPort = 5432
 			}
@@ -161,6 +166,21 @@ func (c *Catalog) PasswordHosts() map[string][]string {
 	for _, hosts := range out {
 		slices.Sort(hosts)
 	}
+	return out
+}
+
+// Buckets returns every bucket of every app, for the plan policy
+// (plans.Policy.Buckets): files may only move between registered buckets.
+func (c *Catalog) Buckets() []string {
+	var out []string
+	for _, a := range c.apps {
+		for _, e := range a.Environments {
+			if e.Bucket != "" && !slices.Contains(out, e.Bucket) {
+				out = append(out, e.Bucket)
+			}
+		}
+	}
+	slices.Sort(out)
 	return out
 }
 

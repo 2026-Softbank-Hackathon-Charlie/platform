@@ -135,6 +135,8 @@ go run ./cmd/gateway
 | `PLATFORM_ADDR`, `PLATFORM_STATE_DIR` | 주소(기본 `:8080`), 엔진 상태 디렉터리 |
 | `PLATFORM_PLAN_ENV_ALLOW` | 어느 Plan이든 두 DSN의 비밀번호 자리에 `${VAR}`로 쓸 수 있는 변수 (기본 `SRC_PGPASSWORD`, `DST_PGPASSWORD`). 이름은 `_PGPASSWORD`로 끝나야 하고 `PLATFORM_`, `AWS_`로 시작하면 안 되며, 어기면 서버가 시작하지 않음 |
 | `PLATFORM_DSN_HOST_SUFFIXES` | 허용할 DB 호스트 접미사 (예: `.ts.net`) |
+| `PLATFORM_PLAN_BUCKETS` | 앱 설정 말고도 Plan의 `files`에 쓸 수 있는 버킷 (`원격:버킷`, 쉼표 구분). 앱 설정의 `bucket`은 자동으로 들어감 |
+| `RCLONE_CONFIG_<원격>_*` | rclone 원격의 종류와 자격 증명 (예: `RCLONE_CONFIG_GCS_TYPE=google cloud storage`). 등록된 버킷의 원격에 `_TYPE`이 없으면 시작할 때 경고 |
 | `PLATFORM_AWS_REGION` | 보안 뷰가 읽는 AWS 리전 (기본 `ap-northeast-2`) |
 | `PLATFORM_AGENT_IDLE` | 이벤트 없이 이 시간이 지난 `running` 에이전트 세션을 `cancelled`로 닫음 (기본 `30m`) |
 
@@ -147,6 +149,15 @@ go run ./cmd/gateway
 - 앱 설정의 `passwordEnv`는 그 환경의 `dbHost:dbPort`로 가는 DSN에만 쓸 수 있습니다. 다른 앱이나 다른 환경의 DSN, 쿼리의 `host=`나 두 번째 호스트로 보내면 거부합니다.
 - `gateway.url`에는 `$`를 쓸 수 없고, `gateway.token`은 비우거나 정확히 `${GATEWAY_TOKEN}`이어야 합니다.
 - Plan 요약의 `dbHost`와 정책 오류 메시지는 펼치기 전의 Plan에서 만듭니다. 펼친 값은 응답에 나오지 않습니다.
+
+### Plan의 파일 이전
+
+rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습니다(`:local:/data`, `:s3,access_key_id=...:버킷`, `gcs,service_account_file=...:버킷`). 그래서 서버는 `files.source`와 `files.target`이 각각 등록된 버킷과 정확히 같을 때만 받습니다.
+
+- 등록된 버킷은 앱 설정 파일의 `bucket`과 `PLATFORM_PLAN_BUCKETS`입니다. 형식은 `원격:버킷` 또는 `원격:버킷/경로`이고, 원격 이름 앞의 `:`, 쉼표, `..`는 쓸 수 없습니다. 형식이 틀리면 서버가 시작하지 않습니다.
+- 등록된 버킷이 하나도 없으면 `files`가 있는 Plan은 모두 거부합니다. 원본과 대상이 같은 버킷이어도 거부합니다.
+- 원격의 종류와 자격 증명은 서버 환경 변수 `RCLONE_CONFIG_<원격>_*`로만 줍니다. 원격 이름은 대문자로 바꾸고 `-`를 `_`로 바꿉니다(`my-remote`는 `RCLONE_CONFIG_MY_REMOTE_TYPE`).
+- `files.rclone`은 비우거나 `rclone`이어야 하고, 플래그는 `--checksum`, `--size-only`, `--fast-list`, `--transfers`, `--checkers`만 받습니다.
 
 환경 설정의 `kubeContext`는 서버의 kubeconfig에 있어야 합니다. 서버 계정에는 `/version` 조회, `nodes` 목록, 모든 네임스페이스의 `clusters.postgresql.cnpg.io` 목록 권한이 필요합니다. 클러스터에 닿지 못하면 그 환경은 `reachable: false`와 짧은 오류로 표시되고, 서버는 그대로 뜹니다.
 

@@ -152,6 +152,7 @@ func TestRollbackReversesThePlanAsSubmitted(t *testing.T) {
 	t.Setenv("GATEWAY_TOKEN", "gw-secret")
 	policy := DefaultPolicy()
 	policy.GatewayURL = "http://gateway.ts.net:9901"
+	policy.Buckets = []string{"gcs:moimroom-photos-gke", "s3:moimroom-photos-eks"}
 	st := storetest.NewMemory()
 	s := New(policy, st)
 

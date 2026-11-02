@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -31,7 +32,9 @@ func planJSON(extra string) []byte {
 
 func TestSubmitAcceptsValidPlan(t *testing.T) {
 	t.Setenv("SRC_PGPASSWORD", "hunter2")
-	s := newService(DefaultPolicy())
+	policy := DefaultPolicy()
+	policy.Buckets = []string{"gcs:b", "s3:b"}
+	s := newService(policy)
 	rec, err := s.Submit(ctx, planJSON(`"files": {"source":"gcs:b","target":"s3:b","flags":["--transfers","16","--checksum"]}`), "alice")
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +78,10 @@ func TestPolicyRejects(t *testing.T) {
 		"rclone flag": {
 			planJSON(`"files": {"source":"a:b","target":"c:d","flags":["--config=/etc/shadow"]}`),
 			`"--config"`,
+		},
+		"files without registered buckets": {
+			planJSON(`"files": {"source":"a:b","target":"c:d"}`),
+			"files is disabled on this server",
 		},
 		"absolute manifest": {
 			[]byte(strings.Replace(string(planJSON("")), `"cluster":"db-eks"`, `"cluster":"db-eks","manifest":"/etc/passwd"`, 1)),
@@ -226,5 +233,49 @@ func TestRejectAndRecoverStarting(t *testing.T) {
 	}
 	if got, _ := s.Get(ctx, b.Ref); got.Status != apiv1.PlanStatusApproved {
 		t.Fatalf("after recover: %s", got.Status)
+	}
+}
+
+// rclone takes a backend definition from the remote part of a path, so only
+// registered buckets may reach it.
+func TestPolicyRejectsUnregisteredBuckets(t *testing.T) {
+	t.Setenv("SRC_PGPASSWORD", "hunter2")
+	policy := DefaultPolicy()
+	policy.Buckets = []string{"gcs:photos-gke", "s3:photos-eks"}
+	cases := map[string]struct{ source, target, want string }{
+		"local backend":       {":local:/data/runs", "s3:photos-eks", `files.source ":local:/data/runs" is not a registered bucket`},
+		"inline s3 backend":   {"gcs:photos-gke", ":s3,access_key_id=AKIA,secret_access_key=x:evil", `files.target ":s3,access_key_id=AKIA,secret_access_key=x:evil" is not a registered bucket`},
+		"remote with options": {"gcs,service_account_file=/home/app/.kube/config:photos-gke", "s3:photos-eks", "is not a registered bucket"},
+		"other bucket":        {"gcs:photos-gke", "s3:someone-else", `files.target "s3:someone-else" is not a registered bucket`},
+		"sub path":            {"gcs:photos-gke/../x", "s3:photos-eks", "is not a registered bucket"},
+		"same bucket":         {"gcs:photos-gke", "gcs:photos-gke", "must be different buckets"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			files, _ := json.Marshal(map[string]string{"source": c.source, "target": c.target})
+			_, err := newService(policy).Submit(ctx, planJSON(`"files": `+string(files)), "x")
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want %q", err, c.want)
+			}
+		})
+	}
+	if _, err := newService(policy).Submit(ctx, planJSON(`"files": {"source":"gcs:photos-gke","target":"s3:photos-eks"}`), "x"); err != nil {
+		t.Fatalf("registered buckets: %v", err)
+	}
+}
+
+func TestCheckBucket(t *testing.T) {
+	for _, ok := range []string{"gcs:moimroom-photos-gke", "s3:a.b_c-d", "minio:photos/2026/uploads", "my-remote:b"} {
+		if err := CheckBucket(ok); err != nil {
+			t.Errorf("CheckBucket(%q) = %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "gcs", ":local:/etc", "gcs,x=y:b", "gcs:", "gcs:/abs", "gcs:b/../c", "gcs:b/./c", "gcs:b c", "gcs:b'", `gcs:b\c`} {
+		if err := CheckBucket(bad); err == nil {
+			t.Errorf("CheckBucket(%q) accepted", bad)
+		}
+	}
+	if got := RcloneTypeEnv("my-remote:b/c"); got != "RCLONE_CONFIG_MY_REMOTE_TYPE" {
+		t.Errorf("RcloneTypeEnv = %q", got)
 	}
 }

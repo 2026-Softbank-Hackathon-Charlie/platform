@@ -105,6 +105,7 @@ func withApps(gateway string) option {
 		policy := plans.DefaultPolicy()
 		policy.GatewayURL = gateway
 		policy.HostPasswordEnvs = cat.PasswordHosts()
+		policy.Buckets = cat.Buckets()
 		d.Plans = plans.New(policy, h.store)
 		d.Plans.SetStateDir(rc.StateDir)
 		d.Apps = cat

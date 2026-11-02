@@ -267,6 +267,7 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	rc := runs.Config{StateDir: t.TempDir(), Store: h.store, Factory: h.factory, Traffic: h.traffic, PollInterval: 10 * time.Millisecond, MinCanaryStep: 10 * time.Millisecond}
 	policy := plans.DefaultPolicy()
 	policy.GatewayURL = gatewayURL
+	policy.Buckets = []string{"gcs:moimroom-photos-gke", "s3:moimroom-photos-eks"}
 	d := Deps{
 		Plans:       plans.New(policy, h.store),
 		Store:       h.store,

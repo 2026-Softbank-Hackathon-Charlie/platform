@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -107,6 +108,28 @@ func main() {
 			fatal("PLATFORM_APPS_FILE", "err", err)
 		}
 		policy.HostPasswordEnvs = appCat.PasswordHosts()
+	}
+
+	// Buckets files may move between: the apps' buckets and any listed here.
+	// rclone reads each remote's backend and credentials from the server's
+	// environment (RCLONE_CONFIG_<REMOTE>_*), never from the plan.
+	for _, b := range splitList(os.Getenv("PLATFORM_PLAN_BUCKETS")) {
+		if err := plans.CheckBucket(b); err != nil {
+			fatal("PLATFORM_PLAN_BUCKETS", "err", err)
+		}
+		policy.Buckets = append(policy.Buckets, b)
+	}
+	if appCat != nil {
+		for _, b := range appCat.Buckets() {
+			if !slices.Contains(policy.Buckets, b) {
+				policy.Buckets = append(policy.Buckets, b)
+			}
+		}
+	}
+	for _, b := range policy.Buckets {
+		if env := plans.RcloneTypeEnv(b); os.Getenv(env) == "" {
+			log.Warn("rclone remote is not configured: plans that move files to or from this bucket will fail", "bucket", b, "missing", env)
+		}
 	}
 
 	// One gateway client for the runner (canary, request counts) and the API.
