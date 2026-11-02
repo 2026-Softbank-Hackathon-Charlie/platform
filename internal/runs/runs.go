@@ -6,6 +6,7 @@
 //	canary           optional: a share of reads goes to the target, gated on its error rate and p95
 //	awaiting_switch  data is in sync; an operator approves the cutover (unless autoSwitch)
 //	cutover, verify  fence ... finalize, executed by the engine with its rollback boundary
+//	observe          optional: the target is watched against the gate; a breach can start the rollback (observe.go)
 //
 // The engine decides what a failure may undo. The runner only decides when to
 // call it, and records everything (run document and numbered events) in the
@@ -79,7 +80,7 @@ const (
 
 var phaseRank = map[apiv1.RunPhase]int{
 	apiv1.RunPhaseSync: 1, apiv1.RunPhaseCanary: 2, apiv1.RunPhaseAwaitingSwitch: 3,
-	apiv1.RunPhaseCutover: 4, apiv1.RunPhaseVerify: 5, apiv1.RunPhaseDone: 6,
+	apiv1.RunPhaseCutover: 4, apiv1.RunPhaseVerify: 5, apiv1.RunPhaseObserve: 6, apiv1.RunPhaseDone: 7,
 }
 
 var syncSteps = []string{engine.StepPrecheck, engine.StepPrepare, engine.StepPresync, engine.StepDelta}
@@ -110,6 +111,7 @@ type StartOptions struct {
 	Actor          string
 	AutoSwitch     bool
 	Canary         *apiv1.CanaryOptions
+	Observe        *apiv1.ObserveOptions
 	RollbackOf     string // the run this run rolls back, if any
 }
 
@@ -124,7 +126,9 @@ type Runner struct {
 	wg   sync.WaitGroup
 
 	stopOnce sync.Once
-	stopCh   chan struct{} // closed by InterruptWaiting: runs stop waiting (canary, switch approval)
+	stopCh   chan struct{} // closed by InterruptWaiting: runs stop waiting (canary, switch approval, observe)
+
+	autoRollback AutoRollbackFunc // guarded by mu; see SetAutoRollback
 }
 
 // New returns a Runner. Cancelling ctx stops every run; the engine then applies
@@ -179,6 +183,10 @@ func (r *Runner) Start(ctx context.Context, o StartOptions) (apiv1.Run, error) {
 	if err != nil {
 		return apiv1.Run{}, err
 	}
+	observe, err := r.observeOptions(o.Plan, o.Observe)
+	if err != nil {
+		return apiv1.Run{}, err
+	}
 	now := r.now()
 	doc := apiv1.Run{
 		PlanRef:    o.PlanRef,
@@ -194,6 +202,9 @@ func (r *Runner) Start(ctx context.Context, o StartOptions) (apiv1.Run, error) {
 	}
 	if canary != nil {
 		doc.Canary = &apiv1.CanaryResult{Options: *canary, Steps: []apiv1.CanaryStep{}}
+	}
+	if observe != nil {
+		doc.Observe = &apiv1.ObserveResult{Options: *observe, Steps: []apiv1.ObserveStep{}}
 	}
 	if o.RollbackOf != "" {
 		doc.RollbackOf = &o.RollbackOf
@@ -291,24 +302,9 @@ func (r *Runner) canaryOptions(p *plan.Plan, in *apiv1.CanaryOptions) (*apiv1.Ca
 	}
 	s := step.String()
 	out.StepDuration = &s
-	g := apiv1.GateThresholds{}
-	if out.Gate != nil {
-		g = *out.Gate
-	}
-	if g.MaxErrorRate == nil {
-		v := float32(0.01)
-		g.MaxErrorRate = &v
-	}
-	if g.MaxP95Millis == nil {
-		v := 800
-		g.MaxP95Millis = &v
-	}
-	if g.MinRequests == nil {
-		v := 20
-		g.MinRequests = &v
-	}
-	if *g.MaxErrorRate < 0 || *g.MaxErrorRate > 1 || *g.MaxP95Millis <= 0 || *g.MinRequests < 1 {
-		return nil, fmt.Errorf("%w: canary.gate thresholds out of range", ErrInvalid)
+	g, err := gateWithDefaults(out.Gate)
+	if err != nil {
+		return nil, fmt.Errorf("%w: canary.gate %v", ErrInvalid, err)
 	}
 	out.Gate = &g
 	return &out, nil
@@ -317,7 +313,10 @@ func (r *Runner) canaryOptions(p *plan.Plan, in *apiv1.CanaryOptions) (*apiv1.Ca
 // --- driving ---
 
 func (r *Runner) drive(ctx context.Context, l *live) {
-	defer r.finish(l)
+	defer func() {
+		r.finish(l)
+		r.maybeAutoRollback(l)
+	}()
 
 	if r.cfg.Traffic != nil {
 		r.captureTrafficBase(l)
@@ -364,6 +363,14 @@ func (r *Runner) drive(ctx context.Context, l *live) {
 		return
 	}
 	l.emitPlatform(engine.EventDone, "", "migration succeeded", map[string]any{"downtimeMillis": l.eng.State().DowntimeMillis})
+	if l.needsObserve() {
+		reason := r.observe(ctx, l)
+		r.ended(l, nil)
+		if reason != "" {
+			r.setStatus(l, apiv1.RunStatusSucceeded, apiv1.RunPhaseObserve, reason)
+		}
+		return
+	}
 	r.ended(l, nil)
 }
 
@@ -413,6 +420,12 @@ func (l *live) markInterrupted() {
 	l.mu.Lock()
 	l.interrupt = true
 	l.mu.Unlock()
+}
+
+func (l *live) aborted() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.abortReq
 }
 
 func (l *live) interrupted() bool {
@@ -806,7 +819,7 @@ func (r *Runner) InterruptWaiting() int {
 	n := 0
 	for _, l := range r.live {
 		l.mu.Lock()
-		if l.doc.Phase == apiv1.RunPhaseAwaitingSwitch || l.doc.Phase == apiv1.RunPhaseCanary {
+		if l.doc.Phase == apiv1.RunPhaseAwaitingSwitch || l.doc.Phase == apiv1.RunPhaseCanary || l.doc.Phase == apiv1.RunPhaseObserve {
 			n++
 		}
 		l.mu.Unlock()
@@ -834,7 +847,17 @@ func (r *Runner) Recover(ctx context.Context) (int, error) {
 			return n, fmt.Errorf("decode run %s: %w", row.RunID, err)
 		}
 		reason := "the platform restarted while this run was active; resume it to continue"
-		doc.Status, doc.StatusReason, doc.UpdatedAt = apiv1.RunStatusInterrupted, &reason, r.now()
+		doc.Status = apiv1.RunStatusInterrupted
+		if doc.Engine.Outcome == apiv1.EngineOutcomeSucceeded {
+			// Stopped while observing: the data already moved, only the watch was cut short.
+			reason = "the cutover succeeded but the observation is incomplete: the platform restarted"
+			doc.Status = apiv1.RunStatusSucceeded
+			if doc.Observe != nil && doc.Observe.Passed == nil {
+				stopped := "the platform restarted"
+				doc.Observe.StoppedReason = &stopped
+			}
+		}
+		doc.StatusReason, doc.UpdatedAt = &reason, r.now()
 		nr, err := runRow(doc)
 		if err != nil {
 			return n, err
@@ -843,7 +866,7 @@ func (r *Runner) Recover(ctx context.Context) (int, error) {
 			return n, err
 		}
 		data, _ := json.Marshal(map[string]any{"status": doc.Status, "phase": doc.Phase, "reason": reason})
-		_, _ = r.cfg.Store.AppendEvent(ctx, store.Event{RunID: row.RunID, Time: r.now(), Kind: EventStatusChanged, Message: "interrupted", Data: data})
+		_, _ = r.cfg.Store.AppendEvent(ctx, store.Event{RunID: row.RunID, Time: r.now(), Kind: EventStatusChanged, Message: string(doc.Status), Data: data})
 		n++
 	}
 	return n, nil

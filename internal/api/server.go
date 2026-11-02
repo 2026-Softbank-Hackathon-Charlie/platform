@@ -83,6 +83,10 @@ func New(cfg Config, d Deps) *Server {
 		cfg.Tokens = &auth.Tokens{}
 	}
 	s := &Server{cfg: cfg, d: d, mux: http.NewServeMux()}
+	if d.Runs != nil {
+		// The observe phase rolls back through the same path as the endpoint.
+		d.Runs.SetAutoRollback(s.autoRollback)
+	}
 	viewer, agent, operator := apiv1.RoleViewer, apiv1.RoleAgent, apiv1.RoleOperator
 
 	s.route("GET /healthz", "", func(w http.ResponseWriter, _ *http.Request) {

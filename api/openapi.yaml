@@ -190,7 +190,9 @@ paths:
         mean the migration finished. The run syncs data, optionally sends a share
         of read traffic to the target (canary), and then waits in
         `awaiting_switch` until an operator calls `/switch`, unless `autoSwitch`
-        is true. Send the same `Idempotency-Key` to get the original run back on
+        is true. With `observe`, a succeeded cutover is followed by an observe
+        phase that checks the target against the gate and can start the
+        rollback by itself (`observe.autoRollback`). Send the same `Idempotency-Key` to get the original run back on
         a retry. A plan with `verify.writtenRecords: "stream:<name>"` starts only
         once the stream has records (400 `invalid_request` before that). A plan
         with `rollbackOf` gives the run the same `rollbackOf`. Role operator.
@@ -1117,6 +1119,56 @@ components:
           default: false
           description: Cut over as soon as data is in sync, without waiting for /switch.
         canary: { $ref: "#/components/schemas/CanaryOptions" }
+        observe: { $ref: "#/components/schemas/ObserveOptions" }
+
+    ObserveOptions:
+      description: |
+        After a successful cutover, keep watching the target at the gateway
+        before the run ends. Each step evaluates the gate over that step's
+        requests to the target. A step with fewer than `gate.minRequests`
+        requests, or without gateway data, is inconclusive: it is recorded but
+        is not a violation, because a rollback is a full migration back and is
+        started only on a measured breach. The first violated step ends the
+        observation. The run still ends `succeeded` (the data moved) with the
+        violation in `observe` and `statusReason`. With `autoRollback` the
+        server then starts this run's rollback (as POST
+        /v1/migrations/{runId}/rollback does) as actor `slo-guard`; without it
+        an operator decides. Needs gateway mode http.
+      type: object
+      additionalProperties: false
+      properties:
+        duration: { type: string, default: "2m", description: "total observation time, from 10s to 30m" }
+        stepDuration: { type: string, default: "20s", description: each gate evaluation covers this window }
+        gate: { $ref: "#/components/schemas/GateThresholds" }
+        autoRollback: { type: boolean, default: false }
+
+    ObserveResult:
+      type: object
+      required: [options, steps]
+      properties:
+        options: { $ref: "#/components/schemas/ObserveOptions" }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/ObserveStep" }
+        passed:
+          type: boolean
+          description: |
+            true: the whole duration was observed, no step violated the gate and
+            at least one step was conclusive. false: a step violated the gate.
+            Absent: still observing, stopped early, or nothing conclusive was measured.
+        violation: { type: string, description: the violated gate's reason }
+        stoppedReason: { type: string, description: why the observation ended before its duration }
+        rollbackRunId: { type: string, description: the automatic rollback's run (its rollbackOf is this run) }
+        rollbackError: { type: string, description: why the automatic rollback could not start }
+
+    ObserveStep:
+      type: object
+      required: [startedAt, verdict]
+      properties:
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        verdict: { type: string, enum: [ok, violated, inconclusive] }
+        gate: { $ref: "#/components/schemas/GateResult" }
 
     CanaryOptions:
       description: |
@@ -1184,8 +1236,10 @@ components:
         awaiting_switch: waiting for /switch.
         cutover: fence, switchover, cutover (writes are held here).
         verify: verify, finalize.
+        observe: optional; the cutover succeeded and the target's traffic is
+          watched against the gate before the run ends (ObserveOptions).
         done: the run ended.
-      enum: [sync, canary, awaiting_switch, cutover, verify, done]
+      enum: [sync, canary, awaiting_switch, cutover, verify, observe, done]
 
     Run:
       type: object
@@ -1200,6 +1254,7 @@ components:
         phase: { $ref: "#/components/schemas/RunPhase" }
         autoSwitch: { type: boolean }
         canary: { $ref: "#/components/schemas/CanaryResult" }
+        observe: { $ref: "#/components/schemas/ObserveResult" }
         startedBy: { type: string }
         startedAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
@@ -1312,7 +1367,8 @@ components:
       description: |
         Engine kinds: step_started, step_succeeded, step_failed, step_skipped,
         log, metric, rollback, halt, done.
-        Platform kinds: status_changed, canary_step, gate_result.
+        Platform kinds: status_changed, canary_step, gate_result, observe_step,
+        observe_rollback.
 
         `data` by kind (other keys may appear):
         - step_succeeded: `durationMillis` (integer), `evidence` (object).
@@ -1321,6 +1377,8 @@ components:
         - status_changed: `status` (RunStatus), `phase` (RunPhase), `reason` (string, may be empty).
         - canary_step: `weight` (integer; 0 means all reads are back on the source), `readWeights` (object of integers).
         - gate_result: `weight` (integer), `gate` (GateResult).
+        - observe_step: `verdict` (ok, violated or inconclusive), `gate` (GateResult).
+        - observe_rollback: `rollbackRunId` (string) or `error` (string). Recorded after the run ended.
       type: object
       required: [seq, time, runId, kind]
       properties:
