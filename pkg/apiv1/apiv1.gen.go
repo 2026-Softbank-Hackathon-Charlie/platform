@@ -36,16 +36,16 @@ func (e EngineOutcome) Valid() bool {
 
 // Defines values for EnginePlanGatewayMode.
 const (
-	Http EnginePlanGatewayMode = "http"
-	None EnginePlanGatewayMode = "none"
+	EnginePlanGatewayModeHttp EnginePlanGatewayMode = "http"
+	EnginePlanGatewayModeNone EnginePlanGatewayMode = "none"
 )
 
 // Valid indicates whether the value is a known member of the EnginePlanGatewayMode enum.
 func (e EnginePlanGatewayMode) Valid() bool {
 	switch e {
-	case Http:
+	case EnginePlanGatewayModeHttp:
 		return true
-	case None:
+	case EnginePlanGatewayModeNone:
 		return true
 	default:
 		return false
@@ -54,25 +54,25 @@ func (e EnginePlanGatewayMode) Valid() bool {
 
 // Defines values for PlanStatus.
 const (
-	Approved        PlanStatus = "approved"
-	PendingApproval PlanStatus = "pending_approval"
-	Rejected        PlanStatus = "rejected"
-	Started         PlanStatus = "started"
-	Starting        PlanStatus = "starting"
+	PlanStatusApproved        PlanStatus = "approved"
+	PlanStatusPendingApproval PlanStatus = "pending_approval"
+	PlanStatusRejected        PlanStatus = "rejected"
+	PlanStatusStarted         PlanStatus = "started"
+	PlanStatusStarting        PlanStatus = "starting"
 )
 
 // Valid indicates whether the value is a known member of the PlanStatus enum.
 func (e PlanStatus) Valid() bool {
 	switch e {
-	case Approved:
+	case PlanStatusApproved:
 		return true
-	case PendingApproval:
+	case PlanStatusPendingApproval:
 		return true
-	case Rejected:
+	case PlanStatusRejected:
 		return true
-	case Started:
+	case PlanStatusStarted:
 		return true
-	case Starting:
+	case PlanStatusStarting:
 		return true
 	default:
 		return false
@@ -81,19 +81,19 @@ func (e PlanStatus) Valid() bool {
 
 // Defines values for Provider.
 const (
-	Aws    Provider = "aws"
-	Gcp    Provider = "gcp"
-	Onprem Provider = "onprem"
+	ProviderAws    Provider = "aws"
+	ProviderGcp    Provider = "gcp"
+	ProviderOnprem Provider = "onprem"
 )
 
 // Valid indicates whether the value is a known member of the Provider enum.
 func (e Provider) Valid() bool {
 	switch e {
-	case Aws:
+	case ProviderAws:
 		return true
-	case Gcp:
+	case ProviderGcp:
 		return true
-	case Onprem:
+	case ProviderOnprem:
 		return true
 	default:
 		return false
@@ -102,19 +102,19 @@ func (e Provider) Valid() bool {
 
 // Defines values for Role.
 const (
-	Agent    Role = "agent"
-	Operator Role = "operator"
-	Viewer   Role = "viewer"
+	RoleAgent    Role = "agent"
+	RoleOperator Role = "operator"
+	RoleViewer   Role = "viewer"
 )
 
 // Valid indicates whether the value is a known member of the Role enum.
 func (e Role) Valid() bool {
 	switch e {
-	case Agent:
+	case RoleAgent:
 		return true
-	case Operator:
+	case RoleOperator:
 		return true
-	case Viewer:
+	case RoleViewer:
 		return true
 	default:
 		return false
