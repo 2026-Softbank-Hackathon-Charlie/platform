@@ -257,8 +257,12 @@ resource "aws_instance" "host" {
     encrypted   = true
   }
 
+  # The security view reads internal/security.DefaultAWSRegion (ap-northeast-2)
+  # unless PLATFORM_AWS_REGION is set. It is left out of user_data on purpose:
+  # any user_data change replaces the host and its Postgres volume. If var.region
+  # ever differs, add PLATFORM_AWS_REGION to the api service when rebuilding.
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    region            = var.region # also PLATFORM_AWS_REGION, the region the security view reads
+    region            = var.region
     prefix            = local.prefix
     image             = local.image
     registry          = split("/", aws_ecr_repository.platform.repository_url)[0]
