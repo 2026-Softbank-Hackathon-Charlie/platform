@@ -23,16 +23,17 @@ jobs:
     timeout-minutes: 20
     env:
       GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
+      GOTOOLCHAIN: auto
       # The PostgreSQL store tests run only when this is set.
       PLATFORM_TEST_DATABASE_URL: postgres://charlie:charlie@localhost:5432/charlie?sslmode=disable
     steps:
-      # Started first and left to boot while the rest of the job runs; a
-      # service container would block the job until it is healthy.
+      # Pulled and started in the background while the rest of the job runs;
+      # the test step waits for it. A service container would block the job.
       - name: Start PostgreSQL
         run: |
           docker run -d --name pg -p 5432:5432 \
             -e POSTGRES_USER=charlie -e POSTGRES_PASSWORD=charlie -e POSTGRES_DB=charlie \
-            postgres:17.11-alpine >/dev/null
+            postgres:17.11-alpine >/tmp/pg.log 2>&1 &
 
       - uses: actions/checkout@v5
 
@@ -48,29 +49,40 @@ jobs:
           fi
           git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: false # restored below from main's cache instead
-
       - name: Restore Go cache from main
-        id: cache
         uses: actions/cache/restore@v4
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-${{ runner.os }}-
+            go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-race-${{ runner.os }}-
 
+      # The runner's own Go switches to the go.mod toolchain by itself
+      # (GOTOOLCHAIN=auto). That toolchain is a module, so it comes from the
+      # cache above instead of a separate download. setup-go only runs when the
+      # runner has no Go at all.
+      - name: Go toolchain
+        id: go
+        run: |
+          if command -v go >/dev/null; then go version; else echo "missing=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-go@v6
+        if: steps.go.outputs.missing == 'true'
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # -race: vet compiles the dependencies the same way the race tests do,
+      # so both share one set of build artifacts in the cache.
       - name: Vet
-        run: go vet ./...
+        run: go vet -race ./...
 
+      # gofmt of the go.mod toolchain, not the runner's own Go.
       - name: Formatting
         run: |
-          unformatted="$(gofmt -l .)"
+          unformatted="$("$(go env GOROOT)/bin/gofmt" -l .)"
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt needed:"; echo "$unformatted"; exit 1
           fi
@@ -84,10 +96,11 @@ jobs:
       # change since main's run reuse their cached result.
       - name: Test (race, PostgreSQL)
         run: |
-          for _ in $(seq 1 30); do
-            docker exec pg pg_isready -U charlie -q && break
+          for _ in $(seq 1 60); do
+            docker exec pg pg_isready -U charlie -q 2>/dev/null && break
             sleep 1
           done
+          docker exec pg pg_isready -U charlie || { cat /tmp/pg.log; exit 1; }
           go test -race ./...
 
       # Only main saves, so a PR spends no time uploading and always starts
@@ -99,7 +112,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
   terraform:
     runs-on: ubuntu-24.04
