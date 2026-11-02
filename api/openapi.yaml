@@ -1,0 +1,1038 @@
+openapi: 3.0.3
+info:
+  title: HopCharlie Platform API
+  version: 1.0.0
+  description: |
+    The single contract shared by the platform server, the `charlie` CLI and the
+    web console. Go types are generated into `pkg/apiv1`; the console generates
+    TypeScript types from this file (`npx openapi-typescript`).
+
+    Every `/v1` request needs `Authorization: Bearer <token>`. Each token has a
+    role:
+
+    | role     | may |
+    |----------|-----|
+    | viewer   | read everything |
+    | agent    | read, and submit plans (the AI planner) |
+    | operator | everything, including approve, start, switch, abort |
+
+    Errors always use the `Error` body.
+
+    The traffic gateway serves `TrafficState`, `RouteRequest` and `WeightsRequest`
+    on its own admin API; they live here so both servers share one type.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+
+tags:
+  - name: system
+  - name: plans
+  - name: migrations
+  - name: environments
+  - name: traffic
+  - name: audit
+
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: The server is up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /openapi.yaml:
+    get:
+      tags: [system]
+      operationId: getOpenAPI
+      security: []
+      responses:
+        "200":
+          description: This document.
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /v1/me:
+    get:
+      tags: [system]
+      operationId: getMe
+      description: Who the token belongs to. The CLI calls this to check a login.
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Principal" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/plans:
+    post:
+      tags: [plans]
+      operationId: submitPlan
+      description: |
+        Submit an engine plan as-is. The server applies its security policy
+        (allowed `${VAR}` references, no kubeconfig paths, gateway and DB host
+        allowlists) and stores the plan as `pending_approval`. Roles: agent, operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnginePlan" }
+      responses:
+        "201":
+          description: Stored, waiting for a human.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+    get:
+      tags: [plans]
+      operationId: listPlans
+      responses:
+        "200":
+          description: All plans, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/plans/{ref}:
+    parameters:
+      - $ref: "#/components/parameters/PlanRef"
+    get:
+      tags: [plans]
+      operationId: getPlan
+      description: A plan summary. DSNs and tokens never leave the server.
+      responses:
+        "200":
+          description: The plan.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/plans/{ref}/approve:
+    parameters:
+      - $ref: "#/components/parameters/PlanRef"
+    post:
+      tags: [plans]
+      operationId: approvePlan
+      description: The human gate between AI planning and execution. Approving twice is a no-op. Role operator.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewRequest" }
+      responses:
+        "200":
+          description: Approved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/plans/{ref}/reject:
+    parameters:
+      - $ref: "#/components/parameters/PlanRef"
+    post:
+      tags: [plans]
+      operationId: rejectPlan
+      description: Reject a pending plan. A rejected plan can never start. Role operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewRequest" }
+      responses:
+        "200":
+          description: Rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/migrations:
+    post:
+      tags: [migrations]
+      operationId: startMigration
+      description: |
+        Start an approved plan. Returns 202 as soon as the run exists; it does not
+        mean the migration finished. The run syncs data, optionally sends a share
+        of read traffic to the target (canary), and then waits in
+        `awaiting_switch` until an operator calls `/switch`, unless `autoSwitch`
+        is true. Send the same `Idempotency-Key` to get the original run back on
+        a retry. Role operator.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StartMigrationRequest" }
+      responses:
+        "202":
+          description: The run was created.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StartMigrationResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+    get:
+      tags: [migrations]
+      operationId: listMigrations
+      responses:
+        "200":
+          description: All runs, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/migrations/{runId}:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [migrations]
+      operationId: getMigration
+      responses:
+        "200":
+          description: The run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/migrations/{runId}/events:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [migrations]
+      operationId: streamMigrationEvents
+      description: |
+        Server-Sent Events.
+
+        - The first message is `snapshot` (data: `Run`), the current state.
+        - Then every `RunEvent`, with the event kind as the SSE event name and
+          the event `seq` as the SSE id.
+        - When the run ends: a final `snapshot`, then the stream closes.
+
+        Reconnect with `Last-Event-ID` (or `?after=`) to replay the events you
+        missed; they are stored, so nothing is lost. Browsers cannot set the
+        Authorization header on `EventSource`; use a fetch-based SSE client.
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: string }
+        - name: after
+          in: query
+          required: false
+          description: Replay events with seq greater than this. Same as Last-Event-ID.
+          schema: { type: integer, format: int64, minimum: 0 }
+      responses:
+        "200":
+          description: An event stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/migrations/{runId}/switch:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    post:
+      tags: [migrations]
+      operationId: switchMigration
+      description: |
+        Approve the cutover of a run in `awaiting_switch`. The engine then holds
+        writes, promotes the target and moves traffic. Role operator.
+      responses:
+        "200":
+          description: Cutover started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/migrations/{runId}/abort:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    post:
+      tags: [migrations]
+      operationId: abortMigration
+      description: |
+        Stop a running migration. The engine's boundary decides the result:
+        before writes are held nothing changed (`aborted`); before the target
+        is asked to promote it rolls back to the source (`rolled_back`); after
+        that it halts (`halted`) for an operator. Role operator.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AbortRequest" }
+      responses:
+        "200":
+          description: Abort requested. Watch the run for its final status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/migrations/{runId}/resume:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    post:
+      tags: [migrations]
+      operationId: resumeMigration
+      description: |
+        Continue a run that is `interrupted` (the server restarted), `failed`
+        or `aborted`. Steps that already succeeded are skipped. Role operator.
+      responses:
+        "200":
+          description: Resumed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /v1/envs:
+    get:
+      tags: [environments]
+      operationId: listEnvironments
+      description: Registered environments with their live cluster status.
+      responses:
+        "200":
+          description: Environments in configuration order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnvironmentList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/envs/{name}:
+    parameters:
+      - $ref: "#/components/parameters/EnvName"
+    get:
+      tags: [environments]
+      operationId: getEnvironment
+      responses:
+        "200":
+          description: The environment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Environment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/traffic:
+    get:
+      tags: [traffic]
+      operationId: getTraffic
+      description: The traffic gateway's live state and request statistics.
+      responses:
+        "200":
+          description: Gateway state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TrafficState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/matrix:
+    get:
+      tags: [migrations]
+      operationId: getMatrix
+      description: The latest finished run for every source and target pair of environments.
+      responses:
+        "200":
+          description: One row per ordered pair.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Matrix" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/audit:
+    get:
+      tags: [audit]
+      operationId: listAudit
+      description: Every state-changing request and every denied request, newest first.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - name: before
+          in: query
+          required: false
+          description: Return entries with id lower than this (pagination).
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: Audit entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    PlanRef:
+      name: ref
+      in: path
+      required: true
+      schema: { type: string }
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema: { type: string }
+    EnvName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: "invalid_request, invalid_plan"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: "unauthorized: missing or invalid token"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "forbidden: the token's role may not do this"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "plan_not_found, run_not_found, env_not_found"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooLarge:
+      description: "too_large"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadGateway:
+      description: "engine_init_failed, gateway_unreachable"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unavailable:
+      description: "gateway_not_configured"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: "#/components/schemas/ErrorBody" }
+
+    ErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+
+    Role:
+      type: string
+      enum: [viewer, agent, operator]
+
+    Principal:
+      type: object
+      required: [name, role]
+      properties:
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+
+    # ---------- plans ----------
+
+    EnginePlan:
+      description: The migration-engine plan (migration-engine/pkg/plan). `${VAR}` references are expanded on the server.
+      type: object
+      additionalProperties: false
+      required: [id, source, target]
+      properties:
+        id: { type: string }
+        source: { $ref: "#/components/schemas/EnginePlanEndpoint" }
+        target: { $ref: "#/components/schemas/EnginePlanEndpoint" }
+        files:
+          type: object
+          additionalProperties: false
+          required: [source, target]
+          properties:
+            source: { type: string, example: "gcs:shop-uploads-gke" }
+            target: { type: string, example: "s3:shop-uploads-eks" }
+            flags: { type: array, items: { type: string } }
+            rclone: { type: string }
+        gateway:
+          type: object
+          additionalProperties: false
+          properties:
+            mode: { type: string, enum: [http, none] }
+            url: { type: string }
+            token: { type: string }
+            sourceBackend: { type: string }
+            targetBackend: { type: string }
+        verify:
+          type: object
+          additionalProperties: false
+          properties:
+            schemas: { type: array, items: { type: string } }
+            tables: { type: array, items: { type: string } }
+            fenceGate: { type: boolean }
+            writtenRecords: { type: string }
+        thresholds:
+          type: object
+          additionalProperties: false
+          properties:
+            maxLagBytes: { type: integer, format: int64 }
+            catchupTimeout: { type: string, example: "10m" }
+            switchoverTimeout: { type: string, example: "2m" }
+            maxDowntime: { type: string, example: "3m" }
+
+    EnginePlanEndpoint:
+      type: object
+      additionalProperties: false
+      required: [env, namespace, cluster, dsn]
+      properties:
+        env: { type: string, example: gke }
+        kubeconfig: { type: string }
+        context: { type: string }
+        namespace: { type: string }
+        cluster: { type: string, description: CNPG Cluster name }
+        dsn: { type: string }
+        manifest: { type: string, description: target only }
+
+    PlanStatus:
+      type: string
+      enum: [pending_approval, approved, rejected, starting, started]
+
+    PlanEndpoint:
+      description: The non-secret view of a plan endpoint.
+      type: object
+      required: [env, namespace, cluster]
+      properties:
+        env: { type: string }
+        context: { type: string }
+        namespace: { type: string }
+        cluster: { type: string }
+
+    PlanSummary:
+      type: object
+      required: [planId, source, target, files, gatewayMode, fenceGate, maxDowntime]
+      properties:
+        planId: { type: string }
+        source: { $ref: "#/components/schemas/PlanEndpoint" }
+        target: { $ref: "#/components/schemas/PlanEndpoint" }
+        files: { type: boolean, description: the plan also moves object storage }
+        gatewayMode: { type: string }
+        fenceGate: { type: boolean }
+        maxDowntime: { type: string }
+
+    PlanRecord:
+      type: object
+      required: [ref, status, summary, submittedBy, submittedAt]
+      properties:
+        ref: { type: string, example: pln_3f9c1a0b2d4e }
+        status: { $ref: "#/components/schemas/PlanStatus" }
+        summary: { $ref: "#/components/schemas/PlanSummary" }
+        submittedBy: { type: string }
+        submittedAt: { type: string, format: date-time }
+        reviewedBy: { type: string, description: who approved or rejected }
+        reviewedAt: { type: string, format: date-time }
+        reviewComment: { type: string }
+        runId: { type: string }
+
+    PlanList:
+      type: object
+      required: [plans]
+      properties:
+        plans:
+          type: array
+          items: { $ref: "#/components/schemas/PlanRecord" }
+
+    ReviewRequest:
+      type: object
+      properties:
+        comment: { type: string, maxLength: 2000 }
+
+    # ---------- migrations ----------
+
+    StartMigrationRequest:
+      type: object
+      additionalProperties: false
+      required: [planRef]
+      properties:
+        planRef: { type: string }
+        autoSwitch:
+          type: boolean
+          default: false
+          description: Cut over as soon as data is in sync, without waiting for /switch.
+        canary: { $ref: "#/components/schemas/CanaryOptions" }
+
+    CanaryOptions:
+      description: |
+        Before cutover, send this share of read requests (GET, HEAD, OPTIONS) to
+        the target while writes keep going to the source. After each step the
+        gate checks the target's requests over the step. A failed gate puts all
+        reads back on the source and ends the run as `rolled_back`. Needs
+        gateway mode http.
+      type: object
+      additionalProperties: false
+      required: [weights]
+      properties:
+        weights:
+          type: array
+          minItems: 1
+          items: { type: integer, minimum: 1, maximum: 100 }
+          example: [10, 50]
+        stepDuration: { type: string, default: "20s" }
+        gate: { $ref: "#/components/schemas/GateThresholds" }
+
+    GateThresholds:
+      type: object
+      additionalProperties: false
+      properties:
+        maxErrorRate: { type: number, default: 0.01, description: 5xx and proxy errors over requests }
+        maxP95Millis: { type: integer, default: 800 }
+        minRequests: { type: integer, default: 20, description: fewer requests than this fails the gate }
+
+    StartMigrationResponse:
+      type: object
+      required: [runId, planRef, links]
+      properties:
+        runId: { type: string }
+        planRef: { type: string }
+        links:
+          type: object
+          required: [self, events]
+          properties:
+            self: { type: string }
+            events: { type: string }
+
+    AbortRequest:
+      type: object
+      properties:
+        reason: { type: string, maxLength: 2000 }
+
+    RunStatus:
+      type: string
+      description: |
+        running: steps are executing.
+        awaiting_switch: data is in sync; waiting for an operator to call /switch.
+        succeeded: traffic and data are on the target and verified.
+        rolled_back: the source serves traffic again; nothing was lost.
+        halted: the target was asked to promote and something failed; an operator decides.
+        failed: failed before anything irreversible; can be resumed.
+        aborted: stopped by an operator before anything irreversible; can be resumed.
+        interrupted: the server restarted while the run was active; can be resumed.
+      enum: [running, awaiting_switch, succeeded, rolled_back, halted, failed, aborted, interrupted]
+
+    RunPhase:
+      type: string
+      description: |
+        sync: precheck, prepare, presync, delta.
+        canary: read traffic share on the target.
+        awaiting_switch: waiting for /switch.
+        cutover: fence, switchover, cutover (writes are held here).
+        verify: verify, finalize.
+        done: the run ended.
+      enum: [sync, canary, awaiting_switch, cutover, verify, done]
+
+    Run:
+      type: object
+      required: [runId, planRef, planId, source, target, status, phase, autoSwitch, startedBy, startedAt, updatedAt, result, engine]
+      properties:
+        runId: { type: string }
+        planRef: { type: string }
+        planId: { type: string }
+        source: { $ref: "#/components/schemas/PlanEndpoint" }
+        target: { $ref: "#/components/schemas/PlanEndpoint" }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        phase: { $ref: "#/components/schemas/RunPhase" }
+        autoSwitch: { type: boolean }
+        canary: { $ref: "#/components/schemas/CanaryResult" }
+        startedBy: { type: string }
+        startedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        switchApprovedBy: { type: string }
+        switchApprovedAt: { type: string, format: date-time }
+        abortedBy: { type: string }
+        abortReason: { type: string }
+        statusReason: { type: string, description: why the run ended the way it did }
+        result: { $ref: "#/components/schemas/RunResult" }
+        engine: { $ref: "#/components/schemas/EngineState" }
+
+    RunResult:
+      description: The numbers the console shows. Absent values were not measured (yet).
+      type: object
+      properties:
+        downtimeMillis: { type: integer, format: int64, description: writes held at the gateway }
+        durationMillis: { type: integer, format: int64, description: start to end }
+        requests: { type: integer, format: int64, description: requests the gateway served during the run }
+        failedRequests: { type: integer, format: int64, description: 5xx and proxy errors during the run }
+        missingRows: { type: integer, format: int64, description: source rows missing on the target }
+        missingWrites: { type: integer, format: int64, description: k6-confirmed writes missing on the target }
+        missingFiles: { type: integer, format: int64, description: objects missing on the target }
+        verified: { type: boolean, description: the verify report found no problems }
+
+    CanaryResult:
+      type: object
+      required: [options, steps]
+      properties:
+        options: { $ref: "#/components/schemas/CanaryOptions" }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/CanaryStep" }
+        passed: { type: boolean }
+
+    CanaryStep:
+      type: object
+      required: [weight, startedAt]
+      properties:
+        weight: { type: integer }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        gate: { $ref: "#/components/schemas/GateResult" }
+
+    GateResult:
+      type: object
+      required: [passed, reason, requests, errorRate, p95Millis]
+      properties:
+        passed: { type: boolean }
+        reason: { type: string }
+        requests: { type: integer, format: int64 }
+        errorRate: { type: number }
+        p95Millis: { type: number }
+
+    EngineOutcome:
+      type: string
+      enum: [running, succeeded, rolled_back, halted, failed]
+
+    StepStatus:
+      type: string
+      enum: [pending, running, succeeded, failed]
+
+    StepRecord:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: "#/components/schemas/StepStatus" }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        error: { type: string }
+        evidence:
+          type: object
+          additionalProperties: true
+
+    EngineState:
+      description: The migration engine's persisted run state (migration-engine/pkg/engine.State).
+      type: object
+      required: [runId, planId, createdAt, updatedAt, outcome, steps, writesHeld, sourceDemoted, promoteRequested, trafficOnTarget]
+      properties:
+        runId: { type: string }
+        planId: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        outcome: { $ref: "#/components/schemas/EngineOutcome" }
+        steps:
+          description: "Keyed by step: precheck, prepare, presync, delta, fence, switchover, cutover, verify, finalize."
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/StepRecord" }
+        writesHeld: { type: boolean }
+        writesHeldAt: { type: string, format: date-time }
+        fenceLsn: { type: string }
+        sourceDemoted: { type: boolean }
+        promoteRequested: { type: boolean, description: the point after which nothing rolls back automatically }
+        trafficOnTarget: { type: boolean }
+        downtimeMillis: { type: integer, format: int64 }
+        failureStep: { type: string }
+        failureError: { type: string }
+        rollbackError: { type: string }
+
+    RunList:
+      type: object
+      required: [runs]
+      properties:
+        runs:
+          type: array
+          items: { $ref: "#/components/schemas/Run" }
+
+    RunEvent:
+      description: |
+        Engine kinds: step_started, step_succeeded, step_failed, step_skipped,
+        log, metric, rollback, halt, done.
+        Platform kinds: status_changed, canary_step, gate_result.
+      type: object
+      required: [seq, time, runId, kind]
+      properties:
+        seq: { type: integer, format: int64 }
+        time: { type: string, format: date-time }
+        runId: { type: string }
+        step: { type: string }
+        kind: { type: string }
+        message: { type: string }
+        data:
+          type: object
+          additionalProperties: true
+
+    # ---------- environments ----------
+
+    Provider:
+      type: string
+      enum: [aws, gcp, onprem]
+
+    Environment:
+      type: object
+      required: [name, provider, displayName, gatewayBackend, live, status]
+      properties:
+        name: { type: string, example: gke }
+        provider: { $ref: "#/components/schemas/Provider" }
+        displayName: { type: string, example: GCP GKE }
+        region: { type: string }
+        kubeContext: { type: string }
+        gatewayBackend: { type: string, description: the gateway backend that serves this environment }
+        live: { type: boolean, description: the gateway currently sends writes here }
+        status: { $ref: "#/components/schemas/EnvironmentStatus" }
+
+    EnvironmentStatus:
+      type: object
+      required: [reachable, checkedAt]
+      properties:
+        reachable: { type: boolean }
+        checkedAt: { type: string, format: date-time }
+        error: { type: string }
+        kubernetesVersion: { type: string }
+        nodes: { $ref: "#/components/schemas/NodeSummary" }
+        databases:
+          type: array
+          items: { $ref: "#/components/schemas/DatabaseCluster" }
+
+    NodeSummary:
+      type: object
+      required: [total, ready, architectures]
+      properties:
+        total: { type: integer }
+        ready: { type: integer }
+        architectures:
+          type: array
+          items: { type: string }
+
+    DatabaseCluster:
+      description: A CloudNativePG Cluster.
+      type: object
+      required: [namespace, name, instances, readyInstances, replica]
+      properties:
+        namespace: { type: string }
+        name: { type: string }
+        phase: { type: string }
+        instances: { type: integer }
+        readyInstances: { type: integer }
+        currentPrimary: { type: string }
+        replica: { type: boolean, description: "spec.replica.enabled, or the topology names another cluster as primary" }
+
+    EnvironmentList:
+      type: object
+      required: [environments]
+      properties:
+        environments:
+          type: array
+          items: { $ref: "#/components/schemas/Environment" }
+
+    # ---------- traffic (shared with the gateway admin API) ----------
+
+    TrafficState:
+      type: object
+      required: [writeBackend, readWeights, writesHeld, heldWrites, maxHold, inFlight, backends, stats, totals, updatedAt]
+      properties:
+        writeBackend: { type: string, description: every non-read request goes here }
+        readWeights:
+          description: Share of read requests per backend, summing to 100.
+          type: object
+          additionalProperties: { type: integer }
+        writesHeld: { type: boolean }
+        heldSince: { type: string, format: date-time }
+        heldWrites: { type: integer, description: write requests waiting right now }
+        maxHold: { type: string, description: held writes are released to the current write backend after this }
+        inFlight: { $ref: "#/components/schemas/InFlight" }
+        backends:
+          type: array
+          items: { $ref: "#/components/schemas/BackendState" }
+        stats:
+          description: Rolling window per backend.
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/BackendStats" }
+        totals:
+          description: Counters per backend since the gateway started.
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/BackendTotals" }
+        updatedAt: { type: string, format: date-time }
+
+    InFlight:
+      type: object
+      required: [reads, writes]
+      properties:
+        reads: { type: integer }
+        writes: { type: integer }
+
+    BackendState:
+      type: object
+      required: [name, url, healthy]
+      properties:
+        name: { type: string }
+        url: { type: string }
+        healthy: { type: boolean }
+        lastCheck: { type: string, format: date-time }
+        lastError: { type: string }
+
+    BackendStats:
+      type: object
+      required: [windowSeconds, requests, errors, errorRate, rps, p50Millis, p95Millis, p99Millis]
+      properties:
+        windowSeconds: { type: integer }
+        requests: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+        errorRate: { type: number }
+        rps: { type: number }
+        p50Millis: { type: number }
+        p95Millis: { type: number }
+        p99Millis: { type: number }
+
+    BackendTotals:
+      type: object
+      required: [requests, errors]
+      properties:
+        requests: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+
+    RouteRequest:
+      type: object
+      required: [backend]
+      properties:
+        backend: { type: string }
+
+    WeightsRequest:
+      type: object
+      required: [readWeights]
+      properties:
+        readWeights:
+          type: object
+          additionalProperties: { type: integer }
+
+    # ---------- matrix ----------
+
+    Matrix:
+      type: object
+      required: [environments, routes]
+      properties:
+        environments:
+          type: array
+          items: { type: string }
+        routes:
+          type: array
+          items: { $ref: "#/components/schemas/MatrixRoute" }
+
+    MatrixRoute:
+      type: object
+      required: [source, target]
+      properties:
+        source: { type: string }
+        target: { type: string }
+        runId: { type: string, description: absent when this pair never finished a run }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        finishedAt: { type: string, format: date-time }
+        result: { $ref: "#/components/schemas/RunResult" }
+
+    # ---------- audit ----------
+
+    AuditEntry:
+      type: object
+      required: [id, time, actor, role, action, target, status]
+      properties:
+        id: { type: integer, format: int64 }
+        time: { type: string, format: date-time }
+        actor: { type: string }
+        role: { type: string }
+        action: { type: string, example: "POST /v1/plans/{ref}/approve" }
+        target: { type: string, example: "/v1/plans/pln_3f9c1a0b2d4e/approve" }
+        status: { type: integer, description: HTTP status of the response }
+        requestId: { type: string }
+        detail:
+          type: object
+          additionalProperties: true
+
+    AuditList:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEntry" }
+        nextBefore: { type: integer, format: int64, description: pass as `before` for the next page }
