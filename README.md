@@ -17,11 +17,13 @@ platform/
 │   ├── envs/          환경 등록, 클러스터 실시간 상태
 │   ├── gateway/       게이트웨이 본체와 관리 API 클라이언트
 │   └── store/         PostgreSQL 저장소
-├── examples/envs.yaml 환경 설정 예시
+├── examples/envs.yaml 로컬 개발용 환경 설정 예시
 └── docs/adr/          설계 결정 기록
 ```
 
 CLI는 별도 레포 [cli](https://github.com/2026-Softbank-Hackathon-Charlie/cli)에 있습니다.
+
+AWS 관리 호스트, EKS Pod Identity, 상태 버킷(`state/`), ACM·Cloudflare(`dns/`)의 Terraform과 운영 호스트 설정은 [infra/terraform/platform/aws](https://github.com/2026-Softbank-Hackathon-Charlie/infra/tree/main/terraform/platform/aws)에서 관리합니다. 이 레포에는 [애플리케이션 배포 도우미](deploy/aws/README.md)와 로컬 개발 예시만 남습니다. `examples/envs.yaml`, `examples/apps.yaml`을 고쳐도 운영 설정은 바뀌지 않습니다. 운영 설정은 infra의 `terraform/platform/aws/host/envs.yaml`, `host/apps.yaml`을 고칩니다.
 
 ## 이전 한 번의 흐름
 
@@ -130,7 +132,7 @@ go run ./cmd/gateway
 | `PLATFORM_DATABASE_URL` | 필수. 플랫폼 DB. 시작할 때 스키마를 자동으로 적용 |
 | `PLATFORM_TOKENS` | `이름:역할:토큰`을 쉼표로 구분. 역할은 viewer, agent, operator. 토큰은 16자 이상 |
 | `PLATFORM_API_TOKEN` | 첫 버전 호환용. operator 토큰 하나로 추가됨 |
-| `PLATFORM_ENVS_FILE` | 필수. 환경 설정 파일 ([examples/envs.yaml](examples/envs.yaml)) |
+| `PLATFORM_ENVS_FILE` | 필수. 환경 설정 파일 ([로컬 개발 예시](examples/envs.yaml); 운영 설정은 infra에서 관리) |
 | `PLATFORM_GATEWAY_URL`, `GATEWAY_TOKEN` | 게이트웨이 관리 API 주소와 토큰. 비우면 카나리와 `/v1/traffic`이 꺼지고 `gateway.mode: http` Plan을 거부 |
 | `PLATFORM_CORS_ORIGINS` | 콘솔 주소. 쉼표 구분, `*`는 전부 허용 |
 | `PLATFORM_ADDR`, `PLATFORM_STATE_DIR` | 주소(기본 `:8080`), 엔진 상태 디렉터리 |
@@ -221,7 +223,7 @@ PLATFORM_TEST_DATABASE_URL='postgres://charlie:charlie@localhost:55432/charlie?s
 
 ### CI
 
-PR과 main push마다 GitHub Actions(`.github/workflows/ci.yml`)가 vet, gofmt, 생성 코드 확인, `go test -race`(PostgreSQL 포함), Terraform fmt와 validate, 셸 `bash -n`을 돌립니다.
+PR과 main push마다 GitHub Actions(`.github/workflows/ci.yml`)가 vet, gofmt, 생성 코드 확인, `go test -race`(PostgreSQL 포함), 셸 `bash -n`, AWS 접속 없는 Terraform output 호환 테스트를 돌립니다. Terraform fmt와 validate는 infra 레포 CI가 담당합니다.
 
 - PR 검사는 1분 안에 끝나는 것이 목표입니다. main push만 Go 캐시를 저장하고, PR은 그 캐시로 바뀐 패키지만 다시 컴파일합니다. 테스트도 입력이 바뀐 패키지만 다시 돌립니다(go test 결과 캐시).
 - `go.sum`이 바뀐 PR도 main의 최근 캐시에서 시작하므로, 바뀐 의존성만 새로 컴파일하는 만큼 더 걸립니다. 캐시가 전혀 없을 때(새 레포, 캐시 만료)는 client-go와 AWS SDK를 처음부터 컴파일하느라 약 10분 걸립니다.
@@ -258,7 +260,7 @@ Plan JSON을 손으로 쓰지 않고 이전을 준비하고, 검증에 쓸 쓰�
 
 ### 앱 설정과 Plan 초안
 
-- `PLATFORM_APPS_FILE`에 앱 설정 파일([examples/apps.yaml](examples/apps.yaml))을 지정합니다. 비워 두면 앱 목록이 비고 초안 요청은 400입니다.
+- `PLATFORM_APPS_FILE`에 앱 설정 파일([로컬 개발 예시](examples/apps.yaml))을 지정합니다. 운영 파일은 infra의 `terraform/platform/aws/host/apps.yaml`입니다. 비워 두면 앱 목록이 비고 초안 요청은 400입니다.
 - 앱의 환경 이름은 `PLATFORM_ENVS_FILE`에 있어야 합니다. 환경별 `passwordEnv`는 그 환경의 `dbHost:dbPort`로 가는 DSN의 비밀번호로만 쓸 수 있습니다. 이름은 `_PGPASSWORD`로 끝나야 하고 `PLATFORM_`, `AWS_`로 시작하면 안 됩니다. 그래야 `GATEWAY_TOKEN`이나 `PLATFORM_DATABASE_URL` 같은 다른 용도의 서버 변수를 비밀번호로 내보낼 수 없습니다.
 - 초안의 id는 `<app>-<source>-to-<target>`이고, 컨텍스트는 환경의 `kubeContext`에서, 네임스페이스와 클러스터와 DB 호스트는 앱에서 가져옵니다.
 - DSN은 `postgres://<user>:${<passwordEnv>}@<host>:<port>/<db>?sslmode=require`입니다. 비밀번호는 실행할 때 서버 환경에서 채웁니다. 값을 이스케이프하지 않고 URL에 그대로 넣으므로 비밀번호는 URL에 그대로 쓸 수 있는 문자(영문, 숫자, `-._~`)여야 합니다. CNPG가 만든 비밀번호는 그렇습니다. `@`, `/`, `:`, `#`, `?`, `%`가 들어가면 엔진이 다른 호스트로 접속하거나 접속 오류에 비밀번호 일부가 보일 수 있습니다.
@@ -301,7 +303,7 @@ CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks -
 - 401로 막힌 요청은 호출자가 경로를 마음대로 쓸 수 있으므로 경로를 보여 주지 않고 라우트(`GET /v1/plans/{ref}`)만 보여 줍니다. 403의 경로는 제어 문자를 지우고 80자에서 자르며, 3개까지만 적고 나머지는 개수만 적습니다.
 - 결과는 60초 동안 캐시합니다. `?refresh=true`는 다시 읽지만 10초에 한 번까지입니다. `?environment=gke`, `?severity=high`(그 이상만)로 거릅니다.
 - 수집기는 소스마다 하나이고 동시에 실행하며, 하나가 느려도 25초에서 끊습니다. 새 공급자는 `security.Collector` 구현 하나를 추가하면 됩니다.
-- AWS는 SDK 기본 자격 증명 체인(환경 변수, `AWS_PROFILE`, 인스턴스 역할)을 쓰고 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) 한 리전을 읽습니다. Describe, List, Get 호출만 하며 아무것도 켜거나 바꾸지 않습니다. 관리 호스트 역할에는 Terraform이 수집기가 부르는 읽기 API 17개만 허용하는 인라인 정책(`read-security-configuration`)을 붙입니다.
+- AWS는 SDK 기본 자격 증명 체인(환경 변수, `AWS_PROFILE`, 인스턴스 역할)을 쓰고 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) 한 리전을 읽습니다. Describe, List, Get 호출만 하며 아무것도 켜거나 바꾸지 않습니다. 관리 호스트 역할에는 infra 레포의 Terraform이 수집기가 부르는 읽기 API 17개만 허용하는 인라인 정책(`read-security-configuration`)을 붙입니다.
 - 자격 증명이 정말 없을 때(인스턴스에 역할이 없거나 메타데이터 서비스가 꺼짐)만 `not_configured`입니다. 메타데이터 서비스 시간 초과나 네트워크 오류로 가져오지 못하면 `error`이고, 메시지에는 SDK 원문 대신 실패 종류만 적습니다.
 - GuardDuty 탐지는 심각한 것부터 50개까지 읽고, 더 있으면 메시지에 그렇게 적습니다.
 - Kubernetes는 `GET /v1/envs`와 같은 kubeconfig와 컨텍스트를 씁니다. 서버 계정에 모든 네임스페이스의 pods, services, networkpolicies 목록과 clusterrolebindings 목록 권한이 필요합니다.

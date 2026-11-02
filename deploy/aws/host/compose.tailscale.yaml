@@ -1,8 +1,0 @@
-# Added by sync.sh only when the host is on the tailnet: the API (engine,
-# cluster probes) and the gateway resolve *.ts.net through MagicDNS, which
-# forwards every other name to the host's normal resolvers.
-services:
-  api:
-    dns: [100.100.100.100]
-  gateway:
-    dns: [100.100.100.100]

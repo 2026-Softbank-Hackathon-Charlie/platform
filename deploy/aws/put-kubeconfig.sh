@@ -2,7 +2,7 @@
 # Stores one cluster's kubeconfig for the management host, as the SSM
 # SecureString /hopcharlie/kube/<name>. The host merges every one of them
 # (KUBECONFIG) on the next ./redeploy.sh. Context names must match
-# examples/envs.yaml (gke-hopcharlie, eks-hopcharlie, onprem-hopcharlie).
+# infra/terraform/platform/aws/host/envs.yaml (the production source).
 #   ./put-kubeconfig.sh gke ./gke-hopcharlie.kubeconfig
 # Use a kubeconfig that needs no local plugin: a ServiceAccount token from
 # ../k8s/make-kubeconfig.sh, not one that calls aws or gke-gcloud-auth-plugin.
