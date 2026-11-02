@@ -305,7 +305,7 @@ func TestAWSVendorFindingsAndFailures(t *testing.T) {
 	if r := reps["aws-iam"]; r.Status != apiv1.SecuritySourceStatusError || !strings.Contains(r.Message, "iam ListUsers: access denied (AccessDenied)") || len(r.Findings) != 0 {
 		t.Errorf("iam: %+v", r)
 	}
-	if r := reps["aws-ec2"]; r.Status != apiv1.SecuritySourceStatusError || !strings.Contains(r.Message, "SecurityAudit") {
+	if r := reps["aws-ec2"]; r.Status != apiv1.SecuritySourceStatusError || !strings.Contains(r.Message, "read-security-configuration") {
 		t.Errorf("ec2: %+v", r)
 	}
 	if r := reps["aws-cloudtrail"]; r.Status != apiv1.SecuritySourceStatusOk || len(r.Findings) != 0 || !strings.Contains(r.Message, "logging: main") {
