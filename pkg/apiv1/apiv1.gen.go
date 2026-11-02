@@ -608,10 +608,14 @@ type BackendStats struct {
 	WindowSeconds int     `json:"windowSeconds"`
 }
 
-// BackendTotals defines model for BackendTotals.
+// BackendTotals What clients received from this backend since the gateway started. A read that failed here (5xx or no answer) and that the gateway sent once more to another backend is counted in retried, not in requests or errors; the retry is counted on the backend that answered it. Windowed stats (BackendStats) count every answer, retried ones included, so canary gates still see a failing backend.
 type BackendTotals struct {
+	// Errors answers with status 500 or above that reached the client
 	Errors   int64 `json:"errors"`
 	Requests int64 `json:"requests"`
+
+	// Retried failed reads sent once more to another backend
+	Retried *int64 `json:"retried,omitempty"`
 }
 
 // CanaryOptions Before cutover, send this share of read requests (GET, HEAD, OPTIONS) to
