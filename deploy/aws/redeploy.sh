@@ -2,7 +2,7 @@
 # Applies the current SSM settings on the host and restarts what changed,
 # through SSM Run Command (no SSH): fetches host/sync.sh and runs it.
 #   ./redeploy.sh
-# Use it after ./push-image.sh, ./push-console.sh, ./tf.sh apply, or after
+# Use it after ./push-image.sh, ./push-console.sh, an infra Terraform apply, or after
 # changing a team secret (db-passwords, rclone-env, kube/*, tailscale-authkey).
 set -euo pipefail
 cd "$(dirname "$0")"

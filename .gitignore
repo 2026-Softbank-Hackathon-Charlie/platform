@@ -6,3 +6,5 @@
 /deploy/aws/**/*.tfstate
 /deploy/aws/**/*.tfstate.*
 /deploy/aws/tfplan
+/deploy/aws/**/*.tfvars
+/deploy/aws/**/*.tfvars.json
