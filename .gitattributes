@@ -1,0 +1,4 @@
+# Files that run on Linux or in bash must keep LF even on Windows checkouts.
+*.sh text eol=lf
+*.tftpl text eol=lf
+Dockerfile text eol=lf
