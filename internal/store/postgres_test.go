@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -108,8 +109,10 @@ func TestOpenTwiceIsNoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(versions) != 1 || versions[0] != "0001_init" {
-		t.Fatalf("schema_migrations = %v, want [0001_init]", versions)
+	// Every migration file is applied once, and nothing else is recorded.
+	wantVersions, wantTables := migrationFiles(t)
+	if strings.Join(versions, ",") != strings.Join(wantVersions, ",") {
+		t.Fatalf("schema_migrations = %v, want %v", versions, wantVersions)
 	}
 	// The tables went into the schema named by search_path, not public.
 	var n int
@@ -117,8 +120,8 @@ func TestOpenTwiceIsNoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 6 {
-		t.Fatalf("%d tables in schema %s, want 6", n, schema)
+	if n != wantTables {
+		t.Fatalf("%d tables in schema %s, want %d", n, schema, wantTables)
 	}
 }
 

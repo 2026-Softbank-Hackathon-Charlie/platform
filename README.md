@@ -197,3 +197,43 @@ PLATFORM_TEST_DATABASE_URL='postgres://charlie:charlie@localhost:55432/charlie?s
 - 인증은 정적 토큰입니다. 운영 환경이라면 OIDC로 토큰을 발급해야 합니다.
 - 클러스터 안에서 게이트웨이를 거치지 않고 DB에 쓰는 작업은 전환 중에 막을 수 없습니다. 이전하는 동안 멈춰야 합니다.
 - 실제 클러스터에서 끝까지 이전해 본 것은 아직 없습니다. 클러스터 3개가 준비되면 엔진과 함께 리허설합니다.
+
+## Plan 도구
+
+Plan JSON을 손으로 쓰지 않고 이전을 준비하고, 검증에 쓸 쓰기 기록을 모으고, 끝난 이전을 되돌리는 API입니다.
+
+| 요청 | 역할 | 설명 |
+| --- | --- | --- |
+| `GET /v1/apps` | viewer | `PLATFORM_APPS_FILE`의 앱과 앱이 있는 환경 |
+| `POST /v1/plans/draft` | agent | `{"app","source","target"}`로 엔진 Plan 초안을 만듦. 저장하지 않으므로 그대로 또는 고쳐서 `POST /v1/plans`로 제출 |
+| `PUT /v1/plans/{ref}/attachments/{name}` | agent | Plan이 참조하는 파일(대상 CNPG 매니페스트) 업로드. 본문 그대로 1 MiB까지, `pending_approval`일 때만 |
+| `GET /v1/plans/{ref}/attachments/{name}` | viewer | 첨부 내용. Plan 응답의 `attachments`에 이름, 크기, SHA-256이 있음 |
+| `POST /v1/written-records/{stream}` | agent | 부하 생성기가 성공 응답을 받은 쓰기 `{"table","pk","at"}`. 한 번에 1개에서 5000개 |
+| `GET /v1/written-records/{stream}` | viewer | 스트림의 기록 수와 가장 늦은 기록 시각 |
+| `POST /v1/migrations/{runId}/rollback` | operator | `succeeded` run을 온 길 그대로 되돌림. 202 + 새 runId |
+
+### 앱 설정과 Plan 초안
+
+- `PLATFORM_APPS_FILE`에 앱 설정 파일([examples/apps.yaml](examples/apps.yaml))을 지정합니다. 비워 두면 앱 목록이 비고 초안 요청은 400입니다.
+- 앱의 환경 이름은 `PLATFORM_ENVS_FILE`에 있어야 합니다. 환경별 `passwordEnv`는 Plan 정책의 환경 변수 허용 목록에 자동으로 들어갑니다.
+- 초안의 id는 `<app>-<source>-to-<target>`이고, 컨텍스트는 환경의 `kubeContext`에서, 네임스페이스와 클러스터와 DB 호스트는 앱에서 가져옵니다.
+- DSN은 `postgres://<user>:${<passwordEnv>}@<host>:<port>/<db>?sslmode=require`입니다. 비밀번호는 실행할 때 서버 환경에서 채웁니다.
+- 두 환경 모두 `bucket`이 있으면 파일 이전을 넣습니다(`files: false`로 뺄 수 있음). 게이트웨이가 설정된 서버면 `gateway.mode: http`, 아니면 `none`입니다.
+
+### 첨부와 쓰기 기록 참조
+
+Plan은 서버의 파일을 경로 대신 이름으로 가리킵니다. 정책은 지금처럼 절대 경로와 `..`를 거부하고, 실제 경로는 서버가 정합니다.
+
+- `target.manifest: "attachment:<name>"`: 첨부가 없으면 승인이 409로 실패합니다. 승인 뒤에는 첨부를 바꿀 수 없으므로, 승인자가 본 내용 그대로 실행됩니다. 실행을 시작하거나 재개할 때 `<PLATFORM_STATE_DIR>/plans/<ref>/<name>`(디렉터리 0700, 파일 0600)에 쓰고 엔진에는 그 경로를 넘깁니다.
+- `verify.writtenRecords: "stream:<name>"`: verify 단계 바로 전에 스트림의 기록 전부를 `<PLATFORM_STATE_DIR>/<runId>.written.jsonl`(0600)에 엔진 형식으로 씁니다. 전환하는 동안 들어온 기록까지 검증에 들어가고, 재개할 때도 같습니다. 파일을 쓰지 못하면 verify가 기록을 읽지 못했다고 보고하므로 통과로 넘어가지 않습니다.
+- 쓰기 기록 요청도 감사 로그에 하나씩 남습니다. 부하 생성기는 기록을 모아서 몇 초에 한 번 보냅니다.
+
+### 1-click 롤백
+
+- 원래 Plan의 원본과 대상을 맞바꾼 Plan(`<plan id>-rollback`)을 새로 저장하고 바로 실행합니다. env, 컨텍스트, 네임스페이스, 클러스터, DSN, 파일 위치, 게이트웨이 backend가 함께 바뀝니다. 옛 원본은 복제본으로 남아 있으므로 대상 매니페스트는 뺍니다.
+- 새 Plan은 제출한 그대로의 JSON에서 만들므로 `${VAR}` 참조가 그대로 남고, 비밀번호는 저장되지 않습니다.
+- 운영자의 롤백 요청이 사람 승인입니다. 새 Plan의 `reviewedBy`는 요청한 운영자이고 `reviewComment`는 `rollback of run <id>: <reason>`입니다. 감사 로그에는 fromRun, planRef, runId가 남습니다.
+- 기본은 `autoSwitch: true`입니다. `false`면 `awaiting_switch`에서 `/switch`를 기다립니다.
+- run 하나는 한 번만 롤백합니다. 새 run에는 `rollbackOf`가 붙습니다.
+
+CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks --stream moimroom-demo --submit`, `charlie plan attach REF --name target.yaml -f target.yaml`, `charlie written-records moimroom-demo`, `charlie migrate rollback RUNID --watch`를 씁니다.

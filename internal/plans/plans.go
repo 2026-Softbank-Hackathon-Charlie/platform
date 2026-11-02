@@ -35,6 +35,8 @@ type Service struct {
 	policy Policy
 	store  store.Store
 	now    func() time.Time
+
+	stateDir string // attachments are written below it before a run (attachments.go)
 }
 
 // New returns a Service enforcing policy.
@@ -80,7 +82,7 @@ func (s *Service) Submit(ctx context.Context, raw []byte, actor string) (apiv1.P
 	if err := s.store.CreatePlan(ctx, row); err != nil {
 		return apiv1.PlanRecord{}, err
 	}
-	return record(row)
+	return s.recordOf(ctx, row)
 }
 
 // Get returns a plan by ref.
@@ -89,7 +91,7 @@ func (s *Service) Get(ctx context.Context, ref string) (apiv1.PlanRecord, error)
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
-	return record(row)
+	return s.recordOf(ctx, row)
 }
 
 // List returns all plans, newest first.
@@ -106,23 +108,29 @@ func (s *Service) List(ctx context.Context) ([]apiv1.PlanRecord, error) {
 		}
 		out = append(out, rec)
 	}
+	if err := s.withAttachments(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
 // Approve records human approval. Approving an approved plan is a no-op.
 func (s *Service) Approve(ctx context.Context, ref, actor, comment string) (apiv1.PlanRecord, error) {
+	if err := s.requireAttachments(ctx, ref); err != nil {
+		return apiv1.PlanRecord{}, err
+	}
 	now := s.now()
 	row, err := s.transition(ctx, ref, []string{store.PlanPending}, store.PlanApproved,
 		store.PlanUpdate{ReviewedBy: actor, ReviewedAt: &now, ReviewComment: comment})
 	if errors.Is(err, ErrWrongStatus) {
 		if cur, gerr := s.get(ctx, ref); gerr == nil && cur.Status == store.PlanApproved {
-			return record(cur)
+			return s.recordOf(ctx, cur)
 		}
 	}
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
-	return record(row)
+	return s.recordOf(ctx, row)
 }
 
 // Reject records that a human refused the plan. A rejected plan never starts.
@@ -133,7 +141,7 @@ func (s *Service) Reject(ctx context.Context, ref, actor, comment string) (apiv1
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
-	return record(row)
+	return s.recordOf(ctx, row)
 }
 
 // Reserve moves an approved plan to starting and returns the parsed plan.
@@ -144,6 +152,9 @@ func (s *Service) Reserve(ctx context.Context, ref string) (*plan.Plan, error) {
 		return nil, err
 	}
 	p, err := s.Parse(row.Raw) // re-parse: secrets come from the environment at start time
+	if err == nil {
+		err = s.materialize(ctx, ref, p)
+	}
 	if err != nil {
 		s.Release(ctx, ref)
 		return nil, err
@@ -157,7 +168,14 @@ func (s *Service) Load(ctx context.Context, ref string) (*plan.Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.Parse(row.Raw)
+	p, err := s.Parse(row.Raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.materialize(ctx, ref, p); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // Started links a reserved plan to its run.

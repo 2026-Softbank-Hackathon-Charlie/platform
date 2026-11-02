@@ -138,4 +138,6 @@ type Store interface {
 
 	// Close releases connections.
 	Close()
+
+	PlanTools // written-records streams and plan attachments (written.go)
 }

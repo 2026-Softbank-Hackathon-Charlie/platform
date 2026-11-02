@@ -1,0 +1,22 @@
+# Applications the platform drafts migration plans for (GET /v1/apps,
+# POST /v1/plans/draft, charlie plan new). Point PLATFORM_APPS_FILE at this file.
+#
+#   name          id used in plan ids (<app>-<source>-to-<target>), ^[a-z0-9-]+$
+#   namespace     namespace of the app's CNPG Cluster in every environment
+#   database      name and user the DSNs connect with; schemas verification compares
+#   environments  keyed by environment name from PLATFORM_ENVS_FILE:
+#     cnpgCluster   CNPG Cluster resource name
+#     dbHost        host of the cluster's -rw service (over Tailscale)
+#     dbPort        optional, default 5432
+#     passwordEnv   server environment variable with the database password; plans
+#                   refer to it as ${VAR} and it is added to the plan env allowlist
+#     bucket        optional rclone remote:bucket of the app's files; files move
+#                   when both environments of a route have one
+apps:
+  - name: moimroom
+    namespace: moimroom
+    database: {name: app, user: app, schemas: [app]}
+    environments:
+      gke:    {cnpgCluster: moimroom-db-gke,    dbHost: moimroom-db-gke-rw.moimroom.gke.ts.net,       passwordEnv: GKE_MOIMROOM_PGPASSWORD,    bucket: "gcs:moimroom-photos-gke"}
+      eks:    {cnpgCluster: moimroom-db-eks,    dbHost: moimroom-db-eks-rw.moimroom.eks.ts.net,       passwordEnv: EKS_MOIMROOM_PGPASSWORD,    bucket: "s3:moimroom-photos-eks"}
+      onprem: {cnpgCluster: moimroom-db-onprem, dbHost: moimroom-db-onprem-rw.moimroom.onprem.ts.net, passwordEnv: ONPREM_MOIMROOM_PGPASSWORD, bucket: "minio:moimroom-photos"}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	specdoc "github.com/2026-Softbank-Hackathon-Charlie/platform/api"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
@@ -56,6 +57,8 @@ type Deps struct {
 	Traffic Traffic
 	// EnvNotFound is the error Envs.Get returns for an unknown name.
 	EnvNotFound error
+	// Apps drafts plans from PLATFORM_APPS_FILE; nil when the file is not set.
+	Apps *apps.Catalog
 }
 
 // Server is the HTTP handler.
@@ -103,6 +106,13 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/traffic", viewer, s.traffic)
 	s.route("GET /v1/matrix", viewer, s.matrix)
 	s.route("GET /v1/audit", viewer, s.listAudit)
+	s.route("POST /v1/written-records/{stream}", agent, s.appendWrittenRecords)
+	s.route("GET /v1/written-records/{stream}", viewer, s.writtenRecordStats)
+	s.route("PUT /v1/plans/{ref}/attachments/{name}", agent, s.putPlanAttachment)
+	s.route("GET /v1/plans/{ref}/attachments/{name}", viewer, s.getPlanAttachment)
+	s.route("GET /v1/apps", viewer, s.listApps)
+	s.route("POST /v1/plans/draft", agent, s.draftPlan)
+	s.route("POST /v1/migrations/{runId}/rollback", operator, s.rollbackMigration)
 	return s
 }
 

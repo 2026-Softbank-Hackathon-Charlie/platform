@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
@@ -86,6 +87,19 @@ func main() {
 		log.Warn("PLATFORM_DSN_HOST_SUFFIXES is not set: a plan may point its DSN at any host; approvers must check dbHost in the plan summary")
 	}
 
+	// Optional: apps to draft plans for. Their password variables may appear in plans.
+	var appCat *apps.Catalog
+	if path := os.Getenv("PLATFORM_APPS_FILE"); path != "" {
+		appCfg, err := apps.LoadConfig(path)
+		if err == nil {
+			appCat, err = apps.New(appCfg, envCfg.Environments, policy.GatewayURL)
+		}
+		if err != nil {
+			fatal("PLATFORM_APPS_FILE", "err", err)
+		}
+		policy.EnvAllow = append(policy.EnvAllow, appCat.PasswordEnvs()...)
+	}
+
 	// One gateway client for the runner (canary, request counts) and the API.
 	// The engine builds its own from the plan; both use GATEWAY_TOKEN.
 	var gw *gateway.Client
@@ -103,6 +117,7 @@ func main() {
 	}
 	runner := runs.New(runCtx, rcfg)
 	planSvc := plans.New(policy, st)
+	planSvc.SetStateDir(*stateDir)
 
 	if n, err := planSvc.RecoverStarting(ctx); err != nil {
 		fatal("recover plans", "err", err)
@@ -116,6 +131,7 @@ func main() {
 	}
 
 	deps := api.Deps{Plans: planSvc, Runs: runner, Store: st, Envs: envSvc, EnvNotFound: envs.ErrNotFound}
+	deps.Apps = appCat
 	if gw != nil {
 		deps.Traffic = gw
 	}
