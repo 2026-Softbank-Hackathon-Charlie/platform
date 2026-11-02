@@ -1,0 +1,24 @@
+# Source primary of the CNPG distributed topology for moimroom.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: { name: moimroom-src-db, namespace: moimroom }
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.11
+  # moimroom keeps pooled connections; see moimroom deploy/cnpg/cluster.yaml.
+  smartShutdownTimeout: 5
+  storage: { size: 1Gi }
+  bootstrap:
+    initdb: { database: app, owner: app }
+  replica: { self: moimroom-src-db, primary: moimroom-src-db, source: moimroom-dst-db }
+  externalClusters:
+    - name: moimroom-src-db
+      connectionParameters: { host: moimroom-src-db-rw.moimroom.svc, user: streaming_replica, dbname: postgres, sslmode: verify-full }
+      sslKey: { name: moimroom-src-db-replication, key: tls.key }
+      sslCert: { name: moimroom-src-db-replication, key: tls.crt }
+      sslRootCert: { name: moimroom-src-db-ca, key: ca.crt }
+    - name: moimroom-dst-db
+      connectionParameters: { host: moimroom-dst-db-rw.moimroom.svc, user: streaming_replica, dbname: postgres, sslmode: verify-full }
+      sslKey: { name: moimroom-dst-db-replication, key: tls.key }
+      sslCert: { name: moimroom-dst-db-replication, key: tls.crt }
+      sslRootCert: { name: moimroom-dst-db-ca, key: ca.crt }

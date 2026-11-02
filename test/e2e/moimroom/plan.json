@@ -1,0 +1,41 @@
+{
+  "id": "moimroom-src-to-dst",
+  "source": {
+    "env": "src",
+    "context": "kind-hop-moimroom",
+    "namespace": "moimroom",
+    "cluster": "moimroom-src-db",
+    "dsn": "postgres://app:${SRC_PGPASSWORD}@127.0.0.1:55742/app?sslmode=require"
+  },
+  "target": {
+    "env": "dst",
+    "context": "kind-hop-moimroom",
+    "namespace": "moimroom",
+    "cluster": "moimroom-dst-db",
+    "dsn": "postgres://app:${DST_PGPASSWORD}@127.0.0.1:55743/app?sslmode=require",
+    "manifest": "attachment:target.yaml"
+  },
+  "files": {
+    "source": "src:moimroom-photos",
+    "target": "dst:moimroom-photos",
+    "flags": ["--checksum"]
+  },
+  "gateway": {
+    "mode": "http",
+    "url": "http://127.0.0.1:19902",
+    "token": "${GATEWAY_TOKEN}",
+    "sourceBackend": "src",
+    "targetBackend": "dst"
+  },
+  "verify": {
+    "schemas": ["app"],
+    "fenceGate": true,
+    "writtenRecords": "stream:moimroom"
+  },
+  "thresholds": {
+    "maxLagBytes": 1048576,
+    "catchupTimeout": "10m",
+    "switchoverTimeout": "3m",
+    "maxDowntime": "3m"
+  }
+}
