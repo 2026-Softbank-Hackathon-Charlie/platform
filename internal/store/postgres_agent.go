@@ -43,6 +43,7 @@ func scanAgentSession(row pgx.Row) (AgentSession, error) {
 }
 
 func (s *Postgres) CreateAgentSession(ctx context.Context, a AgentSession) error {
+	a = a.Clean()
 	_, err := s.pool.Exec(ctx, `INSERT INTO agent_sessions
 		(id, kind, title, actor, plan_ref, run_id, model, status, summary, created_at, ended_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
@@ -54,6 +55,9 @@ func (s *Postgres) CreateAgentSession(ctx context.Context, a AgentSession) error
 }
 
 func (s *Postgres) GetAgentSession(ctx context.Context, id string) (AgentSession, error) {
+	if !Clean(id) { // PostgreSQL would reject the parameter
+		return AgentSession{}, fmt.Errorf("%w: agent session %q", ErrNotFound, id)
+	}
 	a, err := scanAgentSession(s.pool.QueryRow(ctx, `SELECT `+agentSessionColumns+`
 		FROM agent_sessions s `+agentTotalsJoin+` WHERE s.id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -63,6 +67,9 @@ func (s *Postgres) GetAgentSession(ctx context.Context, id string) (AgentSession
 }
 
 func (s *Postgres) ListAgentSessions(ctx context.Context, f AgentSessionFilter) ([]AgentSession, error) {
+	if !Clean(f.PlanRef) || !Clean(f.RunID) {
+		return []AgentSession{}, nil
+	}
 	var lim *int // LIMIT NULL means no limit
 	if f.Limit > 0 {
 		lim = &f.Limit
@@ -78,6 +85,10 @@ func (s *Postgres) ListAgentSessions(ctx context.Context, f AgentSessionFilter) 
 }
 
 func (s *Postgres) FinishAgentSession(ctx context.Context, id, status, summary string, endedAt time.Time) (AgentSession, error) {
+	if !Clean(id) {
+		return AgentSession{}, fmt.Errorf("%w: agent session %q", ErrNotFound, id)
+	}
+	status, summary = CleanText(status), CleanText(summary)
 	// The row lock of this UPDATE waits for an append that holds the session
 	// row, and an append after it sees the new status.
 	tag, err := s.pool.Exec(ctx, `UPDATE agent_sessions SET status = $2, summary = $3, ended_at = $4
@@ -116,6 +127,13 @@ func scanAgentEvent(row pgx.Row) (AgentEvent, error) {
 // to one session therefore commit one at a time in Seq order (a reader
 // resuming with afterSeq cannot skip one), and a finish waits for them.
 func (s *Postgres) AppendAgentEvent(ctx context.Context, e AgentEvent) (AgentEvent, error) {
+	if !Clean(e.SessionID) {
+		return AgentEvent{}, fmt.Errorf("%w: agent session %q", ErrNotFound, e.SessionID)
+	}
+	e, err := e.Clean()
+	if err != nil {
+		return AgentEvent{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return AgentEvent{}, err
@@ -144,6 +162,9 @@ func (s *Postgres) AppendAgentEvent(ctx context.Context, e AgentEvent) (AgentEve
 }
 
 func (s *Postgres) ListAgentEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]AgentEvent, error) {
+	if !Clean(sessionID) {
+		return []AgentEvent{}, nil
+	}
 	var lim *int
 	if limit > 0 {
 		lim = &limit
@@ -154,4 +175,16 @@ func (s *Postgres) ListAgentEvents(ctx context.Context, sessionID string, afterS
 		return nil, err
 	}
 	return collect(rows, scanAgentEvent)
+}
+
+func (s *Postgres) IdleAgentSessions(ctx context.Context, before time.Time) ([]AgentSession, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+agentSessionColumns+`
+		FROM agent_sessions s `+agentTotalsJoin+`
+		WHERE s.status = $1 AND s.created_at < $2
+			AND NOT EXISTS (SELECT 1 FROM agent_events e WHERE e.session_id = s.id AND e.time >= $2)
+		ORDER BY s.created_at, s.id`, AgentRunning, before)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, scanAgentSession)
 }

@@ -88,7 +88,7 @@ func TestKubeChecks(t *testing.T) {
 		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: "payments", Name: "default-deny"}},
 		// System namespaces and finished pods are skipped.
 		pod("kube-system", "coredns", "coredns-5d8f-a", web),
-		pod("gke-managed-system", "x", "x-5d8f-a", web),
+		pod("kube-public", "x", "x-5d8f-a", web),
 		func() *corev1.Pod { p := pod("batch", "", "done", web); p.Status.Phase = corev1.PodSucceeded; return p }(),
 		&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "cluster-admin"}, RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
 			Subjects: []rbacv1.Subject{{Kind: "Group", Name: "system:masters"}}},
@@ -154,5 +154,91 @@ func TestKubeUnreachableAndPartial(t *testing.T) {
 	})
 	if r := c.Collect(t.Context())[0]; r.Status != apiv1.SecuritySourceStatusNotConfigured || !strings.Contains(r.Message, "gke-ctx") {
 		t.Fatalf("no kubeconfig: %+v", r)
+	}
+}
+
+func no() *bool { b := false; return &b }
+
+func uid(n int64) *int64 { return &n }
+
+// TestKubeHardening covers one rule per case; only the findings of the
+// checks named in want are compared.
+func TestKubeHardening(t *testing.T) {
+	admin := func(name string, subjects ...rbacv1.Subject) *rbacv1.ClusterRoleBinding {
+		return &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}, RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"}, Subjects: subjects}
+	}
+	ctr := func(name string, sc *corev1.SecurityContext) corev1.Container {
+		return corev1.Container{Name: name, Resources: limits(), SecurityContext: sc}
+	}
+	for _, c := range []struct {
+		name   string
+		checks []string
+		objs   []runtime.Object
+		want   []string
+	}{
+		{"broad subjects are not system subjects", []string{"k8s.cluster-admin"}, []runtime.Object{
+			admin("all-sa", rbacv1.Subject{Kind: "Group", Name: "system:serviceaccounts"}),
+			admin("shop-sa", rbacv1.Subject{Kind: "Group", Name: "system:serviceaccounts:shop"}),
+			admin("everyone", rbacv1.Subject{Kind: "Group", Name: "system:authenticated"}, rbacv1.Subject{Kind: "Group", Name: "system:unauthenticated"}),
+			admin("ci", rbacv1.Subject{Kind: "User", Name: "system:serviceaccount:default:ci"}),
+			admin("system", rbacv1.Subject{Kind: "Group", Name: "system:masters"}, rbacv1.Subject{Kind: "User", Name: "system:kube-controller-manager"},
+				rbacv1.Subject{Kind: "User", Name: "system:serviceaccount:kube-system:helm"}, rbacv1.Subject{Kind: "ServiceAccount", Namespace: "kube-system", Name: "helm"}),
+		}, []string{
+			"critical k8s.cluster-admin ClusterRoleBinding/all-sa/Group system:serviceaccounts",
+			"critical k8s.cluster-admin ClusterRoleBinding/everyone/Group system:authenticated",
+			"critical k8s.cluster-admin ClusterRoleBinding/everyone/Group system:unauthenticated",
+			"critical k8s.cluster-admin ClusterRoleBinding/shop-sa/Group system:serviceaccounts:shop",
+			"high k8s.cluster-admin ClusterRoleBinding/ci/User system:serviceaccount:default:ci",
+		}},
+		{"container runAsNonRoot false overrides the pod", []string{"k8s.run-as-non-root"}, []runtime.Object{
+			pod("shop", "web", "web-5d8f-a", corev1.PodSpec{SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: yes()},
+				Containers: []corev1.Container{ctr("app", nil), ctr("sidecar", &corev1.SecurityContext{RunAsNonRoot: no()})}}),
+		}, []string{"low k8s.run-as-non-root shop/Deployment/web/sidecar"}},
+		{"a non-zero runAsUser is non-root", []string{"k8s.run-as-non-root"}, []runtime.Object{
+			pod("shop", "web", "web-5d8f-a", corev1.PodSpec{SecurityContext: &corev1.PodSecurityContext{RunAsUser: uid(1000)},
+				Containers: []corev1.Container{ctr("app", nil), ctr("root", &corev1.SecurityContext{RunAsUser: uid(0)})}}),
+			pod("shop", "api", "api-5d8f-a", corev1.PodSpec{Containers: []corev1.Container{ctr("app", &corev1.SecurityContext{RunAsUser: uid(10001), RunAsNonRoot: no()})}}),
+		}, []string{"low k8s.run-as-non-root shop/Deployment/web/root"}},
+		{"init and ephemeral containers", []string{"k8s.privileged", "k8s.run-as-non-root"}, []runtime.Object{
+			pod("shop", "web", "web-5d8f-a", corev1.PodSpec{SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: yes()},
+				InitContainers: []corev1.Container{ctr("migrate", &corev1.SecurityContext{Privileged: yes()})},
+				Containers:     []corev1.Container{ctr("app", nil)},
+				EphemeralContainers: []corev1.EphemeralContainer{{EphemeralContainerCommon: corev1.EphemeralContainerCommon{Name: "debugger",
+					SecurityContext: &corev1.SecurityContext{Privileged: yes(), RunAsNonRoot: no()}}}}}),
+		}, []string{
+			"high k8s.privileged shop/Deployment/web/debugger",
+			"high k8s.privileged shop/Deployment/web/migrate",
+			"low k8s.run-as-non-root shop/Deployment/web/debugger",
+		}},
+		{"host IPC", []string{"k8s.host-ipc"}, []runtime.Object{
+			pod("shop", "agent", "agent-5d8f-a", corev1.PodSpec{HostIPC: true, Containers: []corev1.Container{ctr("agent", nil)}}),
+		}, []string{"high k8s.host-ipc shop/Deployment/agent"}},
+		{"system namespaces are an exact list", []string{"k8s.privileged", "k8s.cluster-admin"}, []runtime.Object{
+			pod("kube-system", "dns", "dns-5d8f-a", corev1.PodSpec{Containers: []corev1.Container{ctr("dns", &corev1.SecurityContext{Privileged: yes()})}}),
+			pod("kube-node-lease", "x", "x-5d8f-a", corev1.PodSpec{Containers: []corev1.Container{ctr("x", &corev1.SecurityContext{Privileged: yes()})}}),
+			pod("kube-tools", "miner", "miner-5d8f-a", corev1.PodSpec{Containers: []corev1.Container{ctr("miner", &corev1.SecurityContext{Privileged: yes()})}}),
+			pod("gke-extras", "x", "x-5d8f-a", corev1.PodSpec{Containers: []corev1.Container{ctr("x", &corev1.SecurityContext{Privileged: yes()})}}),
+			admin("tools", rbacv1.Subject{Kind: "ServiceAccount", Namespace: "kube-tools", Name: "miner"}),
+		}, []string{
+			"high k8s.cluster-admin ClusterRoleBinding/tools/ServiceAccount kube-tools/miner",
+			"high k8s.privileged gke-extras/Deployment/x/x",
+			"high k8s.privileged kube-tools/Deployment/miner/miner",
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := collectKube(t, newFakeKube(c.objs...))
+			if r.Status != apiv1.SecuritySourceStatusOk {
+				t.Fatalf("status %s: %s", r.Status, r.Message)
+			}
+			var got []string
+			for _, f := range checks(r) {
+				if check := strings.Fields(f)[1]; slices.Contains(c.checks, check) {
+					got = append(got, f)
+				}
+			}
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("findings:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(c.want, "\n"))
+			}
+		})
 	}
 }

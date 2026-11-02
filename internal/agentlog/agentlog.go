@@ -3,8 +3,10 @@
 // tool call, tool result, message, blocked action, decision or error.
 //
 // Events are stored before they are delivered to live subscribers, so a
-// client that reconnects with the last seq it saw misses nothing. Values of
-// keys that look like credentials are redacted before anything is stored.
+// client that reconnects with the last seq it saw misses nothing.
+// Credentials in event payloads are redacted before anything is stored (see
+// Redact), and a session nobody writes to is closed by the platform (see
+// RunSweeper).
 package agentlog
 
 import (
@@ -15,7 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +37,8 @@ var (
 	ErrInvalid   = errors.New("invalid agent request")
 	// ErrTooLarge means an event's input or output exceeds MaxPayloadBytes.
 	ErrTooLarge = errors.New("agent event payload too large")
+	// ErrSessionFull means the session holds MaxEvents events already.
+	ErrSessionFull = errors.New("agent session is full")
 )
 
 // Limits.
@@ -44,17 +48,19 @@ const (
 	// SubscriberBuffer is how many events a slow subscriber may lag before it
 	// is dropped; it then reconnects with Last-Event-ID and replays from the store.
 	SubscriberBuffer = 256
-	maxTitle         = 200
-	maxRef           = 200
-	maxStatus        = 64
-	maxSummary       = 4000
+	// MaxEvents is how many events one session may hold.
+	MaxEvents = 5000
+	// DefaultEventPage and MaxEventPage bound one read of a session's events.
+	DefaultEventPage = 500
+	MaxEventPage     = 2000
+	// DefaultIdle is how long a running session may go without an event
+	// before the sweeper closes it.
+	DefaultIdle = 30 * time.Minute
+	maxTitle    = 200
+	maxRef      = 200
+	maxStatus   = 64
+	maxSummary  = 4000
 )
-
-// Redacted replaces the value of every key that matches SecretKey.
-const Redacted = "[redacted]"
-
-// SecretKey matches keys whose values are stored as Redacted.
-var SecretKey = regexp.MustCompile(`(?i)password|secret|token|authorization|api[_-]?key`)
 
 // EventInput is one event as the agent sends it. Input and Output are any
 // JSON value; absent or null means none.
@@ -75,9 +81,10 @@ type EventInput struct {
 // can never overtake an append. Agent events arrive a few per second, so one
 // lock for all sessions costs nothing that matters.
 type Service struct {
-	st    store.AgentStore
-	now   func() time.Time
-	newID func() string
+	st        store.AgentStore
+	now       func() time.Time
+	newID     func() string
+	maxEvents int
 
 	mu   sync.Mutex
 	subs map[string]map[chan apiv1.AgentEvent]struct{} // by session id
@@ -90,6 +97,8 @@ func New(st store.AgentStore) *Service {
 		now:   func() time.Time { return time.Now().UTC() },
 		newID: func() string { b := make([]byte, 6); _, _ = rand.Read(b); return "ags_" + hex.EncodeToString(b) },
 		subs:  map[string]map[chan apiv1.AgentEvent]struct{}{},
+
+		maxEvents: MaxEvents,
 	}
 }
 
@@ -106,7 +115,8 @@ func checkLen(field, v string, n int) error {
 
 // Create starts a running session owned by actor.
 func (s *Service) Create(ctx context.Context, actor string, req apiv1.CreateAgentSessionRequest) (apiv1.AgentSession, error) {
-	title := strings.TrimSpace(req.Title)
+	// Cleaned as the store keeps it, so the answer matches what is stored.
+	title := strings.TrimSpace(store.CleanText(req.Title))
 	switch {
 	case !req.Kind.Valid():
 		return apiv1.AgentSession{}, invalid("kind must be plan, rehearsal, diagnose, explain or other")
@@ -117,7 +127,7 @@ func (s *Service) Create(ctx context.Context, actor string, req apiv1.CreateAgen
 		ID: s.newID(), Kind: string(req.Kind), Title: title, Actor: actor,
 		PlanRef: deref(req.PlanRef), RunID: deref(req.RunId), Model: deref(req.Model),
 		Status: store.AgentRunning, CreatedAt: s.now(),
-	}
+	}.Clean()
 	for _, f := range []struct {
 		name, v string
 		n       int
@@ -157,18 +167,28 @@ func (s *Service) List(ctx context.Context, planRef, runID string, limit int) ([
 	return out, nil
 }
 
-// Events returns a session's stored events with seq > after.
-func (s *Service) Events(ctx context.Context, id string, after int64) ([]apiv1.AgentEvent, error) {
+// Events returns up to limit of a session's stored events with seq > after
+// (DefaultEventPage when limit <= 0, at most MaxEventPage). NextAfter is set
+// when more events follow; pass it as after for the next page.
+func (s *Service) Events(ctx context.Context, id string, after int64, limit int) (apiv1.AgentEventList, error) {
+	if limit <= 0 {
+		limit = DefaultEventPage
+	}
+	limit = min(limit, MaxEventPage)
 	if _, err := s.Get(ctx, id); err != nil {
-		return nil, err
+		return apiv1.AgentEventList{}, err
 	}
-	rows, err := s.st.ListAgentEvents(ctx, id, after, 0)
+	rows, err := s.st.ListAgentEvents(ctx, id, after, limit+1) // one more tells whether a next page exists
 	if err != nil {
-		return nil, err
+		return apiv1.AgentEventList{}, err
 	}
-	out := make([]apiv1.AgentEvent, len(rows))
-	for i, e := range rows {
-		out[i] = apiEvent(e)
+	out := apiv1.AgentEventList{Events: make([]apiv1.AgentEvent, 0, min(len(rows), limit))}
+	for _, e := range rows[:min(len(rows), limit)] {
+		out.Events = append(out.Events, apiEvent(e))
+	}
+	if len(rows) > limit {
+		next := out.Events[limit-1].Seq
+		out.NextAfter = &next
 	}
 	return out, nil
 }
@@ -209,8 +229,12 @@ func (s *Service) Append(ctx context.Context, p auth.Principal, id string, in Ev
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.authorize(ctx, p, id); err != nil {
+	a, err := s.authorize(ctx, p, id)
+	if err != nil {
 		return apiv1.AgentEvent{}, err
+	}
+	if a.Status == store.AgentRunning && a.Totals.Events >= int64(s.maxEvents) {
+		return apiv1.AgentEvent{}, fmt.Errorf("%w: it holds %d events, the limit", ErrSessionFull, a.Totals.Events)
 	}
 	e.Time = s.now()
 	stored, err := s.st.AppendAgentEvent(ctx, e)
@@ -245,10 +269,16 @@ func (s *Service) Finish(ctx context.Context, p auth.Principal, id string, req a
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.authorize(ctx, p, id); err != nil {
+	if _, err := s.authorize(ctx, p, id); err != nil {
 		return apiv1.AgentSession{}, err
 	}
-	a, err := s.st.FinishAgentSession(ctx, id, string(req.Status), summary, s.now())
+	return s.finish(ctx, id, string(req.Status), summary)
+}
+
+// finish ends a running session and closes its subscribers. Call it with
+// s.mu held.
+func (s *Service) finish(ctx context.Context, id, status, summary string) (apiv1.AgentSession, error) {
+	a, err := s.st.FinishAgentSession(ctx, id, status, summary, s.now())
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return apiv1.AgentSession{}, ErrNotFound
@@ -263,20 +293,82 @@ func (s *Service) Finish(ctx context.Context, p auth.Principal, id string, req a
 	return apiSession(a), nil
 }
 
-// authorize checks that the session exists and that p may write to it.
-// Call it with s.mu held.
-func (s *Service) authorize(ctx context.Context, p auth.Principal, id string) error {
+// authorize returns the session when it exists and p may write to it. Call
+// it with s.mu held.
+func (s *Service) authorize(ctx context.Context, p auth.Principal, id string) (store.AgentSession, error) {
 	a, err := s.st.GetAgentSession(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
-		return ErrNotFound
+		return store.AgentSession{}, ErrNotFound
 	}
 	if err != nil {
-		return err
+		return store.AgentSession{}, err
 	}
 	if !allowed(p, a) {
-		return ErrForbidden
+		return store.AgentSession{}, ErrForbidden
 	}
-	return nil
+	return a, nil
+}
+
+// Sweep finishes as cancelled every running session that has had no event
+// for idle (counted from its creation when it has none) and closes its
+// subscribers, which then send their final snapshot. It returns the ids it
+// closed.
+func (s *Service) Sweep(ctx context.Context, idle time.Duration) ([]string, error) {
+	s.mu.Lock() // no append slips in between the query and the finish
+	defer s.mu.Unlock()
+	rows, err := s.st.IdleAgentSessions(ctx, s.now().Add(-idle))
+	if err != nil {
+		return nil, err
+	}
+	summary := fmt.Sprintf("no activity for %s; closed by the platform", shortDuration(idle))
+	var closed []string
+	for _, a := range rows {
+		_, err := s.finish(ctx, a.ID, store.AgentCancelled, summary)
+		switch {
+		case errors.Is(err, ErrFinished) || errors.Is(err, ErrNotFound):
+			// finished by another server meanwhile
+		case err != nil:
+			return closed, err
+		default:
+			closed = append(closed, a.ID)
+		}
+	}
+	return closed, nil
+}
+
+// RunSweeper calls Sweep with idle now and then every idle/4 (at least once
+// a minute) until ctx ends, and logs what it closes.
+func (s *Service) RunSweeper(ctx context.Context, idle time.Duration, log *slog.Logger) {
+	tick := time.NewTicker(min(max(idle/4, time.Millisecond), time.Minute))
+	defer tick.Stop()
+	for {
+		ids, err := s.Sweep(ctx, idle)
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err != nil:
+			log.Error("agent session sweep failed", "err", err)
+		case len(ids) > 0:
+			log.Info("closed idle agent sessions", "sessions", ids, "idle", idle.String())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// shortDuration renders d without zero trailing units: 30m, 1h, 1h30m, 45s.
+func shortDuration(d time.Duration) string {
+	out := d.String()
+	if strings.HasSuffix(out, "m0s") {
+		out = strings.TrimSuffix(out, "0s")
+	}
+	if strings.HasSuffix(out, "h0m") {
+		out = strings.TrimSuffix(out, "0m")
+	}
+	return out
 }
 
 // Subscribe returns the live events of a running session. The channel closes
@@ -345,30 +437,6 @@ func payload(field string, raw json.RawMessage) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s is %d bytes; the limit is %d", ErrTooLarge, field, len(b), MaxPayloadBytes)
 	}
 	return b, nil
-}
-
-// Redact returns v with the value of every object key that matches SecretKey
-// replaced by Redacted, at any depth. It does not modify v.
-func Redact(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, val := range x {
-			if SecretKey.MatchString(k) {
-				out[k] = Redacted
-			} else {
-				out[k] = Redact(val)
-			}
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, val := range x {
-			out[i] = Redact(val)
-		}
-		return out
-	}
-	return v
 }
 
 // --- conversions ---

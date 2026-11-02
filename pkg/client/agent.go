@@ -59,14 +59,33 @@ func (c *Client) GetAgentSession(ctx context.Context, sessionID string) (*apiv1.
 	return call[apiv1.AgentSession](ctx, c, request{method: http.MethodGet, path: "/v1/agent/sessions/%s", params: []string{sessionID}})
 }
 
+// agentEventPage is how many events ListAgentEvents asks for at once: the
+// server's maximum page.
+const agentEventPage = 2000
+
 // ListAgentEvents returns a session's stored events with seq > after, as one
-// list instead of a stream.
+// list instead of a stream. It reads them a page at a time, following
+// nextAfter until the last page.
 func (c *Client) ListAgentEvents(ctx context.Context, sessionID string, after int64) (*apiv1.AgentEventList, error) {
-	q := url.Values{"format": {"json"}}
-	if after > 0 {
-		q.Set("after", strconv.FormatInt(after, 10))
+	out := &apiv1.AgentEventList{Events: []apiv1.AgentEvent{}}
+	for {
+		q := url.Values{"format": {"json"}, "limit": {strconv.Itoa(agentEventPage)}}
+		if after > 0 {
+			q.Set("after", strconv.FormatInt(after, 10))
+		}
+		page, err := call[apiv1.AgentEventList](ctx, c, request{method: http.MethodGet, path: "/v1/agent/sessions/%s/events", params: []string{sessionID}, query: q})
+		if err != nil {
+			return nil, err
+		}
+		out.Events = append(out.Events, page.Events...)
+		if page.NextAfter == nil {
+			return out, nil
+		}
+		if *page.NextAfter <= after {
+			return nil, &protocolError{fmt.Errorf("client: agent events page after %d points back to %d", after, *page.NextAfter)}
+		}
+		after = *page.NextAfter
 	}
-	return call[apiv1.AgentEventList](ctx, c, request{method: http.MethodGet, path: "/v1/agent/sessions/%s/events", params: []string{sessionID}, query: q})
 }
 
 // AgentMessage is one message of an agent session's event stream.

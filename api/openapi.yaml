@@ -578,11 +578,18 @@ paths:
       operationId: appendAgentEvent
       description: |
         Record one tool call, tool result, message, blocked action, decision or
-        error. Only the session's actor or an operator may append. `input` and
-        `output` are any JSON value up to 64 KiB each; values of keys that look
-        like credentials (password, secret, token, authorization, api key) are
-        stored as `"[redacted]"`. Error codes: agent_session_not_found (404),
-        agent_session_finished (409), too_large (413).
+        error. Only the session's actor or an operator may append. A session
+        holds at most 5000 events. `input` and `output` are any JSON value up
+        to 64 KiB each. Credentials are stored as `"[redacted]"`: string values
+        under keys that look like credentials (password, passwd, pwd, pass,
+        secret, token, authorization, cookie, api key, private key, credential,
+        access key; numbers and booleans are kept, so token counts stay), the
+        `value` of an object whose `name` or `key` looks like one, and within
+        strings `NAME=value` and `NAME: value` assignments, URL passwords,
+        bearer tokens, AWS access key ids and PEM private keys. NUL characters
+        are removed and invalid UTF-8 is replaced in every stored string.
+        Error codes: agent_session_not_found (404), agent_session_finished
+        (409), session_full (409), too_large (413).
       requestBody:
         required: true
         content:
@@ -616,8 +623,9 @@ paths:
           While it runs the stream stays open, with `: keep-alive` comments.
 
         Reconnect with `Last-Event-ID` (or `?after=`) to replay the events you
-        missed. `format=json` returns the stored events as one `AgentEventList`
-        instead of a stream.
+        missed. `format=json` returns one page of the stored events as an
+        `AgentEventList` instead of a stream: up to `limit` events after
+        `after`, and `nextAfter` when more follow.
       parameters:
         - name: Last-Event-ID
           in: header
@@ -632,9 +640,14 @@ paths:
           in: query
           required: false
           schema: { type: string, enum: [sse, json], default: sse }
+        - name: limit
+          in: query
+          required: false
+          description: With `format=json`, the most events to return.
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 500 }
       responses:
         "200":
-          description: An event stream, or the event list with `format=json`.
+          description: An event stream, or a page of the event list with `format=json`.
           content:
             text/event-stream:
               schema: { type: string }
@@ -653,8 +666,10 @@ paths:
       operationId: finishAgentSession
       description: |
         End a running session. Only the session's actor or an operator may
-        finish it. Error codes: agent_session_not_found (404),
-        agent_session_finished (409).
+        finish it. A running session with no event for `PLATFORM_AGENT_IDLE`
+        (default 30 minutes) is finished by the platform as `cancelled` with
+        the summary "no activity for 30m; closed by the platform". Error codes:
+        agent_session_not_found (404), agent_session_finished (409).
       requestBody:
         required: true
         content:
@@ -1545,7 +1560,7 @@ components:
         - ok: read completely.
         - unavailable: the source did not answer (e.g. the cluster is unreachable).
         - not_configured: this server has no credentials or settings for the source; the message says what is missing.
-        - error: the source answered but some or all reads failed (e.g. access denied); findings read before the failure are kept.
+        - error: credentials exist but could not be fetched (e.g. the instance metadata service timed out), or the source answered but some or all reads failed (e.g. access denied); findings read before the failure are kept.
       type: string
       enum: [ok, unavailable, not_configured, error]
 
@@ -1554,7 +1569,7 @@ components:
       type: object
       required: [id, environment, provider, source, check, category, severity, title, resource, detail, recommendation, observedAt]
       properties:
-        id: { type: string, description: "stable across collections: a hash of environment, source, check and resource" }
+        id: { type: string, description: "stable across collections: a hash of environment, source, check, resource and, where it has one, the vendor's own finding id (GuardDuty finding id, Security Hub finding ARN) or the rule's protocol, ports and CIDRs" }
         environment: { type: string, description: "an environment name, or aws-account, or platform", example: gke }
         provider: { $ref: "#/components/schemas/SecurityProvider" }
         source: { type: string, example: aws-guardduty, description: "kubernetes, aws-iam, aws-ec2, aws-cloudtrail, aws-guardduty, aws-securityhub, aws-s3, platform-audit, platform-config" }
@@ -1714,6 +1729,10 @@ components:
         events:
           type: array
           items: { $ref: "#/components/schemas/AgentEvent" }
+        nextAfter:
+          type: integer
+          format: int64
+          description: Set when more events follow this page; pass it as `after` to read them.
 
     FinishAgentSessionRequest:
       type: object

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -18,7 +19,7 @@ type AgentLog interface {
 	Create(ctx context.Context, actor string, req apiv1.CreateAgentSessionRequest) (apiv1.AgentSession, error)
 	Get(ctx context.Context, id string) (apiv1.AgentSession, error)
 	List(ctx context.Context, planRef, runID string, limit int) ([]apiv1.AgentSession, error)
-	Events(ctx context.Context, id string, after int64) ([]apiv1.AgentEvent, error)
+	Events(ctx context.Context, id string, after int64, limit int) (apiv1.AgentEventList, error)
 	Append(ctx context.Context, p auth.Principal, id string, in agentlog.EventInput) (apiv1.AgentEvent, error)
 	Finish(ctx context.Context, p auth.Principal, id string, req apiv1.FinishAgentSessionRequest) (apiv1.AgentSession, error)
 	Subscribe(ctx context.Context, id string) (<-chan apiv1.AgentEvent, func(), error)
@@ -39,6 +40,8 @@ func (s *Server) agentError(w http.ResponseWriter, r *http.Request, err error) {
 		s.fail(w, r, http.StatusNotFound, "agent_session_not_found", "agent session not found")
 	case errors.Is(err, agentlog.ErrFinished):
 		s.fail(w, r, http.StatusConflict, "agent_session_finished", "the agent session is finished and takes no more events")
+	case errors.Is(err, agentlog.ErrSessionFull):
+		s.fail(w, r, http.StatusConflict, "session_full", fmt.Sprintf("the agent session holds %d events, the most it may; start a new session", agentlog.MaxEvents))
 	case errors.Is(err, agentlog.ErrForbidden):
 		s.fail(w, r, http.StatusForbidden, "forbidden", err.Error())
 	case errors.Is(err, agentlog.ErrTooLarge):
@@ -163,7 +166,8 @@ func (s *Server) finishAgentSession(w http.ResponseWriter, r *http.Request) {
 // "snapshot" with the session first, then stored events after Last-Event-ID
 // (or ?after=), then live events, with the event type as the SSE event name
 // and the seq as the SSE id; when the session finishes, a final "snapshot"
-// and the stream closes. ?format=json returns the stored events instead.
+// and the stream closes. Stored events are read a page at a time.
+// ?format=json&limit= returns one page of stored events instead.
 func (s *Server) agentEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.agentsReady(w, r) {
 		return
@@ -178,12 +182,21 @@ func (s *Server) agentEvents(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Query().Get("format") {
 	case "", "sse":
 	case "json":
-		events, err := s.d.Agents.Events(ctx, id, after)
+		limit := agentlog.DefaultEventPage
+		if v := r.URL.Query().Get("limit"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 || n > agentlog.MaxEventPage {
+				s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("limit must be between 1 and %d", agentlog.MaxEventPage))
+				return
+			}
+			limit = n
+		}
+		page, err := s.d.Agents.Events(ctx, id, after, limit)
 		if err != nil {
 			s.agentError(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, apiv1.AgentEventList{Events: events})
+		writeJSON(w, http.StatusOK, page)
 		return
 	default:
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", "format must be sse or json")
@@ -205,7 +218,7 @@ func (s *Server) agentEvents(w http.ResponseWriter, r *http.Request) {
 		s.agentError(w, r, err)
 		return
 	}
-	history, err := s.d.Agents.Events(ctx, id, after)
+	page, err := s.d.Agents.Events(ctx, id, after, agentlog.DefaultEventPage)
 	if err != nil {
 		s.agentError(w, r, err)
 		return
@@ -220,13 +233,23 @@ func (s *Server) agentEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	last := after
-	for _, ev := range history {
-		if writeSSE(w, string(ev.Type), ev.Seq, ev) != nil {
+	for {
+		for _, ev := range page.Events {
+			if writeSSE(w, string(ev.Type), ev.Seq, ev) != nil {
+				return
+			}
+			last = max(last, ev.Seq)
+		}
+		fl.Flush()
+		if page.NextAfter == nil {
+			break
+		}
+		// Live events wait in the subscription meanwhile; one that falls too
+		// far behind is closed and the client resumes from its last id.
+		if page, err = s.d.Agents.Events(ctx, id, *page.NextAfter, agentlog.DefaultEventPage); err != nil {
 			return
 		}
-		last = max(last, ev.Seq)
 	}
-	fl.Flush()
 
 	tick := time.NewTicker(SSEHeartbeat)
 	defer tick.Stop()

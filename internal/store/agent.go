@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -60,6 +61,32 @@ type AgentEvent struct {
 	OutputTokens   int64
 }
 
+// Clean returns a with every string passed through CleanText. Stores apply
+// it on every write, so all of them keep the same text.
+func (a AgentSession) Clean() AgentSession {
+	for _, f := range []*string{&a.ID, &a.Kind, &a.Title, &a.Actor, &a.PlanRef, &a.RunID, &a.Model, &a.Status, &a.Summary} {
+		*f = CleanText(*f)
+	}
+	return a
+}
+
+// Clean returns e with its strings passed through CleanText and Input and
+// Output through CleanJSON. Stores apply it on every append. SessionID is a
+// reference and stays as it is: an id that is not clean names no session.
+func (e AgentEvent) Clean() (AgentEvent, error) {
+	for _, f := range []*string{&e.Type, &e.Tool, &e.Status} {
+		*f = CleanText(*f)
+	}
+	var err error
+	if e.Input, err = CleanJSON(e.Input); err != nil {
+		return AgentEvent{}, fmt.Errorf("agent event input: %w", err)
+	}
+	if e.Output, err = CleanJSON(e.Output); err != nil {
+		return AgentEvent{}, fmt.Errorf("agent event output: %w", err)
+	}
+	return e, nil
+}
+
 // AgentSessionFilter selects sessions. Empty fields match everything.
 type AgentSessionFilter struct {
 	PlanRef string
@@ -67,7 +94,8 @@ type AgentSessionFilter struct {
 	Limit   int // <= 0 means no limit
 }
 
-// AgentStore persists agent sessions and their events.
+// AgentStore persists agent sessions and their events. Every string is
+// stored as Clean leaves it: without NUL and with invalid UTF-8 replaced.
 type AgentStore interface {
 	// CreateAgentSession inserts a session. ErrConflict if the id exists.
 	CreateAgentSession(ctx context.Context, s AgentSession) error
@@ -89,4 +117,7 @@ type AgentStore interface {
 	// ListAgentEvents returns a session's events with Seq > afterSeq in Seq
 	// order, at most limit (<= 0 means no limit).
 	ListAgentEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]AgentEvent, error)
+	// IdleAgentSessions returns the running sessions created before before
+	// whose events (if any) are all older than before, oldest CreatedAt first.
+	IdleAgentSessions(ctx context.Context, before time.Time) ([]AgentSession, error)
 }

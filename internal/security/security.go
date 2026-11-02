@@ -41,7 +41,9 @@ type Source struct {
 // Report is what a collector read from one source. Collectors set the
 // finding fields that depend on the check (check, category, severity, title,
 // resource, detail, recommendation and, when the source reports one,
-// observedAt); the Service fills in the rest from Source.
+// observedAt); the Service fills in the rest from Source. A collector may set
+// Id to what tells apart findings with the same check and resource, such as
+// the vendor's own finding id; the Service hashes it into the final Id.
 type Report struct {
 	Source
 	Status    apiv1.SecuritySourceStatus
@@ -234,7 +236,7 @@ func assemble(generated time.Time, reps []Report) apiv1.SecurityReport {
 		out.Sources = append(out.Sources, src)
 		for _, f := range r.Findings {
 			f.Environment, f.Provider, f.Source = r.Environment, r.Provider, r.Name
-			f.Id = FindingID(r.Environment, r.Name, f.Check, f.Resource)
+			f.Id = FindingID(r.Environment, r.Name, f.Check, f.Resource, f.Id)
 			if f.ObservedAt.IsZero() {
 				f.ObservedAt = r.CheckedAt
 			}
@@ -255,9 +257,15 @@ func assemble(generated time.Time, reps []Report) apiv1.SecurityReport {
 }
 
 // FindingID is stable across collections. The environment is part of it, so
-// the same workload in two clusters gives two findings.
-func FindingID(environment, source, check, resource string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{environment, source, check, resource}, "\x00")))
+// the same workload in two clusters gives two findings. key tells apart
+// findings with the same check and resource (two GuardDuty findings about one
+// instance, two rules of one security group); "" leaves it out.
+func FindingID(environment, source, check, resource, key string) string {
+	parts := []string{environment, source, check, resource}
+	if key != "" {
+		parts = append(parts, key)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return "sf_" + hex.EncodeToString(sum[:8])
 }
 

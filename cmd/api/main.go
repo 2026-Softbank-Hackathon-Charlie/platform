@@ -153,7 +153,19 @@ func main() {
 		DSNHostSuffixes:   policy.DSNHostSuffixes,
 		GatewayConfigured: gw != nil,
 	}), security.Options{Log: log})
-	deps.Agents = agentlog.New(st)
+	// A running agent session with no event for PLATFORM_AGENT_IDLE is closed
+	// as cancelled, so an agent that crashed does not leave it open forever.
+	agentIdle := agentlog.DefaultIdle
+	if v := os.Getenv("PLATFORM_AGENT_IDLE"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			fatal("PLATFORM_AGENT_IDLE must be a positive duration such as 30m", "value", v)
+		}
+		agentIdle = d
+	}
+	agents := agentlog.New(st)
+	deps.Agents = agents
+	go agents.RunSweeper(runCtx, agentIdle, log)
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{

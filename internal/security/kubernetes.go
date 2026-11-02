@@ -21,28 +21,16 @@ import (
 // KubeRequestTimeout bounds one Kubernetes API request.
 const KubeRequestTimeout = 5 * time.Second
 
-// systemNamespaces are run by Kubernetes or the cloud provider, not by the
-// team; their workloads are skipped. systemPrefixes covers the managed
-// add-on namespaces of GKE (gke-*, gmp-*) and EKS (amazon-*, eks-*).
-var (
-	systemNamespaces = []string{"kube-system", "kube-public", "kube-node-lease"}
-	systemPrefixes   = []string{"kube-", "gke-", "gmp-", "amazon-", "eks-"}
-)
+// systemNamespaces are run by Kubernetes, not by the team; their workloads
+// are skipped. The list is exact: a prefix would let anyone hide a workload
+// in a namespace named, say, kube-tools.
+var systemNamespaces = []string{"kube-system", "kube-public", "kube-node-lease"}
 
-func systemNamespace(ns string) bool {
-	if slices.Contains(systemNamespaces, ns) {
-		return true
-	}
-	for _, p := range systemPrefixes {
-		if strings.HasPrefix(ns, p) {
-			return true
-		}
-	}
-	return false
-}
+func systemNamespace(ns string) bool { return slices.Contains(systemNamespaces, ns) }
 
 // KubeCollector checks one registered cluster: privileged and host-level
-// pods, containers that may run as root or have no limits, namespaces without
+// pods (network, PID, IPC, paths), containers (init and ephemeral ones too)
+// that may run as root, containers without limits, namespaces without
 // a NetworkPolicy, cluster-admin bindings and Services exposed on nodes or
 // load balancers. It only lists; it never changes the cluster.
 type KubeCollector struct {
@@ -205,6 +193,12 @@ func (k *kubeChecks) pods(pods []corev1.Pod) {
 				Detail:         fmt.Sprintf("%s (pod %s) can see and signal every process on the node.", w, p.Name),
 				Recommendation: "Remove hostPID."})
 		}
+		if spec.HostIPC {
+			k.add(apiv1.SecurityFinding{Check: "k8s.host-ipc", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityHigh,
+				Title: "Pod shares the host IPC namespace", Resource: w,
+				Detail:         fmt.Sprintf("%s (pod %s) can read and write the shared memory of every process on the node.", w, p.Name),
+				Recommendation: "Remove hostIPC."})
+		}
 		for _, v := range spec.Volumes {
 			if v.HostPath == nil {
 				continue
@@ -214,20 +208,19 @@ func (k *kubeChecks) pods(pods []corev1.Pod) {
 				Detail:         fmt.Sprintf("%s mounts the node path %s as volume %q.", w, v.HostPath.Path, v.Name),
 				Recommendation: "Use a PersistentVolume, a ConfigMap or an emptyDir instead of a node path."})
 		}
-		podNonRoot := spec.SecurityContext != nil && isTrue(spec.SecurityContext.RunAsNonRoot)
-		for _, ctr := range slices.Concat(spec.InitContainers, spec.Containers) {
-			r := w + "/" + ctr.Name
-			sc := ctr.SecurityContext
+		for _, ctr := range containers(spec) {
+			r := w + "/" + ctr.name
+			sc := ctr.sc
 			if sc != nil && isTrue(sc.Privileged) {
 				k.add(apiv1.SecurityFinding{Check: "k8s.privileged", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityHigh,
 					Title: "Privileged container", Resource: r,
-					Detail:         fmt.Sprintf("Container %q of %s runs privileged: it has every capability and the node's devices.", ctr.Name, w),
+					Detail:         fmt.Sprintf("Container %q of %s runs privileged: it has every capability and the node's devices.", ctr.name, w),
 					Recommendation: "Drop privileged and add only the capabilities the container needs."})
 			}
-			if !podNonRoot && (sc == nil || !isTrue(sc.RunAsNonRoot)) {
+			if mayRunAsRoot(spec.SecurityContext, sc) {
 				k.add(apiv1.SecurityFinding{Check: "k8s.run-as-non-root", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityLow,
-					Title: "Container does not set runAsNonRoot", Resource: r,
-					Detail:         fmt.Sprintf("Container %q of %s may run as root: neither the pod nor the container sets runAsNonRoot.", ctr.Name, w),
+					Title: "Container may run as root", Resource: r,
+					Detail:         fmt.Sprintf("Container %q of %s may run as root: runAsNonRoot is not true and runAsUser is not a non-zero uid, in the container or the pod.", ctr.name, w),
 					Recommendation: "Set securityContext.runAsNonRoot: true and a non-zero runAsUser."})
 			}
 		}
@@ -240,6 +233,44 @@ func (k *kubeChecks) pods(pods []corev1.Pod) {
 			}
 		}
 	}
+}
+
+// container is the part of an init, app or ephemeral container the checks read.
+type container struct {
+	name string
+	sc   *corev1.SecurityContext
+}
+
+// containers lists every container of a pod: init, app and ephemeral
+// (kubectl debug), which runs with the same rights as the others.
+func containers(spec *corev1.PodSpec) []container {
+	var out []container
+	for _, c := range slices.Concat(spec.InitContainers, spec.Containers) {
+		out = append(out, container{c.Name, c.SecurityContext})
+	}
+	for _, c := range spec.EphemeralContainers {
+		out = append(out, container{c.Name, c.SecurityContext})
+	}
+	return out
+}
+
+// mayRunAsRoot applies Kubernetes' precedence: a container's runAsUser and
+// runAsNonRoot override the pod's. The container runs as non-root when its
+// uid is set and not 0, or when runAsNonRoot is true (the kubelet then
+// refuses to start it as root).
+func mayRunAsRoot(pod *corev1.PodSecurityContext, sc *corev1.SecurityContext) bool {
+	var uid *int64
+	var nonRoot *bool
+	if pod != nil {
+		uid, nonRoot = pod.RunAsUser, pod.RunAsNonRoot
+	}
+	if sc != nil && sc.RunAsUser != nil {
+		uid = sc.RunAsUser
+	}
+	if sc != nil && sc.RunAsNonRoot != nil {
+		nonRoot = sc.RunAsNonRoot
+	}
+	return !(uid != nil && *uid != 0) && !isTrue(nonRoot)
 }
 
 // networkPolicies reports namespaces that run pods but have no NetworkPolicy:
@@ -266,18 +297,31 @@ func (k *kubeChecks) networkPolicies(pods []corev1.Pod, pols []networkingv1.Netw
 	}
 }
 
-// anyone are the groups and users that mean every caller.
-var anyone = []string{"system:authenticated", "system:unauthenticated", "system:anonymous"}
+// broad reports the groups and users that mean every caller, or every
+// service account (of the cluster or of one namespace): any pod can then act
+// with the binding's rights.
+func broad(name string) bool {
+	switch name {
+	case "system:authenticated", "system:unauthenticated", "system:anonymous", "system:serviceaccounts":
+		return true
+	}
+	return strings.HasPrefix(name, "system:serviceaccounts:")
+}
 
-// systemSubject reports subjects Kubernetes or the provider manages:
-// system: users and groups (except the ones meaning anyone), EKS's eks:
-// identities and service accounts of system namespaces.
+// systemSubject reports subjects Kubernetes or the provider manages: system:
+// users and groups (except the broad ones), EKS's eks: identities and service
+// accounts of system namespaces, named directly or as a
+// system:serviceaccount:<ns>:<name> user.
 func systemSubject(s rbacv1.Subject) bool {
 	if s.Kind == rbacv1.ServiceAccountKind {
 		return systemNamespace(s.Namespace)
 	}
-	if slices.Contains(anyone, s.Name) {
+	if broad(s.Name) {
 		return false
+	}
+	if rest, ok := strings.CutPrefix(s.Name, "system:serviceaccount:"); ok {
+		ns, _, _ := strings.Cut(rest, ":")
+		return systemNamespace(ns)
 	}
 	return strings.HasPrefix(s.Name, "system:") || strings.HasPrefix(s.Name, "eks:")
 }
@@ -296,7 +340,7 @@ func (k *kubeChecks) clusterAdmins(crbs []rbacv1.ClusterRoleBinding) {
 				who = s.Kind + " " + s.Namespace + "/" + s.Name
 			}
 			sev := apiv1.SecuritySeverityHigh
-			if slices.Contains(anyone, s.Name) {
+			if broad(s.Name) {
 				sev = apiv1.SecuritySeverityCritical
 			}
 			k.add(apiv1.SecurityFinding{Check: "k8s.cluster-admin", Category: apiv1.SecurityCategoryIdentity, Severity: sev,

@@ -64,7 +64,7 @@ func TestReportCachesAndThrottlesRefresh(t *testing.T) {
 	}
 	f := rep.Findings[0]
 	if f.Environment != "gke" || f.Source != "kubernetes" || f.Provider != apiv1.SecurityProviderGcp || f.ObservedAt.IsZero() ||
-		f.Id != FindingID("gke", "kubernetes", "k8s.privileged", "shop/Deployment/web/app") {
+		f.Id != FindingID("gke", "kubernetes", "k8s.privileged", "shop/Deployment/web/app", "") {
 		t.Fatalf("finding not filled from its source: %+v", f)
 	}
 	if rep.Sources[0].Findings != 1 || rep.Summary.BySeverity.High != 1 || rep.Summary.ByEnvironment["gke"].Total != 1 {

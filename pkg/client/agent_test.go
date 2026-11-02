@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -65,7 +66,7 @@ func TestSecurityAndAgentOperations(t *testing.T) {
 			method: "GET", path: "/v1/agent/sessions/ags_1", resp: sessionJSON,
 			got: func(v any) string { return v.(*apiv1.AgentSession).Actor }, want: "planner"},
 		{name: "ListAgentEvents", call: func(c *Client) (any, error) { return c.ListAgentEvents(ctx, "ags_1", 3) },
-			method: "GET", path: "/v1/agent/sessions/ags_1/events", query: "after=3&format=json", resp: `{"events":[` + eventJSON + `]}`,
+			method: "GET", path: "/v1/agent/sessions/ags_1/events", query: "after=3&format=json&limit=2000", resp: `{"events":[` + eventJSON + `]}`,
 			got: func(v any) string { return *v.(*apiv1.AgentEventList).Events[0].Tool }, want: "list_envs"},
 	}
 	for _, tc := range cases {
@@ -162,5 +163,38 @@ func TestWatchAgentSessionErrors(t *testing.T) {
 	var pe *protocolError
 	if !errors.As(err, &pe) || !strings.Contains(err.Error(), "decode agent session snapshot") {
 		t.Fatalf("bad snapshot: %v", err)
+	}
+}
+
+func TestListAgentEventsFollowsPages(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("after") {
+		case "":
+			fmt.Fprint(w, `{"events":[{"seq":1,"sessionId":"ags_1","time":"2026-11-02T09:00:00Z","type":"message"},{"seq":4,"sessionId":"ags_1","time":"2026-11-02T09:00:00Z","type":"message"}],"nextAfter":4}`)
+		case "4":
+			fmt.Fprint(w, `{"events":[{"seq":9,"sessionId":"ags_1","time":"2026-11-02T09:00:00Z","type":"message"}]}`)
+		case "9":
+			fmt.Fprint(w, `{"events":[],"nextAfter":9}`) // a server that points back
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := New(srv.URL+"/", "tok")
+	l, err := c.ListAgentEvents(context.Background(), "ags_1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seqs []int64
+	for _, e := range l.Events {
+		seqs = append(seqs, e.Seq)
+	}
+	if fmt.Sprint(seqs) != "[1 4 9]" || fmt.Sprint(queries) != "[format=json&limit=2000 after=4&format=json&limit=2000]" {
+		t.Fatalf("seqs %v, queries %v", seqs, queries)
+	}
+	var pe *protocolError
+	if _, err := c.ListAgentEvents(context.Background(), "ags_1", 9); !errors.As(err, &pe) {
+		t.Fatalf("a page pointing back: %v", err)
 	}
 }

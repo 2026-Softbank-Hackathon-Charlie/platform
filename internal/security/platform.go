@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
@@ -23,6 +24,10 @@ const (
 	deniedWindow    = 24 * time.Hour
 	auditPage       = 500
 	auditMaxEntries = 20000 // a scan stops here and says so
+	// Request paths are what the caller sent, and the security view is read
+	// by people and by the AI agent: a finding lists a few, each cut short.
+	maxTargets   = 3
+	maxTargetLen = 80
 )
 
 // PlatformCollector reports the platform's own governance signals: requests
@@ -64,7 +69,8 @@ type deniedGroup struct {
 	deniedKey
 	n           int
 	first, last time.Time
-	targets     []string
+	targets     []string            // the first maxTargets paths seen, cleaned
+	paths       map[string]struct{} // every cleaned path seen
 }
 
 // denied groups the requests answered 401 or 403 in the last 24 hours by
@@ -97,13 +103,22 @@ func (c *PlatformCollector) denied(ctx context.Context) Report {
 			k := deniedKey{a.Actor, a.Role, a.Action, a.Status}
 			g := groups[k]
 			if g == nil {
-				g = &deniedGroup{deniedKey: k, first: a.Time, last: a.Time}
+				g = &deniedGroup{deniedKey: k, first: a.Time, last: a.Time, paths: map[string]struct{}{}}
 				groups[k] = g
 			}
 			g.n++
 			g.first = a.Time // newest first, so the last one seen is the earliest
-			if len(g.targets) < 3 && !slices.Contains(g.targets, a.Target) {
-				g.targets = append(g.targets, a.Target)
+			// A 401 comes from a caller without a valid token, who could put
+			// anything in the path: only the route (the action) is shown.
+			if a.Status == http.StatusUnauthorized {
+				continue
+			}
+			t := cleanTarget(a.Target)
+			if _, seen := g.paths[t]; !seen {
+				g.paths[t] = struct{}{}
+				if len(g.targets) < maxTargets {
+					g.targets = append(g.targets, t)
+				}
 			}
 		}
 		if len(rows) < auditPage {
@@ -127,6 +142,21 @@ func (c *PlatformCollector) denied(ctx context.Context) Report {
 	return rep
 }
 
+// cleanTarget drops control and formatting characters (newlines, bidi
+// overrides) from a request path and cuts it to maxTargetLen characters.
+func cleanTarget(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s)
+	if r := []rune(s); len(r) > maxTargetLen {
+		s = string(r[:maxTargetLen]) + "..."
+	}
+	return s
+}
+
 func deniedFinding(g *deniedGroup) apiv1.SecurityFinding {
 	who := g.actor
 	if g.role != "" {
@@ -137,12 +167,20 @@ func deniedFinding(g *deniedGroup) apiv1.SecurityFinding {
 		times = fmt.Sprintf("%d times", g.n)
 	}
 	f := apiv1.SecurityFinding{
+		Id:         g.role, // the same token name may have had another role
 		Check:      fmt.Sprintf("platform.denied-%d", g.status),
 		Category:   apiv1.SecurityCategoryIdentity,
 		Resource:   g.actor + ": " + g.action,
 		ObservedAt: g.last,
-		Detail: fmt.Sprintf("%s tried %s %s in the last 24h and got HTTP %d each time (first %s, last %s). Targets: %s.",
-			who, g.action, times, g.status, g.first.Format(time.RFC3339), g.last.Format(time.RFC3339), strings.Join(g.targets, ", ")),
+		Detail: fmt.Sprintf("%s tried %s %s in the last 24h and got HTTP %d each time (first %s, last %s).",
+			who, g.action, times, g.status, g.first.Format(time.RFC3339), g.last.Format(time.RFC3339)),
+	}
+	if len(g.targets) > 0 {
+		f.Detail += " Targets: " + strings.Join(g.targets, ", ")
+		if more := len(g.paths) - len(g.targets); more > 0 {
+			f.Detail += fmt.Sprintf(" and %d more", more)
+		}
+		f.Detail += "."
 	}
 	if g.status == http.StatusForbidden {
 		f.Severity = apiv1.SecuritySeverityMedium

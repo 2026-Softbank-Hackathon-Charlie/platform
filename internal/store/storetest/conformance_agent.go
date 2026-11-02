@@ -24,6 +24,8 @@ func ConformanceAgent(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"AgentEventsAfterFinish", testAgentEventsAfterFinish},
 		{"AgentAppendFinishRace", testAgentAppendFinishRace},
 		{"AgentCopies", testAgentCopies},
+		{"AgentText", testAgentText},
+		{"AgentIdle", testAgentIdle},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -317,5 +319,90 @@ func testAgentCopies(t *testing.T, s store.Store) {
 	must(t, err)
 	if string(canonJSON(t, list[0].Input)) != `{"a":1}` || *list[0].DurationMillis != 5 {
 		t.Fatalf("stored event changed through a caller's slice or pointer: %s %d", list[0].Input, *list[0].DurationMillis)
+	}
+}
+
+// testAgentText stores strings with NUL and invalid UTF-8, which PostgreSQL
+// rejects in text and jsonb: every store keeps them cleaned the same way, and
+// a lookup by an id that is not clean finds nothing.
+func testAgentText(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	a := newAgentSession("ags_1", 0)
+	a.Title, a.Kind, a.Model, a.PlanRef = "plan\x00 gke\xff", "plan\x00", "claude\x00\xfe\xfftest", "pln\x001"
+	must(t, s.CreateAgentSession(ctx, a))
+	want := newAgentSession("ags_1", 0)
+	want.Title, want.Kind, want.Model, want.PlanRef = "plan gke\uFFFD", "plan", "claude\uFFFDtest", "pln1"
+	got, err := s.GetAgentSession(ctx, "ags_1")
+	must(t, err)
+	eqAgentSession(t, got, want)
+
+	e := store.AgentEvent{SessionID: "ags_1", Time: at(1), Type: "tool\x00_call", Tool: "list\x00_envs\xff", Status: "o\x00k",
+		Input:  []byte(`{"q":"a\u0000b","k\u0000":"\ud800","raw":"x` + "\xff" + `y","n":12345678901234567890}`),
+		Output: []byte(`["\u0000"]`)}
+	stored, err := s.AppendAgentEvent(ctx, e)
+	must(t, err)
+	wantEv := store.AgentEvent{Seq: stored.Seq, SessionID: "ags_1", Time: at(1), Type: "tool_call", Tool: "list_envs\uFFFD", Status: "ok",
+		Input: []byte(`{"q":"ab","k":"\ufffd","raw":"x\ufffdy","n":12345678901234567890}`), Output: []byte(`[""]`)}
+	eqAgentEvent(t, stored, wantEv)
+	list, err := s.ListAgentEvents(ctx, "ags_1", 0, 0)
+	must(t, err)
+	if len(list) != 1 {
+		t.Fatalf("%d events, want 1", len(list))
+	}
+	eqAgentEvent(t, list[0], wantEv)
+
+	fin, err := s.FinishAgentSession(ctx, "ags_1", store.AgentFailed, "gave up\x00 \xff", at(2))
+	must(t, err)
+	if fin.Summary != "gave up \uFFFD" || fin.Status != store.AgentFailed {
+		t.Fatalf("finished %q %q", fin.Status, fin.Summary)
+	}
+
+	_, err = s.GetAgentSession(ctx, "ags\x00_1")
+	wantErr(t, err, store.ErrNotFound)
+	_, err = s.FinishAgentSession(ctx, "ags_1\xff", store.AgentFailed, "", at(3))
+	wantErr(t, err, store.ErrNotFound)
+	_, err = s.AppendAgentEvent(ctx, store.AgentEvent{SessionID: "ags_1\x00", Time: at(3), Type: "message"})
+	wantErr(t, err, store.ErrNotFound)
+	list, err = s.ListAgentEvents(ctx, "ags_1\x00", 0, 0)
+	must(t, err)
+	sessions, err := s.ListAgentSessions(ctx, store.AgentSessionFilter{PlanRef: "pln\x001"})
+	must(t, err)
+	if len(list) != 0 || sessions == nil || len(sessions) != 0 {
+		t.Fatalf("lookups by unclean ids: %d events, sessions %v", len(list), sessions)
+	}
+}
+
+// testAgentIdle lists running sessions whose last event, or creation when
+// they have none, is older than a time.
+func testAgentIdle(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	for _, id := range []string{"ags_quiet", "ags_busy", "ags_done"} {
+		must(t, s.CreateAgentSession(ctx, newAgentSession(id, 0)))
+	}
+	must(t, s.CreateAgentSession(ctx, newAgentSession("ags_new", 10)))
+	_, err := s.AppendAgentEvent(ctx, store.AgentEvent{SessionID: "ags_busy", Time: at(10), Type: "message"})
+	must(t, err)
+	_, err = s.AppendAgentEvent(ctx, store.AgentEvent{SessionID: "ags_busy", Time: at(2), Type: "message"})
+	must(t, err)
+	_, err = s.FinishAgentSession(ctx, "ags_done", store.AgentSucceeded, "", at(1))
+	must(t, err)
+
+	for _, c := range []struct {
+		before int
+		want   []string
+	}{
+		{0, []string{}},
+		{5, []string{"ags_quiet"}},
+		{10, []string{"ags_quiet"}}, // an event or a creation at the time itself is activity
+		{11, []string{"ags_busy", "ags_quiet", "ags_new"}},
+	} {
+		got, err := s.IdleAgentSessions(ctx, at(c.before))
+		must(t, err)
+		eqList(t, fmt.Sprintf("IdleAgentSessions(at(%d))", c.before), sessionIDs(got), c.want)
+	}
+	got, err := s.IdleAgentSessions(ctx, at(11))
+	must(t, err)
+	if got[0].Totals.Events != 2 {
+		t.Fatalf("idle session totals %+v", got[0].Totals)
 	}
 }

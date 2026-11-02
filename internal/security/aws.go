@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -121,7 +122,7 @@ func loadAWS(ctx context.Context, region string) (awsClients, error) {
 		return awsClients{}, fmt.Errorf("AWS SDK configuration could not be loaded: %s", shorten(err.Error(), 160))
 	}
 	if _, err := cfg.Credentials.Retrieve(ctx); err != nil {
-		return awsClients{}, errors.New("no AWS credentials: set AWS_PROFILE or AWS_ACCESS_KEY_ID, or run on a host whose instance role has the SecurityAudit policy")
+		return awsClients{}, credentialsError(err)
 	}
 	return awsClients{
 		iam:         iam.NewFromConfig(cfg),
@@ -132,6 +133,42 @@ func loadAWS(ctx context.Context, region string) (awsClients, error) {
 		s3control:   s3control.NewFromConfig(cfg),
 		sts:         sts.NewFromConfig(cfg),
 	}, nil
+}
+
+const noCredentials = "no AWS credentials: set AWS_PROFILE or AWS_ACCESS_KEY_ID, or run on a host whose instance role can read the security configuration"
+
+// retrievalError is a failure to fetch credentials that exist or may exist,
+// such as an instance metadata service that timed out. It is reported as
+// error, not not_configured.
+type retrievalError struct{ msg string }
+
+func (e *retrievalError) Error() string { return e.msg }
+
+// credentialsError explains why the default chain gave no credentials. Only
+// "there are none" stays a plain error (reported as not_configured): the
+// instance metadata service answering that the instance has no role (404), or
+// being turned off. A timeout, a network failure or a rejection while
+// fetching them is a retrievalError whose message names the kind of failure,
+// not the SDK's text, which can carry endpoints, file paths and profile names.
+func credentialsError(err error) error {
+	const prefix = "AWS credentials could not be retrieved: "
+	var status interface{ HTTPStatusCode() int }
+	var ae smithy.APIError
+	var ne net.Error
+	switch {
+	case errors.As(err, &status) && status.HTTPStatusCode() == http.StatusNotFound,
+		strings.Contains(err.Error(), "AWS_EC2_METADATA_DISABLED"):
+		return errors.New(noCredentials)
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || (errors.As(err, &ne) && ne.Timeout()):
+		return &retrievalError{prefix + "the credential source timed out (on EC2: is the instance role attached, and can containers reach the metadata service?)"}
+	case errors.As(err, &ne):
+		return &retrievalError{prefix + "network error reaching the credential source"}
+	case errors.As(err, &ae):
+		return &retrievalError{prefix + "the credential source answered " + ae.ErrorCode()}
+	case errors.As(err, &status):
+		return &retrievalError{prefix + fmt.Sprintf("the credential source answered HTTP %d", status.HTTPStatusCode())}
+	}
+	return &retrievalError{prefix + "the credential source failed"}
 }
 
 var awsSources = []string{"aws-iam", "aws-ec2", "aws-cloudtrail", "aws-guardduty", "aws-securityhub", "aws-s3"}
@@ -163,10 +200,15 @@ func (c *AWSCollector) getClients(ctx context.Context) (awsClients, error) {
 }
 
 // Collect runs the checks concurrently. Without credentials every source is
-// not_configured; with rejected credentials every source is an error.
+// not_configured; with credentials that could not be fetched or were
+// rejected, every source is an error.
 func (c *AWSCollector) Collect(ctx context.Context) []Report {
 	cl, err := c.getClients(ctx)
-	if err != nil {
+	var re *retrievalError
+	switch {
+	case errors.As(err, &re):
+		return failed(c.Sources(), apiv1.SecuritySourceStatusError, err.Error())
+	case err != nil:
 		return failed(c.Sources(), apiv1.SecuritySourceStatusNotConfigured, err.Error())
 	}
 	id, err := cl.sts.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
@@ -337,7 +379,8 @@ func (c *AWSCollector) checkUser(ctx context.Context, api iamAPI, u iamtypes.Use
 				continue
 			}
 			key := maskKey(aws.ToString(k.AccessKeyId))
-			p.add(apiv1.SecurityFinding{Check: "aws.access-key-age", Category: apiv1.SecurityCategoryIdentity, Severity: apiv1.SecuritySeverityMedium,
+			// The full key id only goes into the hashed finding id.
+			p.add(apiv1.SecurityFinding{Id: aws.ToString(k.AccessKeyId), Check: "aws.access-key-age", Category: apiv1.SecurityCategoryIdentity, Severity: apiv1.SecuritySeverityMedium,
 				Title: "Access key older than 90 days", Resource: arn + "/access-key/" + key,
 				Detail:         fmt.Sprintf("Active access key %s of IAM user %s was created %d days ago.", key, name, int(now.Sub(*k.CreateDate).Hours()/24)),
 				Recommendation: "Rotate the key, or replace it with a role or SSO credentials."})
@@ -431,7 +474,10 @@ func openIngress(sg ec2types.SecurityGroup, perm ec2types.IpPermission) (apiv1.S
 		rec = "Allow only known addresses, or reach the port through SSM Session Manager, Tailscale or the gateway."
 	}
 	id := aws.ToString(sg.GroupId)
-	return apiv1.SecurityFinding{Check: "aws.sg-open-ingress", Category: apiv1.SecurityCategoryNetwork, Severity: sev,
+	// Two ICMP rules both read "icmp/all": the raw protocol, ports and CIDRs
+	// tell them apart.
+	key := fmt.Sprintf("%s/%d-%d/%s", aws.ToString(perm.IpProtocol), lo, hi, strings.Join(from, ","))
+	return apiv1.SecurityFinding{Id: key, Check: "aws.sg-open-ingress", Category: apiv1.SecurityCategoryNetwork, Severity: sev,
 		Title: "Security group allows " + what + " from the internet", Resource: id + "/" + proto + "/" + ports,
 		Detail: fmt.Sprintf("Security group %s (%s) in %s allows inbound %s from %s.",
 			id, aws.ToString(sg.GroupName), aws.ToString(sg.VpcId), what, strings.Join(from, " and ")),
@@ -531,11 +577,12 @@ func (c *AWSCollector) checkGuardDuty(ctx context.Context, cl awsClients, _ stri
 		FindingCriteria: &gdtypes.FindingCriteria{Criterion: map[string]gdtypes.Condition{"service.archived": {Equals: []string{"false"}}}},
 		SortCriteria:    &gdtypes.SortCriteria{AttributeName: aws.String("severity"), OrderBy: gdtypes.OrderByDesc},
 	})
-	n := 0
+	n, more := 0, false
 	switch {
 	case err != nil:
 		p.fail("guardduty ListFindings", err)
 	case len(list.FindingIds) > 0:
+		more = aws.ToString(list.NextToken) != ""
 		got, err := cl.guardduty.GetFindings(ctx, &guardduty.GetFindingsInput{DetectorId: &id, FindingIds: list.FindingIds})
 		if err != nil {
 			p.fail("guardduty GetFindings", err)
@@ -547,6 +594,9 @@ func (c *AWSCollector) checkGuardDuty(ctx context.Context, cl awsClients, _ stri
 		}
 	}
 	p.message = fmt.Sprintf("detector %s, %s read", status, many(n, "active finding", "active findings"))
+	if more {
+		p.message += fmt.Sprintf("; there are more: only the %d most severe are shown", maxVendorFinds)
+	}
 	return p.report()
 }
 
@@ -565,6 +615,7 @@ func guardDutySeverity(s float64) apiv1.SecuritySeverity {
 
 func guardDutyFinding(f gdtypes.Finding) apiv1.SecurityFinding {
 	out := apiv1.SecurityFinding{
+		Id:             aws.ToString(f.Id), // one instance can have several findings of a type
 		Check:          "guardduty." + aws.ToString(f.Type),
 		Category:       apiv1.SecurityCategoryThreat,
 		Severity:       guardDutySeverity(aws.ToFloat64(f.Severity)),
@@ -676,6 +727,7 @@ func hubFinding(f shtypes.AwsSecurityFinding) apiv1.SecurityFinding {
 		rec = strings.TrimSpace(aws.ToString(r.Text) + " " + aws.ToString(r.Url))
 	}
 	out := apiv1.SecurityFinding{
+		Id:             aws.ToString(f.Id), // the finding ARN
 		Check:          "securityhub." + aws.ToString(f.GeneratorId),
 		Category:       hubCategory(f.Types, rtype),
 		Severity:       sev,

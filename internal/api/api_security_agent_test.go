@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
@@ -45,6 +47,13 @@ func withSecurity() option {
 
 func withAgents() option {
 	return func(h *harness, _ *runs.Config, d *Deps) { d.Agents = agentlog.New(h.store) }
+}
+
+// fullLog answers every append as a full session would (tests only).
+type fullLog struct{ AgentLog }
+
+func (fullLog) Append(context.Context, auth.Principal, string, agentlog.EventInput) (apiv1.AgentEvent, error) {
+	return apiv1.AgentEvent{}, agentlog.ErrSessionFull
 }
 
 func TestRootNamesTheService(t *testing.T) {
@@ -344,4 +353,113 @@ func (h *harness) agentStream(id, lastEventID string) []sseMsg {
 		}
 	}
 	return out
+}
+
+func TestAgentEventPages(t *testing.T) {
+	h := newHarness(t, withAgents())
+	a := h.createSession(agentToken, apiv1.CreateAgentSessionRequest{Kind: apiv1.AgentSessionKindPlan, Title: "pages"})
+	for n := range 5 {
+		if code, b := h.agentEvent(agentToken, a.Id, map[string]any{"type": "message", "output": n}); code != 201 {
+			t.Fatalf("event %d: %d %s", n, code, b)
+		}
+	}
+	var seqs []int64
+	path := "/v1/agent/sessions/" + a.Id + "/events?format=json&limit=2"
+	after := ""
+	for pages := 1; ; pages++ {
+		code, b := h.do("GET", path+after, viewerToken, nil)
+		l := decode[apiv1.AgentEventList](t, b)
+		if code != 200 || len(l.Events) > 2 || pages > 3 {
+			t.Fatalf("page %d: %d %s", pages, code, b)
+		}
+		for _, e := range l.Events {
+			seqs = append(seqs, e.Seq)
+		}
+		if l.NextAfter == nil {
+			break
+		}
+		after = "&after=" + strconv.FormatInt(*l.NextAfter, 10)
+	}
+	if len(seqs) != 5 {
+		t.Fatalf("paged seqs %v, want 5", seqs)
+	}
+	for _, q := range []string{"limit=0", "limit=2001", "limit=x"} {
+		if code, b := h.do("GET", "/v1/agent/sessions/"+a.Id+"/events?format=json&"+q, viewerToken, nil); code != 400 || errCode(t, b) != "invalid_request" {
+			t.Errorf("%s: %d %s", q, code, b)
+		}
+	}
+
+	// NUL and invalid UTF-8 are cleaned, not a 500.
+	code, b := h.agentEvent(agentToken, a.Id, `{"type":"tool_result","tool":"sh\u0000","output":{"stdout":"ok\u0000\ud800"}}`)
+	if code != 201 || strings.Contains(string(b), `\u0000`) {
+		t.Fatalf("NUL event: %d %s", code, b)
+	}
+}
+
+func TestAgentSessionFull(t *testing.T) {
+	h := newHarness(t, func(h *harness, _ *runs.Config, d *Deps) { d.Agents = fullLog{agentlog.New(h.store)} })
+	a := h.createSession(agentToken, apiv1.CreateAgentSessionRequest{Kind: apiv1.AgentSessionKindPlan, Title: "full"})
+	if code, b := h.agentEvent(agentToken, a.Id, map[string]any{"type": "message"}); code != 409 || errCode(t, b) != "session_full" {
+		t.Fatalf("full session: %d %s", code, b)
+	}
+}
+
+func TestIdleAgentSessionStreamEnds(t *testing.T) {
+	var log *agentlog.Service
+	h := newHarness(t, func(h *harness, _ *runs.Config, d *Deps) {
+		log = agentlog.New(h.store)
+		d.Agents = log
+	})
+	a := h.createSession(agentToken, apiv1.CreateAgentSessionRequest{Kind: apiv1.AgentSessionKindPlan, Title: "abandoned"})
+	msgs := make(chan []sseMsg, 1)
+	go func() { msgs <- h.agentStream(a.Id, "") }()
+	time.Sleep(50 * time.Millisecond)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go log.RunSweeper(ctx, 100*time.Millisecond, slog.New(slog.DiscardHandler))
+
+	var got []sseMsg
+	select {
+	case got = <-msgs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream of an idle session did not end")
+	}
+	if n := names(got); len(got) != 2 || n[0] != "snapshot" || n[1] != "snapshot" {
+		t.Fatalf("stream: %v", n)
+	}
+	final := decode[apiv1.AgentSession](t, []byte(got[1].data))
+	if final.Status != apiv1.AgentSessionStatusCancelled || deref(final.Summary) != "no activity for 100ms; closed by the platform" {
+		t.Fatalf("final snapshot: %+v", final)
+	}
+	if code, b := h.agentEvent(agentToken, a.Id, map[string]any{"type": "message"}); code != 409 || errCode(t, b) != "agent_session_finished" {
+		t.Fatalf("event after the sweep: %d %s", code, b)
+	}
+}
+
+func TestAgentStreamReplaysInPages(t *testing.T) {
+	var log *agentlog.Service
+	h := newHarness(t, func(h *harness, _ *runs.Config, d *Deps) {
+		log = agentlog.New(h.store)
+		d.Agents = log
+	})
+	a := h.createSession(agentToken, apiv1.CreateAgentSessionRequest{Kind: apiv1.AgentSessionKindPlan, Title: "long"})
+	ai := auth.Principal{Name: "ai", Role: apiv1.RoleAgent}
+	n := 2*agentlog.DefaultEventPage + 7
+	for range n {
+		if _, err := log.Append(t.Context(), ai, a.Id, agentlog.EventInput{Type: apiv1.AgentEventTypeMessage}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := log.Finish(t.Context(), ai, a.Id, apiv1.FinishAgentSessionRequest{Status: apiv1.AgentSessionStatusSucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	got := h.agentStream(a.Id, "")
+	if len(got) != n+2 || got[0].event != "snapshot" || got[len(got)-1].event != "snapshot" {
+		t.Fatalf("%d messages for %d events", len(got), n)
+	}
+	for i := 2; i <= n; i++ {
+		if got[i].id <= got[i-1].id {
+			t.Fatalf("message %d has id %d after %d", i, got[i].id, got[i-1].id)
+		}
+	}
 }

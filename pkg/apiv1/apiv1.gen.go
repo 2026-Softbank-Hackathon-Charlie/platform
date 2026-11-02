@@ -444,6 +444,9 @@ type AgentEvent struct {
 // AgentEventList defines model for AgentEventList.
 type AgentEventList struct {
 	Events []AgentEvent `json:"events"`
+
+	// NextAfter Set when more events follow this page; pass it as `after` to read them.
+	NextAfter *int64 `json:"nextAfter,omitempty"`
 }
 
 // AgentEventRequest defines model for AgentEventRequest.
@@ -1147,7 +1150,7 @@ type SecurityFinding struct {
 	// Example: gke
 	Environment string `json:"environment"`
 
-	// Id stable across collections: a hash of environment, source, check and resource
+	// Id stable across collections: a hash of environment, source, check, resource and, where it has one, the vendor's own finding id (GuardDuty finding id, Security Hub finding ARN) or the rule's protocol, ports and CIDRs
 	Id string `json:"id"`
 
 	// ObservedAt when the source reported it, or when it was read
@@ -1201,14 +1204,14 @@ type SecuritySource struct {
 	// Status - ok: read completely.
 	// - unavailable: the source did not answer (e.g. the cluster is unreachable).
 	// - not_configured: this server has no credentials or settings for the source; the message says what is missing.
-	// - error: the source answered but some or all reads failed (e.g. access denied); findings read before the failure are kept.
+	// - error: credentials exist but could not be fetched (e.g. the instance metadata service timed out), or the source answered but some or all reads failed (e.g. access denied); findings read before the failure are kept.
 	Status SecuritySourceStatus `json:"status"`
 }
 
 // SecuritySourceStatus - ok: read completely.
 // - unavailable: the source did not answer (e.g. the cluster is unreachable).
 // - not_configured: this server has no credentials or settings for the source; the message says what is missing.
-// - error: the source answered but some or all reads failed (e.g. access denied); findings read before the failure are kept.
+// - error: credentials exist but could not be fetched (e.g. the instance metadata service timed out), or the source answered but some or all reads failed (e.g. access denied); findings read before the failure are kept.
 type SecuritySourceStatus string
 
 // SecuritySummary defines model for SecuritySummary.
@@ -1398,9 +1401,12 @@ type ListAgentSessionsParams struct {
 // StreamAgentEventsParams defines parameters for StreamAgentEvents.
 type StreamAgentEventsParams struct {
 	// After Replay events with seq greater than this. Same as Last-Event-ID.
-	After       *int64                         `form:"after,omitempty" json:"after,omitempty"`
-	Format      *StreamAgentEventsParamsFormat `form:"format,omitempty" json:"format,omitempty"`
-	LastEventID *string                        `json:"Last-Event-ID,omitempty"`
+	After  *int64                         `form:"after,omitempty" json:"after,omitempty"`
+	Format *StreamAgentEventsParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+
+	// Limit With `format=json`, the most events to return.
+	Limit       *int    `form:"limit,omitempty" json:"limit,omitempty"`
+	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
 // StreamAgentEventsParamsFormat defines parameters for StreamAgentEvents.

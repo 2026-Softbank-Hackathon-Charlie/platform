@@ -135,6 +135,8 @@ go run ./cmd/gateway
 | `PLATFORM_ADDR`, `PLATFORM_STATE_DIR` | 주소(기본 `:8080`), 엔진 상태 디렉터리 |
 | `PLATFORM_PLAN_ENV_ALLOW` | 어느 Plan이든 두 DSN의 비밀번호 자리에 `${VAR}`로 쓸 수 있는 변수 (기본 `SRC_PGPASSWORD`, `DST_PGPASSWORD`). 이름은 `_PGPASSWORD`로 끝나야 하고 `PLATFORM_`, `AWS_`로 시작하면 안 되며, 어기면 서버가 시작하지 않음 |
 | `PLATFORM_DSN_HOST_SUFFIXES` | 허용할 DB 호스트 접미사 (예: `.ts.net`) |
+| `PLATFORM_AWS_REGION` | 보안 뷰가 읽는 AWS 리전 (기본 `ap-northeast-2`) |
+| `PLATFORM_AGENT_IDLE` | 이벤트 없이 이 시간이 지난 `running` 에이전트 세션을 `cancelled`로 닫음 (기본 `30m`) |
 
 ### Plan의 환경 변수 참조
 
@@ -252,19 +254,24 @@ CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks -
 
 ### `GET /v1/security` (viewer)
 
-여러 환경의 보안 신호를 한 형식(`SecurityFinding`)으로 모아 보여 줍니다. 항목마다 환경, 공급자, 소스, 분류(identity, network, workload, data, logging, threat), 심각도(critical, high, medium, low, info), 대상, 설명, 권고가 있습니다. `id`는 환경, 소스, 검사, 대상으로 만든 해시라서 다시 읽어도 같습니다.
+여러 환경의 보안 신호를 한 형식(`SecurityFinding`)으로 모아 보여 줍니다. 항목마다 환경, 공급자, 소스, 분류(identity, network, workload, data, logging, threat), 심각도(critical, high, medium, low, info), 대상, 설명, 권고가 있습니다. `id`는 환경, 소스, 검사, 대상으로 만든 해시라서 다시 읽어도 같습니다. 검사와 대상이 같은 항목이 여럿일 수 있는 곳은 공급자의 탐지 id(GuardDuty 탐지 id, Security Hub 탐지 ARN)나 보안 그룹 규칙의 프로토콜, 포트 범위, CIDR까지 해시에 넣어 `id`가 겹치지 않습니다.
 
 | 소스 | 환경 | 읽는 것 |
 | --- | --- | --- |
-| `kubernetes` | 등록된 환경마다 | privileged, hostNetwork, hostPID, hostPath, runAsNonRoot 미설정, limits 없음, NetworkPolicy 없는 네임스페이스, cluster-admin 바인딩, NodePort와 LoadBalancer 서비스. kube-system과 GKE, EKS 관리 네임스페이스는 뺍니다 |
+| `kubernetes` | 등록된 환경마다 | privileged, hostNetwork, hostPID, hostIPC, hostPath, root로 돌 수 있는 컨테이너(init, ephemeral 포함), limits 없음, NetworkPolicy 없는 네임스페이스, cluster-admin 바인딩, NodePort와 LoadBalancer 서비스. kube-system, kube-public, kube-node-lease만 뺍니다 |
 | `aws-iam`, `aws-ec2`, `aws-cloudtrail`, `aws-guardduty`, `aws-securityhub`, `aws-s3` | `aws-account` | 루트 MFA와 키, MFA 없는 콘솔 사용자, 90일 넘은 액세스 키, 인터넷에 열린 보안 그룹, EBS 기본 암호화, 로깅 중인 trail, GuardDuty와 그 탐지 결과, Security Hub와 그 결과, S3 계정 퍼블릭 액세스 차단 |
 | `platform-audit`, `platform-config` | `platform` | 지난 24시간 동안 401, 403으로 막힌 요청(누가 무엇을 몇 번), DB 호스트 제한과 게이트웨이 설정 |
 | `gcp-scc`, `cloudflare` | `gcp-project`, `cloudflare-account` | 아직 연결하지 않았습니다. `not_configured`와 무엇이 없는지를 보여 줍니다 |
 
-- 읽지 못한 소스는 `sources`에 `unavailable`(응답 없음), `not_configured`(설정이나 자격 증명 없음), `error`(권한 부족 등)와 이유로 표시하고, 항목을 지어내지 않습니다.
+- 읽지 못한 소스는 `sources`에 `unavailable`(응답 없음), `not_configured`(설정이나 자격 증명 없음), `error`(권한 부족, 자격 증명을 가져오다 실패 등)와 이유로 표시하고, 항목을 지어내지 않습니다.
+- 컨테이너는 컨테이너의 `runAsUser`, `runAsNonRoot`가 파드 값보다 우선합니다. `runAsNonRoot: true`이거나 `runAsUser`가 0이 아니면 root가 아닌 것으로 봅니다.
+- `system:authenticated`, `system:unauthenticated`, `system:serviceaccounts`, `system:serviceaccounts:<ns>`에 cluster-admin을 묶으면 critical입니다.
+- 401로 막힌 요청은 호출자가 경로를 마음대로 쓸 수 있으므로 경로를 보여 주지 않고 라우트(`GET /v1/plans/{ref}`)만 보여 줍니다. 403의 경로는 제어 문자를 지우고 80자에서 자르며, 3개까지만 적고 나머지는 개수만 적습니다.
 - 결과는 60초 동안 캐시합니다. `?refresh=true`는 다시 읽지만 10초에 한 번까지입니다. `?environment=gke`, `?severity=high`(그 이상만)로 거릅니다.
 - 수집기는 소스마다 하나이고 동시에 실행하며, 하나가 느려도 25초에서 끊습니다. 새 공급자는 `security.Collector` 구현 하나를 추가하면 됩니다.
-- AWS는 SDK 기본 자격 증명 체인(환경 변수, `AWS_PROFILE`, 인스턴스 역할)을 쓰고 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) 한 리전을 읽습니다. Describe, List, Get 호출만 하며 아무것도 켜거나 바꾸지 않습니다. 관리 호스트 역할에는 Terraform이 `SecurityAudit` 정책을 붙입니다.
+- AWS는 SDK 기본 자격 증명 체인(환경 변수, `AWS_PROFILE`, 인스턴스 역할)을 쓰고 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) 한 리전을 읽습니다. Describe, List, Get 호출만 하며 아무것도 켜거나 바꾸지 않습니다. 관리 호스트 역할에는 Terraform이 수집기가 부르는 읽기 API 17개만 허용하는 인라인 정책(`read-security-configuration`)을 붙입니다.
+- 자격 증명이 정말 없을 때(인스턴스에 역할이 없거나 메타데이터 서비스가 꺼짐)만 `not_configured`입니다. 메타데이터 서비스 시간 초과나 네트워크 오류로 가져오지 못하면 `error`이고, 메시지에는 SDK 원문 대신 실패 종류만 적습니다.
+- GuardDuty 탐지는 심각한 것부터 50개까지 읽고, 더 있으면 메시지에 그렇게 적습니다.
 - Kubernetes는 `GET /v1/envs`와 같은 kubeconfig와 컨텍스트를 씁니다. 서버 계정에 모든 네임스페이스의 pods, services, networkpolicies 목록과 clusterrolebindings 목록 권한이 필요합니다.
 - 실제 계정 점검을 다시 해 보려면 `PLATFORM_TEST_AWS_LIVE=1 AWS_PROFILE=hopcharlie go test -run TestAWSLive -v ./internal/security`를 실행합니다.
 
@@ -279,9 +286,15 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 | `POST /v1/agent/sessions/{id}/finish` | agent | `{status: succeeded, failed, cancelled, summary?}` |
 | `GET /v1/agent/sessions` | viewer | 최신순. `?planRef=`, `?runId=`, `?limit=`로 거름 |
 | `GET /v1/agent/sessions/{id}` | viewer | 이벤트 수, 도구 호출 수, 토큰, 소요 시간 합계 포함 |
-| `GET /v1/agent/sessions/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속). `?format=json`은 목록 |
+| `GET /v1/agent/sessions/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속). `?format=json`은 목록 한 쪽: `?after=`, `?limit=`(기본 500, 최대 2000), 더 있으면 `nextAfter` |
 
 - 이벤트와 종료는 세션을 만든 토큰이나 operator만 쓸 수 있습니다. 끝난 세션에 쓰면 409 `agent_session_finished`입니다.
-- `input`, `output`은 아무 JSON 값이고 각각 64 KiB까지입니다. 키 이름이 password, secret, token, authorization, api key 꼴이면 값을 `"[redacted]"`로 바꿔 저장합니다.
+- 세션 하나에는 이벤트를 5000개까지 남깁니다. 넘으면 409 `session_full`입니다.
+- `input`, `output`은 아무 JSON 값이고 각각 64 KiB까지입니다. 저장하기 전에 비밀값을 `"[redacted]"`로 바꿉니다.
+  - 키 이름이 password, passwd, pwd, pass, secret, token, authorization, cookie, api key, private key, credential, access key 꼴이면 그 아래 문자열 값을 바꿉니다. 숫자와 불리언은 그대로 두므로 `input_tokens` 같은 토큰 수는 남습니다.
+  - `{"name": "DB_PASSWORD", "value": "..."}`처럼 `name`이나 `key`가 비밀값 이름인 객체는 `value`를 바꿉니다.
+  - 모든 문자열 안에서 `NAME=값`, `NAME: 값`(libpq `password=...` 포함), URL의 비밀번호(`postgres://u:[redacted]@host`), `Bearer` 토큰, AWS 액세스 키 id, PEM 개인 키를 바꿉니다. `${SRC_PGPASSWORD}` 같은 변수 참조는 값이 아니므로 남깁니다.
+- 저장하는 문자열에서는 NUL을 지우고 잘못된 UTF-8을 U+FFFD로 바꿉니다. PostgreSQL이 받지 않는 값이어도 이벤트를 잃지 않습니다.
+- 이벤트 없이 `PLATFORM_AGENT_IDLE`(기본 30분)이 지난 `running` 세션은 플랫폼이 `cancelled`로 닫고 요약에 `no activity for 30m; closed by the platform`을 남깁니다. 보고 있던 스트림은 마지막 `snapshot`을 보내고 닫힙니다.
 - 쓰기 요청은 모두 감사 로그에 남습니다. 감사 로그에는 세션 id, 이벤트 종류, 도구 이름만 남고 내용은 남기지 않습니다.
 - 테이블은 마이그레이션 `0003_agent_activity.sql`이 만듭니다.

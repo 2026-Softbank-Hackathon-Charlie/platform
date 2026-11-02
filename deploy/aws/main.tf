@@ -143,12 +143,40 @@ resource "aws_iam_role_policy_attachment" "ecr_read" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
-# Read-only access to security configuration (IAM, EC2, CloudTrail, GuardDuty,
-# Security Hub, S3) for GET /v1/security. AWS managed, no cost; it grants no
-# write action.
-resource "aws_iam_role_policy_attachment" "security_audit" {
-  role       = aws_iam_role.host.name
-  policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
+# Exactly the read calls the AWS collector of GET /v1/security makes
+# (internal/security/aws.go), and nothing else: no write action, and none of
+# the other reads the managed SecurityAudit policy would add. These actions
+# take no resource-level permissions, so the resource is "*".
+# s3control GetPublicAccessBlock is the IAM action s3:GetAccountPublicAccessBlock.
+resource "aws_iam_role_policy" "security_read" {
+  name = "read-security-configuration"
+  role = aws_iam_role.host.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "iam:GetAccountSummary",
+        "iam:ListUsers",
+        "iam:GetLoginProfile",
+        "iam:ListMFADevices",
+        "iam:ListAccessKeys",
+        "ec2:DescribeSecurityGroups",
+        "ec2:GetEbsEncryptionByDefault",
+        "cloudtrail:DescribeTrails",
+        "cloudtrail:GetTrailStatus",
+        "guardduty:ListDetectors",
+        "guardduty:GetDetector",
+        "guardduty:ListFindings",
+        "guardduty:GetFindings",
+        "securityhub:DescribeHub",
+        "securityhub:GetFindings",
+        "s3:GetAccountPublicAccessBlock",
+        "sts:GetCallerIdentity",
+      ]
+      Resource = "*"
+    }]
+  })
 }
 
 resource "aws_iam_role_policy" "own_parameters" {
@@ -230,7 +258,7 @@ resource "aws_instance" "host" {
   }
 
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    region            = var.region
+    region            = var.region # also PLATFORM_AWS_REGION, the region the security view reads
     prefix            = local.prefix
     image             = local.image
     registry          = split("/", aws_ecr_repository.platform.repository_url)[0]

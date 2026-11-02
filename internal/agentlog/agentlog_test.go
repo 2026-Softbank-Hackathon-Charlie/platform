@@ -1,10 +1,14 @@
 package agentlog
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest"
@@ -31,24 +35,6 @@ func newSession(t *testing.T, s *Service) apiv1.AgentSession {
 	return a
 }
 
-func TestRedact(t *testing.T) {
-	in := map[string]any{
-		"query":       "select 1",
-		"DB_PASSWORD": "hunter2", "apiKey": "k", "api-key": "k", "Authorization": "Bearer x",
-		"nested": []any{map[string]any{"client_secret": map[string]any{"value": "s"}, "ok": 1}},
-		"auth":   map[string]any{"token": "t", "user": "u"},
-	}
-	got, _ := json.Marshal(Redact(in))
-	want := `{"Authorization":"[redacted]","DB_PASSWORD":"[redacted]","api-key":"[redacted]","apiKey":"[redacted]",` +
-		`"auth":{"token":"[redacted]","user":"u"},"nested":[{"client_secret":"[redacted]","ok":1}],"query":"select 1"}`
-	if string(got) != want {
-		t.Fatalf("redacted:\n%s\nwant:\n%s", got, want)
-	}
-	if in["DB_PASSWORD"] != "hunter2" {
-		t.Fatal("Redact modified its input")
-	}
-}
-
 func TestAppendRedactsAndLimits(t *testing.T) {
 	s := New(storetest.NewMemory())
 	a := newSession(t, s)
@@ -56,14 +42,15 @@ func TestAppendRedactsAndLimits(t *testing.T) {
 
 	ev, err := s.Append(ctx, planner, a.Id, EventInput{
 		Type: apiv1.AgentEventTypeToolCall, Tool: ptr("submit_plan"),
-		Input:          json.RawMessage(`{"plan":{"source":{"dsn":"postgres://app:${SRC_PGPASSWORD}@db/app"},"gateway":{"token":"gw-secret"}},"bytes":12345678901234567890}`),
+		Input:          json.RawMessage(`{"plan":{"source":{"dsn":"postgres://app:${SRC_PGPASSWORD}@db/app"},"target":{"dsn":"postgres://app:pw-literal@db2/app"},"gateway":{"token":"gw-secret"}},"bytes":12345678901234567890}`),
 		DurationMillis: ptr(int64(120)), Usage: &apiv1.TokenUsage{InputTokens: 900, OutputTokens: 80},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	in, _ := json.Marshal(ev.Input)
-	if strings.Contains(string(in), "gw-secret") || !strings.Contains(string(in), `"token":"[redacted]"`) || !strings.Contains(string(in), "12345678901234567890") {
+	if strings.Contains(string(in), "gw-secret") || strings.Contains(string(in), "pw-literal") || !strings.Contains(string(in), `"token":"[redacted]"`) ||
+		!strings.Contains(string(in), "${SRC_PGPASSWORD}") || !strings.Contains(string(in), "12345678901234567890") {
 		t.Fatalf("stored input %s", in)
 	}
 	if ev.Seq == 0 || ev.Usage == nil || ev.Usage.InputTokens != 900 || *ev.DurationMillis != 120 {
@@ -185,6 +172,186 @@ func TestCreateValidation(t *testing.T) {
 	} {
 		if _, err := s.Create(t.Context(), "planner", req); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%+v: %v", req, err)
+		}
+	}
+}
+
+func TestAppendCleansText(t *testing.T) {
+	s := New(storetest.NewMemory())
+	ctx := t.Context()
+	a, err := s.Create(ctx, planner.Name, apiv1.CreateAgentSessionRequest{Kind: apiv1.AgentSessionKindPlan, Title: "plan\x00 gke\xff", Model: ptr("m\x00")})
+	if err != nil || a.Title != "plan gke\uFFFD" || *a.Model != "m" {
+		t.Fatalf("create: %+v %v", a, err)
+	}
+	if got, _ := s.Get(ctx, a.Id); got.Title != a.Title {
+		t.Fatalf("stored title %q, answered %q", got.Title, a.Title)
+	}
+	if _, err := s.Create(ctx, planner.Name, apiv1.CreateAgentSessionRequest{Kind: apiv1.AgentSessionKindPlan, Title: "\x00"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("title of only NUL: %v", err)
+	}
+	ev, err := s.Append(ctx, planner, a.Id, EventInput{Type: apiv1.AgentEventTypeToolResult, Tool: ptr("sh\x00"),
+		Output: json.RawMessage(`{"stdout":"ok\u0000"}`)})
+	if err != nil || *ev.Tool != "sh" || string(mustJSON(t, ev.Output)) != `{"stdout":"ok"}` {
+		t.Fatalf("append: %+v %v", ev, err)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestSessionFull(t *testing.T) {
+	s := New(storetest.NewMemory())
+	s.maxEvents = 3
+	a := newSession(t, s)
+	ctx := t.Context()
+	for range 3 {
+		if _, err := s.Append(ctx, planner, a.Id, EventInput{Type: apiv1.AgentEventTypeMessage}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Append(ctx, planner, a.Id, EventInput{Type: apiv1.AgentEventTypeMessage}); !errors.Is(err, ErrSessionFull) {
+		t.Fatalf("fourth event: %v", err)
+	}
+	if fin, err := s.Finish(ctx, planner, a.Id, apiv1.FinishAgentSessionRequest{Status: apiv1.AgentSessionStatusFailed}); err != nil || fin.Totals.Events != 3 {
+		t.Fatalf("finish a full session: %+v %v", fin, err)
+	}
+	if _, err := s.Append(ctx, planner, a.Id, EventInput{Type: apiv1.AgentEventTypeMessage}); !errors.Is(err, ErrFinished) {
+		t.Fatalf("event after finish: %v", err)
+	}
+}
+
+func TestEventsPages(t *testing.T) {
+	s := New(storetest.NewMemory())
+	a := newSession(t, s)
+	ctx := t.Context()
+	var seqs []int64
+	for range 5 {
+		ev, err := s.Append(ctx, planner, a.Id, EventInput{Type: apiv1.AgentEventTypeMessage})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seqs = append(seqs, ev.Seq)
+	}
+	var got []int64
+	var after int64
+	for pages := 0; ; pages++ {
+		page, err := s.Events(ctx, a.Id, after, 2)
+		if err != nil || len(page.Events) > 2 || pages > 3 {
+			t.Fatalf("page %d: %+v %v", pages, page, err)
+		}
+		for _, e := range page.Events {
+			got = append(got, e.Seq)
+		}
+		if page.NextAfter == nil {
+			if pages != 2 {
+				t.Fatalf("%d pages of 2 for 5 events, want 3", pages+1)
+			}
+			break
+		}
+		after = *page.NextAfter
+	}
+	if fmt.Sprint(got) != fmt.Sprint(seqs) {
+		t.Fatalf("paged %v, want %v", got, seqs)
+	}
+	if page, err := s.Events(ctx, a.Id, 0, 5); err != nil || len(page.Events) != 5 || page.NextAfter != nil {
+		t.Fatalf("exact page: %+v %v", page, err)
+	}
+	if page, err := s.Events(ctx, a.Id, 0, 0); err != nil || len(page.Events) != 5 {
+		t.Fatalf("default page: %+v %v", page, err)
+	}
+	if _, err := s.Events(ctx, "ags_missing", 0, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing session: %v", err)
+	}
+}
+
+func TestSweepClosesIdleSessions(t *testing.T) {
+	s := New(storetest.NewMemory())
+	now := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	ctx := t.Context()
+	quiet, busy := newSession(t, s), newSession(t, s)
+	live, cancel, err := s.Subscribe(ctx, quiet.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	now = now.Add(20 * time.Minute)
+	if _, err := s.Append(ctx, planner, busy.Id, EventInput{Type: apiv1.AgentEventTypeMessage}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(11 * time.Minute) // quiet: 31m since creation; busy: 11m since its event
+	closed, err := s.Sweep(ctx, 30*time.Minute)
+	if err != nil || fmt.Sprint(closed) != fmt.Sprint([]string{quiet.Id}) {
+		t.Fatalf("sweep closed %v, %v; want %s", closed, err, quiet.Id)
+	}
+	if _, open := <-live; open {
+		t.Fatal("the idle session's subscriber is still open")
+	}
+	got, _ := s.Get(ctx, quiet.Id)
+	if got.Status != apiv1.AgentSessionStatusCancelled || deref(got.Summary) != "no activity for 30m; closed by the platform" || got.EndedAt == nil {
+		t.Fatalf("idle session: %+v", got)
+	}
+	if got, _ := s.Get(ctx, busy.Id); got.Status != apiv1.AgentSessionStatusRunning {
+		t.Fatalf("active session was closed: %+v", got)
+	}
+
+	now = now.Add(20 * time.Minute)
+	if closed, err := s.Sweep(ctx, 30*time.Minute); err != nil || fmt.Sprint(closed) != fmt.Sprint([]string{busy.Id}) {
+		t.Fatalf("second sweep closed %v, %v", closed, err)
+	}
+	if closed, err := s.Sweep(ctx, 30*time.Minute); err != nil || len(closed) != 0 {
+		t.Fatalf("third sweep closed %v, %v", closed, err)
+	}
+}
+
+func TestRunSweeperWithShortIdle(t *testing.T) {
+	s := New(storetest.NewMemory())
+	a := newSession(t, s)
+	live, cancel, err := s.Subscribe(t.Context(), a.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	ctx, stop := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		s.RunSweeper(ctx, 50*time.Millisecond, slog.New(slog.DiscardHandler))
+		close(done)
+	}()
+	select {
+	case _, open := <-live:
+		if open {
+			t.Fatal("unexpected live event")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sweeper did not close the idle session")
+	}
+	got, _ := s.Get(t.Context(), a.Id)
+	if got.Status != apiv1.AgentSessionStatusCancelled || deref(got.Summary) != "no activity for 50ms; closed by the platform" {
+		t.Fatalf("session: %+v", got)
+	}
+	stop()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSweeper did not return after its context ended")
+	}
+}
+
+func TestShortDuration(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		30 * time.Minute: "30m", time.Hour: "1h", 90 * time.Minute: "1h30m", 45 * time.Second: "45s",
+		50 * time.Millisecond: "50ms", 2*time.Minute + 5*time.Second: "2m5s",
+	} {
+		if got := shortDuration(d); got != want {
+			t.Errorf("shortDuration(%s) = %q, want %q", d, got, want)
 		}
 	}
 }

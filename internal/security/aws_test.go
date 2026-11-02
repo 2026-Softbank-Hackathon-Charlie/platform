@@ -3,6 +3,11 @@ package security
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -24,6 +29,7 @@ import (
 	shtypes "github.com/aws/aws-sdk-go-v2/service/securityhub/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -109,6 +115,7 @@ type fakeGuardDuty struct {
 	detectors []string
 	status    gdtypes.DetectorStatus
 	findings  []gdtypes.Finding
+	more      bool // findings beyond the page
 }
 
 func (f *fakeGuardDuty) ListDetectors(context.Context, *guardduty.ListDetectorsInput, ...func(*guardduty.Options)) (*guardduty.ListDetectorsOutput, error) {
@@ -125,7 +132,11 @@ func (f *fakeGuardDuty) ListFindings(_ context.Context, in *guardduty.ListFindin
 	for _, x := range f.findings {
 		ids = append(ids, *x.Id)
 	}
-	return &guardduty.ListFindingsOutput{FindingIds: ids}, nil
+	out := &guardduty.ListFindingsOutput{FindingIds: ids}
+	if f.more {
+		out.NextToken = aws.String("next")
+	}
+	return out, nil
 }
 func (f *fakeGuardDuty) GetFindings(context.Context, *guardduty.GetFindingsInput, ...func(*guardduty.Options)) (*guardduty.GetFindingsOutput, error) {
 	return &guardduty.GetFindingsOutput{Findings: f.findings}, nil
@@ -337,5 +348,131 @@ func TestAWSWithoutCredentials(t *testing.T) {
 		if r.Status != apiv1.SecuritySourceStatusError || !strings.Contains(r.Message, "credentials rejected") {
 			t.Errorf("%s: %+v", r.Name, r)
 		}
+	}
+}
+
+func TestAWSCredentialRetrievalFailures(t *testing.T) {
+	imds404 := &smithyhttp.ResponseError{Response: &smithyhttp.Response{Response: &http.Response{StatusCode: 404}}, Err: errors.New("request to EC2 IMDS failed")}
+	imdsURL := "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+	refresh := func(err error) error {
+		return fmt.Errorf("failed to refresh cached credentials, no EC2 IMDS role found, %w", err)
+	}
+	for _, c := range []struct {
+		name   string
+		err    error
+		status apiv1.SecuritySourceStatus
+		msg    string
+	}{
+		{"no instance role", refresh(imds404), apiv1.SecuritySourceStatusNotConfigured, "no AWS credentials"},
+		{"metadata service turned off", refresh(&smithy.OperationError{ServiceID: "ec2imds", OperationName: "GetMetadata",
+			Err: errors.New(`access disabled to EC2 IMDS via client option, or "AWS_EC2_METADATA_DISABLED" environment variable`)}),
+			apiv1.SecuritySourceStatusNotConfigured, "no AWS credentials"},
+		{"metadata service timeout", refresh(&smithy.OperationError{ServiceID: "ec2imds", OperationName: "GetMetadata", Err: context.DeadlineExceeded}),
+			apiv1.SecuritySourceStatusError, "timed out"},
+		{"dial timeout", refresh(&url.Error{Op: "Get", URL: imdsURL, Err: &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}}),
+			apiv1.SecuritySourceStatusError, "timed out"},
+		{"network error", refresh(&url.Error{Op: "Get", URL: imdsURL, Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: network is unreachable")}}),
+			apiv1.SecuritySourceStatusError, "network error"},
+		{"metadata service error", refresh(&smithyhttp.ResponseError{Response: &smithyhttp.Response{Response: &http.Response{StatusCode: 500}}, Err: errors.New("x")}),
+			apiv1.SecuritySourceStatusError, "HTTP 500"},
+		{"STS rejects the profile's role", fmt.Errorf("failed to refresh cached credentials, %w", &smithy.GenericAPIError{Code: "AccessDenied", Message: "arn:aws:iam::123456789012:role/x is not authorized"}),
+			apiv1.SecuritySourceStatusError, "answered AccessDenied"},
+		{"anything else", errors.New("open /home/app/.aws/sso/cache/abc.json: no such file"), apiv1.SecuritySourceStatusError, "the credential source failed"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			col := newAWSCollector("ap-northeast-2", func(context.Context) (awsClients, error) { return awsClients{}, credentialsError(c.err) })
+			for _, r := range col.Collect(t.Context()) {
+				if r.Status != c.status || !strings.Contains(r.Message, c.msg) {
+					t.Errorf("%s: %s %q, want %s with %q", r.Name, r.Status, r.Message, c.status, c.msg)
+				}
+				if strings.ContainsAny(r.Message, "/\\") || strings.Contains(r.Message, "169.254") || strings.Contains(r.Message, "123456789012") {
+					t.Errorf("%s: SDK text in the message: %q", r.Name, r.Message)
+				}
+			}
+		})
+	}
+}
+
+func TestAWSGuardDutyTruncated(t *testing.T) {
+	gd := &fakeGuardDuty{detectors: []string{"det1"}, status: gdtypes.DetectorStatusEnabled, more: true, findings: []gdtypes.Finding{{
+		Id: aws.String("gd1"), Type: aws.String("Recon:EC2/PortProbeUnprotectedPort"), Severity: aws.Float64(5), Title: aws.String("probe"),
+	}}}
+	reps := collectAWS(t, awsClients{iam: &fakeIAM{}, ec2: &fakeEC2{ebs: true}, cloudtrail: &fakeTrail{}, guardduty: gd,
+		securityhub: &fakeHub{}, s3control: &fakeS3{}, sts: &fakeSTS{}})
+	if r := reps["aws-guardduty"]; r.Status != apiv1.SecuritySourceStatusOk || !strings.Contains(r.Message, "only the 50 most severe are shown") {
+		t.Fatalf("guardduty: %s %q", r.Status, r.Message)
+	}
+	gd.more = false
+	reps = collectAWS(t, awsClients{iam: &fakeIAM{}, ec2: &fakeEC2{ebs: true}, cloudtrail: &fakeTrail{}, guardduty: gd,
+		securityhub: &fakeHub{}, s3control: &fakeS3{}, sts: &fakeSTS{}})
+	if r := reps["aws-guardduty"]; strings.Contains(r.Message, "more") {
+		t.Fatalf("guardduty without more findings: %q", r.Message)
+	}
+}
+
+// TestFindingIDsAreUnique collects an account where several findings share a
+// check and a resource, as real accounts have: GuardDuty findings of one type
+// about one instance, Security Hub findings of one control about one group
+// (from two products), two ICMP rules of one security group and two access
+// keys with the same last four characters.
+func TestFindingIDsAreUnique(t *testing.T) {
+	old := t0.Add(-200 * 24 * time.Hour)
+	instance := &gdtypes.Resource{ResourceType: aws.String("Instance"), InstanceDetails: &gdtypes.InstanceDetails{InstanceId: aws.String("i-1")}}
+	probe := func(id string, sev float64) gdtypes.Finding {
+		return gdtypes.Finding{Id: aws.String(id), Type: aws.String("Recon:EC2/PortProbeUnprotectedPort"), Severity: aws.Float64(sev),
+			Title: aws.String("Unprotected port on EC2 instance i-1 is being probed."), Description: aws.String("probed"), Resource: instance}
+	}
+	control := func(arn string) shtypes.AwsSecurityFinding {
+		return shtypes.AwsSecurityFinding{Id: aws.String(arn), GeneratorId: aws.String("security-control/EC2.18"), Title: aws.String("Security groups should only allow unrestricted incoming traffic for authorized ports"),
+			Severity: &shtypes.Severity{Label: shtypes.SeverityLabelHigh}, Resources: []shtypes.Resource{{Id: aws.String("arn:aws:ec2:ap-northeast-2:123456789012:security-group/sg-1"), Type: aws.String("AwsEc2SecurityGroup")}}}
+	}
+	icmp := func(typ int32) ec2types.IpPermission {
+		return ec2types.IpPermission{IpProtocol: aws.String("icmp"), FromPort: aws.Int32(typ), ToPort: aws.Int32(-1), IpRanges: []ec2types.IpRange{{CidrIp: aws.String("0.0.0.0/0")}}}
+	}
+	reps := collectAWS(t, awsClients{
+		iam: &fakeIAM{summary: map[string]int32{"AccountMFAEnabled": 1}, users: []iamtypes.User{{UserName: aws.String("ci"), Arn: aws.String("arn:aws:iam::123456789012:user/ci")}},
+			keys: map[string][]iamtypes.AccessKeyMetadata{"ci": {
+				{AccessKeyId: aws.String("AKIAAAAAAAAAAAAA1234"), Status: iamtypes.StatusTypeActive, CreateDate: &old},
+				{AccessKeyId: aws.String("AKIABBBBBBBBBBBB1234"), Status: iamtypes.StatusTypeActive, CreateDate: &old},
+			}}},
+		ec2: &fakeEC2{ebs: true, groups: []ec2types.SecurityGroup{
+			sg("sg-1", icmp(8), icmp(0), tcp(22, 22, "0.0.0.0/0"), tcp(443, 443, "0.0.0.0/0", "::/0")),
+			sg("sg-2", icmp(8), tcp(22, 22, "::/0")),
+		}},
+		cloudtrail: &fakeTrail{trails: []cttypes.Trail{{Name: aws.String("main"), TrailARN: aws.String("arn:trail/main")}}, logging: map[string]bool{"arn:trail/main": true}},
+		guardduty:  &fakeGuardDuty{detectors: []string{"det1"}, status: gdtypes.DetectorStatusEnabled, findings: []gdtypes.Finding{probe("gd1", 5), probe("gd2", 5), probe("gd3", 2)}},
+		securityhub: &fakeHub{enabled: true, findings: map[shtypes.SeverityLabel][]shtypes.AwsSecurityFinding{shtypes.SeverityLabelHigh: {
+			control("arn:aws:securityhub:ap-northeast-2:123456789012:security-control/EC2.18/finding/a1"),
+			control("arn:aws:securityhub:ap-northeast-2:123456789012:subscription/aws-foundational-security-best-practices/v/1.0.0/EC2.18/finding/b2"),
+		}}},
+		s3control: &fakeS3{pab: &s3ctypes.PublicAccessBlockConfiguration{BlockPublicAcls: aws.Bool(true), IgnorePublicAcls: aws.Bool(true), BlockPublicPolicy: aws.Bool(true), RestrictPublicBuckets: aws.Bool(true)}},
+		sts:       &fakeSTS{},
+	})
+	var batch []Report
+	for _, name := range awsSources {
+		batch = append(batch, reps[name])
+	}
+	rep := assemble(t0, batch)
+	ids := map[string]string{}
+	shared := map[string]int{}
+	for _, f := range rep.Findings {
+		what := f.Source + " " + f.Check + " " + f.Resource
+		if prev, dup := ids[f.Id]; dup {
+			t.Errorf("id %s for %q and %q", f.Id, prev, what)
+		}
+		ids[f.Id] = what
+		shared[what]++
+	}
+	n := 0
+	for _, c := range shared {
+		if c > 1 {
+			n++
+		}
+	}
+	if len(rep.Findings) != 13 || n != 4 {
+		t.Fatalf("%d findings, %d check and resource pairs shared; the batch needs 13 and 4:\n%v", len(rep.Findings), n, shared)
+	}
+	if again := assemble(t0, batch); fmt.Sprint(again.Findings) != fmt.Sprint(rep.Findings) {
+		t.Fatal("ids differ between two collections of the same account")
 	}
 }

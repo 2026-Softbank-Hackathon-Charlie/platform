@@ -64,7 +64,7 @@ func (m *memory) CreateAgentSession(_ context.Context, a store.AgentSession) err
 	if m.agent.sessions == nil {
 		m.agent.sessions = map[string]store.AgentSession{}
 	}
-	a = copyAgentSession(a)
+	a = copyAgentSession(a.Clean())
 	a.CreatedAt = pgTime(a.CreatedAt)
 	m.agent.sessions[a.ID] = a
 	return nil
@@ -109,16 +109,14 @@ func (m *memory) FinishAgentSession(_ context.Context, id, status, summary strin
 	if a.Status != store.AgentRunning {
 		return store.AgentSession{}, fmt.Errorf("%w: agent session is %s", store.ErrConflict, a.Status)
 	}
-	a.Status, a.Summary, a.EndedAt = status, summary, pgTimePtr(&endedAt)
+	a.Status, a.Summary, a.EndedAt = store.CleanText(status), store.CleanText(summary), pgTimePtr(&endedAt)
 	m.agent.sessions[id] = a
 	return m.withTotals(a), nil
 }
 
 func (m *memory) AppendAgentEvent(_ context.Context, e store.AgentEvent) (store.AgentEvent, error) {
-	if err := checkJSON("agent event input", e.Input); err != nil {
-		return store.AgentEvent{}, err
-	}
-	if err := checkJSON("agent event output", e.Output); err != nil {
+	e, err := e.Clean()
+	if err != nil {
 		return store.AgentEvent{}, err
 	}
 	m.mu.Lock()
@@ -149,5 +147,28 @@ func (m *memory) ListAgentEvents(_ context.Context, sessionID string, afterSeq i
 			out = append(out, copyAgentEvent(e))
 		}
 	}
+	return out, nil
+}
+
+func (m *memory) IdleAgentSessions(_ context.Context, before time.Time) ([]store.AgentSession, error) {
+	before = pgTime(before)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	last := map[string]time.Time{}
+	for _, e := range m.agent.events {
+		if e.Time.After(last[e.SessionID]) {
+			last[e.SessionID] = e.Time
+		}
+	}
+	out := []store.AgentSession{}
+	for _, a := range m.agent.sessions {
+		if a.Status == store.AgentRunning && a.CreatedAt.Before(before) && last[a.ID].Before(before) {
+			out = append(out, m.withTotals(a))
+		}
+	}
+	// Same order as Postgres: created_at, id.
+	slices.SortFunc(out, func(a, b store.AgentSession) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
+	})
 	return out, nil
 }
