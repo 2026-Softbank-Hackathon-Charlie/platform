@@ -1,0 +1,18 @@
+# HTTPS in front of the management host. The host names come from the caddy
+# service's environment (compose.yaml), so this file does not change per host.
+
+{$API_HOST} {
+	reverse_proxy api:8080 {
+		flush_interval -1
+	}
+}
+
+{$APP_HOST} {
+	reverse_proxy gateway:8000 {
+		flush_interval -1
+	}
+}
+
+{$CONSOLE_HOST} {
+	reverse_proxy console:80
+}

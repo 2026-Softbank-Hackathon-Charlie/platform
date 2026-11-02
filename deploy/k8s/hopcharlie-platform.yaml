@@ -1,0 +1,89 @@
+# Identity of the HopCharlie platform in one cluster. make-kubeconfig.sh applies
+# this file, binds the migrator role in each app namespace and writes a
+# kubeconfig with this ServiceAccount's token, which needs no cloud CLI or
+# credential plugin on the management host.
+#
+# Two roles:
+#   hopcharlie-observer  cluster-wide reads: environment status (nodes, CNPG
+#                        clusters) and the security view (pods, services,
+#                        network policies, cluster role bindings)
+#   hopcharlie-migrator  bound only in app namespaces: what the migration
+#                        engine changes there (CNPG Cluster, scaling the app
+#                        down and back, the write-blocking NetworkPolicy)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hopcharlie-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hopcharlie-platform
+  namespace: hopcharlie-system
+---
+# A long-lived token, so the kubeconfig keeps working for the whole event.
+# Delete this Secret (or the namespace) to revoke it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hopcharlie-platform-token
+  namespace: hopcharlie-system
+  annotations:
+    kubernetes.io/service-account.name: hopcharlie-platform
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hopcharlie-observer
+rules:
+  - apiGroups: [""]
+    resources: [nodes, namespaces, pods, services]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterrolebindings]
+    verbs: [get, list]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hopcharlie-observer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hopcharlie-observer
+subjects:
+  - kind: ServiceAccount
+    name: hopcharlie-platform
+    namespace: hopcharlie-system
+---
+# Bound per app namespace by make-kubeconfig.sh (RoleBinding, not cluster-wide).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hopcharlie-migrator
+rules:
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [get, list, patch]
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    verbs: [get, list, patch]
+  - apiGroups: [""]
+    resources: [services, configmaps, secrets, persistentvolumeclaims]
+    verbs: [get, list, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    verbs: [get, list, watch, create, patch, update]

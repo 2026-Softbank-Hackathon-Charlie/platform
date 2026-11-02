@@ -1,6 +1,9 @@
 #!/bin/bash
-# Bootstrap of the HopCharlie management host (rendered by Terraform; runs once
-# at first boot). Log: /var/log/hopcharlie-bootstrap.log
+# First boot of the HopCharlie management host (rendered by Terraform, runs
+# once). It only installs Docker and hands over to sync.sh, which reads every
+# setting from SSM; settings change through ./redeploy.sh, never through this
+# file, so the host is not replaced when they change.
+# Log: /var/log/hopcharlie-bootstrap.log, then /var/log/hopcharlie-sync.log
 set -euo pipefail
 exec > >(tee -a /var/log/hopcharlie-bootstrap.log) 2>&1
 
@@ -12,125 +15,13 @@ curl -fsSL -o /usr/libexec/docker/cli-plugins/docker-compose \
 chmod +x /usr/libexec/docker/cli-plugins/docker-compose
 
 install -d -m 0755 /opt/hopcharlie
-# kubeconfig for the three clusters goes here (kube/config); the API container
-# runs as uid 10001 and reads it.
-install -d -m 0750 -o 10001 -g 10001 /opt/hopcharlie/kube
-cd /opt/hopcharlie
+aws ssm get-parameter --region ${region} --name "${prefix}/host/sync.sh" \
+  --query Parameter.Value --output text > /opt/hopcharlie/sync.sh
 
-param() {
-  aws ssm get-parameter --region ${region} --with-decryption \
-    --name "${prefix}/$1" --query Parameter.Value --output text
-}
-
-# Secrets live only in this file (0600) and in SSM; never in the image or git.
-umask 077
-cat > .env <<ENV
-IMAGE=${image}
-DB_PASSWORD=$(param db-password)
-GATEWAY_TOKEN=$(param gateway-admin-token)
-PLATFORM_TOKENS=$(param platform-tokens)
-GATEWAY_BACKENDS=${backends}
-CORS_ORIGINS=${cors_origins}
-DSN_HOST_SUFFIXES=${dsn_host_suffixes}
-# Database passwords that migration plans reference as SRC_PGPASSWORD and DST_PGPASSWORD:
-SRC_PGPASSWORD=
-DST_PGPASSWORD=
-ENV
-umask 022
-
-cat > envs.yaml <<'YAML'
-${envs_yaml}
-YAML
-
-cat > Caddyfile <<'CADDY'
-${api_host} {
-	reverse_proxy api:8080 {
-		flush_interval -1
-	}
-}
-
-${app_host} {
-	reverse_proxy gateway:8000 {
-		flush_interval -1
-	}
-}
-CADDY
-
-cat > compose.yaml <<'COMPOSE'
-name: hopcharlie
-services:
-  postgres:
-    image: postgres:17.11-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: charlie
-      POSTGRES_DB: charlie
-      POSTGRES_PASSWORD: $${DB_PASSWORD}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "charlie"]
-      interval: 5s
-      retries: 30
-
-  gateway:
-    image: $${IMAGE}
-    restart: unless-stopped
-    command: ["hopcharlie-gateway", "-listen", ":8000", "-admin-addr", ":9901", "-state-file", "/data/gateway-state.json"]
-    environment:
-      GATEWAY_ADMIN_TOKEN: $${GATEWAY_TOKEN}
-      GATEWAY_BACKENDS: $${GATEWAY_BACKENDS}
-    volumes:
-      - gwdata:/data
-
-  api:
-    image: $${IMAGE}
-    restart: unless-stopped
-    command: ["hopcharlie-api", "-addr", ":8080", "-state-dir", "/data/runs"]
-    environment:
-      PLATFORM_DATABASE_URL: postgres://charlie:$${DB_PASSWORD}@postgres:5432/charlie?sslmode=disable
-      PLATFORM_TOKENS: $${PLATFORM_TOKENS}
-      PLATFORM_ENVS_FILE: /etc/hopcharlie/envs.yaml
-      PLATFORM_GATEWAY_URL: http://gateway:9901
-      GATEWAY_TOKEN: $${GATEWAY_TOKEN}
-      PLATFORM_CORS_ORIGINS: $${CORS_ORIGINS}
-      PLATFORM_DSN_HOST_SUFFIXES: $${DSN_HOST_SUFFIXES}
-      SRC_PGPASSWORD: $${SRC_PGPASSWORD:-}
-      DST_PGPASSWORD: $${DST_PGPASSWORD:-}
-    volumes:
-      - apidata:/data
-      - /opt/hopcharlie/envs.yaml:/etc/hopcharlie/envs.yaml:ro
-      - /opt/hopcharlie/kube:/home/app/.kube:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      gateway:
-        condition: service_started
-
-  caddy:
-    image: caddy:2.11.7-alpine
-    restart: unless-stopped
-    ports: ["80:80", "443:443"]
-    volumes:
-      - /opt/hopcharlie/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on: [api, gateway]
-
-volumes:
-  pgdata: {}
-  gwdata: {}
-  apidata: {}
-  caddy_data: {}
-  caddy_config: {}
-COMPOSE
-
-# The image may be pushed after the host boots; keep trying for 20 minutes.
+# The images may be pushed after the host boots; keep trying for 20 minutes.
 for i in $(seq 1 60); do
-  aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${registry} \
-    && docker compose pull && break
-  echo "image not pullable yet (attempt $i); retrying in 20s"
+  bash /opt/hopcharlie/sync.sh ${region} ${prefix} && break
+  echo "sync failed (attempt $i); retrying in 20s"
   sleep 20
 done
-docker compose up -d
 echo "bootstrap done"

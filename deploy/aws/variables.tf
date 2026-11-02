@@ -43,3 +43,9 @@ variable "dsn_host_suffixes" {
   type        = string
   default     = ".ts.net"
 }
+
+variable "console_image_tag" {
+  description = "Tag of the hopcharlie/console image the host runs (push-console.sh pushes latest)."
+  type        = string
+  default     = "latest"
+}

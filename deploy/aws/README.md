@@ -9,15 +9,17 @@
 | EC2 | t3.small 1대, Amazon Linux 2023, 기본 VPC, 디스크 gp3 20GiB(암호화) |
 | Elastic IP | 고정 공인 IP. `api.<IP>.sslip.io`, `app.<IP>.sslip.io` 도메인으로 쓴다 |
 | 보안 그룹 | 80, 443만 연다. SSH 포트는 없고 SSM Session Manager로 들어간다 |
-| ECR | `hopcharlie/platform` 이미지 저장소 (최근 10개만 보관) |
+| ECR | `hopcharlie/platform`, `hopcharlie/console` 이미지 저장소 (각각 최근 10개만 보관) |
 | IAM | 호스트 역할: SSM 접속, ECR 읽기, `/hopcharlie/*` 파라미터 읽기, 보안 뷰가 부르는 보안 설정 읽기 API만 (`read-security-configuration`) |
-| SSM Parameter Store | DB 비밀번호, 게이트웨이 관리 토큰, API 토큰 (SecureString) |
+| SSM Parameter Store | 호스트 설정 파일(`/hopcharlie/host/*`), 생성한 비밀값(DB 비밀번호, 게이트웨이 관리 토큰, API 토큰), 팀이 넣는 비밀값(아래 "설정 바꾸기") |
 
 호스트 안의 구성은 다음과 같습니다.
 
 - Caddy가 Let's Encrypt 인증서로 HTTPS를 받습니다.
   - `api.<IP>.sslip.io`는 플랫폼 API로 보냅니다.
   - `app.<IP>.sslip.io`는 게이트웨이로 보냅니다.
+  - `console.<IP>.sslip.io`는 콘솔(frontend 레포를 빌드한 정적 파일)로 보냅니다. 콘솔 주소는 CORS 허용 목록에 자동으로 들어갑니다.
+- 호스트의 설정 파일은 모두 SSM에 있고, `host/sync.sh`가 받아서 `/opt/hopcharlie`에 씁니다. 처음 부팅할 때와 `./redeploy.sh`를 실행할 때마다 돕니다. 그래서 설정을 바꿔도 EC2가 교체되지 않습니다(user_data는 첫 부팅 뒤 무시합니다).
 - 게이트웨이 관리 포트(9901)와 PostgreSQL은 밖으로 열지 않습니다.
 - sslip.io는 팀 도메인(Cloudflare)이 생기기 전까지 쓰는 임시 주소입니다.
 
@@ -65,8 +67,9 @@ export AWS_PROFILE=<내 해커톤 프로필>   # 기본값 hopcharlie
 ## 배포
 
 ```bash
-./tf.sh apply -target=aws_ecr_repository.platform   # 이미지 저장소 먼저 (처음 한 번)
-./push-image.sh                                       # 이미지 빌드, 푸시
+./tf.sh apply -target=aws_ecr_repository.platform -target=aws_ecr_repository.console   # 이미지 저장소 먼저 (처음 한 번)
+./push-image.sh                                       # 플랫폼 이미지 빌드, 푸시
+./push-console.sh                                     # 콘솔 빌드, 푸시 (frontend 레포가 platform 옆에 있어야 함)
 ./tf.sh apply                                         # 나머지 전부
 ./tf.sh output api_url
 ```
@@ -89,9 +92,54 @@ charlie login --server "$(./tf.sh output -raw api_url)"
 ## 코드 바꾼 뒤 다시 배포
 
 ```bash
-./push-image.sh
-./redeploy.sh   # SSM으로 호스트에서 docker compose pull, up -d
+./push-image.sh     # platform 코드가 바뀌었을 때
+./push-console.sh   # frontend 코드가 바뀌었을 때
+./redeploy.sh       # SSM으로 호스트에서 sync.sh 실행 (설정 받기, docker compose pull, up -d)
 ```
+
+## 설정 바꾸기
+
+Terraform이 관리하는 설정(`host/compose.yaml`, `host/Caddyfile`, `examples/envs.yaml`, `examples/apps.yaml`, 변수)은 `./tf.sh apply` 다음 `./redeploy.sh`로 반영합니다.
+
+팀이 직접 넣는 비밀값은 SSM SecureString에 두고, 바꾼 뒤 `./redeploy.sh`를 실행합니다. Terraform은 이 값을 만들기만 하고 apply할 때 덮어쓰지 않습니다. 값은 Slack이나 Notion에 올리지 않습니다.
+
+| 파라미터 | 내용 | 넣는 방법 |
+| --- | --- | --- |
+| `/hopcharlie/db-passwords` | Plan이 참조하는 DB 비밀번호. 한 줄에 `이름=값` (`SRC_PGPASSWORD`, `GKE_MOIMROOM_PGPASSWORD` 등) | 아래 명령 |
+| `/hopcharlie/rclone-env` | 파일 이전에 쓰는 rclone 원격. 한 줄에 `RCLONE_CONFIG_<원격>_<옵션>=값` | 아래 명령 |
+| `/hopcharlie/kube/<이름>` | 클러스터마다 kubeconfig 하나 | `./put-kubeconfig.sh` |
+| `/hopcharlie/tailscale-authkey` | 있으면 호스트가 Tailscale에 붙음 | 아래 명령 |
+
+```bash
+# 파일 내용을 그대로 넣는다. 파일은 넣은 뒤 지운다.
+aws ssm put-parameter --profile hopcharlie --region ap-northeast-2 --overwrite \
+  --name /hopcharlie/db-passwords --type SecureString --value file://db-passwords.env
+aws ssm put-parameter --profile hopcharlie --region ap-northeast-2 --overwrite \
+  --name /hopcharlie/rclone-env --type SecureString --value file://rclone.env
+aws ssm put-parameter --profile hopcharlie --region ap-northeast-2 \
+  --name /hopcharlie/tailscale-authkey --type SecureString --value 'tskey-auth-...'
+./redeploy.sh
+```
+
+### 클러스터 연결
+
+호스트에는 aws CLI나 gke-gcloud-auth-plugin 같은 인증 플러그인이 없습니다. 그래서 클러스터마다 ServiceAccount 토큰으로 된 kubeconfig를 만들어 넣습니다.
+
+```bash
+# 그 클러스터의 관리자 권한 kubectl 컨텍스트에서
+../k8s/make-kubeconfig.sh gke-hopcharlie gke.kubeconfig moimroom   # 컨텍스트 이름은 examples/envs.yaml과 같게
+./put-kubeconfig.sh gke gke.kubeconfig
+rm gke.kubeconfig
+./redeploy.sh
+```
+
+- 권한은 `../k8s/hopcharlie-platform.yaml`에 있습니다. 클러스터 전체에서는 읽기만 하고(환경 상태, 보안 뷰), 이전에 필요한 변경 권한은 앱 namespace에서만 받습니다.
+- 클러스터 API가 private 주소라면, 호스트가 닿는 주소를 `SERVER=https://...`로 지정해서 kubeconfig를 만듭니다. 이때 호스트는 Tailscale로 닿습니다.
+- 토큰을 끊으려면 그 클러스터에서 `kubectl delete secret hopcharlie-platform-token -n hopcharlie-system`을 실행합니다.
+
+### Tailscale
+
+`/hopcharlie/tailscale-authkey`가 있으면 `sync.sh`가 Tailscale을 설치하고 `hopcharlie-mgmt`라는 이름으로 tailnet에 붙습니다. 이때 API와 게이트웨이 컨테이너는 MagicDNS(100.100.100.100)로 이름을 찾으므로, Plan의 `*.ts.net` DB 주소와 게이트웨이 백엔드 주소에 닿습니다. 일회용이 아닌 재사용 가능 키를 쓰고, 호스트를 다시 만들 일이 없으면 만료 기간은 짧게 둡니다. 실제 tailnet에서 아직 확인하지 않았으므로 처음 붙일 때 `tailscale status`와 컨테이너 안의 이름 해석을 확인합니다.
 
 ## 호스트에 들어가기
 
@@ -100,9 +148,9 @@ aws ssm start-session --profile hopcharlie --region ap-northeast-2 --target "$(.
 sudo -i; cd /opt/hopcharlie; docker compose ps; docker compose logs -f api
 ```
 
-- 설정 파일은 `/opt/hopcharlie/.env`(비밀값, 0600), `compose.yaml`, `Caddyfile`, `envs.yaml`입니다.
-- 클러스터 kubeconfig는 `/opt/hopcharlie/kube/config`에 둡니다. 소유자는 uid 10001입니다.
-- 게이트웨이 백엔드는 `.env`의 `GATEWAY_BACKENDS`에 있습니다. 클러스터가 생기면 실제 주소로 바꾸고 `docker compose up -d`를 실행합니다.
+- 설정 파일은 `/opt/hopcharlie/.env`, `db-passwords.env`, `rclone.env`(비밀값, 0600), `compose.yaml`, `Caddyfile`, `envs.yaml`, `apps.yaml`, `kube/<이름>`입니다. 모두 `sync.sh`가 SSM에서 받아 쓰므로 호스트에서 직접 고치지 않습니다. 직접 고친 내용은 다음 `./redeploy.sh` 때 사라집니다.
+- 마지막 동기화 기록은 `/var/log/hopcharlie-sync.log`에 있습니다.
+- 게이트웨이 백엔드는 Terraform 변수 `gateway_backends`입니다. 클러스터가 생기면 실제 주소로 바꾸고 `./tf.sh apply`, `./redeploy.sh` 순서로 반영합니다.
 - 게이트웨이가 쓰기를 붙잡은 채 엔진이 멈췄다면, 상태를 확인한 뒤 호스트에서 직접 풀 수 있습니다.
 
 ```bash
