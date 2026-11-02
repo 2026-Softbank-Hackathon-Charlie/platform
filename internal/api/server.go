@@ -152,7 +152,7 @@ func (s *Server) route(pattern string, need apiv1.Role, h http.HandlerFunc) {
 		} else {
 			h(rec, r.WithContext(ctx))
 		}
-		if need != "" && (!isRead(r.Method) || rec.status == http.StatusUnauthorized || rec.status == http.StatusForbidden) {
+		if need != "" && shouldAudit(pattern, r.Method, rec.status) {
 			s.audit(r, p, pattern, rec.status, note)
 		}
 	})
@@ -208,7 +208,7 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request) bool {
 	h.Add("Vary", "Origin")
 	h.Set("Access-Control-Expose-Headers", "Location, X-Request-Id")
 	if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-		h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, Last-Event-ID, X-Request-Id")
 		h.Set("Access-Control-Max-Age", "600")
 		w.WriteHeader(http.StatusNoContent)
@@ -234,6 +234,16 @@ func noteAudit(r *http.Request, key string, v any) {
 func actor(r *http.Request) string {
 	p, _ := auth.FromContext(r.Context())
 	return p.Name
+}
+
+// shouldAudit records state changes and every denied request. Written-record
+// batches are excluded unless denied: a load generator sends them every few
+// seconds, and they are data, not decisions an auditor needs to see.
+func shouldAudit(pattern, method string, status int) bool {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return true
+	}
+	return !isRead(method) && pattern != "POST /v1/written-records/{stream}"
 }
 
 func isRead(method string) bool {
