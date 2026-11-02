@@ -119,7 +119,7 @@ func (c *Client) send(ctx context.Context, r request) (*http.Response, error) {
 	for k, v := range r.header {
 		req.Header[k] = v
 	}
-	if r.body != nil {
+	if r.body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if req.Header.Get("Accept") == "" {

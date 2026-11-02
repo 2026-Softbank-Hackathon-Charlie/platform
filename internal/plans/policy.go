@@ -68,10 +68,10 @@ func (p Policy) checkParsed(pl *plan.Plan) error {
 			return err
 		}
 	}
-	if err := safeRelPath("target.manifest", pl.Target.Manifest); err != nil {
+	if err := checkManifest(pl.Target.Manifest); err != nil {
 		return err
 	}
-	if err := safeRelPath("verify.writtenRecords", pl.Verify.WrittenRecords); err != nil {
+	if err := checkWrittenRecords(pl.Verify.WrittenRecords); err != nil {
 		return err
 	}
 	if pl.Files != nil {

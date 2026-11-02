@@ -431,6 +431,179 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /v1/written-records/{stream}:
+    parameters:
+      - name: stream
+        in: path
+        required: true
+        description: 'Stream name, `^[a-z0-9][a-z0-9-]{0,62}$`. A plan refers to it as `verify.writtenRecords: "stream:<name>"`.'
+        schema: { type: string }
+    post:
+      tags: [migrations]
+      operationId: appendWrittenRecords
+      description: |
+        Record writes that a load generator saw succeed. When a run's plan sets
+        `verify.writtenRecords: "stream:<name>"`, the server writes every record
+        of the stream to a file right before the verify step, and the engine
+        checks that each one exists on the target database. Send records in
+        batches: every request is audited. Roles: agent, operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WrittenRecordsRequest" }
+      responses:
+        "202":
+          description: Stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WrittenRecordsAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        default: { $ref: "#/components/responses/Internal" }
+    get:
+      tags: [migrations]
+      operationId: getWrittenRecordStats
+      description: How many records a stream holds. A stream nobody wrote to has count 0.
+      responses:
+        "200":
+          description: The stream's numbers.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WrittenRecordStats" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/plans/{ref}/attachments/{name}:
+    parameters:
+      - $ref: "#/components/parameters/PlanRef"
+      - name: name
+        in: path
+        required: true
+        description: '`^[A-Za-z0-9._-]{1,100}$`, other than `.` and `..`.'
+        schema: { type: string }
+    put:
+      tags: [plans]
+      operationId: putPlanAttachment
+      description: |
+        Upload a file the plan refers to, such as the target CNPG Cluster
+        manifest (`target.manifest: "attachment:<name>"`). Allowed only while the
+        plan is `pending_approval`, so the approver approves fixed content.
+        Uploading the same name again replaces it. The body is the raw content,
+        at most 1 MiB. Approving a plan that refers to a missing attachment
+        fails with 409. Roles: agent, operator.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: Stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanAttachment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        default: { $ref: "#/components/responses/Internal" }
+    get:
+      tags: [plans]
+      operationId: getPlanAttachment
+      description: The attachment as uploaded. 404 `attachment_not_found` when the plan has no attachment of that name.
+      responses:
+        "200":
+          description: The content.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/apps:
+    get:
+      tags: [plans]
+      operationId: listApps
+      description: The applications in the server's `PLATFORM_APPS_FILE` and the environments each one runs in. Empty when the file is not set.
+      responses:
+        "200":
+          description: Apps in configuration order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/plans/draft:
+    post:
+      tags: [plans]
+      operationId: draftPlan
+      description: |
+        Build an engine plan for one app and route from the server's
+        configuration, so nobody writes plan JSON by hand. The draft is not
+        stored: submit it with `POST /v1/plans`, as is or edited.
+
+        - `id` is `<app>-<source>-to-<target>`; contexts come from the
+          environments, clusters and database hosts from the app.
+        - DSNs read the password from the environment's `passwordEnv` as `${VAR}`.
+        - `files` is set when both environments have a bucket, unless `files` is false.
+        - `gateway` is mode `http` with the platform gateway when the server has one, otherwise `none`.
+
+        Roles: agent, operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PlanDraftRequest" }
+      responses:
+        "200":
+          description: The draft plan.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnginePlan" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/migrations/{runId}/rollback:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    post:
+      tags: [migrations]
+      operationId: rollbackMigration
+      description: |
+        One-click rollback of a `succeeded` run: migrate back the way it came.
+        The server builds the reverse of the run's plan (source and target
+        swapped, files and gateway backends swapped, no target manifest because
+        the old source still exists as a replica), stores it as a new plan with
+        id `<plan id>-rollback`, approved by the caller, and starts it. The new
+        run has `rollbackOf` set. A run is rolled back at most once. Role operator.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RollbackRequest" }
+      responses:
+        "202":
+          description: The rollback run was created.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StartMigrationResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        default: { $ref: "#/components/responses/Internal" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -633,6 +806,10 @@ components:
         reviewedAt: { type: string, format: date-time }
         reviewComment: { type: string }
         runId: { type: string }
+        attachments:
+          type: array
+          description: Files uploaded for this plan (PUT /v1/plans/{ref}/attachments/{name}).
+          items: { $ref: "#/components/schemas/PlanAttachment" }
 
     PlanList:
       type: object
@@ -754,6 +931,7 @@ components:
         statusReason: { type: string, description: why the run ended the way it did }
         result: { $ref: "#/components/schemas/RunResult" }
         engine: { $ref: "#/components/schemas/EngineState" }
+        rollbackOf: { type: string, description: "the run this run rolls back (POST /v1/migrations/{runId}/rollback)" }
 
     RunResult:
       description: The numbers the console shows. Absent values were not measured (yet).
@@ -1075,3 +1253,110 @@ components:
           type: array
           items: { $ref: "#/components/schemas/AuditEntry" }
         nextBefore: { type: integer, format: int64, description: pass as `before` for the next page }
+
+    # ---------- plan tools: written records, attachments, apps, drafts, rollback ----------
+
+    WrittenRecord:
+      description: One write a load generator saw succeed, in the engine's written-records format.
+      type: object
+      additionalProperties: false
+      required: [table, pk]
+      properties:
+        table: { type: string, example: orders.orders, description: "schema.table or table" }
+        pk: { type: string, maxLength: 200, example: "42", description: 'the primary key as text; composite keys as "(a,b)"' }
+        at: { type: string, format: date-time, description: when the write succeeded; defaults to when the server received it }
+
+    WrittenRecordsRequest:
+      type: object
+      additionalProperties: false
+      required: [records]
+      properties:
+        records:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          items: { $ref: "#/components/schemas/WrittenRecord" }
+
+    WrittenRecordsAccepted:
+      type: object
+      required: [accepted]
+      properties:
+        accepted: { type: integer, description: records stored }
+
+    WrittenRecordStats:
+      type: object
+      required: [stream, count]
+      properties:
+        stream: { type: string }
+        count: { type: integer, format: int64 }
+        latestAt: { type: string, format: date-time, description: the newest record's time; absent when the stream is empty }
+
+    PlanAttachment:
+      type: object
+      required: [name, size, sha256]
+      properties:
+        name: { type: string, example: target.yaml }
+        size: { type: integer, format: int64, description: bytes }
+        sha256: { type: string, description: hex SHA-256 of the content }
+
+    AppList:
+      type: object
+      required: [apps]
+      properties:
+        apps:
+          type: array
+          items: { $ref: "#/components/schemas/App" }
+
+    App:
+      description: An application from PLATFORM_APPS_FILE.
+      type: object
+      required: [name, namespace, database, environments]
+      properties:
+        name: { type: string, example: shop }
+        namespace: { type: string, example: shop }
+        database: { $ref: "#/components/schemas/AppDatabase" }
+        environments:
+          description: The environments the app runs in, in PLATFORM_ENVS_FILE order.
+          type: array
+          items: { $ref: "#/components/schemas/AppEnvironment" }
+
+    AppDatabase:
+      type: object
+      required: [name, user, schemas]
+      properties:
+        name: { type: string, example: app }
+        user: { type: string, example: app }
+        schemas:
+          description: Schemas verification compares. Empty means the engine default (public).
+          type: array
+          items: { type: string }
+
+    AppEnvironment:
+      type: object
+      required: [env, cnpgCluster, dbHost]
+      properties:
+        env: { type: string, example: gke }
+        cnpgCluster: { type: string, example: shop-db-gke }
+        dbHost: { type: string, description: "host:port of the cluster's -rw service", example: "shop-db-gke-rw.shop.gke.ts.net:5432" }
+        bucket: { type: string, description: the rclone remote and bucket of the app's files, example: "gcs:shop-uploads-gke" }
+
+    PlanDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [app, source, target]
+      properties:
+        app: { type: string, example: shop }
+        source: { type: string, example: gke }
+        target: { type: string, example: eks }
+        files: { type: boolean, description: "false leaves object storage out even when both environments have a bucket" }
+        writtenRecordsStream: { type: string, description: 'sets verify.writtenRecords to "stream:<name>"' }
+
+    RollbackRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string, maxLength: 2000 }
+        autoSwitch:
+          type: boolean
+          default: true
+          description: Cut over as soon as data is in sync. false waits in awaiting_switch for /switch.

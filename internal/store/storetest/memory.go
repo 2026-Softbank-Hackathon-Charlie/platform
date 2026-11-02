@@ -30,6 +30,8 @@ type memory struct {
 	idem    map[string]idemEntry
 	seq     int64
 	auditID int64
+
+	tools memoryPlanTools // written records and plan attachments (memory_written.go)
 }
 
 // NewMemory returns an empty in-memory store with the same semantics as the

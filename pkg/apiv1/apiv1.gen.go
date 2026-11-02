@@ -216,6 +216,56 @@ type AbortRequest struct {
 	Reason *string `json:"reason,omitempty"`
 }
 
+// App An application from PLATFORM_APPS_FILE.
+type App struct {
+	Database AppDatabase `json:"database"`
+
+	// Environments The environments the app runs in, in PLATFORM_ENVS_FILE order.
+	Environments []AppEnvironment `json:"environments"`
+
+	// Name Example: shop
+	Name string `json:"name"`
+
+	// Namespace Example: shop
+	Namespace string `json:"namespace"`
+}
+
+// AppDatabase defines model for AppDatabase.
+type AppDatabase struct {
+	// Name Example: app
+	Name string `json:"name"`
+
+	// Schemas Schemas verification compares. Empty means the engine default (public).
+	Schemas []string `json:"schemas"`
+
+	// User Example: app
+	User string `json:"user"`
+}
+
+// AppEnvironment defines model for AppEnvironment.
+type AppEnvironment struct {
+	// Bucket the rclone remote and bucket of the app's files
+	//
+	// Example: gcs:shop-uploads-gke
+	Bucket *string `json:"bucket,omitempty"`
+
+	// CnpgCluster Example: shop-db-gke
+	CnpgCluster string `json:"cnpgCluster"`
+
+	// DbHost host:port of the cluster's -rw service
+	//
+	// Example: shop-db-gke-rw.shop.gke.ts.net:5432
+	DbHost string `json:"dbHost"`
+
+	// Env Example: gke
+	Env string `json:"env"`
+}
+
+// AppList defines model for AppList.
+type AppList struct {
+	Apps []App `json:"apps"`
+}
+
 // AuditEntry defines model for AuditEntry.
 type AuditEntry struct {
 	// Action Example: POST /v1/plans/{ref}/approve
@@ -523,6 +573,36 @@ type NodeSummary struct {
 	Total         int      `json:"total"`
 }
 
+// PlanAttachment defines model for PlanAttachment.
+type PlanAttachment struct {
+	// Name Example: target.yaml
+	Name string `json:"name"`
+
+	// Sha256 hex SHA-256 of the content
+	Sha256 string `json:"sha256"`
+
+	// Size bytes
+	Size int64 `json:"size"`
+}
+
+// PlanDraftRequest defines model for PlanDraftRequest.
+type PlanDraftRequest struct {
+	// App Example: shop
+	App string `json:"app"`
+
+	// Files false leaves object storage out even when both environments have a bucket
+	Files *bool `json:"files,omitempty"`
+
+	// Source Example: gke
+	Source string `json:"source"`
+
+	// Target Example: eks
+	Target string `json:"target"`
+
+	// WrittenRecordsStream sets verify.writtenRecords to "stream:<name>"
+	WrittenRecordsStream *string `json:"writtenRecordsStream,omitempty"`
+}
+
 // PlanEndpoint The non-secret view of a plan endpoint.
 type PlanEndpoint struct {
 	Cluster string  `json:"cluster"`
@@ -541,6 +621,9 @@ type PlanList struct {
 
 // PlanRecord defines model for PlanRecord.
 type PlanRecord struct {
+	// Attachments Files uploaded for this plan (PUT /v1/plans/{ref}/attachments/{name}).
+	Attachments *[]PlanAttachment `json:"attachments,omitempty"`
+
 	// Ref Example: pln_3f9c1a0b2d4e
 	Ref           string     `json:"ref"`
 	ReviewComment *string    `json:"reviewComment,omitempty"`
@@ -592,6 +675,13 @@ type ReviewRequest struct {
 // Role defines model for Role.
 type Role string
 
+// RollbackRequest defines model for RollbackRequest.
+type RollbackRequest struct {
+	// AutoSwitch Cut over as soon as data is in sync. false waits in awaiting_switch for /switch.
+	AutoSwitch *bool   `json:"autoSwitch,omitempty"`
+	Reason     *string `json:"reason,omitempty"`
+}
+
 // RouteRequest defines model for RouteRequest.
 type RouteRequest struct {
 	Backend string `json:"backend"`
@@ -620,7 +710,10 @@ type Run struct {
 
 	// Result The numbers the console shows. Absent values were not measured (yet).
 	Result RunResult `json:"result"`
-	RunId  string    `json:"runId"`
+
+	// RollbackOf the run this run rolls back (POST /v1/migrations/{runId}/rollback)
+	RollbackOf *string `json:"rollbackOf,omitempty"`
+	RunId      string  `json:"runId"`
 
 	// Source The non-secret view of a plan endpoint.
 	Source    PlanEndpoint `json:"source"`
@@ -786,6 +879,42 @@ type WeightsRequest struct {
 	ReadWeights map[string]int `json:"readWeights"`
 }
 
+// WrittenRecord One write a load generator saw succeed, in the engine's written-records format.
+type WrittenRecord struct {
+	// At when the write succeeded; defaults to when the server received it
+	At *time.Time `json:"at,omitempty"`
+
+	// Pk the primary key as text; composite keys as "(a,b)"
+	//
+	// Example: 42
+	Pk string `json:"pk"`
+
+	// Table schema.table or table
+	//
+	// Example: orders.orders
+	Table string `json:"table"`
+}
+
+// WrittenRecordStats defines model for WrittenRecordStats.
+type WrittenRecordStats struct {
+	Count int64 `json:"count"`
+
+	// LatestAt the newest record's time; absent when the stream is empty
+	LatestAt *time.Time `json:"latestAt,omitempty"`
+	Stream   string     `json:"stream"`
+}
+
+// WrittenRecordsAccepted defines model for WrittenRecordsAccepted.
+type WrittenRecordsAccepted struct {
+	// Accepted records stored
+	Accepted int `json:"accepted"`
+}
+
+// WrittenRecordsRequest defines model for WrittenRecordsRequest.
+type WrittenRecordsRequest struct {
+	Records []WrittenRecord `json:"records"`
+}
+
 // EnvName defines model for EnvName.
 type EnvName = string
 
@@ -854,11 +983,20 @@ type StartMigrationJSONRequestBody = StartMigrationRequest
 // AbortMigrationJSONRequestBody defines body for AbortMigration for application/json ContentType.
 type AbortMigrationJSONRequestBody = AbortRequest
 
+// RollbackMigrationJSONRequestBody defines body for RollbackMigration for application/json ContentType.
+type RollbackMigrationJSONRequestBody = RollbackRequest
+
 // SubmitPlanJSONRequestBody defines body for SubmitPlan for application/json ContentType.
 type SubmitPlanJSONRequestBody = EnginePlan
+
+// DraftPlanJSONRequestBody defines body for DraftPlan for application/json ContentType.
+type DraftPlanJSONRequestBody = PlanDraftRequest
 
 // ApprovePlanJSONRequestBody defines body for ApprovePlan for application/json ContentType.
 type ApprovePlanJSONRequestBody = ReviewRequest
 
 // RejectPlanJSONRequestBody defines body for RejectPlan for application/json ContentType.
 type RejectPlanJSONRequestBody = ReviewRequest
+
+// AppendWrittenRecordsJSONRequestBody defines body for AppendWrittenRecords for application/json ContentType.
+type AppendWrittenRecordsJSONRequestBody = WrittenRecordsRequest

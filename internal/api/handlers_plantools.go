@@ -1,0 +1,235 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"regexp"
+	"time"
+	"unicode/utf8"
+
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
+)
+
+// --- written records ---
+
+// MaxWrittenRecords bounds one POST /v1/written-records/{stream}.
+const MaxWrittenRecords = 5000
+
+// maxPKChars bounds a written record's primary key text.
+const maxPKChars = 200
+
+// writtenTable is "schema.table" or "table" with unquoted PostgreSQL identifiers.
+var writtenTable = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]{0,62}(\.[A-Za-z_][A-Za-z0-9_$]{0,62})?$`)
+
+// POST /v1/written-records/{stream}: writes a load generator saw succeed.
+func (s *Server) appendWrittenRecords(w http.ResponseWriter, r *http.Request) {
+	stream := r.PathValue("stream")
+	noteAudit(r, "stream", stream)
+	if !plans.StreamName.MatchString(stream) {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "stream name must match "+plans.StreamName.String())
+		return
+	}
+	var req apiv1.WrittenRecordsRequest
+	if !s.decode(w, r, &req, true) {
+		return
+	}
+	n := len(req.Records)
+	if n < 1 || n > MaxWrittenRecords {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("records must hold 1 to %d records, got %d", MaxWrittenRecords, n))
+		return
+	}
+	now := time.Now().UTC()
+	recs := make([]store.WrittenRecord, n)
+	for i, rec := range req.Records {
+		switch {
+		case !writtenTable.MatchString(rec.Table):
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("records[%d].table %q must be schema.table or table", i, rec.Table))
+			return
+		case rec.Pk == "" || utf8.RuneCountInString(rec.Pk) > maxPKChars:
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("records[%d].pk must be 1 to %d characters", i, maxPKChars))
+			return
+		}
+		at := now
+		if rec.At != nil {
+			at = rec.At.UTC()
+		}
+		recs[i] = store.WrittenRecord{Table: rec.Table, PK: rec.Pk, At: at, ReceivedAt: now}
+	}
+	if err := s.d.Store.AppendWrittenRecords(context.WithoutCancel(r.Context()), stream, recs); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	noteAudit(r, "accepted", n)
+	writeJSON(w, http.StatusAccepted, apiv1.WrittenRecordsAccepted{Accepted: n})
+}
+
+func (s *Server) writtenRecordStats(w http.ResponseWriter, r *http.Request) {
+	stream := r.PathValue("stream")
+	if !plans.StreamName.MatchString(stream) {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "stream name must match "+plans.StreamName.String())
+		return
+	}
+	st, err := s.d.Store.WrittenRecordStats(r.Context(), stream)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apiv1.WrittenRecordStats{Stream: stream, Count: st.Count, LatestAt: st.LatestAt})
+}
+
+// --- plan attachments ---
+
+// PUT /v1/plans/{ref}/attachments/{name}: the body is the file as is.
+func (s *Server) putPlanAttachment(w http.ResponseWriter, r *http.Request) {
+	ref, name := r.PathValue("ref"), r.PathValue("name")
+	noteAudit(r, "planRef", ref)
+	noteAudit(r, "attachment", name)
+	if !plans.ValidAttachmentName(name) {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "attachment name must be 1 to 100 letters, digits, '.', '_' or '-', and not . or ..")
+		return
+	}
+	body, ok := s.readBody(w, r)
+	if !ok {
+		return
+	}
+	if len(body) == 0 {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "the attachment is empty")
+		return
+	}
+	info, err := s.d.Plans.PutAttachment(context.WithoutCancel(r.Context()), ref, name, body, actor(r))
+	if err != nil {
+		s.planError(w, r, err)
+		return
+	}
+	noteAudit(r, "size", info.Size)
+	noteAudit(r, "sha256", info.Sha256)
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *Server) getPlanAttachment(w http.ResponseWriter, r *http.Request) {
+	ref, name := r.PathValue("ref"), r.PathValue("name")
+	a, err := s.d.Plans.GetAttachment(r.Context(), ref, name)
+	if errors.Is(err, plans.ErrAttachmentNotFound) {
+		s.fail(w, r, http.StatusNotFound, "attachment_not_found", "the plan has no attachment named "+name)
+		return
+	}
+	if err != nil {
+		s.planError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(a.Content)
+}
+
+// --- apps and plan drafts ---
+
+func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
+	list := []apiv1.App{}
+	if s.d.Apps != nil {
+		list = s.d.Apps.List()
+	}
+	writeJSON(w, http.StatusOK, apiv1.AppList{Apps: list})
+}
+
+// POST /v1/plans/draft: an engine plan built from the apps file. Not stored.
+func (s *Server) draftPlan(w http.ResponseWriter, r *http.Request) {
+	var req apiv1.PlanDraftRequest
+	if !s.decode(w, r, &req, true) {
+		return
+	}
+	noteAudit(r, "app", req.App)
+	noteAudit(r, "route", req.Source+" -> "+req.Target)
+	if s.d.Apps == nil {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "this server has no apps configured (PLATFORM_APPS_FILE)")
+		return
+	}
+	p, err := s.d.Apps.Draft(req)
+	if err != nil {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// --- rollback ---
+
+// POST /v1/migrations/{runId}/rollback: migrate a succeeded run back. The
+// operator's call is the human approval of the reverse plan.
+func (s *Server) rollbackMigration(w http.ResponseWriter, r *http.Request) {
+	var req apiv1.RollbackRequest
+	if !s.decode(w, r, &req, false) {
+		return
+	}
+	id := r.PathValue("runId")
+	noteAudit(r, "fromRun", id)
+	if req.Reason != nil {
+		noteAudit(r, "reason", *req.Reason)
+	}
+	// Like a start, every write below must finish even if the client goes away.
+	ctx := context.WithoutCancel(r.Context())
+
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+
+	orig, err := s.d.Runs.Get(ctx, id)
+	if err != nil {
+		s.runError(w, r, err)
+		return
+	}
+	if orig.Status != apiv1.RunStatusSucceeded {
+		s.fail(w, r, http.StatusConflict, "run_state_conflict", fmt.Sprintf("run is %s; only a succeeded run can be rolled back", orig.Status))
+		return
+	}
+	list, err := s.d.Runs.List(ctx)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	for _, run := range list {
+		if run.RollbackOf != nil && *run.RollbackOf == id {
+			s.fail(w, r, http.StatusConflict, "run_state_conflict", "run "+run.RunId+" already rolls back this run; resume or watch it instead")
+			return
+		}
+	}
+
+	comment := "rollback of run " + id
+	if reason := deref(req.Reason); reason != "" {
+		comment += ": " + reason
+	}
+	rec, err := s.d.Plans.Rollback(ctx, orig.PlanRef, actor(r), comment)
+	if err != nil {
+		s.planError(w, r, err)
+		return
+	}
+	noteAudit(r, "planRef", rec.Ref)
+	p, err := s.d.Plans.Reserve(ctx, rec.Ref)
+	if err != nil {
+		s.planError(w, r, err)
+		return
+	}
+	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
+		PlanRef:    rec.Ref,
+		Plan:       p,
+		Actor:      actor(r),
+		AutoSwitch: req.AutoSwitch == nil || *req.AutoSwitch,
+		RollbackOf: id,
+	})
+	if err != nil {
+		s.d.Plans.Release(ctx, rec.Ref) // stays approved; it can be started by hand
+		s.runError(w, r, err)
+		return
+	}
+	if err := s.d.Plans.Started(ctx, rec.Ref, run.RunId); err != nil {
+		s.cfg.Log.Error("link plan to run", "plan", rec.Ref, "run", run.RunId, "err", err)
+	}
+	noteAudit(r, "runId", run.RunId)
+	noteAudit(r, "autoSwitch", run.AutoSwitch)
+	w.Header().Set("Location", "/v1/migrations/"+run.RunId)
+	writeJSON(w, http.StatusAccepted, startResponse(run.RunId, rec.Ref))
+}

@@ -107,6 +107,7 @@ type StartOptions struct {
 	Actor      string
 	AutoSwitch bool
 	Canary     *apiv1.CanaryOptions
+	RollbackOf string // the run this run rolls back, if any
 }
 
 // Runner starts runs and tracks the active ones.
@@ -147,6 +148,7 @@ type live struct {
 	plan     *plan.Plan
 	eng      Engine
 	clusters []string
+	stream   string // the written-records stream verify reads, if any (written.go)
 	cancel   context.CancelFunc
 	done     chan struct{} // closed once everything is persisted and subscribers are closed
 
@@ -190,6 +192,9 @@ func (r *Runner) Start(ctx context.Context, o StartOptions) (apiv1.Run, error) {
 	if canary != nil {
 		doc.Canary = &apiv1.CanaryResult{Options: *canary, Steps: []apiv1.CanaryStep{}}
 	}
+	if o.RollbackOf != "" {
+		doc.RollbackOf = &o.RollbackOf
+	}
 	return r.launch(ctx, o.Plan, "", doc)
 }
 
@@ -218,6 +223,7 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		return apiv1.Run{}, fmt.Errorf("%w: %w", ErrEngineInit, err)
 	}
 	l.eng, l.id = eng, eng.RunID()
+	r.useWrittenStream(l)
 	doc.RunId = l.id
 	if doc.Result.Requests != nil {
 		l.prevReq = *doc.Result.Requests
@@ -362,6 +368,9 @@ func (r *Runner) runSteps(ctx context.Context, l *live, steps []string) error {
 	for _, step := range steps {
 		if stepSucceeded(l.eng, step) {
 			continue
+		}
+		if step == engine.StepVerify {
+			r.writeWritten(ctx, l)
 		}
 		err := l.eng.RunStep(ctx, step)
 		l.syncEngine()
