@@ -17,6 +17,7 @@ require (
 	github.com/getkin/kin-openapi v0.142.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/prometheus/client_golang v1.25.0
+	go.yaml.in/yaml/v3 v3.0.5
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
@@ -79,7 +80,6 @@ require (
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
