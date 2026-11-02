@@ -286,7 +286,7 @@ func awsError(op string, err error) (apiv1.SecuritySourceStatus, string) {
 	case errors.As(err, &ae):
 		switch code := ae.ErrorCode(); code {
 		case "AccessDenied", "AccessDeniedException", "UnauthorizedOperation", "AuthorizationError", "UnauthorizedAccess":
-			return apiv1.SecuritySourceStatusError, fmt.Sprintf("%s: access denied (%s); the server's AWS identity needs the SecurityAudit policy", op, code)
+			return apiv1.SecuritySourceStatusError, fmt.Sprintf("%s: access denied (%s); the server's AWS identity needs this read in its read-security-configuration policy (deploy/aws/main.tf)", op, code)
 		case "InvalidClientTokenId", "ExpiredToken", "ExpiredTokenException", "UnrecognizedClientException", "SignatureDoesNotMatch":
 			return apiv1.SecuritySourceStatusError, fmt.Sprintf("%s: AWS credentials rejected (%s)", op, code)
 		default:
