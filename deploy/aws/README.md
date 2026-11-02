@@ -4,7 +4,7 @@
 
 ## 관리 EKS로 옮기는 중
 
-2026-11-02 팀 회의에서 플랫폼을 infra 레포의 관리 EKS(`charlie-dev-management`)로 옮기기로 했습니다. 클러스터와 그 위의 pod는 infra 레포가 Argo CD로 배포합니다(infra `docs/adr/0014`, `helm/charts/hopcharlie-platform`). 이 폴더는 플랫폼 전용 AWS 리소스를 계속 맡습니다.
+2026-11-02 팀 회의에서 플랫폼을 infra 레포의 관리 EKS(`charlie-dev-management`)로 옮기기로 했습니다. 클러스터와 그 위의 pod는 infra 레포가 Argo CD로 배포합니다(infra `docs/adr/0015`, `helm/charts/hopcharlie-platform`). 이 폴더는 플랫폼 전용 AWS 리소스를 계속 맡습니다.
 
 | 파일 | 내용 |
 | --- | --- |
@@ -21,12 +21,12 @@ pod는 지금과 같은 SSM 파라미터(`/hopcharlie/*`)를 init 컨테이너�
    ```bash
    export CLOUDFLARE_API_TOKEN=...   # Zone.DNS:Edit 권한
    ./tf.sh -chdir=dns init
-   ./tf.sh -chdir=dns apply -var cloudflare_zone_id=<영역 ID>
+   ./tf.sh -chdir=dns apply
    ./tf.sh -chdir=dns output -raw certificate_arn
    ```
 4. infra에서 baseline `externalAlb`(인증서 ARN)와 플랫폼 `ingress.enabled`를 켜는 PR을 올린다. ALB가 생기면 레코드를 연결한다.
    ```bash
-   ./tf.sh -chdir=dns apply -var cloudflare_zone_id=<영역 ID> -var alb_name=charlie-management-external
+   ./tf.sh -chdir=dns apply -var alb_name=charlie-management-external
    API_URL=https://api.hopcharlie.dev ./push-console.sh
    ```
 5. 새 콘솔 이미지의 digest를 infra values에 반영하고, `charlie login --server https://api.hopcharlie.dev`로 확인한 뒤 EC2 호스트를 정리한다.

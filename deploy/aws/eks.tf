@@ -1,4 +1,4 @@
-# The platform on the management EKS cluster (infra repo, ADR 0014). The infra
+# The platform on the management EKS cluster (infra repo, ADR 0015). The infra
 # repo owns the cluster and deploys the pods with Argo CD; this stack gives
 # them an AWS identity. EKS Pod Identity binds the role to the ServiceAccount
 # charlie-platform/hopcharlie-platform, and the role has the same reads as the
