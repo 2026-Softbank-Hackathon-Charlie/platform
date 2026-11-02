@@ -1,5 +1,10 @@
 name: ci
 
+# Target: a PR is checked in under a minute. Most of a cold run is compiling
+# client-go and the AWS SDK (twice: plain and -race), so PRs reuse the Go
+# module and build cache that main saves, recompile only what changed, and
+# rerun only the tests whose inputs changed (go test's own result cache).
+
 on:
   pull_request:
   push:
@@ -16,23 +21,19 @@ jobs:
   go:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:17.11-alpine
-        env:
-          POSTGRES_USER: charlie
-          POSTGRES_PASSWORD: charlie
-          POSTGRES_DB: charlie
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U charlie"
-          --health-interval 5s
-          --health-retries 20
     env:
       GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
       # The PostgreSQL store tests run only when this is set.
       PLATFORM_TEST_DATABASE_URL: postgres://charlie:charlie@localhost:5432/charlie?sslmode=disable
     steps:
+      # Started first and left to boot while the rest of the job runs; a
+      # service container would block the job until it is healthy.
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name pg -p 5432:5432 \
+            -e POSTGRES_USER=charlie -e POSTGRES_PASSWORD=charlie -e POSTGRES_DB=charlie \
+            postgres:17.11-alpine >/dev/null
+
       - uses: actions/checkout@v5
 
       # migration-engine is a private module. MODULE_READ_TOKEN is a repository
@@ -50,11 +51,22 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false # restored below from main's cache instead
 
-      - name: Build and vet
-        run: |
-          go build ./...
-          go vet ./...
+      - name: Restore Go cache from main
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-${{ runner.os }}-
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Formatting
         run: |
@@ -68,19 +80,46 @@ jobs:
           go generate ./pkg/apiv1/...
           git diff --exit-code -- pkg/apiv1
 
+      # No -count=1: packages whose code, test files and environment did not
+      # change since main's run reuse their cached result.
       - name: Test (race, PostgreSQL)
-        run: go test -race -count=1 ./...
+        run: |
+          for _ in $(seq 1 30); do
+            docker exec pg pg_isready -U charlie -q && break
+            sleep 1
+          done
+          go test -race ./...
+
+      # Only main saves, so a PR spends no time uploading and always starts
+      # from main's latest state.
+      - name: Save Go cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
   terraform:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugins
     steps:
       - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.17.1
+          terraform_wrapper: false
+      - name: Restore provider cache
+        uses: actions/cache@v4
+        with:
+          path: .terraform-plugins
+          key: tf-${{ runner.os }}-${{ hashFiles('deploy/aws/.terraform.lock.hcl', 'deploy/aws/state/.terraform.lock.hcl') }}
       - name: Format and validate (no backend, no AWS)
         run: |
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
           terraform fmt -check -recursive deploy/aws
           for dir in deploy/aws deploy/aws/state; do
             terraform -chdir="$dir" init -backend=false -input=false >/dev/null
