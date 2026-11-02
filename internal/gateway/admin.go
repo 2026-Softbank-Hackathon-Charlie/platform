@@ -97,15 +97,17 @@ func (g *Gateway) handleHold(w http.ResponseWriter, r *http.Request) {
 	// writes went to, and the waiting writes can safely follow them.
 	left := g.inflightWrites
 	gen := g.releaseLocked()
+	// Read under the lock: released writes decrement gen.pending as they go.
+	released, backend := gen.pending, gen.backend.name
 	snap = g.snapshotLocked()
 	g.mu.Unlock()
 	g.save(snap)
 	g.log.Warn("admin action", "action", "hold", "changed", changed, "hold", id, "result", "drain_timeout",
 		"reverted", true, "err", drainErr, "inFlightAtHold", inFlight, "inFlightLeft", left,
-		"released", gen.pending, "backend", gen.backend.name, "waitedMillis", time.Since(start).Milliseconds())
+		"released", released, "backend", backend, "waitedMillis", time.Since(start).Milliseconds())
 	writeError(w, http.StatusGatewayTimeout, "drain_timeout",
 		fmt.Sprintf("%d in-flight writes did not finish within %s; the hold was reverted and writes flow to %s again",
-			left, g.cfg.DrainTimeout, gen.backend.name))
+			left, g.cfg.DrainTimeout, backend))
 }
 
 // handleRelease is idempotent. Held writes go to the write backend as it is
