@@ -13,11 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"strconv"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -47,26 +43,35 @@ func New(policy Policy, st store.Store) *Service {
 // Parse applies the policy and parses raw plan JSON. Secrets are expanded from
 // the server environment, so call it again at start time rather than caching.
 func (s *Service) Parse(raw []byte) (*plan.Plan, error) {
-	if err := s.policy.checkRaw(raw); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+	p, _, err := s.parse(raw)
+	return p, err
+}
+
+// parse also returns the plan's summary, built from the plan as submitted:
+// nothing expanded from the environment ever reaches it or an error.
+func (s *Service) parse(raw []byte) (*plan.Plan, apiv1.PlanSummary, error) {
+	hosts, err := s.policy.checkRefs(raw)
+	if err != nil {
+		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
+	// The engine's errors name fields, never expanded values.
 	p, err := plan.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	if err := s.policy.checkParsed(p); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	return p, nil
+	return p, summarize(p, hosts), nil
 }
 
 // Submit validates and stores a plan awaiting approval.
 func (s *Service) Submit(ctx context.Context, raw []byte, actor string) (apiv1.PlanRecord, error) {
-	p, err := s.Parse(raw)
+	p, summary, err := s.parse(raw)
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
-	sum, err := json.Marshal(Summarize(p))
+	sum, err := json.Marshal(summary)
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
@@ -76,6 +81,7 @@ func (s *Service) Submit(ctx context.Context, raw []byte, actor string) (apiv1.P
 		Status:      store.PlanPending,
 		Summary:     sum,
 		Raw:         append([]byte(nil), raw...),
+		Revision:    1,
 		SubmittedBy: actor,
 		SubmittedAt: s.now(),
 	}
@@ -114,23 +120,50 @@ func (s *Service) List(ctx context.Context) ([]apiv1.PlanRecord, error) {
 	return out, nil
 }
 
-// Approve records human approval. Approving an approved plan is a no-op.
-func (s *Service) Approve(ctx context.Context, ref, actor, comment string) (apiv1.PlanRecord, error) {
-	if err := s.requireAttachments(ctx, ref); err != nil {
+// Approve records human approval of the plan at revision, the
+// PlanRecord.revision the approver reviewed. A plan with attachments needs
+// it, so content uploaded after the review is never approved; for other
+// plans it is checked when given. Approving an approved plan again is a no-op.
+func (s *Service) Approve(ctx context.Context, ref, actor, comment string, revision *int64) (apiv1.PlanRecord, error) {
+	row, err := s.get(ctx, ref)
+	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
+	attached, err := s.store.ListPlanAttachments(ctx, []string{ref})
+	if err != nil {
+		return apiv1.PlanRecord{}, err
+	}
+	if err := requireAttachments(row, attached); err != nil {
+		return apiv1.PlanRecord{}, err
+	}
+	want := row.Revision
+	switch {
+	case revision != nil:
+		want = *revision
+	case len(attached) > 0:
+		return apiv1.PlanRecord{}, fmt.Errorf("%w: plan %s has attachments, so approving it needs the revision you reviewed (now %d): send \"revision\", or use charlie plan approve",
+			ErrWrongStatus, ref, row.Revision)
+	}
 	now := s.now()
-	row, err := s.transition(ctx, ref, []string{store.PlanPending}, store.PlanApproved,
-		store.PlanUpdate{ReviewedBy: actor, ReviewedAt: &now, ReviewComment: comment})
+	// IfRevision makes the check and the approval one write: an upload that
+	// lands in between changes the revision and the approval fails.
+	next, err := s.transition(ctx, ref, []string{store.PlanPending}, store.PlanApproved,
+		store.PlanUpdate{ReviewedBy: actor, ReviewedAt: &now, ReviewComment: comment, IfRevision: want})
 	if errors.Is(err, ErrWrongStatus) {
-		if cur, gerr := s.get(ctx, ref); gerr == nil && cur.Status == store.PlanApproved {
-			return s.recordOf(ctx, cur)
+		if cur, gerr := s.get(ctx, ref); gerr == nil && (cur.Status == store.PlanPending || cur.Status == store.PlanApproved) {
+			if cur.Revision != want {
+				return apiv1.PlanRecord{}, fmt.Errorf("%w: plan %s changed since you reviewed it (revision %d, now %d); review it again",
+					ErrWrongStatus, ref, want, cur.Revision)
+			}
+			if cur.Status == store.PlanApproved {
+				return s.recordOf(ctx, cur)
+			}
 		}
 	}
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
-	return s.recordOf(ctx, row)
+	return s.recordOf(ctx, next)
 }
 
 // Reject records that a human refused the plan. A rejected plan never starts.
@@ -144,22 +177,32 @@ func (s *Service) Reject(ctx context.Context, ref, actor, comment string) (apiv1
 	return s.recordOf(ctx, row)
 }
 
-// Reserve moves an approved plan to starting and returns the parsed plan.
+// Reserved is an approved plan that one caller may now start.
+type Reserved struct {
+	// Plan has secrets expanded: it goes to the engine and nowhere else.
+	Plan *plan.Plan
+	// Summary is built from the plan as submitted, for the run record.
+	Summary apiv1.PlanSummary
+	// RollbackOf is the run this plan rolls back, if any.
+	RollbackOf string
+}
+
+// Reserve moves an approved plan to starting and parses it.
 // Exactly one caller wins; it must call Started or Release afterwards.
-func (s *Service) Reserve(ctx context.Context, ref string) (*plan.Plan, error) {
+func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 	row, err := s.transition(ctx, ref, []string{store.PlanApproved}, store.PlanStarting, store.PlanUpdate{})
 	if err != nil {
-		return nil, err
+		return Reserved{}, err
 	}
-	p, err := s.Parse(row.Raw) // re-parse: secrets come from the environment at start time
+	p, sum, err := s.parse(row.Raw) // re-parse: secrets come from the environment at start time
 	if err == nil {
 		err = s.materialize(ctx, ref, p)
 	}
 	if err != nil {
 		s.Release(ctx, ref)
-		return nil, err
+		return Reserved{}, err
 	}
-	return p, nil
+	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf}, nil
 }
 
 // Load re-parses a started plan, for resuming its run.
@@ -244,12 +287,14 @@ func (s *Service) transition(ctx context.Context, ref string, from []string, to 
 	return row, err
 }
 
-// Summarize is the non-secret view of a plan.
-func Summarize(p *plan.Plan) apiv1.PlanSummary {
+// summarize is the non-secret view of a plan. hosts come from the DSNs as
+// submitted (Policy.checkRefs), so an approver sees where each password would
+// be sent and nothing expanded from the environment.
+func summarize(p *plan.Plan, hosts dbHosts) apiv1.PlanSummary {
 	return apiv1.PlanSummary{
 		PlanId:      p.ID,
-		Source:      Endpoint(p.Source),
-		Target:      Endpoint(p.Target),
+		Source:      endpoint(p.Source, hosts.source),
+		Target:      endpoint(p.Target, hosts.target),
 		Files:       p.Files != nil,
 		GatewayMode: p.Gateway.Mode,
 		FenceGate:   *p.Verify.FenceGate,
@@ -257,33 +302,23 @@ func Summarize(p *plan.Plan) apiv1.PlanSummary {
 	}
 }
 
-// Endpoint drops the DSN and manifest from a plan endpoint. It keeps the
-// DSN's host:port so an approver can see where the password would be sent.
-func Endpoint(e plan.Endpoint) apiv1.PlanEndpoint {
+// endpoint drops the DSN and manifest from a plan endpoint.
+func endpoint(e plan.Endpoint, dbHost string) apiv1.PlanEndpoint {
 	ep := apiv1.PlanEndpoint{Env: e.Env, Namespace: e.Namespace, Cluster: e.Cluster}
 	if e.Context != "" {
 		ep.Context = &e.Context
 	}
-	if h := dsnHost(e.DSN); h != "" {
-		ep.DbHost = &h
+	if dbHost != "" {
+		ep.DbHost = &dbHost
 	}
 	return ep
-}
-
-// dsnHost returns host:port of a DSN, or "" when it cannot be parsed. It never
-// returns credentials.
-func dsnHost(dsn string) string {
-	cfg, err := pgconn.ParseConfig(dsn)
-	if err != nil || cfg.Host == "" {
-		return ""
-	}
-	return net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port)))
 }
 
 func record(row store.Plan) (apiv1.PlanRecord, error) {
 	rec := apiv1.PlanRecord{
 		Ref:         row.Ref,
 		Status:      apiv1.PlanStatus(row.Status),
+		Revision:    row.Revision,
 		SubmittedBy: row.SubmittedBy,
 		SubmittedAt: row.SubmittedAt,
 		ReviewedAt:  row.ReviewedAt,
@@ -299,6 +334,9 @@ func record(row store.Plan) (apiv1.PlanRecord, error) {
 	}
 	if row.RunID != "" {
 		rec.RunId = &row.RunID
+	}
+	if row.RollbackOf != "" {
+		rec.RollbackOf = &row.RollbackOf
 	}
 	return rec, nil
 }

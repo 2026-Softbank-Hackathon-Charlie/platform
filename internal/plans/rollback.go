@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -13,12 +14,13 @@ import (
 
 const rollbackSuffix = "-rollback"
 
-// Rollback stores the reverse of plan ref as a new plan that is already
-// approved: the operator asking for the rollback is the human approval, and
-// comment records why. The reverse is built from the plan JSON as submitted,
-// so ${VAR} references stay unexpanded and no secret reaches the store. It
-// passes the same policy as a submitted plan.
-func (s *Service) Rollback(ctx context.Context, ref, actor, comment string) (apiv1.PlanRecord, error) {
+// Rollback stores the reverse of plan ref, the plan of run runID, as a new
+// plan that is already approved: the operator asking for the rollback is the
+// human approval, and comment records why. The reverse is built from the plan
+// JSON as submitted, so ${VAR} references stay unexpanded and no secret
+// reaches the store. It passes the same policy as a submitted plan. A run has
+// at most one rollback plan (FindRollback); a second one is ErrWrongStatus.
+func (s *Service) Rollback(ctx context.Context, runID, ref, actor, comment string) (apiv1.PlanRecord, error) {
 	orig, err := s.get(ctx, ref)
 	if err != nil {
 		return apiv1.PlanRecord{}, err
@@ -27,11 +29,11 @@ func (s *Service) Rollback(ctx context.Context, ref, actor, comment string) (api
 	if err != nil {
 		return apiv1.PlanRecord{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	p, err := s.Parse(raw)
+	p, summary, err := s.parse(raw)
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
-	sum, err := json.Marshal(Summarize(p))
+	sum, err := json.Marshal(summary)
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
@@ -42,16 +44,38 @@ func (s *Service) Rollback(ctx context.Context, ref, actor, comment string) (api
 		Status:        store.PlanApproved,
 		Summary:       sum,
 		Raw:           raw,
+		Revision:      1,
+		RollbackOf:    runID,
 		SubmittedBy:   actor,
 		SubmittedAt:   now,
 		ReviewedBy:    actor,
 		ReviewedAt:    &now,
 		ReviewComment: comment,
 	}
-	if err := s.store.CreatePlan(ctx, row); err != nil {
+	err = s.store.CreatePlan(ctx, row)
+	if errors.Is(err, store.ErrConflict) {
+		return apiv1.PlanRecord{}, fmt.Errorf("%w: %v", ErrWrongStatus, err)
+	}
+	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
 	return s.recordOf(ctx, row)
+}
+
+// FindRollback returns the plan that rolls back run runID, if an earlier
+// rollback created one. Rejected plans do not count.
+func (s *Service) FindRollback(ctx context.Context, runID string) (apiv1.PlanRecord, bool, error) {
+	rows, err := s.store.ListPlans(ctx)
+	if err != nil {
+		return apiv1.PlanRecord{}, false, err
+	}
+	for _, row := range rows {
+		if row.RollbackOf == runID && row.Status != store.PlanRejected {
+			rec, err := s.recordOf(ctx, row)
+			return rec, err == nil, err
+		}
+	}
+	return apiv1.PlanRecord{}, false, nil
 }
 
 // reversePlan swaps source and target of a submitted plan: the endpoints

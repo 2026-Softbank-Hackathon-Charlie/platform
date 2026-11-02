@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -141,6 +142,54 @@ func TestOpenConcurrent(t *testing.T) {
 	for range n {
 		if err := <-errs; err != nil {
 			t.Fatalf("concurrent Open: %v", err)
+		}
+	}
+}
+
+// Plans stored before 0004_plan_revision get a revision that counts their
+// attachments, so an approval of such a plan still has to name it.
+func TestMigrationPlanRevisionCountsExistingAttachments(t *testing.T) {
+	schema, u := newSchema(t)
+	ctx := t.Context()
+	conn, err := pgx.Connect(ctx, testDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, "SET search_path TO "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	versions, _ := migrationFiles(t)
+	if _, err := conn.Exec(ctx, `CREATE TABLE schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range versions {
+		if v >= "0004" {
+			break
+		}
+		sql, err := os.ReadFile(filepath.Join("migrations", v+".sql"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("%s: %v", v, err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := conn.Exec(ctx, `INSERT INTO plans (ref, status) VALUES ('pln_a', 'pending_approval'), ('pln_b', 'approved');
+		INSERT INTO plan_attachments (ref, name, content, sha256, size) VALUES
+			('pln_a', 'target.yaml', '', '', 0), ('pln_a', 'values.yaml', '', '', 0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	s := openSchema(t, u)
+	defer s.Close()
+	for ref, want := range map[string]int64{"pln_a": 3, "pln_b": 1} {
+		p, err := s.GetPlan(ctx, ref)
+		if err != nil || p.Revision != want || p.RollbackOf != "" {
+			t.Errorf("%s: revision %d rollbackOf %q (%v), want revision %d", ref, p.Revision, p.RollbackOf, err, want)
 		}
 	}
 }

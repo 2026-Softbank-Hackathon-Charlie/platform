@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
@@ -50,8 +51,9 @@ type Environment struct {
 	// DBPort defaults to 5432.
 	DBPort int `json:"dbPort,omitempty"`
 	// PasswordEnv names the server environment variable holding the database
-	// password. Plans refer to it as ${VAR}; it is added to the plan policy's
-	// allowlist.
+	// password. Plans refer to it as ${VAR}, as the password of a DSN to
+	// DBHost:DBPort and no other host. It must end in _PGPASSWORD and not start
+	// with PLATFORM_ or AWS_ (plans.CheckPasswordEnv).
 	PasswordEnv string `json:"passwordEnv"`
 	// Bucket is the rclone remote and bucket of the app's files, e.g. "gcs:moimroom-photos-gke".
 	Bucket string `json:"bucket,omitempty"`
@@ -62,7 +64,6 @@ var (
 	dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 	dbName   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$`)
 	hostName = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
-	envVar   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 // LoadConfig reads an apps file (YAML) strictly.
@@ -129,8 +130,9 @@ func New(cfg Config, environments []envs.EnvConfig, gatewayURL string) (*Catalog
 				return nil, fmt.Errorf("app %q in %s: dbHost %q is not a host name", a.Name, name, e.DBHost)
 			case e.DBPort < 0 || e.DBPort > 65535:
 				return nil, fmt.Errorf("app %q in %s: dbPort %d is out of range", a.Name, name, e.DBPort)
-			case !envVar.MatchString(e.PasswordEnv):
-				return nil, fmt.Errorf("app %q in %s: passwordEnv %q is not an environment variable name", a.Name, name, e.PasswordEnv)
+			}
+			if err := plans.CheckPasswordEnv(e.PasswordEnv); err != nil {
+				return nil, fmt.Errorf("app %q in %s: passwordEnv: %w", a.Name, name, err)
 			}
 			if e.DBPort == 0 {
 				e.DBPort = 5432
@@ -144,17 +146,21 @@ func New(cfg Config, environments []envs.EnvConfig, gatewayURL string) (*Catalog
 	return &Catalog{apps: out, envs: slices.Clone(environments), gatewayURL: gatewayURL}, nil
 }
 
-// PasswordEnvs lists every passwordEnv once, for the plan policy's allowlist.
-func (c *Catalog) PasswordEnvs() []string {
-	var out []string
+// PasswordHosts maps every passwordEnv to the database hosts ("host:port")
+// it is the password of, for the plan policy (plans.Policy.HostPasswordEnvs):
+// a plan may send the variable to those hosts and no others.
+func (c *Catalog) PasswordHosts() map[string][]string {
+	out := map[string][]string{}
 	for _, a := range c.apps {
 		for _, e := range a.Environments {
-			if !slices.Contains(out, e.PasswordEnv) {
-				out = append(out, e.PasswordEnv)
+			if h := hostPort(e); !slices.Contains(out[e.PasswordEnv], h) {
+				out[e.PasswordEnv] = append(out[e.PasswordEnv], h)
 			}
 		}
 	}
-	slices.Sort(out)
+	for _, hosts := range out {
+		slices.Sort(hosts)
+	}
 	return out
 }
 

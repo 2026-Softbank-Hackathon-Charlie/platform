@@ -25,7 +25,6 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
-	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -102,12 +101,16 @@ type Config struct {
 
 // StartOptions describe a new run.
 type StartOptions struct {
-	PlanRef    string
-	Plan       *plan.Plan
-	Actor      string
-	AutoSwitch bool
-	Canary     *apiv1.CanaryOptions
-	RollbackOf string // the run this run rolls back, if any
+	PlanRef string
+	Plan    *plan.Plan
+	// Source and Target are the plan's endpoints as its summary shows them
+	// (plans.Reserved): built from the plan as submitted, never from Plan,
+	// whose DSNs hold expanded secrets.
+	Source, Target apiv1.PlanEndpoint
+	Actor          string
+	AutoSwitch     bool
+	Canary         *apiv1.CanaryOptions
+	RollbackOf     string // the run this run rolls back, if any
 }
 
 // Runner starts runs and tracks the active ones.
@@ -180,8 +183,8 @@ func (r *Runner) Start(ctx context.Context, o StartOptions) (apiv1.Run, error) {
 	doc := apiv1.Run{
 		PlanRef:    o.PlanRef,
 		PlanId:     o.Plan.ID,
-		Source:     plans.Endpoint(o.Plan.Source),
-		Target:     plans.Endpoint(o.Plan.Target),
+		Source:     o.Source,
+		Target:     o.Target,
 		Status:     apiv1.RunStatusRunning,
 		Phase:      apiv1.RunPhaseSync,
 		AutoSwitch: o.AutoSwitch,
@@ -201,6 +204,9 @@ func (r *Runner) Start(ctx context.Context, o StartOptions) (apiv1.Run, error) {
 // launch creates the engine (new run when runID is empty, resumed otherwise),
 // stores the run document and starts the background goroutines.
 func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc apiv1.Run) (apiv1.Run, error) {
+	if err := r.requireWritten(ctx, p); err != nil {
+		return apiv1.Run{}, err
+	}
 	keys := clusterKeys(p)
 	l := &live{
 		plan:     p,

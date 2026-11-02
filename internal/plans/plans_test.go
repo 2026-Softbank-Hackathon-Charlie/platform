@@ -58,7 +58,7 @@ func TestPolicyRejects(t *testing.T) {
 		},
 		"bare $VAR form": {
 			[]byte(strings.Replace(string(planJSON("")), "${SRC_PGPASSWORD}", "$HOME", 1)),
-			`"HOME"`,
+			"only as its whole password",
 		},
 		"dsn to outside host": {
 			[]byte(strings.Replace(string(planJSON("")), "db-gke.shop.ts.net", "attacker.example.com", 1)),
@@ -138,14 +138,14 @@ func TestLifecycle(t *testing.T) {
 	if _, err := s.Reserve(ctx, rec.Ref); !errors.Is(err, ErrWrongStatus) {
 		t.Fatalf("reserving an unapproved plan: %v", err)
 	}
-	if rec, err = s.Approve(ctx, rec.Ref, "operator", "ok"); err != nil || rec.Status != apiv1.PlanStatusApproved || *rec.ReviewedBy != "operator" || *rec.ReviewComment != "ok" {
+	if rec, err = s.Approve(ctx, rec.Ref, "operator", "ok", nil); err != nil || rec.Status != apiv1.PlanStatusApproved || *rec.ReviewedBy != "operator" || *rec.ReviewComment != "ok" {
 		t.Fatalf("approve: %+v %v", rec, err)
 	}
-	if _, err := s.Approve(ctx, rec.Ref, "operator", ""); err != nil {
+	if _, err := s.Approve(ctx, rec.Ref, "operator", "", nil); err != nil {
 		t.Fatalf("second approve should be a no-op: %v", err)
 	}
-	p, err := s.Reserve(ctx, rec.Ref)
-	if err != nil || p.ID != "shop-gke-to-eks" {
+	res, err := s.Reserve(ctx, rec.Ref)
+	if err != nil || res.Plan.ID != "shop-gke-to-eks" || res.Summary.PlanId != "shop-gke-to-eks" || res.RollbackOf != "" {
 		t.Fatalf("reserve: %v", err)
 	}
 	if _, err := s.Reserve(ctx, rec.Ref); !errors.Is(err, ErrWrongStatus) {
@@ -165,7 +165,7 @@ func TestLifecycle(t *testing.T) {
 	if got.Status != apiv1.PlanStatusStarted || *got.RunId != "run-1" {
 		t.Fatalf("after start: %+v", got)
 	}
-	if _, err := s.Approve(ctx, rec.Ref, "x", ""); !errors.Is(err, ErrWrongStatus) {
+	if _, err := s.Approve(ctx, rec.Ref, "x", "", nil); !errors.Is(err, ErrWrongStatus) {
 		t.Fatalf("approving a started plan: %v", err)
 	}
 	if _, err := s.Get(ctx, "pln_missing"); !errors.Is(err, ErrNotFound) {
@@ -180,7 +180,7 @@ func TestRecoverStartingLinksAnExistingRun(t *testing.T) {
 	st := storetest.NewMemory()
 	s := New(DefaultPolicy(), st)
 	rec, _ := s.Submit(ctx, planJSON(""), "ai")
-	_, _ = s.Approve(ctx, rec.Ref, "operator", "")
+	_, _ = s.Approve(ctx, rec.Ref, "operator", "", nil)
 	if _, err := s.Reserve(ctx, rec.Ref); err != nil {
 		t.Fatal(err)
 	}
@@ -212,11 +212,11 @@ func TestRejectAndRecoverStarting(t *testing.T) {
 	if r, err := s.Reject(ctx, a.Ref, "operator", "wrong target"); err != nil || r.Status != apiv1.PlanStatusRejected {
 		t.Fatalf("reject: %+v %v", r, err)
 	}
-	if _, err := s.Approve(ctx, a.Ref, "operator", ""); !errors.Is(err, ErrWrongStatus) {
+	if _, err := s.Approve(ctx, a.Ref, "operator", "", nil); !errors.Is(err, ErrWrongStatus) {
 		t.Fatalf("approve after reject: %v", err)
 	}
 	b, _ := s.Submit(ctx, planJSON(""), "ai")
-	_, _ = s.Approve(ctx, b.Ref, "operator", "")
+	_, _ = s.Approve(ctx, b.Ref, "operator", "", nil)
 	if _, err := s.Reserve(ctx, b.Ref); err != nil {
 		t.Fatal(err)
 	}

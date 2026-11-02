@@ -107,11 +107,16 @@ func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	ref := r.PathValue("ref")
 	noteAudit(r, "planRef", ref)
-	rec, err := s.d.Plans.Approve(r.Context(), ref, actor(r), deref(req.Comment))
+	if req.Revision != nil && *req.Revision < 1 {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "revision must be at least 1")
+		return
+	}
+	rec, err := s.d.Plans.Approve(r.Context(), ref, actor(r), deref(req.Comment), req.Revision)
 	if err != nil {
 		s.planError(w, r, err)
 		return
 	}
+	noteAudit(r, "revision", rec.Revision)
 	writeJSON(w, http.StatusOK, rec)
 }
 
@@ -181,17 +186,20 @@ func (s *Server) startMigration(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	p, err := s.d.Plans.Reserve(ctx, req.PlanRef)
+	res, err := s.d.Plans.Reserve(ctx, req.PlanRef)
 	if err != nil {
 		s.planError(w, r, err)
 		return
 	}
 	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
 		PlanRef:    req.PlanRef,
-		Plan:       p,
+		Plan:       res.Plan,
+		Source:     res.Summary.Source,
+		Target:     res.Summary.Target,
 		Actor:      actor(r),
 		AutoSwitch: req.AutoSwitch != nil && *req.AutoSwitch,
 		Canary:     req.Canary,
+		RollbackOf: res.RollbackOf, // a rollback plan started by hand is still that run's rollback
 	})
 	if err != nil {
 		s.d.Plans.Release(ctx, req.PlanRef)

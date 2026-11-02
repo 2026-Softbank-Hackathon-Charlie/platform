@@ -49,8 +49,9 @@ type PlanTools interface {
 	WrittenRecordStats(ctx context.Context, stream string) (WrittenStats, error)
 
 	// PutPlanAttachment inserts or replaces an attachment of a plan that is
-	// pending_approval, atomically with respect to plan transitions: an
-	// approval either sees the write or makes it fail. ErrNotFound when the
+	// pending_approval and raises the plan's Revision by one, atomically with
+	// respect to plan transitions: an approval either sees the write or makes
+	// it fail. ErrNotFound when the
 	// plan does not exist; ErrConflict (wrapped, with the current status in
 	// the message) when it is not pending_approval.
 	PutPlanAttachment(ctx context.Context, a PlanAttachment) error

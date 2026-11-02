@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"math"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -116,12 +117,12 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 func (s *Postgres) Close() { s.pool.Close() }
 
 const planColumns = `ref, plan_id, status, summary, raw, submitted_by, submitted_at,
-	reviewed_by, reviewed_at, review_comment, run_id`
+	reviewed_by, reviewed_at, review_comment, run_id, revision, rollback_of`
 
 func scanPlan(row pgx.Row) (Plan, error) {
 	var p Plan
 	err := row.Scan(&p.Ref, &p.PlanID, &p.Status, &p.Summary, &p.Raw, &p.SubmittedBy, &p.SubmittedAt,
-		&p.ReviewedBy, &p.ReviewedAt, &p.ReviewComment, &p.RunID)
+		&p.ReviewedBy, &p.ReviewedAt, &p.ReviewComment, &p.RunID, &p.Revision, &p.RollbackOf)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -135,10 +136,14 @@ func scanPlan(row pgx.Row) (Plan, error) {
 
 func (s *Postgres) CreatePlan(ctx context.Context, p Plan) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO plans (`+planColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		p.Ref, p.PlanID, p.Status, p.Summary, p.Raw, p.SubmittedBy, p.SubmittedAt,
-		p.ReviewedBy, p.ReviewedAt, p.ReviewComment, p.RunID)
-	if isUniqueViolation(err) {
+		p.ReviewedBy, p.ReviewedAt, p.ReviewComment, p.RunID, p.Revision, p.RollbackOf)
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "plans_rollback_of_idx":
+		return fmt.Errorf("%w: a plan rolling back run %s exists", ErrConflict, p.RollbackOf)
+	case isUniqueViolation(err):
 		return fmt.Errorf("%w: plan %s exists", ErrConflict, p.Ref)
 	}
 	return err
@@ -169,21 +174,30 @@ func (s *Postgres) TransitionPlan(ctx context.Context, ref string, from []string
 			reviewed_at    = COALESCE($4::timestamptz, reviewed_at),
 			review_comment = COALESCE(NULLIF($5::text, ''), review_comment),
 			run_id         = COALESCE(NULLIF($6::text, ''), run_id)
-		WHERE ref = $1 AND status = ANY($7::text[])
+		WHERE ref = $1 AND status = ANY($7::text[]) AND ($8::bigint = 0 OR revision = $8::bigint)
 		RETURNING `+planColumns,
-		ref, to, u.ReviewedBy, u.ReviewedAt, u.ReviewComment, u.RunID, from))
+		ref, to, u.ReviewedBy, u.ReviewedAt, u.ReviewComment, u.RunID, from, u.IfRevision))
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return p, err
 	}
 	var current string
-	err = s.pool.QueryRow(ctx, `SELECT status FROM plans WHERE ref = $1`, ref).Scan(&current)
+	var revision int64
+	err = s.pool.QueryRow(ctx, `SELECT status, revision FROM plans WHERE ref = $1`, ref).Scan(&current, &revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Plan{}, fmt.Errorf("%w: plan %s", ErrNotFound, ref)
 	}
 	if err != nil {
 		return Plan{}, err
 	}
-	return Plan{}, fmt.Errorf("%w: plan is %s", ErrConflict, current)
+	return Plan{}, transitionConflict(from, current, u.IfRevision, revision)
+}
+
+// transitionConflict names the condition of a transition that did not hold.
+func transitionConflict(from []string, status string, ifRevision, revision int64) error {
+	if slices.Contains(from, status) && ifRevision != 0 && ifRevision != revision {
+		return fmt.Errorf("%w: plan revision is %d, not %d", ErrConflict, revision, ifRevision)
+	}
+	return fmt.Errorf("%w: plan is %s", ErrConflict, status)
 }
 
 const runColumns = `run_id, plan_ref, source_env, target_env, status, doc, created_at, updated_at`

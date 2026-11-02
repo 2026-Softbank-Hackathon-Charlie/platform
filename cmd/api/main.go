@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
@@ -23,6 +24,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -79,7 +81,13 @@ func main() {
 
 	policy := plans.DefaultPolicy()
 	if v := os.Getenv("PLATFORM_PLAN_ENV_ALLOW"); v != "" {
-		policy.EnvAllow = splitList(v)
+		// Password variables either DSN of any plan may use.
+		policy.PasswordEnvs = splitList(v)
+		for _, name := range policy.PasswordEnvs {
+			if err := plans.CheckPasswordEnv(name); err != nil {
+				fatal("PLATFORM_PLAN_ENV_ALLOW", "err", err)
+			}
+		}
 	}
 	policy.GatewayURL = os.Getenv("PLATFORM_GATEWAY_URL")
 	policy.DSNHostSuffixes = splitList(os.Getenv("PLATFORM_DSN_HOST_SUFFIXES"))
@@ -87,7 +95,8 @@ func main() {
 		log.Warn("PLATFORM_DSN_HOST_SUFFIXES is not set: a plan may point its DSN at any host; approvers must check dbHost in the plan summary")
 	}
 
-	// Optional: apps to draft plans for. Their password variables may appear in plans.
+	// Optional: apps to draft plans for. A plan may use an app's password
+	// variable only in a DSN to that app's database host.
 	var appCat *apps.Catalog
 	if path := os.Getenv("PLATFORM_APPS_FILE"); path != "" {
 		appCfg, err := apps.LoadConfig(path)
@@ -97,7 +106,7 @@ func main() {
 		if err != nil {
 			fatal("PLATFORM_APPS_FILE", "err", err)
 		}
-		policy.EnvAllow = append(policy.EnvAllow, appCat.PasswordEnvs()...)
+		policy.HostPasswordEnvs = appCat.PasswordHosts()
 	}
 
 	// One gateway client for the runner (canary, request counts) and the API.
@@ -135,6 +144,28 @@ func main() {
 	if gw != nil {
 		deps.Traffic = gw
 	}
+	// The security view reads every cluster, the AWS account and our own audit
+	// log; GCP and Cloudflare are reported as not connected.
+	deps.Security = security.New(security.Collectors(security.Config{
+		Environments:      envCfg.Environments,
+		AWSRegion:         os.Getenv("PLATFORM_AWS_REGION"),
+		Audit:             st,
+		DSNHostSuffixes:   policy.DSNHostSuffixes,
+		GatewayConfigured: gw != nil,
+	}), security.Options{Log: log})
+	// A running agent session with no event for PLATFORM_AGENT_IDLE is closed
+	// as cancelled, so an agent that crashed does not leave it open forever.
+	agentIdle := agentlog.DefaultIdle
+	if v := os.Getenv("PLATFORM_AGENT_IDLE"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			fatal("PLATFORM_AGENT_IDLE must be a positive duration such as 30m", "value", v)
+		}
+		agentIdle = d
+	}
+	agents := agentlog.New(st)
+	deps.Agents = agents
+	go agents.RunSweeper(runCtx, agentIdle, log)
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{

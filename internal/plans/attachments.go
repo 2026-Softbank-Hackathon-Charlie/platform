@@ -23,8 +23,9 @@ var ErrAttachmentNotFound = errors.New("attachment not found")
 func (s *Service) SetStateDir(dir string) { s.stateDir = dir }
 
 // PutAttachment stores a file the plan refers to as "attachment:<name>".
-// Only a plan waiting for approval accepts attachments, so the approver
-// approves the content that will run.
+// Only a plan waiting for approval accepts attachments, and every upload
+// raises the plan's revision, so the approver approves the content that will
+// run (Approve).
 func (s *Service) PutAttachment(ctx context.Context, ref, name string, content []byte, actor string) (apiv1.PlanAttachment, error) {
 	sum := sha256.Sum256(content)
 	a := store.PlanAttachment{
@@ -98,13 +99,9 @@ func (s *Service) withAttachments(ctx context.Context, recs []apiv1.PlanRecord) 
 }
 
 // requireAttachments fails when a pending plan refers to an attachment that
-// was not uploaded. Attachments are never deleted, so a plan that passes here
-// still has its attachment when it starts.
-func (s *Service) requireAttachments(ctx context.Context, ref string) error {
-	row, err := s.get(ctx, ref)
-	if err != nil {
-		return err
-	}
+// is not among attached. Attachments are never deleted, so a plan that passes
+// here still has its attachment when it starts.
+func requireAttachments(row store.Plan, attached []store.PlanAttachment) error {
 	if row.Status != store.PlanPending {
 		return nil // the transition reports the status
 	}
@@ -114,23 +111,19 @@ func (s *Service) requireAttachments(ctx context.Context, ref string) error {
 		} `json:"target"`
 	}
 	if err := json.Unmarshal(row.Raw, &refs); err != nil {
-		return fmt.Errorf("decode plan %s: %w", ref, err)
+		return fmt.Errorf("decode plan %s: %w", row.Ref, err)
 	}
 	name, ok := ManifestAttachment(&plan.Plan{Target: plan.Endpoint{Manifest: refs.Target.Manifest}})
 	if !ok {
 		return nil
 	}
-	list, err := s.store.ListPlanAttachments(ctx, []string{ref})
-	if err != nil {
-		return err
-	}
-	for _, a := range list {
+	for _, a := range attached {
 		if a.Name == name {
 			return nil
 		}
 	}
 	return fmt.Errorf("%w: target.manifest refers to attachment %q, which has not been uploaded (PUT /v1/plans/%s/attachments/%s)",
-		ErrWrongStatus, name, ref, name)
+		ErrWrongStatus, name, row.Ref, name)
 }
 
 // materialize writes the attachment that target.manifest refers to under the

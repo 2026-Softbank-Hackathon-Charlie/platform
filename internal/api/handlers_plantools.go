@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
@@ -47,18 +49,22 @@ func (s *Server) appendWrittenRecords(w http.ResponseWriter, r *http.Request) {
 	recs := make([]store.WrittenRecord, n)
 	for i, rec := range req.Records {
 		switch {
-		case !writtenTable.MatchString(rec.Table):
+		case !writtenTable.MatchString(rec.Table): // no control characters either
 			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("records[%d].table %q must be schema.table or table", i, rec.Table))
 			return
 		case rec.Pk == "" || utf8.RuneCountInString(rec.Pk) > maxPKChars:
 			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("records[%d].pk must be 1 to %d characters", i, maxPKChars))
+			return
+		case strings.ContainsFunc(rec.Pk, unicode.IsControl): // PostgreSQL text cannot hold NUL
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("records[%d].pk must not contain control characters", i))
 			return
 		}
 		at := now
 		if rec.At != nil {
 			at = rec.At.UTC()
 		}
-		recs[i] = store.WrittenRecord{Table: rec.Table, PK: rec.Pk, At: at, ReceivedAt: now}
+		// Unquoted identifiers are lower case in PostgreSQL, which is what verify looks up.
+		recs[i] = store.WrittenRecord{Table: strings.ToLower(rec.Table), PK: rec.Pk, At: at, ReceivedAt: now}
 	}
 	if err := s.d.Store.AppendWrittenRecords(context.WithoutCancel(r.Context()), stream, recs); err != nil {
 		s.internal(w, r, err)
@@ -198,38 +204,57 @@ func (s *Server) rollbackMigration(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	comment := "rollback of run " + id
-	if reason := deref(req.Reason); reason != "" {
-		comment += ": " + reason
-	}
-	rec, err := s.d.Plans.Rollback(ctx, orig.PlanRef, actor(r), comment)
+	// A run is rolled back at most once. An earlier rollback whose start
+	// failed left its plan approved: start that plan again rather than
+	// creating another one next to it.
+	prev, found, err := s.d.Plans.FindRollback(ctx, id)
 	if err != nil {
-		s.planError(w, r, err)
+		s.internal(w, r, err)
 		return
 	}
-	noteAudit(r, "planRef", rec.Ref)
-	p, err := s.d.Plans.Reserve(ctx, rec.Ref)
+	if found && prev.Status == apiv1.PlanStatusStarted {
+		s.fail(w, r, http.StatusConflict, "run_state_conflict", "run "+deref(prev.RunId)+" already rolls back this run; resume or watch it instead")
+		return
+	}
+	ref := prev.Ref
+	if !found {
+		comment := "rollback of run " + id
+		if reason := deref(req.Reason); reason != "" {
+			comment += ": " + reason
+		}
+		rec, err := s.d.Plans.Rollback(ctx, id, orig.PlanRef, actor(r), comment)
+		if err != nil {
+			s.planError(w, r, err)
+			return
+		}
+		ref = rec.Ref
+	}
+	noteAudit(r, "planRef", ref)
+	noteAudit(r, "reusedPlan", found)
+	res, err := s.d.Plans.Reserve(ctx, ref)
 	if err != nil {
 		s.planError(w, r, err)
 		return
 	}
 	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
-		PlanRef:    rec.Ref,
-		Plan:       p,
+		PlanRef:    ref,
+		Plan:       res.Plan,
+		Source:     res.Summary.Source,
+		Target:     res.Summary.Target,
 		Actor:      actor(r),
 		AutoSwitch: req.AutoSwitch == nil || *req.AutoSwitch,
 		RollbackOf: id,
 	})
 	if err != nil {
-		s.d.Plans.Release(ctx, rec.Ref) // stays approved; it can be started by hand
+		s.d.Plans.Release(ctx, ref) // stays approved; the next rollback call starts it again
 		s.runError(w, r, err)
 		return
 	}
-	if err := s.d.Plans.Started(ctx, rec.Ref, run.RunId); err != nil {
-		s.cfg.Log.Error("link plan to run", "plan", rec.Ref, "run", run.RunId, "err", err)
+	if err := s.d.Plans.Started(ctx, ref, run.RunId); err != nil {
+		s.cfg.Log.Error("link plan to run", "plan", ref, "run", run.RunId, "err", err)
 	}
 	noteAudit(r, "runId", run.RunId)
 	noteAudit(r, "autoSwitch", run.AutoSwitch)
 	w.Header().Set("Location", "/v1/migrations/"+run.RunId)
-	writeJSON(w, http.StatusAccepted, startResponse(run.RunId, rec.Ref))
+	writeJSON(w, http.StatusAccepted, startResponse(run.RunId, ref))
 }

@@ -72,7 +72,7 @@ func TestAttachmentLifecycle(t *testing.T) {
 	if rec.Attachments == nil || len(*rec.Attachments) != 0 {
 		t.Fatalf("attachments of a new plan = %v", rec.Attachments)
 	}
-	if _, err := s.Approve(ctx, rec.Ref, "op", ""); !errors.Is(err, ErrWrongStatus) || !strings.Contains(err.Error(), `attachment "target.yaml"`) {
+	if _, err := s.Approve(ctx, rec.Ref, "op", "", nil); !errors.Is(err, ErrWrongStatus) || !strings.Contains(err.Error(), `attachment "target.yaml"`) {
 		t.Fatalf("approve without the attachment: %v", err)
 	}
 	if _, err := s.GetAttachment(ctx, rec.Ref, "target.yaml"); !errors.Is(err, ErrAttachmentNotFound) {
@@ -97,17 +97,21 @@ func TestAttachmentLifecycle(t *testing.T) {
 	if err != nil || got.Attachments == nil || len(*got.Attachments) != 1 || (*got.Attachments)[0] != info {
 		t.Fatalf("record attachments = %v, %v", got.Attachments, err)
 	}
-	if _, err := s.Approve(ctx, rec.Ref, "op", "ok"); err != nil {
+	if got.Revision != 2 {
+		t.Fatalf("revision after one upload = %d", got.Revision)
+	}
+	if _, err := s.Approve(ctx, rec.Ref, "op", "ok", ptr[int64](2)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.PutAttachment(ctx, rec.Ref, "target.yaml", []byte("changed"), "planner"); !errors.Is(err, ErrWrongStatus) {
 		t.Fatalf("put after approval: %v", err)
 	}
 
-	p, err := s.Reserve(ctx, rec.Ref)
+	res, err := s.Reserve(ctx, rec.Ref)
 	if err != nil {
 		t.Fatal(err)
 	}
+	p := res.Plan
 	want := filepath.Join(dir, "plans", rec.Ref, "target.yaml")
 	if p.Target.Manifest != want {
 		t.Fatalf("manifest = %q, want %q", p.Target.Manifest, want)
@@ -163,11 +167,12 @@ func TestRollbackReversesThePlanAsSubmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec, err := s.Rollback(ctx, orig.Ref, "op", "rollback of run r1: demo")
+	rec, err := s.Rollback(ctx, "r1", orig.Ref, "op", "rollback of run r1: demo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Status != apiv1.PlanStatusApproved || deref(rec.ReviewedBy) != "op" || rec.SubmittedBy != "op" || deref(rec.ReviewComment) != "rollback of run r1: demo" {
+	if rec.Status != apiv1.PlanStatusApproved || deref(rec.ReviewedBy) != "op" || rec.SubmittedBy != "op" || deref(rec.ReviewComment) != "rollback of run r1: demo" ||
+		deref(rec.RollbackOf) != "r1" || rec.Revision != 1 {
 		t.Fatalf("record = %+v", rec)
 	}
 	sum := rec.Summary
@@ -206,14 +211,17 @@ func TestRollbackReversesThePlanAsSubmitted(t *testing.T) {
 	}
 
 	// The reverse plan starts like any approved plan, without an attachment.
-	pl, err := s.Reserve(ctx, rec.Ref)
+	res, err := s.Reserve(ctx, rec.Ref)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pl.Gateway.SourceBackend != "eks" || pl.Gateway.TargetBackend != "gke-be" || pl.Target.Manifest != "" {
-		t.Fatalf("parsed reverse plan: %+v %+v", pl.Gateway, pl.Target)
+	if pl := res.Plan; pl.Gateway.SourceBackend != "eks" || pl.Gateway.TargetBackend != "gke-be" || pl.Target.Manifest != "" || res.RollbackOf != "r1" {
+		t.Fatalf("parsed reverse plan: %+v %+v %q", pl.Gateway, pl.Target, res.RollbackOf)
 	}
-	if _, err := s.Rollback(ctx, "pln_missing", "op", ""); !errors.Is(err, ErrNotFound) {
+	if res.Summary.Source.Env != "eks" || deref(res.Summary.Source.DbHost) != "db-eks.shop.ts.net:5432" {
+		t.Fatalf("reserved summary: %+v", res.Summary.Source)
+	}
+	if _, err := s.Rollback(ctx, "r9", "pln_missing", "op", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("rollback of a missing plan: %v", err)
 	}
 }

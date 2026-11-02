@@ -63,10 +63,11 @@ func (s *Postgres) WrittenRecordStats(ctx context.Context, stream string) (Writt
 	return st, err
 }
 
-// PutPlanAttachment reads the plan's status FOR SHARE in the same
-// transaction as the write. An approval updates the plan row, so it waits for
-// this transaction, and this transaction sees an approval that committed
-// first; an attachment can never change after its plan was approved.
+// PutPlanAttachment raises the plan's revision with a conditional UPDATE in
+// the same transaction as the write. An approval updates the plan row too, so
+// it waits for this transaction and then sees the new revision, and this
+// transaction sees an approval that committed first; an attachment can never
+// change after its plan was approved, nor between a review and its approval.
 func (s *Postgres) PutPlanAttachment(ctx context.Context, a PlanAttachment) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -74,15 +75,19 @@ func (s *Postgres) PutPlanAttachment(ctx context.Context, a PlanAttachment) erro
 	}
 	defer tx.Rollback(ctx) // no-op after Commit
 
-	var status string
-	err = tx.QueryRow(ctx, `SELECT status FROM plans WHERE ref = $1 FOR SHARE`, a.Ref).Scan(&status)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("%w: plan %s", ErrNotFound, a.Ref)
-	}
+	tag, err := tx.Exec(ctx, `UPDATE plans SET revision = revision + 1 WHERE ref = $1 AND status = $2`, a.Ref, PlanPending)
 	if err != nil {
 		return err
 	}
-	if status != PlanPending {
+	if tag.RowsAffected() == 0 {
+		var status string
+		err = tx.QueryRow(ctx, `SELECT status FROM plans WHERE ref = $1`, a.Ref).Scan(&status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: plan %s", ErrNotFound, a.Ref)
+		}
+		if err != nil {
+			return err
+		}
 		return fmt.Errorf("%w: plan is %s", ErrConflict, status)
 	}
 	content := a.Content

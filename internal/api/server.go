@@ -59,6 +59,10 @@ type Deps struct {
 	EnvNotFound error
 	// Apps drafts plans from PLATFORM_APPS_FILE; nil when the file is not set.
 	Apps *apps.Catalog
+	// Security builds the security and governance view; nil turns /v1/security off.
+	Security SecurityReporter
+	// Agents is the AI agent's activity log; nil turns /v1/agent off.
+	Agents AgentLog
 }
 
 // Server is the HTTP handler.
@@ -113,6 +117,14 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/apps", viewer, s.listApps)
 	s.route("POST /v1/plans/draft", agent, s.draftPlan)
 	s.route("POST /v1/migrations/{runId}/rollback", operator, s.rollbackMigration)
+	s.route("GET /{$}", "", s.root)
+	s.route("GET /v1/security", viewer, s.security)
+	s.route("POST /v1/agent/sessions", agent, s.createAgentSession)
+	s.route("GET /v1/agent/sessions", viewer, s.listAgentSessions)
+	s.route("GET /v1/agent/sessions/{id}", viewer, s.getAgentSession)
+	s.route("POST /v1/agent/sessions/{id}/events", agent, s.appendAgentEvent)
+	s.route("GET /v1/agent/sessions/{id}/events", viewer, s.agentEvents)
+	s.route("POST /v1/agent/sessions/{id}/finish", agent, s.finishAgentSession)
 	return s
 }
 

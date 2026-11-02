@@ -10,7 +10,7 @@
 | Elastic IP | 고정 공인 IP. `api.<IP>.sslip.io`, `app.<IP>.sslip.io` 도메인으로 쓴다 |
 | 보안 그룹 | 80, 443만 연다. SSH 포트는 없고 SSM Session Manager로 들어간다 |
 | ECR | `hopcharlie/platform` 이미지 저장소 (최근 10개만 보관) |
-| IAM | 호스트 역할: SSM 접속, ECR 읽기, `/hopcharlie/*` 파라미터 읽기 |
+| IAM | 호스트 역할: SSM 접속, ECR 읽기, `/hopcharlie/*` 파라미터 읽기, 보안 뷰가 부르는 보안 설정 읽기 API만 (`read-security-configuration`) |
 | SSM Parameter Store | DB 비밀번호, 게이트웨이 관리 토큰, API 토큰 (SecureString) |
 
 호스트 안의 구성은 다음과 같습니다.

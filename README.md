@@ -63,7 +63,7 @@ sequenceDiagram
 | `GET /v1/me` | viewer | 토큰 주인 확인 |
 | `POST /v1/plans` | agent | 엔진 Plan JSON을 그대로 제출. 보안 정책 검사 후 `pending_approval` |
 | `GET /v1/plans`, `GET /v1/plans/{ref}` | viewer | DSN과 토큰은 응답에 넣지 않음 |
-| `POST /v1/plans/{ref}/approve`, `/reject` | operator | 사람의 승인 또는 거절 (거절은 사유 필수) |
+| `POST /v1/plans/{ref}/approve`, `/reject` | operator | 사람의 승인 또는 거절 (거절은 사유 필수, 첨부가 있는 Plan의 승인은 검토한 `revision` 필수) |
 | `POST /v1/migrations` | operator | 승인된 Plan 실행. 202 + runId. `Idempotency-Key` 지원 |
 | `GET /v1/migrations`, `GET /v1/migrations/{runId}` | viewer | run 문서 (상태, 단계, 결과 숫자, 엔진 상태) |
 | `GET /v1/migrations/{runId}/events` | viewer | SSE. `Last-Event-ID`로 재접속하면 빠진 이벤트를 다시 받음 |
@@ -133,8 +133,20 @@ go run ./cmd/gateway
 | `PLATFORM_GATEWAY_URL`, `GATEWAY_TOKEN` | 게이트웨이 관리 API 주소와 토큰. 비우면 카나리와 `/v1/traffic`이 꺼지고 `gateway.mode: http` Plan을 거부 |
 | `PLATFORM_CORS_ORIGINS` | 콘솔 주소. 쉼표 구분, `*`는 전부 허용 |
 | `PLATFORM_ADDR`, `PLATFORM_STATE_DIR` | 주소(기본 `:8080`), 엔진 상태 디렉터리 |
-| `PLATFORM_PLAN_ENV_ALLOW` | Plan이 `${VAR}`로 참조할 수 있는 환경 변수 (기본 `SRC_PGPASSWORD`, `DST_PGPASSWORD`, `GATEWAY_TOKEN`) |
+| `PLATFORM_PLAN_ENV_ALLOW` | 어느 Plan이든 두 DSN의 비밀번호 자리에 `${VAR}`로 쓸 수 있는 변수 (기본 `SRC_PGPASSWORD`, `DST_PGPASSWORD`). 이름은 `_PGPASSWORD`로 끝나야 하고 `PLATFORM_`, `AWS_`로 시작하면 안 되며, 어기면 서버가 시작하지 않음 |
 | `PLATFORM_DSN_HOST_SUFFIXES` | 허용할 DB 호스트 접미사 (예: `.ts.net`) |
+| `PLATFORM_AWS_REGION` | 보안 뷰가 읽는 AWS 리전 (기본 `ap-northeast-2`) |
+| `PLATFORM_AGENT_IDLE` | 이벤트 없이 이 시간이 지난 `running` 에이전트 세션을 `cancelled`로 닫음 (기본 `30m`) |
+
+### Plan의 환경 변수 참조
+
+엔진은 `source.dsn`, `target.dsn`, `gateway.url`, `gateway.token`에서 서버 환경 변수를 펼칩니다. 서버는 JSON을 해석한 뒤, 펼치기 전에 이 네 필드를 하나씩 검사합니다. JSON 유니코드 이스케이프로 쓴 `$`도 해석한 뒤라 그대로 걸립니다.
+
+- DSN은 `postgres://` 또는 `postgresql://` URL이어야 합니다. 참조는 비밀번호 전체 자리 하나에만 둘 수 있습니다(`postgres://app:${SRC_PGPASSWORD}@host:5432/db?sslmode=require`). 사용자, 호스트, 포트, 경로, 쿼리에는 `$`를 쓸 수 없습니다. 비밀번호 참조가 없는 DSN도 됩니다.
+- `PLATFORM_PLAN_ENV_ALLOW`의 변수는 어느 DSN에든 쓸 수 있습니다. 롤백이 두 DSN을 맞바꾸기 때문입니다.
+- 앱 설정의 `passwordEnv`는 그 환경의 `dbHost:dbPort`로 가는 DSN에만 쓸 수 있습니다. 다른 앱이나 다른 환경의 DSN, 쿼리의 `host=`나 두 번째 호스트로 보내면 거부합니다.
+- `gateway.url`에는 `$`를 쓸 수 없고, `gateway.token`은 비우거나 정확히 `${GATEWAY_TOKEN}`이어야 합니다.
+- Plan 요약의 `dbHost`와 정책 오류 메시지는 펼치기 전의 Plan에서 만듭니다. 펼친 값은 응답에 나오지 않습니다.
 
 환경 설정의 `kubeContext`는 서버의 kubeconfig에 있어야 합니다. 서버 계정에는 `/version` 조회, `nodes` 목록, 모든 네임스페이스의 `clusters.postgresql.cnpg.io` 목록 권한이 필요합니다. 클러스터에 닿지 못하면 그 환경은 `reachable: false`와 짧은 오류로 표시되고, 서버는 그대로 뜹니다.
 
@@ -208,24 +220,24 @@ Plan JSON을 손으로 쓰지 않고 이전을 준비하고, 검증에 쓸 쓰�
 | `POST /v1/plans/draft` | agent | `{"app","source","target"}`로 엔진 Plan 초안을 만듦. 저장하지 않으므로 그대로 또는 고쳐서 `POST /v1/plans`로 제출 |
 | `PUT /v1/plans/{ref}/attachments/{name}` | agent | Plan이 참조하는 파일(대상 CNPG 매니페스트) 업로드. 본문 그대로 1 MiB까지, `pending_approval`일 때만 |
 | `GET /v1/plans/{ref}/attachments/{name}` | viewer | 첨부 내용. Plan 응답의 `attachments`에 이름, 크기, SHA-256이 있음 |
-| `POST /v1/written-records/{stream}` | agent | 부하 생성기가 성공 응답을 받은 쓰기 `{"table","pk","at"}`. 한 번에 1개에서 5000개 |
+| `POST /v1/written-records/{stream}` | agent | 부하 생성기가 성공 응답을 받은 쓰기 `{"table","pk","at"}`. 한 번에 1개에서 5000개. `table`은 소문자로 저장하고(따옴표 없는 PostgreSQL 식별자), `table`과 `pk`에 제어 문자(NUL 포함)가 있으면 400 |
 | `GET /v1/written-records/{stream}` | viewer | 스트림의 기록 수와 가장 늦은 기록 시각 |
 | `POST /v1/migrations/{runId}/rollback` | operator | `succeeded` run을 온 길 그대로 되돌림. 202 + 새 runId |
 
 ### 앱 설정과 Plan 초안
 
 - `PLATFORM_APPS_FILE`에 앱 설정 파일([examples/apps.yaml](examples/apps.yaml))을 지정합니다. 비워 두면 앱 목록이 비고 초안 요청은 400입니다.
-- 앱의 환경 이름은 `PLATFORM_ENVS_FILE`에 있어야 합니다. 환경별 `passwordEnv`는 Plan 정책의 환경 변수 허용 목록에 자동으로 들어갑니다.
+- 앱의 환경 이름은 `PLATFORM_ENVS_FILE`에 있어야 합니다. 환경별 `passwordEnv`는 그 환경의 `dbHost:dbPort`로 가는 DSN의 비밀번호로만 쓸 수 있습니다. 이름은 `_PGPASSWORD`로 끝나야 하고 `PLATFORM_`, `AWS_`로 시작하면 안 됩니다. 그래야 `GATEWAY_TOKEN`이나 `PLATFORM_DATABASE_URL` 같은 다른 용도의 서버 변수를 비밀번호로 내보낼 수 없습니다.
 - 초안의 id는 `<app>-<source>-to-<target>`이고, 컨텍스트는 환경의 `kubeContext`에서, 네임스페이스와 클러스터와 DB 호스트는 앱에서 가져옵니다.
-- DSN은 `postgres://<user>:${<passwordEnv>}@<host>:<port>/<db>?sslmode=require`입니다. 비밀번호는 실행할 때 서버 환경에서 채웁니다.
+- DSN은 `postgres://<user>:${<passwordEnv>}@<host>:<port>/<db>?sslmode=require`입니다. 비밀번호는 실행할 때 서버 환경에서 채웁니다. 값을 이스케이프하지 않고 URL에 그대로 넣으므로 비밀번호는 URL에 그대로 쓸 수 있는 문자(영문, 숫자, `-._~`)여야 합니다. CNPG가 만든 비밀번호는 그렇습니다. `@`, `/`, `:`, `#`, `?`, `%`가 들어가면 엔진이 다른 호스트로 접속하거나 접속 오류에 비밀번호 일부가 보일 수 있습니다.
 - 두 환경 모두 `bucket`이 있으면 파일 이전을 넣습니다(`files: false`로 뺄 수 있음). 게이트웨이가 설정된 서버면 `gateway.mode: http`, 아니면 `none`입니다.
 
 ### 첨부와 쓰기 기록 참조
 
 Plan은 서버의 파일을 경로 대신 이름으로 가리킵니다. 정책은 지금처럼 절대 경로와 `..`를 거부하고, 실제 경로는 서버가 정합니다.
 
-- `target.manifest: "attachment:<name>"`: 첨부가 없으면 승인이 409로 실패합니다. 승인 뒤에는 첨부를 바꿀 수 없으므로, 승인자가 본 내용 그대로 실행됩니다. 실행을 시작하거나 재개할 때 `<PLATFORM_STATE_DIR>/plans/<ref>/<name>`(디렉터리 0700, 파일 0600)에 쓰고 엔진에는 그 경로를 넘깁니다.
-- `verify.writtenRecords: "stream:<name>"`: verify 단계 바로 전에 스트림의 기록 전부를 `<PLATFORM_STATE_DIR>/<runId>.written.jsonl`(0600)에 엔진 형식으로 씁니다. 전환하는 동안 들어온 기록까지 검증에 들어가고, 재개할 때도 같습니다. 파일을 쓰지 못하면 verify가 기록을 읽지 못했다고 보고하므로 통과로 넘어가지 않습니다.
+- `target.manifest: "attachment:<name>"`: 첨부가 없으면 승인이 409로 실패합니다. Plan의 `revision`은 제출할 때 1이고 첨부를 올릴 때마다 1씩 늘어납니다. 첨부가 있는 Plan은 검토한 `revision`을 보내야 승인되고, 빠지면 409, 그 사이 첨부가 바뀌었으면 409 `changed since you reviewed it (revision X, now Y)`입니다. 확인과 승인은 저장소의 조건부 쓰기 하나라서 그 사이에 올린 첨부도 놓치지 않습니다. 승인 뒤에는 첨부를 바꿀 수 없으므로, 승인자가 본 내용 그대로 실행됩니다. 실행을 시작하거나 재개할 때 `<PLATFORM_STATE_DIR>/plans/<ref>/<name>`(디렉터리 0700, 파일 0600)에 쓰고 엔진에는 그 경로를 넘깁니다.
+- `verify.writtenRecords: "stream:<name>"`: verify 단계 바로 전에 스트림의 기록 전부를 `<PLATFORM_STATE_DIR>/<runId>.written.jsonl`(0600)에 엔진 형식으로 씁니다. 전환하는 동안 들어온 기록까지 검증에 들어가고, 재개할 때도 같습니다. 파일을 쓰지 못하면 verify가 기록을 읽지 못했다고 보고하므로 통과로 넘어가지 않습니다. 스트림에 기록이 하나도 없으면 실행 시작과 재개가 400 `invalid_request`로 실패합니다. 증거 없이 검증이 통과하지 않도록, 부하 생성기를 이전보다 먼저 켭니다.
 - 쓰기 기록 요청도 감사 로그에 하나씩 남습니다. 부하 생성기는 기록을 모아서 몇 초에 한 번 보냅니다.
 
 ### 1-click 롤백
@@ -234,6 +246,55 @@ Plan은 서버의 파일을 경로 대신 이름으로 가리킵니다. 정책�
 - 새 Plan은 제출한 그대로의 JSON에서 만들므로 `${VAR}` 참조가 그대로 남고, 비밀번호는 저장되지 않습니다.
 - 운영자의 롤백 요청이 사람 승인입니다. 새 Plan의 `reviewedBy`는 요청한 운영자이고 `reviewComment`는 `rollback of run <id>: <reason>`입니다. 감사 로그에는 fromRun, planRef, runId가 남습니다.
 - 기본은 `autoSwitch: true`입니다. `false`면 `awaiting_switch`에서 `/switch`를 기다립니다.
-- run 하나는 한 번만 롤백합니다. 새 run에는 `rollbackOf`가 붙습니다.
+- run 하나는 한 번만 롤백합니다. 새 Plan과 새 run에 `rollbackOf`가 붙고, run 하나를 되돌리는 Plan은 저장소에서 하나뿐입니다(거절된 Plan 제외).
+- 앞선 롤백의 시작이 실패했으면(예: `cluster_busy`) 그 Plan은 `approved`로 남고, 다음 롤백 요청은 새 Plan을 만들지 않고 그 Plan을 다시 시작합니다. 그 Plan을 `POST /v1/migrations`로 직접 시작해도 run에 `rollbackOf`가 붙으므로, 그 뒤의 롤백 요청은 409 `run_state_conflict`로 그 run을 알려 줍니다.
 
 CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks --stream moimroom-demo --submit`, `charlie plan attach REF --name target.yaml -f target.yaml`, `charlie written-records moimroom-demo`, `charlie migrate rollback RUNID --watch`를 씁니다.
+## 보안 거버넌스 뷰와 에이전트 활동 기록
+
+### `GET /v1/security` (viewer)
+
+여러 환경의 보안 신호를 한 형식(`SecurityFinding`)으로 모아 보여 줍니다. 항목마다 환경, 공급자, 소스, 분류(identity, network, workload, data, logging, threat), 심각도(critical, high, medium, low, info), 대상, 설명, 권고가 있습니다. `id`는 환경, 소스, 검사, 대상으로 만든 해시라서 다시 읽어도 같습니다. 검사와 대상이 같은 항목이 여럿일 수 있는 곳은 공급자의 탐지 id(GuardDuty 탐지 id, Security Hub 탐지 ARN)나 보안 그룹 규칙의 프로토콜, 포트 범위, CIDR까지 해시에 넣어 `id`가 겹치지 않습니다.
+
+| 소스 | 환경 | 읽는 것 |
+| --- | --- | --- |
+| `kubernetes` | 등록된 환경마다 | privileged, hostNetwork, hostPID, hostIPC, hostPath, root로 돌 수 있는 컨테이너(init, ephemeral 포함), limits 없음, NetworkPolicy 없는 네임스페이스, cluster-admin 바인딩, NodePort와 LoadBalancer 서비스. kube-system, kube-public, kube-node-lease만 뺍니다 |
+| `aws-iam`, `aws-ec2`, `aws-cloudtrail`, `aws-guardduty`, `aws-securityhub`, `aws-s3` | `aws-account` | 루트 MFA와 키, MFA 없는 콘솔 사용자, 90일 넘은 액세스 키, 인터넷에 열린 보안 그룹, EBS 기본 암호화, 로깅 중인 trail, GuardDuty와 그 탐지 결과, Security Hub와 그 결과, S3 계정 퍼블릭 액세스 차단 |
+| `platform-audit`, `platform-config` | `platform` | 지난 24시간 동안 401, 403으로 막힌 요청(누가 무엇을 몇 번), DB 호스트 제한과 게이트웨이 설정 |
+| `gcp-scc`, `cloudflare` | `gcp-project`, `cloudflare-account` | 아직 연결하지 않았습니다. `not_configured`와 무엇이 없는지를 보여 줍니다 |
+
+- 읽지 못한 소스는 `sources`에 `unavailable`(응답 없음), `not_configured`(설정이나 자격 증명 없음), `error`(권한 부족, 자격 증명을 가져오다 실패 등)와 이유로 표시하고, 항목을 지어내지 않습니다.
+- 컨테이너는 컨테이너의 `runAsUser`, `runAsNonRoot`가 파드 값보다 우선합니다. `runAsNonRoot: true`이거나 `runAsUser`가 0이 아니면 root가 아닌 것으로 봅니다.
+- `system:authenticated`, `system:unauthenticated`, `system:serviceaccounts`, `system:serviceaccounts:<ns>`에 cluster-admin을 묶으면 critical입니다.
+- 401로 막힌 요청은 호출자가 경로를 마음대로 쓸 수 있으므로 경로를 보여 주지 않고 라우트(`GET /v1/plans/{ref}`)만 보여 줍니다. 403의 경로는 제어 문자를 지우고 80자에서 자르며, 3개까지만 적고 나머지는 개수만 적습니다.
+- 결과는 60초 동안 캐시합니다. `?refresh=true`는 다시 읽지만 10초에 한 번까지입니다. `?environment=gke`, `?severity=high`(그 이상만)로 거릅니다.
+- 수집기는 소스마다 하나이고 동시에 실행하며, 하나가 느려도 25초에서 끊습니다. 새 공급자는 `security.Collector` 구현 하나를 추가하면 됩니다.
+- AWS는 SDK 기본 자격 증명 체인(환경 변수, `AWS_PROFILE`, 인스턴스 역할)을 쓰고 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) 한 리전을 읽습니다. Describe, List, Get 호출만 하며 아무것도 켜거나 바꾸지 않습니다. 관리 호스트 역할에는 Terraform이 수집기가 부르는 읽기 API 17개만 허용하는 인라인 정책(`read-security-configuration`)을 붙입니다.
+- 자격 증명이 정말 없을 때(인스턴스에 역할이 없거나 메타데이터 서비스가 꺼짐)만 `not_configured`입니다. 메타데이터 서비스 시간 초과나 네트워크 오류로 가져오지 못하면 `error`이고, 메시지에는 SDK 원문 대신 실패 종류만 적습니다.
+- GuardDuty 탐지는 심각한 것부터 50개까지 읽고, 더 있으면 메시지에 그렇게 적습니다.
+- Kubernetes는 `GET /v1/envs`와 같은 kubeconfig와 컨텍스트를 씁니다. 서버 계정에 모든 네임스페이스의 pods, services, networkpolicies 목록과 clusterrolebindings 목록 권한이 필요합니다.
+- 실제 계정 점검을 다시 해 보려면 `PLATFORM_TEST_AWS_LIVE=1 AWS_PROFILE=hopcharlie go test -run TestAWSLive -v ./internal/security`를 실행합니다.
+
+### 에이전트 활동 기록 `/v1/agent/sessions`
+
+AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을 만들고, 도구 호출과 결과를 이벤트로 남깁니다. 콘솔과 CLI는 SSE로 실시간으로 봅니다.
+
+| 요청 | 역할 | 설명 |
+| --- | --- | --- |
+| `POST /v1/agent/sessions` | agent | `{kind, title, planRef?, runId?, model?}`. 201, 상태 `running`, actor는 토큰 이름 |
+| `POST /v1/agent/sessions/{id}/events` | agent | `{type, tool?, input?, output?, status?, durationMillis?, usage?}`. 201, `seq`가 붙은 이벤트 |
+| `POST /v1/agent/sessions/{id}/finish` | agent | `{status: succeeded, failed, cancelled, summary?}` |
+| `GET /v1/agent/sessions` | viewer | 최신순. `?planRef=`, `?runId=`, `?limit=`로 거름 |
+| `GET /v1/agent/sessions/{id}` | viewer | 이벤트 수, 도구 호출 수, 토큰, 소요 시간 합계 포함 |
+| `GET /v1/agent/sessions/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속). `?format=json`은 목록 한 쪽: `?after=`, `?limit=`(기본 500, 최대 2000), 더 있으면 `nextAfter` |
+
+- 이벤트와 종료는 세션을 만든 토큰이나 operator만 쓸 수 있습니다. 끝난 세션에 쓰면 409 `agent_session_finished`입니다.
+- 세션 하나에는 이벤트를 5000개까지 남깁니다. 넘으면 409 `session_full`입니다.
+- `input`, `output`은 아무 JSON 값이고 각각 64 KiB까지입니다. 저장하기 전에 비밀값을 `"[redacted]"`로 바꿉니다.
+  - 키 이름이 password, passwd, pwd, pass, secret, token, authorization, cookie, api key, private key, credential, access key 꼴이면 그 아래 문자열 값을 바꿉니다. 숫자와 불리언은 그대로 두므로 `input_tokens` 같은 토큰 수는 남습니다.
+  - `{"name": "DB_PASSWORD", "value": "..."}`처럼 `name`이나 `key`가 비밀값 이름인 객체는 `value`를 바꿉니다.
+  - 모든 문자열 안에서 `NAME=값`, `NAME: 값`(libpq `password=...` 포함), URL의 비밀번호(`postgres://u:[redacted]@host`), `Bearer` 토큰, AWS 액세스 키 id, PEM 개인 키를 바꿉니다. `${SRC_PGPASSWORD}` 같은 변수 참조는 값이 아니므로 남깁니다.
+- 저장하는 문자열에서는 NUL을 지우고 잘못된 UTF-8을 U+FFFD로 바꿉니다. PostgreSQL이 받지 않는 값이어도 이벤트를 잃지 않습니다.
+- 이벤트 없이 `PLATFORM_AGENT_IDLE`(기본 30분)이 지난 `running` 세션은 플랫폼이 `cancelled`로 닫고 요약에 `no activity for 30m; closed by the platform`을 남깁니다. 보고 있던 스트림은 마지막 `snapshot`을 보내고 닫힙니다.
+- 쓰기 요청은 모두 감사 로그에 남습니다. 감사 로그에는 세션 id, 이벤트 종류, 도구 이름만 남고 내용은 남기지 않습니다.
+- 테이블은 마이그레이션 `0003_agent_activity.sql`이 만듭니다.

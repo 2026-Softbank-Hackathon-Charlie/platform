@@ -73,6 +73,8 @@ func (m *memory) PutPlanAttachment(_ context.Context, a store.PlanAttachment) er
 	if p.Status != store.PlanPending {
 		return fmt.Errorf("%w: plan is %s", store.ErrConflict, p.Status)
 	}
+	p.Revision++
+	m.plans[a.Ref] = p
 	if m.tools.attachments == nil {
 		m.tools.attachments = map[[2]string]store.PlanAttachment{}
 	}

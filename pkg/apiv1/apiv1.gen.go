@@ -7,6 +7,87 @@ import (
 	"time"
 )
 
+// Defines values for AgentEventType.
+const (
+	AgentEventTypeBlocked    AgentEventType = "blocked"
+	AgentEventTypeDecision   AgentEventType = "decision"
+	AgentEventTypeError      AgentEventType = "error"
+	AgentEventTypeMessage    AgentEventType = "message"
+	AgentEventTypeToolCall   AgentEventType = "tool_call"
+	AgentEventTypeToolResult AgentEventType = "tool_result"
+)
+
+// Valid indicates whether the value is a known member of the AgentEventType enum.
+func (e AgentEventType) Valid() bool {
+	switch e {
+	case AgentEventTypeBlocked:
+		return true
+	case AgentEventTypeDecision:
+		return true
+	case AgentEventTypeError:
+		return true
+	case AgentEventTypeMessage:
+		return true
+	case AgentEventTypeToolCall:
+		return true
+	case AgentEventTypeToolResult:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AgentSessionKind.
+const (
+	AgentSessionKindDiagnose  AgentSessionKind = "diagnose"
+	AgentSessionKindExplain   AgentSessionKind = "explain"
+	AgentSessionKindOther     AgentSessionKind = "other"
+	AgentSessionKindPlan      AgentSessionKind = "plan"
+	AgentSessionKindRehearsal AgentSessionKind = "rehearsal"
+)
+
+// Valid indicates whether the value is a known member of the AgentSessionKind enum.
+func (e AgentSessionKind) Valid() bool {
+	switch e {
+	case AgentSessionKindDiagnose:
+		return true
+	case AgentSessionKindExplain:
+		return true
+	case AgentSessionKindOther:
+		return true
+	case AgentSessionKindPlan:
+		return true
+	case AgentSessionKindRehearsal:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AgentSessionStatus.
+const (
+	AgentSessionStatusCancelled AgentSessionStatus = "cancelled"
+	AgentSessionStatusFailed    AgentSessionStatus = "failed"
+	AgentSessionStatusRunning   AgentSessionStatus = "running"
+	AgentSessionStatusSucceeded AgentSessionStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the AgentSessionStatus enum.
+func (e AgentSessionStatus) Valid() bool {
+	switch e {
+	case AgentSessionStatusCancelled:
+		return true
+	case AgentSessionStatusFailed:
+		return true
+	case AgentSessionStatusRunning:
+		return true
+	case AgentSessionStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EngineOutcome.
 const (
 	EngineOutcomeFailed     EngineOutcome = "failed"
@@ -187,6 +268,114 @@ func (e RunStatus) Valid() bool {
 	}
 }
 
+// Defines values for SecurityCategory.
+const (
+	SecurityCategoryData     SecurityCategory = "data"
+	SecurityCategoryIdentity SecurityCategory = "identity"
+	SecurityCategoryLogging  SecurityCategory = "logging"
+	SecurityCategoryNetwork  SecurityCategory = "network"
+	SecurityCategoryThreat   SecurityCategory = "threat"
+	SecurityCategoryWorkload SecurityCategory = "workload"
+)
+
+// Valid indicates whether the value is a known member of the SecurityCategory enum.
+func (e SecurityCategory) Valid() bool {
+	switch e {
+	case SecurityCategoryData:
+		return true
+	case SecurityCategoryIdentity:
+		return true
+	case SecurityCategoryLogging:
+		return true
+	case SecurityCategoryNetwork:
+		return true
+	case SecurityCategoryThreat:
+		return true
+	case SecurityCategoryWorkload:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityProvider.
+const (
+	SecurityProviderAws        SecurityProvider = "aws"
+	SecurityProviderCloudflare SecurityProvider = "cloudflare"
+	SecurityProviderGcp        SecurityProvider = "gcp"
+	SecurityProviderOnprem     SecurityProvider = "onprem"
+	SecurityProviderPlatform   SecurityProvider = "platform"
+)
+
+// Valid indicates whether the value is a known member of the SecurityProvider enum.
+func (e SecurityProvider) Valid() bool {
+	switch e {
+	case SecurityProviderAws:
+		return true
+	case SecurityProviderCloudflare:
+		return true
+	case SecurityProviderGcp:
+		return true
+	case SecurityProviderOnprem:
+		return true
+	case SecurityProviderPlatform:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecuritySeverity.
+const (
+	SecuritySeverityCritical SecuritySeverity = "critical"
+	SecuritySeverityHigh     SecuritySeverity = "high"
+	SecuritySeverityInfo     SecuritySeverity = "info"
+	SecuritySeverityLow      SecuritySeverity = "low"
+	SecuritySeverityMedium   SecuritySeverity = "medium"
+)
+
+// Valid indicates whether the value is a known member of the SecuritySeverity enum.
+func (e SecuritySeverity) Valid() bool {
+	switch e {
+	case SecuritySeverityCritical:
+		return true
+	case SecuritySeverityHigh:
+		return true
+	case SecuritySeverityInfo:
+		return true
+	case SecuritySeverityLow:
+		return true
+	case SecuritySeverityMedium:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecuritySourceStatus.
+const (
+	SecuritySourceStatusError         SecuritySourceStatus = "error"
+	SecuritySourceStatusNotConfigured SecuritySourceStatus = "not_configured"
+	SecuritySourceStatusOk            SecuritySourceStatus = "ok"
+	SecuritySourceStatusUnavailable   SecuritySourceStatus = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the SecuritySourceStatus enum.
+func (e SecuritySourceStatus) Valid() bool {
+	switch e {
+	case SecuritySourceStatusError:
+		return true
+	case SecuritySourceStatusNotConfigured:
+		return true
+	case SecuritySourceStatusOk:
+		return true
+	case SecuritySourceStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StepStatus.
 const (
 	StepStatusFailed    StepStatus = "failed"
@@ -211,9 +400,115 @@ func (e StepStatus) Valid() bool {
 	}
 }
 
+// Defines values for StreamAgentEventsParamsFormat.
+const (
+	StreamAgentEventsParamsFormatJson StreamAgentEventsParamsFormat = "json"
+	StreamAgentEventsParamsFormatSse  StreamAgentEventsParamsFormat = "sse"
+)
+
+// Valid indicates whether the value is a known member of the StreamAgentEventsParamsFormat enum.
+func (e StreamAgentEventsParamsFormat) Valid() bool {
+	switch e {
+	case StreamAgentEventsParamsFormatJson:
+		return true
+	case StreamAgentEventsParamsFormatSse:
+		return true
+	default:
+		return false
+	}
+}
+
 // AbortRequest defines model for AbortRequest.
 type AbortRequest struct {
 	Reason *string `json:"reason,omitempty"`
+}
+
+// AgentEvent defines model for AgentEvent.
+type AgentEvent struct {
+	DurationMillis *int64 `json:"durationMillis,omitempty"`
+
+	// Input any JSON value; credential-like values are "[redacted]"
+	Input interface{} `json:"input,omitempty"`
+
+	// Output any JSON value; credential-like values are "[redacted]"
+	Output    interface{}    `json:"output,omitempty"`
+	Seq       int64          `json:"seq"`
+	SessionId string         `json:"sessionId"`
+	Status    *string        `json:"status,omitempty"`
+	Time      time.Time      `json:"time"`
+	Tool      *string        `json:"tool,omitempty"`
+	Type      AgentEventType `json:"type"`
+	Usage     *TokenUsage    `json:"usage,omitempty"`
+}
+
+// AgentEventList defines model for AgentEventList.
+type AgentEventList struct {
+	Events []AgentEvent `json:"events"`
+
+	// NextAfter Set when more events follow this page; pass it as `after` to read them.
+	NextAfter *int64 `json:"nextAfter,omitempty"`
+}
+
+// AgentEventRequest defines model for AgentEventRequest.
+type AgentEventRequest struct {
+	DurationMillis *int64 `json:"durationMillis,omitempty"`
+
+	// Input any JSON value, up to 64 KiB
+	Input interface{} `json:"input,omitempty"`
+
+	// Output any JSON value, up to 64 KiB
+	Output interface{} `json:"output,omitempty"`
+
+	// Status Example: ok
+	Status *string `json:"status,omitempty"`
+
+	// Tool the tool name for tool_call, tool_result and blocked
+	Tool  *string        `json:"tool,omitempty"`
+	Type  AgentEventType `json:"type"`
+	Usage *TokenUsage    `json:"usage,omitempty"`
+}
+
+// AgentEventType defines model for AgentEventType.
+type AgentEventType string
+
+// AgentSession defines model for AgentSession.
+type AgentSession struct {
+	// Actor the token name that started the session
+	Actor     string     `json:"actor"`
+	CreatedAt time.Time  `json:"createdAt"`
+	EndedAt   *time.Time `json:"endedAt,omitempty"`
+
+	// Id Example: ags_3f9c1a0b2d4e
+	Id      string             `json:"id"`
+	Kind    AgentSessionKind   `json:"kind"`
+	Model   *string            `json:"model,omitempty"`
+	PlanRef *string            `json:"planRef,omitempty"`
+	RunId   *string            `json:"runId,omitempty"`
+	Status  AgentSessionStatus `json:"status"`
+	Summary *string            `json:"summary,omitempty"`
+	Title   string             `json:"title"`
+	Totals  AgentSessionTotals `json:"totals"`
+}
+
+// AgentSessionKind defines model for AgentSessionKind.
+type AgentSessionKind string
+
+// AgentSessionList defines model for AgentSessionList.
+type AgentSessionList struct {
+	Sessions []AgentSession `json:"sessions"`
+}
+
+// AgentSessionStatus defines model for AgentSessionStatus.
+type AgentSessionStatus string
+
+// AgentSessionTotals defines model for AgentSessionTotals.
+type AgentSessionTotals struct {
+	// DurationMillis sum of the events' durationMillis; wall-clock time is endedAt - createdAt
+	DurationMillis int64 `json:"durationMillis"`
+	Events         int64 `json:"events"`
+	InputTokens    int64 `json:"inputTokens"`
+	OutputTokens   int64 `json:"outputTokens"`
+	ToolCalls      int64 `json:"toolCalls"`
 }
 
 // App An application from PLATFORM_APPS_FILE.
@@ -350,6 +645,17 @@ type CanaryStep struct {
 	Gate      *GateResult `json:"gate,omitempty"`
 	StartedAt time.Time   `json:"startedAt"`
 	Weight    int         `json:"weight"`
+}
+
+// CreateAgentSessionRequest defines model for CreateAgentSessionRequest.
+type CreateAgentSessionRequest struct {
+	Kind AgentSessionKind `json:"kind"`
+
+	// Model Example: claude-opus-4-5
+	Model   *string `json:"model,omitempty"`
+	PlanRef *string `json:"planRef,omitempty"`
+	RunId   *string `json:"runId,omitempty"`
+	Title   string  `json:"title"`
 }
 
 // DatabaseCluster A CloudNativePG Cluster.
@@ -507,6 +813,12 @@ type ErrorBody struct {
 	Message string `json:"message"`
 }
 
+// FinishAgentSessionRequest defines model for FinishAgentSessionRequest.
+type FinishAgentSessionRequest struct {
+	Status  AgentSessionStatus `json:"status"`
+	Summary *string            `json:"summary,omitempty"`
+}
+
 // GateResult defines model for GateResult.
 type GateResult struct {
 	ErrorRate float32 `json:"errorRate"`
@@ -630,7 +942,13 @@ type PlanRecord struct {
 	ReviewedAt    *time.Time `json:"reviewedAt,omitempty"`
 
 	// ReviewedBy who approved or rejected
-	ReviewedBy  *string     `json:"reviewedBy,omitempty"`
+	ReviewedBy *string `json:"reviewedBy,omitempty"`
+
+	// Revision 1 at submit, one more with every attachment upload. Approve with the revision you reviewed.
+	Revision int64 `json:"revision"`
+
+	// RollbackOf the run this plan rolls back (POST /v1/migrations/{runId}/rollback)
+	RollbackOf  *string     `json:"rollbackOf,omitempty"`
 	RunId       *string     `json:"runId,omitempty"`
 	Status      PlanStatus  `json:"status"`
 	SubmittedAt time.Time   `json:"submittedAt"`
@@ -670,6 +988,9 @@ type Provider string
 // ReviewRequest defines model for ReviewRequest.
 type ReviewRequest struct {
 	Comment *string `json:"comment,omitempty"`
+
+	// Revision Approve only. The plan revision the approver reviewed; required when the plan has attachments.
+	Revision *int64 `json:"revision,omitempty"`
 }
 
 // Role defines model for Role.
@@ -811,6 +1132,119 @@ type RunResult struct {
 // interrupted: the server restarted while the run was active; can be resumed.
 type RunStatus string
 
+// SecurityCategory defines model for SecurityCategory.
+type SecurityCategory string
+
+// SecurityFinding One security or governance signal, normalised across vendors.
+type SecurityFinding struct {
+	Category SecurityCategory `json:"category"`
+
+	// Check the rule that produced the finding
+	//
+	// Example: k8s.privileged
+	Check  string `json:"check"`
+	Detail string `json:"detail"`
+
+	// Environment an environment name, or aws-account, or platform
+	//
+	// Example: gke
+	Environment string `json:"environment"`
+
+	// Id stable across collections: a hash of environment, source, check, resource and, where it has one, the vendor's own finding id (GuardDuty finding id, Security Hub finding ARN) or the rule's protocol, ports and CIDRs
+	Id string `json:"id"`
+
+	// ObservedAt when the source reported it, or when it was read
+	ObservedAt     time.Time        `json:"observedAt"`
+	Provider       SecurityProvider `json:"provider"`
+	Recommendation string           `json:"recommendation"`
+
+	// Resource what the finding is about, e.g. shop/Deployment/web/app/app or an ARN
+	Resource string           `json:"resource"`
+	Severity SecuritySeverity `json:"severity"`
+
+	// Source kubernetes, aws-iam, aws-ec2, aws-cloudtrail, aws-guardduty, aws-securityhub, aws-s3, platform-audit, platform-config
+	//
+	// Example: aws-guardduty
+	Source string `json:"source"`
+	Title  string `json:"title"`
+}
+
+// SecurityProvider defines model for SecurityProvider.
+type SecurityProvider string
+
+// SecurityReport defines model for SecurityReport.
+type SecurityReport struct {
+	// Findings Most severe first.
+	Findings []SecurityFinding `json:"findings"`
+
+	// GeneratedAt when the sources were read
+	GeneratedAt time.Time        `json:"generatedAt"`
+	Sources     []SecuritySource `json:"sources"`
+	Summary     SecuritySummary  `json:"summary"`
+}
+
+// SecuritySeverity defines model for SecuritySeverity.
+type SecuritySeverity string
+
+// SecuritySource defines model for SecuritySource.
+type SecuritySource struct {
+	CheckedAt   time.Time `json:"checkedAt"`
+	Environment string    `json:"environment"`
+
+	// Findings findings from this source in this response
+	Findings int `json:"findings"`
+
+	// Message why the status is not ok, or what was read
+	Message *string `json:"message,omitempty"`
+
+	// Name Example: aws-guardduty
+	Name     string           `json:"name"`
+	Provider SecurityProvider `json:"provider"`
+
+	// Status - ok: read completely.
+	// - unavailable: the source did not answer (e.g. the cluster is unreachable).
+	// - not_configured: this server has no credentials or settings for the source; the message says what is missing.
+	// - error: credentials exist but could not be fetched (e.g. the instance metadata service timed out), or the source answered but some or all reads failed (e.g. access denied); findings read before the failure are kept.
+	Status SecuritySourceStatus `json:"status"`
+}
+
+// SecuritySourceStatus - ok: read completely.
+// - unavailable: the source did not answer (e.g. the cluster is unreachable).
+// - not_configured: this server has no credentials or settings for the source; the message says what is missing.
+// - error: credentials exist but could not be fetched (e.g. the instance metadata service timed out), or the source answered but some or all reads failed (e.g. access denied); findings read before the failure are kept.
+type SecuritySourceStatus string
+
+// SecuritySummary defines model for SecuritySummary.
+type SecuritySummary struct {
+	// ByEnvironment Counts per environment; every environment with a source appears, even with no findings.
+	ByEnvironment map[string]SeverityCounts `json:"byEnvironment"`
+	BySeverity    SeverityCounts            `json:"bySeverity"`
+}
+
+// ServiceInfo defines model for ServiceInfo.
+type ServiceInfo struct {
+	Links struct {
+		// Health Example: /healthz
+		Health string `json:"health"`
+
+		// Openapi Example: /openapi.yaml
+		Openapi string `json:"openapi"`
+	} `json:"links"`
+
+	// Name Example: hopcharlie-platform
+	Name string `json:"name"`
+}
+
+// SeverityCounts defines model for SeverityCounts.
+type SeverityCounts struct {
+	Critical int `json:"critical"`
+	High     int `json:"high"`
+	Info     int `json:"info"`
+	Low      int `json:"low"`
+	Medium   int `json:"medium"`
+	Total    int `json:"total"`
+}
+
 // StartMigrationRequest defines model for StartMigrationRequest.
 type StartMigrationRequest struct {
 	// AutoSwitch Cut over as soon as data is in sync, without waiting for /switch.
@@ -846,6 +1280,12 @@ type StepRecord struct {
 
 // StepStatus defines model for StepStatus.
 type StepStatus string
+
+// TokenUsage defines model for TokenUsage.
+type TokenUsage struct {
+	InputTokens  int64 `json:"inputTokens"`
+	OutputTokens int64 `json:"outputTokens"`
+}
 
 // TrafficState defines model for TrafficState.
 type TrafficState struct {
@@ -951,6 +1391,27 @@ type Unauthorized = Error
 // Unavailable defines model for Unavailable.
 type Unavailable = Error
 
+// ListAgentSessionsParams defines parameters for ListAgentSessions.
+type ListAgentSessionsParams struct {
+	PlanRef *string `form:"planRef,omitempty" json:"planRef,omitempty"`
+	RunId   *string `form:"runId,omitempty" json:"runId,omitempty"`
+	Limit   *int    `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// StreamAgentEventsParams defines parameters for StreamAgentEvents.
+type StreamAgentEventsParams struct {
+	// After Replay events with seq greater than this. Same as Last-Event-ID.
+	After  *int64                         `form:"after,omitempty" json:"after,omitempty"`
+	Format *StreamAgentEventsParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+
+	// Limit With `format=json`, the most events to return.
+	Limit       *int    `form:"limit,omitempty" json:"limit,omitempty"`
+	LastEventID *string `json:"Last-Event-ID,omitempty"`
+}
+
+// StreamAgentEventsParamsFormat defines parameters for StreamAgentEvents.
+type StreamAgentEventsParamsFormat string
+
 // ListAuditParams defines parameters for ListAudit.
 type ListAuditParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
@@ -971,11 +1432,30 @@ type StreamMigrationEventsParams struct {
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
+// GetSecurityParams defines parameters for GetSecurity.
+type GetSecurityParams struct {
+	// Environment Only this environment, e.g. `gke`, `aws-account` or `platform`. Unknown names are a 400.
+	Environment *string `form:"environment,omitempty" json:"environment,omitempty"`
+
+	// Severity Minimum severity; `high` returns critical and high findings.
+	Severity *SecuritySeverity `form:"severity,omitempty" json:"severity,omitempty"`
+	Refresh  *bool             `form:"refresh,omitempty" json:"refresh,omitempty"`
+}
+
 // GetTrafficParams defines parameters for GetTraffic.
 type GetTrafficParams struct {
 	// Window Statistics window, a duration between 1s and 5m.
 	Window *string `form:"window,omitempty" json:"window,omitempty"`
 }
+
+// CreateAgentSessionJSONRequestBody defines body for CreateAgentSession for application/json ContentType.
+type CreateAgentSessionJSONRequestBody = CreateAgentSessionRequest
+
+// AppendAgentEventJSONRequestBody defines body for AppendAgentEvent for application/json ContentType.
+type AppendAgentEventJSONRequestBody = AgentEventRequest
+
+// FinishAgentSessionJSONRequestBody defines body for FinishAgentSession for application/json ContentType.
+type FinishAgentSessionJSONRequestBody = FinishAgentSessionRequest
 
 // StartMigrationJSONRequestBody defines body for StartMigration for application/json ContentType.
 type StartMigrationJSONRequestBody = StartMigrationRequest
