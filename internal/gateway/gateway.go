@@ -9,7 +9,9 @@
 //	GET  /healthz                     200 once the config is loaded (no auth)
 //	GET  /metrics                     Prometheus (no auth)
 //	GET  /v1/state[?window=20s]       TrafficState
-//	POST /v1/writes/hold              hold new writes; 200 once in-flight writes drained
+//	POST /v1/writes/hold              hold new writes; 200 once in-flight writes drained,
+//	                                  504 (hold reverted) when they do not drain in time,
+//	                                  409 when released meanwhile
 //	POST /v1/writes/release           dispatch held writes to the current write backend
 //	POST /v1/route {"backend":"eks"}  writes and 100% of reads to that backend
 //	POST /v1/weights {"readWeights":{"gke":50,"eks":50}}
@@ -23,10 +25,13 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,12 +64,13 @@ type backend struct {
 }
 
 // holdGen is one hold period. Writes that arrive during it wait on release;
-// release decides which backend they go to.
+// release decides which backend they go to. A hold only ends by release (or
+// by a hold call reverting it); nothing ends it on a timer.
 type holdGen struct {
+	id         uint64        // from Gateway.holdSeq; tells holds apart across release and re-hold
 	release    chan struct{} // closed on release
 	dispatched chan struct{} // closed once every released write left the queue
-	timer      *time.Timer   // max-hold auto release
-	waiting    int           // writes waiting for release
+	waiting    int           // writes waiting for release, body already read
 	pending    int           // released writes not yet dispatched
 	released   bool
 	backend    *backend // write backend at release time
@@ -87,9 +93,12 @@ type Gateway struct {
 	held           bool
 	heldSince      time.Time
 	gen            *holdGen // non-nil while held
+	holdSeq        uint64   // id of the last hold started
+	buffering      int      // held writes still reading their body; count towards MaxHeld
 	inflightWrites int      // includes released writes not yet dispatched
 	writesIdle     chan struct{}
-	closed         bool
+	shuttingDown   bool
+	shutdown       chan struct{} // closed by BeginShutdown
 	seq            uint64
 
 	saveMu   sync.Mutex
@@ -97,13 +106,14 @@ type Gateway struct {
 }
 
 // New builds a gateway and restores routing from the state file, if any. A
-// hold recorded there continues with the max-hold left since heldSince.
+// hold recorded there continues until release.
 func New(cfg Config) (*Gateway, error) {
 	cfg.setDefaults()
 	if len(cfg.Backends) == 0 {
 		return nil, errors.New("no backends configured")
 	}
-	g := &Gateway{cfg: cfg, log: cfg.Log, byName: map[string]*backend{}, writesIdle: make(chan struct{})}
+	g := &Gateway{cfg: cfg, log: cfg.Log, byName: map[string]*backend{},
+		writesIdle: make(chan struct{}), shutdown: make(chan struct{})}
 	for _, bc := range cfg.Backends {
 		if _, dup := g.byName[bc.Name]; dup {
 			return nil, fmt.Errorf("backend %q listed twice", bc.Name)
@@ -146,41 +156,58 @@ func (g *Gateway) restore() error {
 		g.writeBackend = initial
 		g.readWeights = g.weightsAllTo(initial)
 	} else {
-		// Refuse rather than guess: routing to a different backend than the
-		// one recorded could split writes mid-migration.
-		if _, ok := g.byName[st.WriteBackend]; !ok {
-			g.mu.Unlock()
-			return fmt.Errorf("state file %s: write backend %q is not configured", g.cfg.StateFile, st.WriteBackend)
-		}
-		if err := g.validateWeights(st.ReadWeights); err != nil {
+		weights, err := g.restoredWeights(st)
+		if err != nil {
 			g.mu.Unlock()
 			return fmt.Errorf("state file %s: %w", g.cfg.StateFile, err)
 		}
 		g.writeBackend = st.WriteBackend
-		g.readWeights = g.fullWeights(st.ReadWeights)
+		g.readWeights = weights
 		if st.WritesHeld {
 			since := time.Now()
 			if st.HeldSince != nil {
 				since = *st.HeldSince
 			}
 			g.startHoldLocked(since)
-			g.log.Warn("resuming write hold from state file", "heldSince", since.UTC(),
-				"maxHoldLeft", max(g.cfg.MaxHold-time.Since(since), 0).Round(time.Millisecond).String())
+			g.log.Warn("resuming write hold from state file; it lasts until release", "heldSince", since.UTC())
 		}
 	}
 	snap := g.snapshotLocked()
 	g.mu.Unlock()
 	// Fail at start, not mid-cutover, when the state file cannot be written.
 	if err := g.trySave(snap); err != nil {
-		g.mu.Lock()
-		g.closed = true // a resumed hold's timer must not fire on a dead gateway
-		if g.gen != nil {
-			g.gen.timer.Stop()
-		}
-		g.mu.Unlock()
 		return fmt.Errorf("write state file: %w", err)
 	}
 	return nil
+}
+
+// restoredWeights checks the state file against the configured backends. A
+// backend removed from the config is dropped if it got no reads; anything
+// else is refused rather than guessed, since routing differently from what
+// was recorded could split writes mid-migration.
+func (g *Gateway) restoredWeights(st *persistedState) (map[string]int, error) {
+	configured := strings.Join(g.names(), ", ")
+	if _, ok := g.byName[st.WriteBackend]; !ok {
+		return nil, fmt.Errorf("write backend %q is not configured (configured: %s); add it back to the backends or fix the state file",
+			st.WriteBackend, configured)
+	}
+	weights := make(map[string]int, len(st.ReadWeights))
+	for _, name := range slices.Sorted(maps.Keys(st.ReadWeights)) {
+		w := st.ReadWeights[name]
+		if _, ok := g.byName[name]; !ok {
+			if w == 0 {
+				g.log.Warn("dropping unconfigured backend with read weight 0 from state file", "backend", name)
+				continue
+			}
+			return nil, fmt.Errorf("backend %q has read weight %d but is not configured (configured: %s); add it back to the backends or fix the state file",
+				name, w, configured)
+		}
+		weights[name] = w
+	}
+	if err := g.validateWeights(weights); err != nil {
+		return nil, err
+	}
+	return g.fullWeights(weights), nil
 }
 
 // Proxy returns the public handler for user traffic.
@@ -189,14 +216,24 @@ func (g *Gateway) Proxy() http.Handler { return http.HandlerFunc(g.serveProxy) }
 // Admin returns the admin API handler.
 func (g *Gateway) Admin() http.Handler { return g.admin }
 
-// Close stops the max-hold timer and persists the final state. Call it after
-// the servers have stopped; a hold in progress stays recorded as held.
+// BeginShutdown answers every write waiting on a hold with 503 shutting_down,
+// and every write that arrives while held from now on, without forwarding
+// them. The hold and routing are unchanged, so a restart keeps holding. Call
+// it before shutting the proxy server down: held writes would otherwise keep
+// it waiting.
+func (g *Gateway) BeginShutdown() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.shuttingDown {
+		g.shuttingDown = true
+		close(g.shutdown)
+	}
+}
+
+// Close persists the final state. Call it after the servers have stopped; a
+// hold in progress stays recorded as held.
 func (g *Gateway) Close() {
 	g.mu.Lock()
-	g.closed = true
-	if g.gen != nil {
-		g.gen.timer.Stop()
-	}
 	snap := g.snapshotLocked()
 	g.mu.Unlock()
 	g.save(snap)
@@ -249,30 +286,42 @@ func (g *Gateway) pickReadLocked() *backend {
 // held. Writes never fail over on a bad health check: moving them is a
 // migration decision, not the gateway's.
 func (g *Gateway) serveWrite(w http.ResponseWriter, r *http.Request) {
+	arrived := time.Now()
 	buffered := false
 	g.mu.Lock()
 	for g.held {
-		gen := g.gen
-		if gen.waiting >= g.cfg.MaxHeld {
+		if g.shuttingDown {
 			g.mu.Unlock()
-			w.Header().Set("Retry-After", "1")
-			writeError(w, http.StatusServiceUnavailable, "too_many_held_writes", "writes are paused for a migration; retry shortly")
+			retryLater(w, "shutting_down", "the gateway is restarting; retry shortly")
 			return
 		}
 		if !buffered {
+			if g.waitingLocked() >= g.cfg.MaxHeld {
+				g.mu.Unlock()
+				retryLater(w, "too_many_held_writes", "writes are paused for a migration; retry shortly")
+				return
+			}
+			// Take the slot before reading the body, so MaxHeld bounds the
+			// memory held writes use.
+			g.buffering++
 			g.mu.Unlock()
-			if err := bufferBody(r); err != nil {
+			err := bufferBody(r)
+			g.mu.Lock()
+			g.buffering--
+			if err != nil {
+				g.mu.Unlock()
 				g.metrics.heldDropped.Inc()
+				writeError(w, http.StatusBadRequest, "bad_request", "could not read the request body: "+err.Error())
 				return
 			}
 			buffered = true
-			g.mu.Lock()
 			continue // the hold may have ended while the body was read
 		}
+		gen := g.gen
 		gen.waiting++
 		g.mu.Unlock()
-		b, ok := g.awaitRelease(r.Context(), gen)
-		if !ok {
+		b := g.awaitRelease(w, r, gen, arrived)
+		if b == nil {
 			return
 		}
 		defer g.writeDone()
@@ -309,28 +358,54 @@ func bufferBody(r *http.Request) error {
 	return nil
 }
 
-// awaitRelease blocks until the hold ends. A write whose client leaves first
-// is dropped.
-func (g *Gateway) awaitRelease(ctx context.Context, gen *holdGen) (*backend, bool) {
+func retryLater(w http.ResponseWriter, code, msg string) {
+	w.Header().Set("Retry-After", "1")
+	writeError(w, http.StatusServiceUnavailable, code, msg)
+}
+
+// awaitRelease blocks until gen is released and returns the backend to send
+// the write to; a held write is never forwarded before that. A write that
+// cannot wait any longer (MaxHold since it arrived, or the gateway is shutting
+// down) is answered with 503, and one whose client left is dropped. Then
+// awaitRelease returns nil.
+func (g *Gateway) awaitRelease(w http.ResponseWriter, r *http.Request, gen *holdGen, arrived time.Time) *backend {
+	timeout := time.NewTimer(max(g.cfg.MaxHold-time.Since(arrived), 0))
+	defer timeout.Stop()
+	var gone, expired bool
 	select {
 	case <-gen.release:
-		g.mu.Lock()
+	case <-r.Context().Done():
+		gone = true
+	case <-timeout.C:
+		expired = true
+	case <-g.shutdown:
+	}
+	g.mu.Lock()
+	if gen.released && !gone {
+		// Released, perhaps at the same moment as a timeout or shutdown:
+		// forwarding is safe now, so nobody gets an error.
 		gen.dispatchedOneLocked()
 		g.mu.Unlock()
-		return gen.backend, true
-	case <-ctx.Done():
-		g.mu.Lock()
-		if gen.released {
-			// Release won the race and already counted this write as in flight.
-			gen.dispatchedOneLocked()
-			g.writeDoneLocked()
-		} else {
-			gen.waiting--
-		}
-		g.mu.Unlock()
-		g.metrics.heldDropped.Inc()
-		return nil, false
+		return gen.backend
 	}
+	if gen.released {
+		// Release won the race and already counted this write as in flight.
+		gen.dispatchedOneLocked()
+		g.writeDoneLocked()
+	} else {
+		gen.waiting--
+	}
+	g.mu.Unlock()
+	switch {
+	case gone:
+		g.metrics.heldDropped.Inc()
+	case expired:
+		g.metrics.holdExpired.Inc()
+		retryLater(w, "hold_timeout", fmt.Sprintf("writes are paused for a migration and this one waited %s; retry shortly", g.cfg.MaxHold))
+	default:
+		retryLater(w, "shutting_down", "the gateway is restarting; retry shortly")
+	}
+	return nil
 }
 
 func (gen *holdGen) dispatchedOneLocked() {
@@ -354,17 +429,19 @@ func (g *Gateway) writeDoneLocked() {
 	}
 }
 
+// waitingLocked counts writes waiting for release, including those still
+// reading their body.
 func (g *Gateway) waitingLocked() int {
 	if g.gen == nil {
 		return 0
 	}
-	return g.gen.waiting
+	return g.gen.waiting + g.buffering
 }
 
-// startHoldLocked starts a hold period that auto-releases MaxHold after since.
+// startHoldLocked starts a hold period. It lasts until releaseLocked.
 func (g *Gateway) startHoldLocked(since time.Time) {
-	gen := &holdGen{release: make(chan struct{}), dispatched: make(chan struct{})}
-	gen.timer = time.AfterFunc(max(g.cfg.MaxHold-time.Since(since), 0), func() { g.expireHold(gen) })
+	g.holdSeq++
+	gen := &holdGen{id: g.holdSeq, release: make(chan struct{}), dispatched: make(chan struct{})}
 	g.held, g.heldSince, g.gen = true, since, gen
 }
 
@@ -373,7 +450,6 @@ func (g *Gateway) startHoldLocked(since time.Time) {
 // right away still waits for them.
 func (g *Gateway) releaseLocked() *holdGen {
 	gen := g.gen
-	gen.timer.Stop()
 	gen.released = true
 	gen.backend = g.byName[g.writeBackend]
 	gen.pending = gen.waiting
@@ -385,25 +461,6 @@ func (g *Gateway) releaseLocked() *holdGen {
 	close(gen.release)
 	g.held, g.gen = false, nil
 	return gen
-}
-
-// expireHold releases a hold that outlived MaxHold, so a crashed engine
-// cannot freeze writes forever.
-func (g *Gateway) expireHold(gen *holdGen) {
-	g.mu.Lock()
-	if g.closed || g.gen != gen {
-		g.mu.Unlock()
-		return
-	}
-	heldSince := g.heldSince
-	g.releaseLocked()
-	g.metrics.holdExpired.Inc() // under g.mu: nobody sees the release without the count
-	n := gen.pending
-	snap := g.snapshotLocked()
-	g.mu.Unlock()
-	g.save(snap)
-	g.log.Warn("max hold elapsed; released held writes", "action", "auto_release", "backend", gen.backend.name,
-		"released", n, "heldSince", heldSince.UTC(), "maxHold", g.cfg.MaxHold.String())
 }
 
 func (g *Gateway) waitWritesDrained(ctx context.Context) error {
@@ -426,12 +483,17 @@ func (g *Gateway) newProxy(b *backend) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// cloudflared is the only client, so keep its X-Forwarded-For
-			// chain instead of replacing it with cloudflared's own address.
+			// chain instead of replacing it with cloudflared's own address,
+			// and its X-Forwarded-Proto (https at the edge) instead of the
+			// plain http of the tunnel hop.
 			if xff := pr.In.Header["X-Forwarded-For"]; len(xff) > 0 {
 				pr.Out.Header["X-Forwarded-For"] = xff
 			}
 			pr.SetURL(b.url)
 			pr.SetXForwarded()
+			if proto := pr.In.Header.Get("X-Forwarded-Proto"); proto != "" {
+				pr.Out.Header.Set("X-Forwarded-Proto", proto)
+			}
 		},
 		Transport:     g.cfg.Transport,
 		FlushInterval: -1, // stream SSE and chunked responses as they come
@@ -440,21 +502,46 @@ func (g *Gateway) newProxy(b *backend) *httputil.ReverseProxy {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if r.Context().Err() != nil {
+			client := r.Context()
+			if c, ok := client.Value(clientCtxKey{}).(context.Context); ok {
+				client = c // a write, whose r.Context() outlives the client
+			}
+			switch {
+			case errors.Is(context.Cause(r.Context()), errWriteTimeout):
+				g.log.Warn("write timed out", "backend", b.name, "method", r.Method, "path", r.URL.Path,
+					"writeTimeout", g.cfg.WriteTimeout.String())
+				w.Header().Set(headerBackend, b.name)
+				writeError(w, http.StatusGatewayTimeout, "backend_timeout",
+					fmt.Sprintf("backend %s did not answer within %s", b.name, g.cfg.WriteTimeout))
+			case client.Err() != nil:
 				// The client left; nobody to answer and not the backend's fault.
 				if sw, ok := w.(*statusWriter); ok {
 					sw.code = statusClientClosed
 				}
-				return
+			default:
+				g.log.Warn("proxy error", "backend", b.name, "method", r.Method, "path", r.URL.Path, "err", err)
+				w.Header().Set(headerBackend, b.name)
+				writeError(w, http.StatusBadGateway, "bad_gateway", "backend "+b.name+" did not answer")
 			}
-			g.log.Warn("proxy error", "backend", b.name, "method", r.Method, "path", r.URL.Path, "err", err)
-			w.Header().Set(headerBackend, b.name)
-			writeError(w, http.StatusBadGateway, "bad_gateway", "backend "+b.name+" did not answer")
 		},
 	}
 }
 
+// clientCtxKey holds a forwarded write's client context, so the error handler
+// can still tell that the client left.
+type clientCtxKey struct{}
+
+var errWriteTimeout = errors.New("write timeout")
+
 func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b *backend, class string) {
+	if class == classWrite {
+		// A write stays in flight until the backend answers, even when its
+		// client leaves: the backend may still commit it, and hold must wait
+		// for that. The timeout also gives ReverseProxy a context it can end.
+		ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(r.Context()), g.cfg.WriteTimeout, errWriteTimeout)
+		defer cancel()
+		r = r.WithContext(context.WithValue(ctx, clientCtxKey{}, r.Context()))
+	}
 	sw := &statusWriter{ResponseWriter: w}
 	start := time.Now()
 	// Deferred because ReverseProxy panics with http.ErrAbortHandler when a

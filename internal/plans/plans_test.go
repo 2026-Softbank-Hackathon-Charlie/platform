@@ -1,10 +1,19 @@
 package plans
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
+
+var ctx = context.Background()
+
+func newService(p Policy) *Service { return New(p, storetest.NewMemory()) }
 
 // Base plan; tests splice extra JSON in before the closing brace.
 const base = `{
@@ -22,12 +31,12 @@ func planJSON(extra string) []byte {
 
 func TestSubmitAcceptsValidPlan(t *testing.T) {
 	t.Setenv("SRC_PGPASSWORD", "hunter2")
-	s := New(DefaultPolicy())
-	rec, err := s.Submit(planJSON(`"files": {"source":"gcs:b","target":"s3:b","flags":["--transfers","16","--checksum"]}`), "alice")
+	s := newService(DefaultPolicy())
+	rec, err := s.Submit(ctx, planJSON(`"files": {"source":"gcs:b","target":"s3:b","flags":["--transfers","16","--checksum"]}`), "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Status != StatusPending || !strings.HasPrefix(rec.Ref, "pln_") || rec.SubmittedBy != "alice" {
+	if rec.Status != apiv1.PlanStatusPendingApproval || !strings.HasPrefix(rec.Ref, "pln_") || rec.SubmittedBy != "alice" {
 		t.Fatalf("record = %+v", rec)
 	}
 	if rec.Summary.Source.Cluster != "db-gke" || !rec.Summary.Files || rec.Summary.GatewayMode != "none" || rec.Summary.MaxDowntime != "3m0s" {
@@ -91,7 +100,7 @@ func TestPolicyRejects(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := New(policy).Submit(tc.raw, "x")
+			_, err := newService(policy).Submit(ctx, tc.raw, "x")
 			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want ErrInvalid containing %q", err, tc.want)
 			}
@@ -100,7 +109,7 @@ func TestPolicyRejects(t *testing.T) {
 }
 
 func TestGatewayHTTPDisabledWithoutConfiguredURL(t *testing.T) {
-	_, err := New(DefaultPolicy()).Submit(planJSON(`"gateway": {"mode":"http","url":"http://gw:9901"}`), "x")
+	_, err := newService(DefaultPolicy()).Submit(ctx, planJSON(`"gateway": {"mode":"http","url":"http://gw:9901"}`), "x")
 	if err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("err = %v", err)
 	}
@@ -111,7 +120,7 @@ func TestDSNErrorsNeverEchoSecrets(t *testing.T) {
 	p := DefaultPolicy()
 	p.DSNHostSuffixes = []string{".ts.net"}
 	raw := []byte(strings.Replace(string(planJSON("")), "postgres://app:${SRC_PGPASSWORD}@db-gke.shop.ts.net/app", "postgres://app:${SRC_PGPASSWORD}@[::1", 1))
-	_, err := New(p).Submit(raw, "x")
+	_, err := newService(p).Submit(ctx, raw, "x")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -121,46 +130,101 @@ func TestDSNErrorsNeverEchoSecrets(t *testing.T) {
 }
 
 func TestLifecycle(t *testing.T) {
-	s := New(DefaultPolicy())
-	rec, err := s.Submit(planJSON(""), "ai-agent")
+	s := newService(DefaultPolicy())
+	rec, err := s.Submit(ctx, planJSON(""), "ai-agent")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Reserve(rec.Ref); !errors.Is(err, ErrWrongStatus) {
+	if _, err := s.Reserve(ctx, rec.Ref); !errors.Is(err, ErrWrongStatus) {
 		t.Fatalf("reserving an unapproved plan: %v", err)
 	}
-	if rec, err = s.Approve(rec.Ref, "operator"); err != nil || rec.Status != StatusApproved || rec.ApprovedBy != "operator" {
+	if rec, err = s.Approve(ctx, rec.Ref, "operator", "ok"); err != nil || rec.Status != apiv1.PlanStatusApproved || *rec.ReviewedBy != "operator" || *rec.ReviewComment != "ok" {
 		t.Fatalf("approve: %+v %v", rec, err)
 	}
-	if _, err := s.Approve(rec.Ref, "operator"); err != nil {
+	if _, err := s.Approve(ctx, rec.Ref, "operator", ""); err != nil {
 		t.Fatalf("second approve should be a no-op: %v", err)
 	}
-	p, err := s.Reserve(rec.Ref)
+	p, err := s.Reserve(ctx, rec.Ref)
 	if err != nil || p.ID != "shop-gke-to-eks" {
 		t.Fatalf("reserve: %v", err)
 	}
-	if _, err := s.Reserve(rec.Ref); !errors.Is(err, ErrWrongStatus) {
+	if _, err := s.Reserve(ctx, rec.Ref); !errors.Is(err, ErrWrongStatus) {
 		t.Fatalf("double reserve: %v", err)
 	}
-	s.Release(rec.Ref)
-	if got, _ := s.Get(rec.Ref); got.Status != StatusApproved {
+	s.Release(ctx, rec.Ref)
+	if got, _ := s.Get(ctx, rec.Ref); got.Status != apiv1.PlanStatusApproved {
 		t.Fatalf("after release: %s", got.Status)
 	}
-	if _, err := s.Reserve(rec.Ref); err != nil {
+	if _, err := s.Reserve(ctx, rec.Ref); err != nil {
 		t.Fatal(err)
 	}
-	s.Started(rec.Ref, "run-1")
-	got, _ := s.Get(rec.Ref)
-	if got.Status != StatusStarted || got.RunID != "run-1" {
+	if err := s.Started(ctx, rec.Ref, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get(ctx, rec.Ref)
+	if got.Status != apiv1.PlanStatusStarted || *got.RunId != "run-1" {
 		t.Fatalf("after start: %+v", got)
 	}
-	if _, err := s.Approve(rec.Ref, "x"); !errors.Is(err, ErrWrongStatus) {
+	if _, err := s.Approve(ctx, rec.Ref, "x", ""); !errors.Is(err, ErrWrongStatus) {
 		t.Fatalf("approving a started plan: %v", err)
 	}
-	if _, err := s.Get("pln_missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Get(ctx, "pln_missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	if len(s.List()) != 1 {
+	if l, _ := s.List(ctx); len(l) != 1 {
 		t.Fatal("list")
+	}
+}
+
+func TestRecoverStartingLinksAnExistingRun(t *testing.T) {
+	st := storetest.NewMemory()
+	s := New(DefaultPolicy(), st)
+	rec, _ := s.Submit(ctx, planJSON(""), "ai")
+	_, _ = s.Approve(ctx, rec.Ref, "operator", "")
+	if _, err := s.Reserve(ctx, rec.Ref); err != nil {
+		t.Fatal(err)
+	}
+	// The run was created, then the server died before Started.
+	if err := st.CreateRun(ctx, store.Run{RunID: "run-1", PlanRef: rec.Ref, Status: "running", Doc: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.RecoverStarting(ctx); err != nil || n != 1 {
+		t.Fatalf("recover = %d, %v", n, err)
+	}
+	got, _ := s.Get(ctx, rec.Ref)
+	if got.Status != apiv1.PlanStatusStarted || *got.RunId != "run-1" {
+		t.Fatalf("a plan with a run must not go back to approved: %+v", got)
+	}
+}
+
+func TestPlanIDMustBeSafe(t *testing.T) {
+	for _, id := range []string{"../../x", "Shop", "a/b", "-a", ""} {
+		raw := []byte(strings.Replace(string(planJSON("")), `"id": "shop-gke-to-eks"`, `"id": "`+id+`"`, 1))
+		if _, err := newService(DefaultPolicy()).Submit(ctx, raw, "x"); !errors.Is(err, ErrInvalid) {
+			t.Errorf("id %q accepted: %v", id, err)
+		}
+	}
+}
+
+func TestRejectAndRecoverStarting(t *testing.T) {
+	s := newService(DefaultPolicy())
+	a, _ := s.Submit(ctx, planJSON(""), "ai")
+	if r, err := s.Reject(ctx, a.Ref, "operator", "wrong target"); err != nil || r.Status != apiv1.PlanStatusRejected {
+		t.Fatalf("reject: %+v %v", r, err)
+	}
+	if _, err := s.Approve(ctx, a.Ref, "operator", ""); !errors.Is(err, ErrWrongStatus) {
+		t.Fatalf("approve after reject: %v", err)
+	}
+	b, _ := s.Submit(ctx, planJSON(""), "ai")
+	_, _ = s.Approve(ctx, b.Ref, "operator", "")
+	if _, err := s.Reserve(ctx, b.Ref); err != nil {
+		t.Fatal(err)
+	}
+	// The server crashed between Reserve and Started.
+	if n, err := s.RecoverStarting(ctx); err != nil || n != 1 {
+		t.Fatalf("recover = %d, %v", n, err)
+	}
+	if got, _ := s.Get(ctx, b.Ref); got.Status != apiv1.PlanStatusApproved {
+		t.Fatalf("after recover: %s", got.Status)
 	}
 }

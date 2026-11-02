@@ -15,9 +15,13 @@ import (
 
 // Defaults for Config fields left zero.
 const (
-	DefaultDrainTimeout   = 30 * time.Second
-	DefaultMaxHold        = 3 * time.Minute
-	DefaultMaxHeld        = 10000
+	DefaultDrainTimeout = 30 * time.Second
+	// DefaultMaxHold stays under the Cloudflare origin timeout (about 100s):
+	// a held request older than that gets a 524 at the edge anyway.
+	DefaultMaxHold = 90 * time.Second
+	// DefaultMaxHeld bounds held-write memory: each buffers up to 64 KiB.
+	DefaultMaxHeld        = 2000
+	DefaultWriteTimeout   = 2 * time.Minute
 	DefaultHealthInterval = 2 * time.Second
 	DefaultHealthPath     = "/healthz"
 )
@@ -41,9 +45,14 @@ type Config struct {
 	// AdminToken guards the admin API. Empty disables auth.
 	AdminToken string
 
-	DrainTimeout   time.Duration // how long hold waits for in-flight writes
-	MaxHold        time.Duration // held writes are released after this
-	MaxHeld        int           // more waiting writes than this get 503
+	DrainTimeout time.Duration // how long hold waits for in-flight writes
+	// MaxHold is how long one write may wait for release before it gets 503
+	// hold_timeout. The hold itself lasts until release.
+	MaxHold time.Duration
+	MaxHeld int // more waiting writes than this get 503
+	// WriteTimeout bounds a forwarded write. Writes are not cancelled when
+	// their client leaves, so the backend's work is always waited for.
+	WriteTimeout   time.Duration
 	HealthInterval time.Duration
 	HealthPath     string
 
@@ -103,6 +112,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.MaxHeld <= 0 {
 		c.MaxHeld = DefaultMaxHeld
+	}
+	if c.WriteTimeout <= 0 {
+		c.WriteTimeout = DefaultWriteTimeout
 	}
 	if c.HealthInterval <= 0 {
 		c.HealthInterval = DefaultHealthInterval

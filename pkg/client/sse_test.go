@@ -388,6 +388,44 @@ func TestWatchErrors(t *testing.T) {
 			t.Fatalf("err %v, snapshots %d, connections %d", err, snaps, s.conns())
 		}
 	})
+	t.Run("empty first stream fails at once", func(t *testing.T) {
+		c, s := newSSEServer(t, func(w http.ResponseWriter, r *http.Request, _ int) {})
+		if _, _, err := collect(t, c); err == nil || errors.Is(err, context.DeadlineExceeded) || s.conns() != 1 {
+			t.Fatalf("err %v after %d connections", err, s.conns())
+		}
+	})
+	// The second case once ended Watch with nil: the final snapshot of an
+	// earlier, broken stream counted for the empty one.
+	for name, first := range map[string]func(w http.ResponseWriter){
+		"running, closed":         func(w http.ResponseWriter) { writeSnapshot(w, "running") },
+		"final snapshot, dropped": func(w http.ResponseWriter) { writeSnapshot(w, "succeeded"); abort() },
+	} {
+		t.Run("empty streams after "+name+" stop", func(t *testing.T) {
+			c, s := newSSEServer(t, func(w http.ResponseWriter, r *http.Request, conn int) {
+				if conn == 0 {
+					first(w)
+				}
+			})
+			_, snaps, err := collect(t, c)
+			if err == nil || errors.Is(err, context.DeadlineExceeded) || snaps != 1 || s.conns() != 1+maxEmptyStreams {
+				t.Fatalf("err %v, snapshots %d, connections %d", err, snaps, s.conns())
+			}
+		})
+	}
+	t.Run("a message resets the empty stream count", func(t *testing.T) {
+		// Snapshots on every maxEmptyStreams-th connection, empty streams between.
+		c, s := newSSEServer(t, func(w http.ResponseWriter, r *http.Request, conn int) {
+			switch {
+			case conn == 2*maxEmptyStreams:
+				writeSnapshot(w, "succeeded")
+			case conn%maxEmptyStreams == 0:
+				writeSnapshot(w, "running")
+			}
+		})
+		if _, snaps, err := collect(t, c); err != nil || snaps != 3 {
+			t.Fatalf("err %v, snapshots %d, connections %d", err, snaps, s.conns())
+		}
+	})
 	t.Run("server down at the start", func(t *testing.T) {
 		srv := httptest.NewServer(http.NotFoundHandler())
 		srv.Close()

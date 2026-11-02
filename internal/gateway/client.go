@@ -64,6 +64,9 @@ func (c *Client) Route(ctx context.Context, backend string) error {
 }
 
 // HoldWrites returns once new writes are held and in-flight writes drained.
+// After an error writes are not held by this call: a hold that does not drain
+// in time is reverted (504 drain_timeout), and one released while it drained
+// answers 409 hold_cancelled.
 func (c *Client) HoldWrites(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/writes/hold", nil, nil)
 }

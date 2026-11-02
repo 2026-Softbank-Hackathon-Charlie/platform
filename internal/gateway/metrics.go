@@ -30,7 +30,7 @@ func newMetrics(g *Gateway) *metrics {
 		}, []string{"backend", "class"}),
 		holdExpired: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "charlie_gateway_hold_expired_total",
-			Help: "Write holds released automatically because max-hold elapsed.",
+			Help: "Held writes answered 503 hold_timeout, never forwarded, because they waited max-hold.",
 		}),
 		heldDropped: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "charlie_gateway_held_dropped_total",

@@ -2,351 +2,985 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/getkin/kin-openapi/openapi3filter"
+	"github.com/getkin/kin-openapi/routers"
+	"github.com/getkin/kin-openapi/routers/legacy"
+
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	specdoc "github.com/2026-Softbank-Hackathon-Charlie/platform/api"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
-const token = "test-token"
+const (
+	opToken     = "operator-token-0123456789"
+	agentToken  = "agent-token-0123456789ab"
+	viewerToken = "viewer-token-0123456789a"
+	gatewayURL  = "http://gateway.test:9901"
+)
 
-// fakeEngine emits a step event when started, then waits for finish().
+func planJSON(id, srcCtx, dstCtx string, gatewayHTTP bool) string {
+	gw := ""
+	if gatewayHTTP {
+		gw = `,"gateway":{"mode":"http","url":"` + gatewayURL + `","token":"${GATEWAY_TOKEN}"}`
+	}
+	return `{"id":"` + id + `",
+	"source":{"env":"gke","context":"` + srcCtx + `","namespace":"shop","cluster":"db-gke","dsn":"postgres://app:${SRC_PGPASSWORD}@db-gke.shop.ts.net/app"},
+	"target":{"env":"eks","context":"` + dstCtx + `","namespace":"shop","cluster":"db-eks","dsn":"postgres://app:${DST_PGPASSWORD}@db-eks.shop.ts.net/app"}` + gw + `}`
+}
+
+// --- fake engine (tests only) ---
+
 type fakeEngine struct {
+	mu     sync.Mutex
 	id     string
 	emit   func(engine.Event)
-	finish chan string // outcome to end with
-	mu     sync.Mutex
 	st     engine.State
+	failAt string                   // this step fails
+	block  map[string]chan struct{} // these steps wait until the channel is closed
+}
+
+func newFakeState(id, planID string) engine.State {
+	st := engine.State{RunID: id, PlanID: planID, Outcome: engine.OutcomeRunning, Steps: map[string]*engine.StepRecord{}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	for _, s := range engine.Steps {
+		st.Steps[s] = &engine.StepRecord{Status: engine.StatusPending}
+	}
+	return st
 }
 
 func (f *fakeEngine) RunID() string { return f.id }
 func (f *fakeEngine) Close()        {}
+
+// State returns a shallow copy, like the real engine: the step records stay
+// shared with the goroutine running a step, so -race catches a runner that
+// reads them from anywhere else.
 func (f *fakeEngine) State() engine.State {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.st
 }
-func (f *fakeEngine) Run(ctx context.Context) error {
-	f.emit(engine.Event{RunID: f.id, Step: engine.StepPrecheck, Kind: engine.EventStepStarted})
-	select {
-	case out := <-f.finish:
-		f.mu.Lock()
-		f.st.Outcome = out
-		f.mu.Unlock()
-		if out == engine.OutcomeSucceeded {
-			f.emit(engine.Event{RunID: f.id, Kind: engine.EventDone, Message: "migration succeeded"})
-		}
-	case <-ctx.Done():
+
+// deepState is for tests that inspect an engine owned by a finished run.
+func (f *fakeEngine) deepState() engine.State {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := f.st
+	st.Steps = map[string]*engine.StepRecord{}
+	for k, v := range f.st.Steps {
+		c := *v
+		st.Steps[k] = &c
 	}
+	return st
+}
+
+func (f *fakeEngine) send(step, kind string, data map[string]any) {
+	f.emit(engine.Event{Time: time.Now().UTC(), RunID: f.id, Step: step, Kind: kind, Data: data})
+}
+
+func (f *fakeEngine) RunStep(ctx context.Context, name string) error {
+	f.mu.Lock()
+	if f.st.Outcome == engine.OutcomeFailed {
+		f.st.Outcome = engine.OutcomeRunning
+	}
+	f.mu.Unlock()
+	return f.step(ctx, name)
+}
+
+func (f *fakeEngine) step(ctx context.Context, name string) error {
+	f.mu.Lock()
+	f.st.Steps[name].Status = engine.StatusRunning
+	ch := f.block[name]
+	f.mu.Unlock()
+	f.send(name, engine.EventStepStarted, nil)
+	if ch != nil {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return f.fail(name, ctx.Err())
+		}
+	}
+	if name == f.failAt {
+		return f.fail(name, errors.New("boom at "+name))
+	}
+	f.mu.Lock()
+	rec := f.st.Steps[name]
+	rec.Status = engine.StatusSucceeded
+	switch name {
+	case engine.StepFence:
+		f.st.WritesHeld = true
+	case engine.StepCutover:
+		f.st.DowntimeMillis, f.st.TrafficOnTarget, f.st.WritesHeld = 1234, true, false
+	case engine.StepVerify:
+		rec.Evidence = map[string]any{"report": map[string]any{"ok": true, "missingRows": 0, "written": map[string]any{"checked": 10, "missing": 0}}}
+	case engine.StepFinalize:
+		f.st.Outcome = engine.OutcomeSucceeded
+	}
+	f.mu.Unlock()
+	if name == engine.StepCutover {
+		f.send(name, engine.EventMetric, map[string]any{"downtimeMillis": 1234})
+	}
+	f.send(name, engine.EventStepSucceeded, nil)
 	return nil
 }
 
-type env struct {
+func (f *fakeEngine) fail(name string, err error) error {
+	f.mu.Lock()
+	f.st.Steps[name].Status = engine.StatusFailed
+	f.st.Steps[name].Error = err.Error()
+	f.st.FailureStep, f.st.FailureError = name, err.Error()
+	if f.st.WritesHeld {
+		f.st.Outcome = engine.OutcomeRolledBack
+	} else {
+		f.st.Outcome = engine.OutcomeFailed
+	}
+	f.mu.Unlock()
+	f.send(name, engine.EventStepFailed, nil)
+	return err
+}
+
+// --- fake gateway and environments (tests only) ---
+
+type fakeTraffic struct {
+	mu      sync.Mutex
+	stats   map[string]apiv1.BackendStats
+	totals  map[string]apiv1.BackendTotals
+	weights []map[string]int
+	write   string
+}
+
+func (f *fakeTraffic) State(context.Context, time.Duration) (apiv1.TrafficState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rw := map[string]int{f.write: 100}
+	if n := len(f.weights); n > 0 {
+		rw = f.weights[n-1]
+	}
+	return apiv1.TrafficState{
+		WriteBackend: f.write, ReadWeights: rw, MaxHold: "3m0s", Backends: []apiv1.BackendState{},
+		Stats: f.stats, Totals: f.totals, UpdatedAt: time.Now().UTC(),
+	}, nil
+}
+
+func (f *fakeTraffic) SetReadWeights(_ context.Context, w map[string]int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.weights = append(f.weights, w)
+	return nil
+}
+
+var errNoEnv = errors.New("no such env")
+
+type fakeEnvs struct{ list []apiv1.Environment }
+
+func (f fakeEnvs) List(context.Context) []apiv1.Environment {
+	return append([]apiv1.Environment(nil), f.list...)
+}
+func (f fakeEnvs) Get(_ context.Context, name string) (apiv1.Environment, error) {
+	for _, e := range f.list {
+		if e.Name == name {
+			return e, nil
+		}
+	}
+	return apiv1.Environment{}, errNoEnv
+}
+func (f fakeEnvs) Names() []string {
+	var out []string
+	for _, e := range f.list {
+		out = append(out, e.Name)
+	}
+	return out
+}
+
+func env(name string, p apiv1.Provider) apiv1.Environment {
+	return apiv1.Environment{Name: name, Provider: p, DisplayName: name, KubeContext: name + "-ctx", GatewayBackend: name,
+		Status: apiv1.EnvironmentStatus{Reachable: true, CheckedAt: time.Now().UTC()}}
+}
+
+// --- harness ---
+
+type harness struct {
 	t       *testing.T
 	srv     *httptest.Server
+	store   store.Store
+	runner  *runs.Runner
+	traffic *fakeTraffic
+	router  routers.Router
+	spec    *openapi3.T
+
 	mu      sync.Mutex
-	engines []*fakeEngine
-	failNew bool
+	engines map[string]*fakeEngine // by run id; resumed runs reuse the state
+	setup   func(*fakeEngine)      // configures the next new engine
+	newErr  error
+	n       int
 }
 
-func newEnv(t *testing.T) *env {
-	t.Setenv("SRC_PGPASSWORD", "TOPSECRET")
-	e := &env{t: t}
-	factory := func(p *plan.Plan, o engine.Options) (runs.Engine, error) {
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		if e.failNew {
-			return nil, io.ErrUnexpectedEOF
+type option func(*harness, *runs.Config, *Deps)
+
+func withoutGateway() option {
+	return func(h *harness, rc *runs.Config, d *Deps) { rc.Traffic, d.Traffic, h.traffic = nil, nil, nil }
+}
+
+func newHarness(t *testing.T, opts ...option) *harness {
+	t.Helper()
+	t.Setenv("GATEWAY_TOKEN", "gw-token")
+	h := &harness{t: t, store: storetest.NewMemory(), engines: map[string]*fakeEngine{}}
+	h.traffic = &fakeTraffic{
+		write:  "gke",
+		stats:  map[string]apiv1.BackendStats{},
+		totals: map[string]apiv1.BackendTotals{"gke": {Requests: 100, Errors: 5}, "eks": {Requests: 0, Errors: 0}},
+	}
+
+	spec, err := openapi3.NewLoader().LoadFromData(specdoc.OpenAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(context.Background()); err != nil {
+		t.Fatalf("openapi.yaml is invalid: %v", err)
+	}
+	spec.Servers = openapi3.Servers{{URL: "/"}}
+	h.spec = spec
+	if h.router, err = legacy.NewRouter(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rc := runs.Config{StateDir: t.TempDir(), Store: h.store, Factory: h.factory, Traffic: h.traffic, PollInterval: 10 * time.Millisecond, MinCanaryStep: 10 * time.Millisecond}
+	policy := plans.DefaultPolicy()
+	policy.GatewayURL = gatewayURL
+	d := Deps{
+		Plans:       plans.New(policy, h.store),
+		Store:       h.store,
+		Envs:        fakeEnvs{list: []apiv1.Environment{env("gke", apiv1.ProviderGcp), env("eks", apiv1.ProviderAws), env("onprem", apiv1.ProviderOnprem)}},
+		Traffic:     h.traffic,
+		EnvNotFound: errNoEnv,
+	}
+	for _, o := range opts {
+		o(h, &rc, &d)
+	}
+	h.runner = runs.New(ctx, rc)
+	d.Runs = h.runner
+
+	tokens := &auth.Tokens{}
+	tokens.Add("op", apiv1.RoleOperator, opToken)
+	tokens.Add("ai", apiv1.RoleAgent, agentToken)
+	tokens.Add("view", apiv1.RoleViewer, viewerToken)
+	h.srv = httptest.NewServer(New(Config{Tokens: tokens, CORSOrigins: []string{"http://console.test"}}, d))
+	t.Cleanup(func() {
+		h.srv.Close()
+		cancel()
+		wctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		_ = h.runner.Wait(wctx)
+	})
+	return h
+}
+
+func (h *harness) factory(p *plan.Plan, o engine.Options) (runs.Engine, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.newErr != nil {
+		return nil, h.newErr
+	}
+	if o.RunID != "" { // resume: same state, new engine
+		old, ok := h.engines[o.RunID]
+		if !ok {
+			return nil, fmt.Errorf("run %s not found", o.RunID)
 		}
-		f := &fakeEngine{id: p.ID + "-run" + string(rune('0'+len(e.engines))), emit: o.Emit, finish: make(chan string, 1)}
-		f.st = engine.State{RunID: f.id, PlanID: p.ID, Outcome: engine.OutcomeRunning, CreatedAt: time.Now()}
-		e.engines = append(e.engines, f)
+		f := &fakeEngine{id: o.RunID, emit: o.Emit, st: old.deepState(), block: map[string]chan struct{}{}}
+		h.engines[o.RunID] = f
 		return f, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	s := New(Config{Token: token}, plans.New(plans.DefaultPolicy()), runs.New(ctx, t.TempDir(), factory))
-	e.srv = httptest.NewServer(s)
-	t.Cleanup(e.srv.Close)
-	return e
+	h.n++
+	id := fmt.Sprintf("%s-%d", p.ID, h.n)
+	f := &fakeEngine{id: id, emit: o.Emit, st: newFakeState(id, p.ID), block: map[string]chan struct{}{}}
+	if h.setup != nil {
+		h.setup(f)
+		h.setup = nil
+	}
+	h.engines[id] = f
+	return f, nil
 }
 
-func (e *env) engine(i int) *fakeEngine {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.engines[i]
-}
-
-func (e *env) do(method, path, body string, hdr ...string) (int, map[string]any) {
-	e.t.Helper()
-	req, _ := http.NewRequest(method, e.srv.URL+path, strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
+// do sends a request and validates the response against openapi.yaml.
+func (h *harness) do(method, path, token string, body any, hdr ...string) (int, []byte) {
+	h.t.Helper()
+	var rd io.Reader
+	var raw []byte
+	switch b := body.(type) {
+	case nil:
+	case string:
+		raw = []byte(b)
+	default:
+		raw, _ = json.Marshal(b)
+	}
+	if raw != nil {
+		rd = bytes.NewReader(raw)
+	}
+	req, _ := http.NewRequest(method, h.srv.URL+path, rd)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if raw != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for i := 0; i+1 < len(hdr); i += 2 {
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		e.t.Fatal(err)
+		h.t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if strings.Contains(string(raw), "TOPSECRET") {
-		e.t.Fatalf("%s %s leaked a secret: %s", method, path, raw)
+	out, _ := io.ReadAll(resp.Body)
+	h.validate(req, resp, out)
+	return resp.StatusCode, out
+}
+
+func (h *harness) validate(req *http.Request, resp *http.Response, body []byte) {
+	h.t.Helper()
+	vreq := req.Clone(context.Background())
+	vreq.URL.Host, vreq.URL.Scheme, vreq.Host = "", "", ""
+	route, params, err := h.router.FindRoute(vreq)
+	if err != nil {
+		h.t.Fatalf("%s %s is not in openapi.yaml: %v", req.Method, req.URL.Path, err)
 	}
-	var m map[string]any
-	_ = json.Unmarshal(raw, &m)
-	return resp.StatusCode, m
+	in := &openapi3filter.ResponseValidationInput{
+		RequestValidationInput: &openapi3filter.RequestValidationInput{Request: vreq, PathParams: params, Route: route},
+		Status:                 resp.StatusCode,
+		Header:                 resp.Header,
+		Body:                   io.NopCloser(bytes.NewReader(body)),
+		Options:                &openapi3filter.Options{IncludeResponseStatus: true},
+	}
+	if err := openapi3filter.ValidateResponse(context.Background(), in); err != nil {
+		h.t.Fatalf("%s %s -> %d does not match openapi.yaml: %v\nbody: %s", req.Method, req.URL.Path, resp.StatusCode, err, body)
+	}
 }
 
-func planBody(id, srcCluster string) string {
-	return `{"id":"` + id + `",
-	  "source":{"env":"gke","context":"gke","namespace":"shop","cluster":"` + srcCluster + `","dsn":"postgres://app:${SRC_PGPASSWORD}@db/app"},
-	  "target":{"env":"eks","context":"eks","namespace":"shop","cluster":"` + srcCluster + `-eks","dsn":"postgres://app:x@db/app"}}`
+// validateSchema checks an SSE payload against a component schema.
+func (h *harness) validateSchema(name string, data []byte) {
+	h.t.Helper()
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.spec.Components.Schemas[name].Value.VisitJSON(v); err != nil {
+		h.t.Fatalf("%s payload does not match openapi.yaml: %v\n%s", name, err, data)
+	}
 }
 
-// submitApproved returns the ref of an approved plan.
-func (e *env) submitApproved(id, cluster string) string {
-	e.t.Helper()
-	code, rec := e.do("POST", "/v1/plans", planBody(id, cluster))
+func decode[T any](t *testing.T, b []byte) T {
+	t.Helper()
+	var v T
+	if err := json.Unmarshal(b, &v); err != nil {
+		t.Fatalf("decode %T: %v\n%s", v, err, b)
+	}
+	return v
+}
+
+func (h *harness) submit(body string) apiv1.PlanRecord {
+	h.t.Helper()
+	code, b := h.do("POST", "/v1/plans", agentToken, body)
 	if code != 201 {
-		e.t.Fatalf("submit: %d %v", code, rec)
+		h.t.Fatalf("submit: %d %s", code, b)
 	}
-	ref := rec["ref"].(string)
-	if code, rec := e.do("POST", "/v1/plans/"+ref+"/approve", ""); code != 200 || rec["status"] != "approved" {
-		e.t.Fatalf("approve: %d %v", code, rec)
-	}
-	return ref
+	return decode[apiv1.PlanRecord](h.t, b)
 }
 
-func errCode(m map[string]any) string {
-	if e, ok := m["error"].(map[string]any); ok {
-		return e["code"].(string)
+func (h *harness) approved(body string) string {
+	h.t.Helper()
+	rec := h.submit(body)
+	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, map[string]string{"comment": "looks good"}); code != 200 {
+		h.t.Fatalf("approve: %d %s", code, b)
 	}
-	return ""
+	return rec.Ref
 }
 
-func TestAuth(t *testing.T) {
-	e := newEnv(t)
-	for _, h := range []string{"", "Bearer wrong", "Basic " + token} {
-		req, _ := http.NewRequest("GET", e.srv.URL+"/v1/plans", nil)
-		if h != "" {
-			req.Header.Set("Authorization", h)
+func (h *harness) start(req apiv1.StartMigrationRequest) string {
+	h.t.Helper()
+	code, b := h.do("POST", "/v1/migrations", opToken, req)
+	if code != 202 {
+		h.t.Fatalf("start: %d %s", code, b)
+	}
+	return decode[apiv1.StartMigrationResponse](h.t, b).RunId
+}
+
+func (h *harness) waitRun(id string, ok func(apiv1.Run) bool) apiv1.Run {
+	h.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		code, b := h.do("GET", "/v1/migrations/"+id, viewerToken, nil)
+		if code != 200 {
+			h.t.Fatalf("get run: %d %s", code, b)
 		}
-		resp, _ := http.DefaultClient.Do(req)
-		resp.Body.Close()
-		if resp.StatusCode != 401 {
-			t.Errorf("Authorization %q: status %d", h, resp.StatusCode)
+		run := decode[apiv1.Run](h.t, b)
+		if ok(run) {
+			return run
 		}
-	}
-	resp, _ := http.Get(e.srv.URL + "/healthz")
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("healthz must not require auth: %d", resp.StatusCode)
-	}
-}
-
-func TestPlanSubmitAndApprove(t *testing.T) {
-	e := newEnv(t)
-	code, rec := e.do("POST", "/v1/plans", planBody("p1", "db"))
-	if code != 201 || rec["status"] != "pending_approval" {
-		t.Fatalf("%d %v", code, rec)
-	}
-	if _, has := rec["raw"]; has {
-		t.Fatal("raw plan must not be returned")
-	}
-	ref := rec["ref"].(string)
-	if code, rec := e.do("GET", "/v1/plans/"+ref, ""); code != 200 || rec["summary"].(map[string]any)["planId"] != "p1" {
-		t.Fatalf("get: %d %v", code, rec)
-	}
-	if code, m := e.do("POST", "/v1/plans", `{"id":"x"}`); code != 400 || errCode(m) != "invalid_plan" {
-		t.Fatalf("invalid plan: %d %v", code, m)
-	}
-	if code, m := e.do("GET", "/v1/plans/pln_nope", ""); code != 404 || errCode(m) != "plan_not_found" {
-		t.Fatalf("missing plan: %d %v", code, m)
-	}
-	if code, m := e.do("POST", "/v1/plans", strings.Repeat("x", MaxPlanBytes+1)); code != 413 {
-		t.Fatalf("oversized: %d %v", code, m)
-	}
-}
-
-func TestStartRequiresApproval(t *testing.T) {
-	e := newEnv(t)
-	_, rec := e.do("POST", "/v1/plans", planBody("p1", "db"))
-	code, m := e.do("POST", "/v1/migrations", `{"planRef":"`+rec["ref"].(string)+`"}`)
-	if code != 409 || errCode(m) != "plan_state_conflict" {
-		t.Fatalf("%d %v", code, m)
-	}
-	for _, body := range []string{`{}`, `not json`, `{"planRef":"x","extra":1}`} {
-		if code, m := e.do("POST", "/v1/migrations", body); code != 400 || errCode(m) != "invalid_request" {
-			t.Errorf("body %s: %d %v", body, code, m)
+		if time.Now().After(deadline) {
+			h.t.Fatalf("run %s did not reach the expected state; last: status=%s phase=%s reason=%v", id, run.Status, run.Phase, deref(run.StatusReason))
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-func TestStartIsAcceptedAndIdempotent(t *testing.T) {
-	e := newEnv(t)
-	ref := e.submitApproved("p1", "db")
-	body := `{"planRef":"` + ref + `"}`
+func status(s apiv1.RunStatus) func(apiv1.Run) bool {
+	return func(r apiv1.Run) bool { return r.Status == s }
+}
 
-	code, m := e.do("POST", "/v1/migrations", body, "Idempotency-Key", "k1")
-	if code != 202 || m["runId"] == "" || m["links"].(map[string]any)["events"] == nil {
-		t.Fatalf("start: %d %v", code, m)
-	}
-	runID := m["runId"].(string)
+func ended(s apiv1.RunStatus) func(apiv1.Run) bool {
+	return func(r apiv1.Run) bool { return r.Status == s && r.EndedAt != nil }
+}
 
-	// Retry with the same key → same run, no second engine.
-	code, m = e.do("POST", "/v1/migrations", body, "Idempotency-Key", "k1")
-	if code != 202 || m["runId"] != runID {
-		t.Fatalf("retry: %d %v", code, m)
+func errCode(t *testing.T, b []byte) string {
+	t.Helper()
+	return decode[apiv1.Error](t, b).Error.Code
+}
+
+// --- tests ---
+
+func TestRolesAndAudit(t *testing.T) {
+	h := newHarness(t)
+	if code, _ := h.do("GET", "/v1/plans", "", nil); code != 401 {
+		t.Fatalf("no token: %d", code)
 	}
-	// Same plan without the key → already started.
-	if code, m := e.do("POST", "/v1/migrations", body); code != 409 || errCode(m) != "plan_state_conflict" {
-		t.Fatalf("restart: %d %v", code, m)
+	if code, b := h.do("POST", "/v1/plans", viewerToken, planJSON("p1", "a", "b", false)); code != 403 || errCode(t, b) != "forbidden" {
+		t.Fatalf("viewer submit: %d %s", code, b)
 	}
-	// Key reused for another plan → conflict.
-	other := e.submitApproved("p2", "other")
-	if code, m := e.do("POST", "/v1/migrations", `{"planRef":"`+other+`"}`, "Idempotency-Key", "k1"); code != 409 || errCode(m) != "idempotency_key_reused" {
-		t.Fatalf("reused key: %d %v", code, m)
+	rec := h.submit(planJSON("p1", "a", "b", false))
+	if rec.SubmittedBy != "ai" || rec.Status != apiv1.PlanStatusPendingApproval {
+		t.Fatalf("record: %+v", rec)
 	}
-	e.mu.Lock()
-	n := len(e.engines)
-	e.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("%d engines created, want 1", n)
+	if code, _ := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", agentToken, nil); code != 403 {
+		t.Fatalf("the AI agent must not approve: %d", code)
+	}
+	code, b := h.do("GET", "/v1/me", agentToken, nil)
+	if me := decode[apiv1.Principal](t, b); code != 200 || me.Name != "ai" || me.Role != apiv1.RoleAgent {
+		t.Fatalf("me: %d %s", code, b)
 	}
 
-	code, st := e.do("GET", "/v1/migrations/"+runID, "")
-	if code != 200 || st["outcome"] != "running" || st["planId"] != "p1" {
-		t.Fatalf("get run: %d %v", code, st)
+	_, b = h.do("GET", "/v1/audit", viewerToken, nil)
+	list := decode[apiv1.AuditList](t, b)
+	var got []string
+	for _, e := range list.Entries {
+		got = append(got, fmt.Sprintf("%s %s %d", e.Actor, e.Action, e.Status))
 	}
-	_, plan := e.do("GET", "/v1/plans/"+ref, "")
-	if plan["status"] != "started" || plan["runId"] != runID {
-		t.Fatalf("plan after start: %v", plan)
+	want := []string{
+		"ai POST /v1/plans/{ref}/approve 403",
+		"ai POST /v1/plans 201",
+		"view POST /v1/plans 403",
+		"anonymous GET /v1/plans 401",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("audit:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if d := list.Entries[1].Detail; d == nil || (*d)["planRef"] != rec.Ref {
+		t.Fatalf("submit audit detail: %v", d)
 	}
 }
 
-func TestSameClusterIsBusy(t *testing.T) {
-	e := newEnv(t)
-	a := e.submitApproved("p1", "db")
-	b := e.submitApproved("p2", "db")
-	if code, _ := e.do("POST", "/v1/migrations", `{"planRef":"`+a+`"}`); code != 202 {
-		t.Fatal(code)
+func TestRejectedPlanNeverStarts(t *testing.T) {
+	h := newHarness(t)
+	rec := h.submit(planJSON("p1", "a", "b", false))
+	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/reject", opToken, map[string]string{}); code != 400 {
+		t.Fatalf("reject without comment: %d %s", code, b)
 	}
-	code, m := e.do("POST", "/v1/migrations", `{"planRef":"`+b+`"}`)
-	if code != 409 || errCode(m) != "cluster_busy" {
-		t.Fatalf("%d %v", code, m)
+	code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/reject", opToken, map[string]string{"comment": "wrong target"})
+	if r := decode[apiv1.PlanRecord](t, b); code != 200 || r.Status != apiv1.PlanStatusRejected || deref(r.ReviewedBy) != "op" {
+		t.Fatalf("reject: %d %s", code, b)
 	}
-	// The rejected plan stays approved and can start once the first run ends.
-	if _, p := e.do("GET", "/v1/plans/"+b, ""); p["status"] != "approved" {
-		t.Fatalf("plan b = %v", p["status"])
+	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, nil); code != 409 || errCode(t, b) != "plan_state_conflict" {
+		t.Fatalf("approve after reject: %d %s", code, b)
 	}
-	e.engine(0).finish <- engine.OutcomeSucceeded
-	waitFor(t, func() bool { _, st := e.do("GET", "/v1/migrations/p1-run0", ""); return st["outcome"] == "succeeded" })
-	waitFor(t, func() bool { c, _ := e.do("POST", "/v1/migrations", `{"planRef":"`+b+`"}`); return c == 202 })
-}
-
-func TestEngineCreationFailureReleasesPlan(t *testing.T) {
-	e := newEnv(t)
-	ref := e.submitApproved("p1", "db")
-	e.failNew = true
-	code, m := e.do("POST", "/v1/migrations", `{"planRef":"`+ref+`"}`)
-	if code != 502 || errCode(m) != "engine_init_failed" || strings.Contains(m["error"].(map[string]any)["message"].(string), "EOF") {
-		t.Fatalf("%d %v", code, m)
-	}
-	if _, p := e.do("GET", "/v1/plans/"+ref, ""); p["status"] != "approved" {
-		t.Fatalf("plan not released: %v", p["status"])
+	if code, b := h.do("POST", "/v1/migrations", opToken, apiv1.StartMigrationRequest{PlanRef: rec.Ref}); code != 409 {
+		t.Fatalf("start rejected: %d %s", code, b)
 	}
 }
 
-func TestRunNotFound(t *testing.T) {
-	e := newEnv(t)
-	for _, p := range []string{"/v1/migrations/nope", "/v1/migrations/nope/events"} {
-		if code, m := e.do("GET", p, ""); code != 404 || errCode(m) != "run_not_found" {
-			t.Errorf("%s: %d %v", p, code, m)
+func TestMigrationWaitsForSwitch(t *testing.T) {
+	h := newHarness(t)
+	ref := h.approved(planJSON("p1", "gke-ctx", "eks-ctx", false))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref})
+
+	run := h.waitRun(id, status(apiv1.RunStatusAwaitingSwitch))
+	if run.Phase != apiv1.RunPhaseAwaitingSwitch || run.StartedBy != "op" {
+		t.Fatalf("waiting run: %+v", run)
+	}
+	for _, s := range []string{"precheck", "prepare", "presync", "delta"} {
+		if run.Engine.Steps[s].Status != apiv1.StepStatusSucceeded {
+			t.Fatalf("step %s = %s while waiting", s, run.Engine.Steps[s].Status)
 		}
 	}
+	if run.Engine.Steps["fence"].Status != apiv1.StepStatusPending {
+		t.Fatal("fence must not run before the switch is approved")
+	}
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/switch", agentToken, nil); code != 403 {
+		t.Fatalf("agent switch: %d %s", code, b)
+	}
+
+	h.traffic.mu.Lock()
+	h.traffic.totals = map[string]apiv1.BackendTotals{"gke": {Requests: 250, Errors: 5}, "eks": {Requests: 50, Errors: 0}}
+	h.traffic.mu.Unlock()
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/switch", opToken, nil); code != 200 {
+		t.Fatalf("switch: %d %s", code, b)
+	}
+	run = h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+	r := run.Result
+	if run.Phase != apiv1.RunPhaseDone || deref(run.SwitchApprovedBy) != "op" {
+		t.Fatalf("done run: %+v", run)
+	}
+	if r.DowntimeMillis == nil || *r.DowntimeMillis != 1234 || r.Verified == nil || !*r.Verified || *r.MissingRows != 0 || *r.MissingWrites != 0 {
+		t.Fatalf("result: %+v", r)
+	}
+	if r.Requests == nil || *r.Requests != 200 || *r.FailedRequests != 0 || r.DurationMillis == nil {
+		t.Fatalf("traffic result: requests=%v failed=%v", r.Requests, r.FailedRequests)
+	}
+
+	_, b := h.do("GET", "/v1/plans/"+ref, viewerToken, nil)
+	if p := decode[apiv1.PlanRecord](t, b); p.Status != apiv1.PlanStatusStarted || deref(p.RunId) != id {
+		t.Fatalf("plan after start: %+v", p)
+	}
+	_, b = h.do("GET", "/v1/matrix", viewerToken, nil)
+	m := decode[apiv1.Matrix](t, b)
+	if len(m.Routes) != 6 {
+		t.Fatalf("matrix routes = %d", len(m.Routes))
+	}
+	for _, row := range m.Routes {
+		has := row.RunId != nil
+		if (row.Source == "gke" && row.Target == "eks") != has {
+			t.Fatalf("matrix row %s->%s has run = %v", row.Source, row.Target, has)
+		}
+	}
 }
 
-func TestEventStream(t *testing.T) {
-	e := newEnv(t)
-	ref := e.submitApproved("p1", "db")
-	_, m := e.do("POST", "/v1/migrations", `{"planRef":"`+ref+`"}`)
-	runID := m["runId"].(string)
+func TestSwitchOnlyWhileWaiting(t *testing.T) {
+	h := newHarness(t)
+	block := make(chan struct{})
+	h.setup = func(f *fakeEngine) { f.block["presync"] = block }
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref})
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/switch", opToken, nil); code != 409 || errCode(t, b) != "run_state_conflict" {
+		t.Fatalf("switch during sync: %d %s", code, b)
+	}
+	close(block)
+	h.waitRun(id, status(apiv1.RunStatusAwaitingSwitch))
+}
 
-	req, _ := http.NewRequest("GET", e.srv.URL+"/v1/migrations/"+runID+"/events", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+func TestEventStreamReplaysFromLastEventID(t *testing.T) {
+	h := newHarness(t)
+	block := make(chan struct{})
+	h.setup = func(f *fakeEngine) { f.block["presync"] = block }
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true)})
+
+	// Live: connect while presync is blocked, then let the run finish.
+	msgs := make(chan []sseMsg, 1)
+	go func() { msgs <- h.stream(id, "") }()
+	time.Sleep(50 * time.Millisecond)
+	close(block)
+	live := <-msgs
+
+	if live[0].event != "snapshot" || live[len(live)-1].event != "snapshot" {
+		t.Fatalf("stream must start and end with a snapshot: %v", names(live))
+	}
+	final := decode[apiv1.Run](t, []byte(live[len(live)-1].data))
+	if final.Status != apiv1.RunStatusSucceeded {
+		t.Fatalf("final snapshot status = %s", final.Status)
+	}
+	var seqs []int64
+	for _, m := range live[1 : len(live)-1] {
+		if m.id == 0 {
+			t.Fatalf("event without id: %+v", m)
+		}
+		if len(seqs) > 0 && m.id <= seqs[len(seqs)-1] {
+			t.Fatalf("ids not increasing: %v then %d", seqs, m.id)
+		}
+		seqs = append(seqs, m.id)
+		h.validateSchema("RunEvent", []byte(m.data))
+	}
+	h.validateSchema("Run", []byte(live[0].data))
+
+	// Replay: everything after the third event, and nothing before it.
+	replay := h.stream(id, strconv.FormatInt(seqs[2], 10))
+	var got []int64
+	for _, m := range replay {
+		if m.id > 0 {
+			got = append(got, m.id)
+		}
+	}
+	if len(got) != len(seqs)-3 || got[0] != seqs[3] {
+		t.Fatalf("replay after %d = %v, want %v", seqs[2], got, seqs[3:])
+	}
+	if !strings.Contains(strings.Join(names(live), ","), "status_changed") {
+		t.Fatalf("no status_changed events: %v", names(live))
+	}
+}
+
+func TestCanaryGateFailureRollsReadsBack(t *testing.T) {
+	h := newHarness(t)
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 3, ErrorRate: 0, P95Millis: 40}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, Canary: &apiv1.CanaryOptions{Weights: []int{10, 50}, StepDuration: ptr("20ms")}})
+
+	run := h.waitRun(id, ended(apiv1.RunStatusRolledBack))
+	c := run.Canary
+	if c == nil || c.Passed == nil || *c.Passed || len(c.Steps) != 1 || c.Steps[0].Gate.Passed || !strings.Contains(c.Steps[0].Gate.Reason, "only 3 requests") {
+		t.Fatalf("canary: %+v", c)
+	}
+	if run.Engine.Steps["fence"].Status != apiv1.StepStatusPending {
+		t.Fatal("a failed canary must stop before fence")
+	}
+	h.traffic.mu.Lock()
+	w := fmt.Sprint(h.traffic.weights)
+	h.traffic.mu.Unlock()
+	if w != "[map[eks:10 gke:90] map[gke:100]]" {
+		t.Fatalf("read weights = %s", w)
+	}
+}
+
+func TestCanaryPassThenAutoSwitch(t *testing.T) {
+	h := newHarness(t)
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 500, ErrorRate: 0.001, P95Millis: 120}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true), Canary: &apiv1.CanaryOptions{Weights: []int{10, 50}, StepDuration: ptr("20ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+	if run.Canary.Passed == nil || !*run.Canary.Passed || len(run.Canary.Steps) != 2 {
+		t.Fatalf("canary: %+v", run.Canary)
+	}
+}
+
+func TestCanaryNeedsGateway(t *testing.T) {
+	h := newHarness(t)
+	ref := h.approved(planJSON("p1", "a", "b", false)) // gateway mode none
+	code, b := h.do("POST", "/v1/migrations", opToken, apiv1.StartMigrationRequest{PlanRef: ref, Canary: &apiv1.CanaryOptions{Weights: []int{10}}})
+	if code != 400 || errCode(t, b) != "invalid_request" {
+		t.Fatalf("canary without gateway: %d %s", code, b)
+	}
+	_, b = h.do("GET", "/v1/plans/"+ref, viewerToken, nil)
+	if p := decode[apiv1.PlanRecord](t, b); p.Status != apiv1.PlanStatusApproved {
+		t.Fatalf("plan must be released after a refused start: %s", p.Status)
+	}
+}
+
+func TestAbortWhileWaitingThenResume(t *testing.T) {
+	h := newHarness(t)
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref})
+	h.waitRun(id, status(apiv1.RunStatusAwaitingSwitch))
+
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/abort", opToken, map[string]string{"reason": "demo reset"}); code != 200 {
+		t.Fatalf("abort: %d %s", code, b)
+	}
+	run := h.waitRun(id, ended(apiv1.RunStatusAborted))
+	if deref(run.AbortedBy) != "op" || deref(run.AbortReason) != "demo reset" {
+		t.Fatalf("aborted run: %+v", run)
+	}
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/resume", opToken, nil); code != 200 {
+		t.Fatalf("resume: %d %s", code, b)
+	}
+	h.waitRun(id, status(apiv1.RunStatusAwaitingSwitch))
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/switch", opToken, nil); code != 200 {
+		t.Fatalf("switch: %d %s", code, b)
+	}
+	h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/resume", opToken, nil); code != 409 {
+		t.Fatalf("resume a succeeded run: %d %s", code, b)
+	}
+}
+
+func TestStepFailureBeforeFenceThenResume(t *testing.T) {
+	h := newHarness(t)
+	h.setup = func(f *fakeEngine) { f.failAt = "presync" }
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true)})
+	run := h.waitRun(id, ended(apiv1.RunStatusFailed))
+	if !strings.Contains(deref(run.StatusReason), "boom at presync") {
+		t.Fatalf("reason: %v", deref(run.StatusReason))
+	}
+	h.mu.Lock()
+	h.engines[id].failAt = "" // the operator fixed the cause
+	h.mu.Unlock()
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/resume", opToken, nil); code != 200 {
+		t.Fatalf("resume: %d %s", code, b)
+	}
+	h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+}
+
+func TestAbortDuringFirstCanaryStepRestoresReads(t *testing.T) {
+	h := newHarness(t)
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, Canary: &apiv1.CanaryOptions{Weights: []int{10, 50}, StepDuration: ptr("5s")}})
+	h.waitRun(id, func(r apiv1.Run) bool { return r.Phase == apiv1.RunPhaseCanary })
+	time.Sleep(50 * time.Millisecond)
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/abort", opToken, nil); code != 200 {
+		t.Fatalf("abort: %d %s", code, b)
+	}
+	h.waitRun(id, ended(apiv1.RunStatusAborted))
+	h.traffic.mu.Lock()
+	w := fmt.Sprint(h.traffic.weights)
+	h.traffic.mu.Unlock()
+	if w != "[map[eks:10 gke:90] map[gke:100]]" {
+		t.Fatalf("read weights = %s", w)
+	}
+}
+
+func TestFenceFailureAfterCanaryRestoresReads(t *testing.T) {
+	h := newHarness(t)
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 500, P95Millis: 50}
+	h.setup = func(f *fakeEngine) { f.failAt = "fence" }
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true), Canary: &apiv1.CanaryOptions{Weights: []int{50}, StepDuration: ptr("20ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusFailed))
+	if run.Phase != apiv1.RunPhaseDone || !strings.Contains(deref(run.StatusReason), "boom at fence") {
+		t.Fatalf("run: status=%s reason=%v", run.Status, deref(run.StatusReason))
+	}
+	h.traffic.mu.Lock()
+	w := fmt.Sprint(h.traffic.weights)
+	h.traffic.mu.Unlock()
+	if w != "[map[eks:50 gke:50] map[gke:100]]" {
+		t.Fatalf("read weights = %s", w)
+	}
+}
+
+func TestShutdownDuringSyncDoesNotWaitForSwitch(t *testing.T) {
+	h := newHarness(t)
+	block := make(chan struct{})
+	h.setup = func(f *fakeEngine) { f.block["presync"] = block }
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref})
+	h.waitRun(id, func(r apiv1.Run) bool { return r.Engine.Steps["presync"].Status == apiv1.StepStatusRunning })
+	if n := h.runner.InterruptWaiting(); n != 0 {
+		t.Fatalf("waiting runs = %d", n)
+	}
+	close(block) // the step finishes after the shutdown began
+	h.waitRun(id, ended(apiv1.RunStatusInterrupted))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := h.runner.Wait(ctx); err != nil {
+		t.Fatal("runner did not finish after the shutdown")
+	}
+}
+
+func TestPlanSummaryShowsDBHost(t *testing.T) {
+	h := newHarness(t)
+	rec := h.submit(planJSON("p1", "a", "b", false))
+	if deref(rec.Summary.Source.DbHost) != "db-gke.shop.ts.net:5432" || deref(rec.Summary.Target.DbHost) != "db-eks.shop.ts.net:5432" {
+		t.Fatalf("db hosts: %v %v", deref(rec.Summary.Source.DbHost), deref(rec.Summary.Target.DbHost))
+	}
+	if code, b := h.do("POST", "/v1/plans", agentToken, strings.Replace(planJSON("p1", "a", "b", false), `"id":"p1"`, `"id":"../../x"`, 1)); code != 400 || errCode(t, b) != "invalid_plan" {
+		t.Fatalf("path-like id: %d %s", code, b)
+	}
+}
+
+func TestRecoverMarksActiveRunsInterrupted(t *testing.T) {
+	h := newHarness(t)
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref})
+	h.waitRun(id, status(apiv1.RunStatusAwaitingSwitch))
+
+	// A second runner over the same store plays the restarted server.
+	r2 := runs.New(context.Background(), runs.Config{StateDir: t.TempDir(), Store: h.store, Factory: h.factory})
+	n, err := r2.Recover(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("recover = %d, %v", n, err)
+	}
+	doc, err := r2.Get(context.Background(), id)
+	if err != nil || doc.Status != apiv1.RunStatusInterrupted {
+		t.Fatalf("after recover: %v %v", doc.Status, err)
+	}
+	evs, _ := r2.Events(context.Background(), id, 0)
+	if last := evs[len(evs)-1]; last.Kind != runs.EventStatusChanged || deref(last.Message) != "interrupted" {
+		t.Fatalf("last event: %+v", last)
+	}
+}
+
+func TestShutdownInterruptsWaitingRuns(t *testing.T) {
+	h := newHarness(t)
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref})
+	h.waitRun(id, status(apiv1.RunStatusAwaitingSwitch))
+	if n := h.runner.InterruptWaiting(); n != 1 {
+		t.Fatalf("interrupted %d", n)
+	}
+	h.waitRun(id, ended(apiv1.RunStatusInterrupted))
+}
+
+func TestStartIdempotency(t *testing.T) {
+	h := newHarness(t)
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	ref2 := h.approved(planJSON("p2", "c", "d", false))
+	code, b1 := h.do("POST", "/v1/migrations", opToken, apiv1.StartMigrationRequest{PlanRef: ref}, "Idempotency-Key", "k1")
+	code2, b2 := h.do("POST", "/v1/migrations", opToken, apiv1.StartMigrationRequest{PlanRef: ref}, "Idempotency-Key", "k1")
+	if code != 202 || code2 != 202 || decode[apiv1.StartMigrationResponse](t, b1).RunId != decode[apiv1.StartMigrationResponse](t, b2).RunId {
+		t.Fatalf("retry: %d %s / %d %s", code, b1, code2, b2)
+	}
+	if code, b := h.do("POST", "/v1/migrations", opToken, apiv1.StartMigrationRequest{PlanRef: ref2}, "Idempotency-Key", "k1"); code != 409 || errCode(t, b) != "idempotency_key_reused" {
+		t.Fatalf("reused key: %d %s", code, b)
+	}
+}
+
+func TestSameClusterIsBusyAndPlanIsReleased(t *testing.T) {
+	h := newHarness(t)
+	ref := h.approved(planJSON("p1", "gke-ctx", "eks-ctx", false))
+	ref2 := h.approved(planJSON("p2", "gke-ctx", "eks-ctx", false))
+	h.start(apiv1.StartMigrationRequest{PlanRef: ref})
+	if code, b := h.do("POST", "/v1/migrations", opToken, apiv1.StartMigrationRequest{PlanRef: ref2}); code != 409 || errCode(t, b) != "cluster_busy" {
+		t.Fatalf("second start: %d %s", code, b)
+	}
+	_, b := h.do("GET", "/v1/plans/"+ref2, viewerToken, nil)
+	if p := decode[apiv1.PlanRecord](t, b); p.Status != apiv1.PlanStatusApproved {
+		t.Fatalf("busy plan status = %s", p.Status)
+	}
+}
+
+func TestEngineInitFailureReleasesPlan(t *testing.T) {
+	h := newHarness(t)
+	h.newErr = errors.New(`context "nope" does not exist in /home/secret/.kube/config`)
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	code, b := h.do("POST", "/v1/migrations", opToken, apiv1.StartMigrationRequest{PlanRef: ref})
+	if code != 502 || errCode(t, b) != "engine_init_failed" || strings.Contains(string(b), "secret") {
+		t.Fatalf("start: %d %s", code, b)
+	}
+	_, b = h.do("GET", "/v1/plans/"+ref, viewerToken, nil)
+	if p := decode[apiv1.PlanRecord](t, b); p.Status != apiv1.PlanStatusApproved {
+		t.Fatalf("plan status = %s", p.Status)
+	}
+}
+
+func TestEnvironmentsAndTraffic(t *testing.T) {
+	h := newHarness(t)
+	_, b := h.do("GET", "/v1/envs", viewerToken, nil)
+	list := decode[apiv1.EnvironmentList](t, b)
+	if len(list.Environments) != 3 || !list.Environments[0].Live || list.Environments[1].Live {
+		t.Fatalf("envs: %+v", list)
+	}
+	if code, b := h.do("GET", "/v1/envs/nope", viewerToken, nil); code != 404 || errCode(t, b) != "env_not_found" {
+		t.Fatalf("unknown env: %d %s", code, b)
+	}
+	if code, b := h.do("GET", "/v1/envs/gke", viewerToken, nil); code != 200 || !decode[apiv1.Environment](t, b).Live {
+		t.Fatalf("gke: %d %s", code, b)
+	}
+	if code, b := h.do("GET", "/v1/traffic?window=30s", viewerToken, nil); code != 200 || decode[apiv1.TrafficState](t, b).WriteBackend != "gke" {
+		t.Fatalf("traffic: %d %s", code, b)
+	}
+	if code, _ := h.do("GET", "/v1/traffic?window=1h", viewerToken, nil); code != 400 {
+		t.Fatalf("bad window: %d", code)
+	}
+
+	h2 := newHarness(t, withoutGateway())
+	if code, b := h2.do("GET", "/v1/traffic", viewerToken, nil); code != 503 || errCode(t, b) != "gateway_not_configured" {
+		t.Fatalf("no gateway: %d %s", code, b)
+	}
+}
+
+func TestCORSPreflight(t *testing.T) {
+	h := newHarness(t)
+	req, _ := http.NewRequest("OPTIONS", h.srv.URL+"/v1/migrations", nil)
+	req.Header.Set("Origin", "http://console.test")
+	req.Header.Set("Access-Control-Request-Method", "POST")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
+	resp.Body.Close()
+	if resp.StatusCode != 204 || resp.Header.Get("Access-Control-Allow-Origin") != "http://console.test" ||
+		!strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "Last-Event-ID") {
+		t.Fatalf("preflight: %d %v", resp.StatusCode, resp.Header)
+	}
+	req.Header.Set("Origin", "http://evil.test")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("unknown origin must not be allowed")
+	}
+}
+
+func TestOpenAPIServed(t *testing.T) {
+	h := newHarness(t)
+	resp, err := http.Get(h.srv.URL + "/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !bytes.Equal(b, specdoc.OpenAPI) {
+		t.Fatalf("openapi.yaml: %d", resp.StatusCode)
+	}
+}
+
+// --- SSE helpers ---
+
+type sseMsg struct {
+	id    int64
+	event string
+	data  string
+}
+
+func (h *harness) stream(id, lastEventID string) []sseMsg {
+	h.t.Helper()
+	req, _ := http.NewRequest("GET", h.srv.URL+"/v1/migrations/"+id+"/events", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Error(err)
+		return nil
+	}
 	defer resp.Body.Close()
-	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
-		t.Fatalf("content-type %q", ct)
+	if resp.StatusCode != 200 {
+		h.t.Errorf("events: %d", resp.StatusCode)
+		return nil
 	}
-
-	names := make(chan string, 16)
-	go func() {
-		sc := bufio.NewScanner(resp.Body)
-		for sc.Scan() {
-			if n, ok := strings.CutPrefix(sc.Text(), "event: "); ok {
-				names <- n
+	var out []sseMsg
+	var cur sseMsg
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		switch {
+		case line == "":
+			if cur.event != "" {
+				out = append(out, cur)
 			}
-		}
-		close(names)
-	}()
-	if n := <-names; n != "snapshot" {
-		t.Fatalf("first event %q, want snapshot", n)
-	}
-	e.engine(0).finish <- engine.OutcomeSucceeded
-
-	var got []string
-	timeout := time.After(5 * time.Second)
-	for {
-		select {
-		case n, ok := <-names:
-			if !ok {
-				if len(got) == 0 || got[len(got)-1] != "snapshot" {
-					t.Fatalf("stream must end with a snapshot, got %v", got)
-				}
-				if !contains(got, engine.EventDone) {
-					t.Fatalf("done event missing: %v", got)
-				}
-				return
-			}
-			got = append(got, n)
-		case <-timeout:
-			t.Fatalf("stream did not end; got %v", got)
+			cur = sseMsg{}
+		case strings.HasPrefix(line, "id: "):
+			cur.id, _ = strconv.ParseInt(strings.TrimPrefix(line, "id: "), 10, 64)
+		case strings.HasPrefix(line, "event: "):
+			cur.event = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			cur.data = strings.TrimPrefix(line, "data: ")
 		}
 	}
+	return out
 }
 
-func contains(xs []string, s string) bool {
-	for _, x := range xs {
-		if x == s {
-			return true
-		}
+func names(ms []sseMsg) []string {
+	var out []string
+	for _, m := range ms {
+		out = append(out, m.event)
 	}
-	return false
+	return out
 }
 
-func waitFor(t *testing.T, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("condition not met")
-}
+func ptr[T any](v T) *T { return &v }

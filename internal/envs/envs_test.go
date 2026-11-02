@@ -109,7 +109,7 @@ func TestListInConfigOrder(t *testing.T) {
 	}
 	eks, onprem := got[1], got[2]
 	if eks.Provider != apiv1.ProviderAws || eks.DisplayName != "AWS EKS" || deref(eks.Region) != "ap-northeast-2" ||
-		deref(eks.KubeContext) != "eks-hopcharlie" || eks.GatewayBackend != "eks" {
+		eks.KubeContext != "eks-hopcharlie" || eks.GatewayBackend != "eks" {
 		t.Errorf("eks = %+v", eks)
 	}
 	if onprem.Provider != apiv1.ProviderOnprem || onprem.DisplayName != "onprem" || onprem.Region != nil || onprem.GatewayBackend != "k3s" {

@@ -122,17 +122,20 @@ func toMessage(ev sseEvent) (Message, error) {
 // than running or awaiting_switch and that stream has closed normally, fn's
 // error as is, and ctx.Err() when ctx is done. An error before the first
 // message (unknown run, bad token, server down) is returned at once; after
-// that only 4xx answers and contract violations stop it.
+// that only 4xx answers, contract violations and maxEmptyStreams streams in a
+// row that close without a message stop it. A first stream that closes
+// without a message is an error too.
 func (c *Client) Watch(ctx context.Context, runID string, fn func(Message) error) error {
 	var (
 		lastSeq   int64
-		ended     bool // the latest snapshot shows a final status
 		connected bool // a message arrived on some connection
+		empty     int  // streams that closed without a message since the last message
 		fnErr     error
 	)
 	delay := c.retryMin
 	for {
 		progressed := false
+		ended := false // this stream's latest snapshot shows a final status
 		err := c.StreamEvents(ctx, runID, lastSeq, func(m Message) error {
 			progressed, connected = true, true
 			if m.Event != nil && m.Seq > 0 {
@@ -159,12 +162,21 @@ func (c *Client) Watch(ctx context.Context, runID string, fn func(Message) error
 			return nil
 		case err != nil && (!connected || !retryable(err)):
 			return err
+		case err == nil && !progressed:
+			// A 200 that closes at once is a broken server or proxy, not a
+			// dropped connection; reconnecting may never help.
+			if !connected {
+				return fmt.Errorf("client: event stream of run %s closed before its first message", runID)
+			}
+			if empty++; empty >= maxEmptyStreams {
+				return fmt.Errorf("client: event stream of run %s closed without a message %d times in a row", runID, empty)
+			}
 		}
 
 		// A stream that delivered something earns a quick reconnect; one that
 		// did not backs off further.
 		if progressed {
-			delay = c.retryMin
+			delay, empty = c.retryMin, 0
 		}
 		t := time.NewTimer(delay)
 		select {
@@ -178,6 +190,10 @@ func (c *Client) Watch(ctx context.Context, runID string, fn func(Message) error
 		}
 	}
 }
+
+// maxEmptyStreams is how many streams in a row may close without a message
+// before Watch gives up.
+const maxEmptyStreams = 5
 
 func finalStatus(s apiv1.RunStatus) bool {
 	return s != apiv1.RunStatusRunning && s != apiv1.RunStatusAwaitingSwitch

@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 
@@ -35,8 +34,9 @@ func main() {
 	initial := flag.String("initial-backend", os.Getenv("GATEWAY_INITIAL_BACKEND"), "write backend when there is no state file (default: first backend)")
 	stateFile := flag.String("state-file", envOr("GATEWAY_STATE_FILE", filepath.Join(".hopcharlie", "gateway-state.json")), "routing and hold state, kept across restarts")
 	drain := flag.Duration("drain-timeout", gateway.DefaultDrainTimeout, "how long a hold waits for in-flight writes")
-	maxHold := flag.Duration("max-hold", gateway.DefaultMaxHold, "held writes are released to the current write backend after this")
+	maxHold := flag.Duration("max-hold", gateway.DefaultMaxHold, "a held write that waited this long gets 503 hold_timeout and is not forwarded; the hold itself lasts until release")
 	maxHeld := flag.Int("max-held", gateway.DefaultMaxHeld, "waiting writes beyond this get 503")
+	writeTimeout := flag.Duration("write-timeout", gateway.DefaultWriteTimeout, "how long a forwarded write may take; writes are not cancelled when their client leaves")
 	healthInterval := flag.Duration("health-interval", gateway.DefaultHealthInterval, "backend health check interval")
 	healthPath := flag.String("health-path", gateway.DefaultHealthPath, "backend health check path")
 	insecure := flag.Bool("insecure-no-auth", false, "run the admin API without GATEWAY_ADMIN_TOKEN (local development only)")
@@ -61,6 +61,7 @@ func main() {
 		DrainTimeout:   *drain,
 		MaxHold:        *maxHold,
 		MaxHeld:        *maxHeld,
+		WriteTimeout:   *writeTimeout,
 		HealthInterval: *healthInterval,
 		HealthPath:     *healthPath,
 		Log:            log,
@@ -97,19 +98,25 @@ func main() {
 	stop() // a second signal now kills the process
 
 	log.Info("shutting down")
-	shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var wg sync.WaitGroup
-	for _, s := range []*http.Server{public, admin} {
-		wg.Go(func() {
-			if err := s.Shutdown(shCtx); err != nil {
-				log.Warn("requests still in flight at shutdown", "addr", s.Addr, "err", err)
-			}
-		})
-	}
-	wg.Wait()
+	shutdown(log, gw, public, admin, 10*time.Second)
 	stopHealth()
 	gw.Close()
+}
+
+// shutdown stops the servers without dropping a request silently. Held writes
+// are answered 503 shutting_down first (the hold stays recorded, so a restart
+// keeps holding), then the proxy finishes its in-flight requests, and only
+// then does the admin API stop: the engine can reach it until the proxy is
+// done, and admin calls in progress get their own time to answer.
+func shutdown(log *slog.Logger, gw *gateway.Gateway, public, admin *http.Server, timeout time.Duration) {
+	gw.BeginShutdown()
+	for _, s := range []*http.Server{public, admin} {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		if err := s.Shutdown(ctx); err != nil {
+			log.Warn("requests still in flight at shutdown", "addr", s.Addr, "err", err)
+		}
+		cancel()
+	}
 }
 
 func envOr(k, def string) string {
