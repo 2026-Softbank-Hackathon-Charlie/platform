@@ -408,17 +408,20 @@ type Environment struct {
 	DisplayName string `json:"displayName"`
 
 	// GatewayBackend the gateway backend that serves this environment
-	GatewayBackend string  `json:"gatewayBackend"`
-	KubeContext    *string `json:"kubeContext,omitempty"`
+	GatewayBackend string `json:"gatewayBackend"`
+	KubeContext    string `json:"kubeContext"`
 
 	// Live the gateway currently sends writes here
 	Live bool `json:"live"`
 
 	// Name Example: gke
-	Name     string            `json:"name"`
-	Provider Provider          `json:"provider"`
-	Region   *string           `json:"region,omitempty"`
-	Status   EnvironmentStatus `json:"status"`
+	Name     string   `json:"name"`
+	Provider Provider `json:"provider"`
+	Region   *string  `json:"region,omitempty"`
+
+	// Status Read live from the cluster and cached for a few seconds. Nothing here is
+	// filled in when it could not be read.
+	Status EnvironmentStatus `json:"status"`
 }
 
 // EnvironmentList defines model for EnvironmentList.
@@ -426,14 +429,21 @@ type EnvironmentList struct {
 	Environments []Environment `json:"environments"`
 }
 
-// EnvironmentStatus defines model for EnvironmentStatus.
+// EnvironmentStatus Read live from the cluster and cached for a few seconds. Nothing here is
+// filled in when it could not be read.
 type EnvironmentStatus struct {
-	CheckedAt         time.Time          `json:"checkedAt"`
-	Databases         *[]DatabaseCluster `json:"databases,omitempty"`
-	Error             *string            `json:"error,omitempty"`
-	KubernetesVersion *string            `json:"kubernetesVersion,omitempty"`
-	Nodes             *NodeSummary       `json:"nodes,omitempty"`
-	Reachable         bool               `json:"reachable"`
+	CheckedAt time.Time `json:"checkedAt"`
+
+	// Databases CNPG clusters. Empty when there are none or CNPG is not installed; omitted when they could not be read.
+	Databases *[]DatabaseCluster `json:"databases,omitempty"`
+
+	// Error Why the status is incomplete. Can be set while reachable is true (for example nodes forbidden by RBAC); that part is then omitted.
+	Error             *string      `json:"error,omitempty"`
+	KubernetesVersion *string      `json:"kubernetesVersion,omitempty"`
+	Nodes             *NodeSummary `json:"nodes,omitempty"`
+
+	// Reachable the API server answered /version
+	Reachable bool `json:"reachable"`
 }
 
 // Error defines model for Error.
@@ -515,8 +525,11 @@ type NodeSummary struct {
 
 // PlanEndpoint The non-secret view of a plan endpoint.
 type PlanEndpoint struct {
-	Cluster   string  `json:"cluster"`
-	Context   *string `json:"context,omitempty"`
+	Cluster string  `json:"cluster"`
+	Context *string `json:"context,omitempty"`
+
+	// DbHost host:port the DSN connects to, without credentials. Shown so an approver can see where the database password would be sent.
+	DbHost    *string `json:"dbHost,omitempty"`
 	Env       string  `json:"env"`
 	Namespace string  `json:"namespace"`
 }
@@ -637,6 +650,14 @@ type Run struct {
 // RunEvent Engine kinds: step_started, step_succeeded, step_failed, step_skipped,
 // log, metric, rollback, halt, done.
 // Platform kinds: status_changed, canary_step, gate_result.
+//
+// `data` by kind (other keys may appear):
+// - step_succeeded: `durationMillis` (integer), `evidence` (object).
+// - metric: `lagBytes` (integer) for replication lag, or `downtimeMillis` (integer) for write downtime.
+// - done: `downtimeMillis` (integer).
+// - status_changed: `status` (RunStatus), `phase` (RunPhase), `reason` (string, may be empty).
+// - canary_step: `weight` (integer; 0 means all reads are back on the source), `readWeights` (object of integers).
+// - gate_result: `weight` (integer), `gate` (GateResult).
 type RunEvent struct {
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Kind    string                  `json:"kind"`
@@ -742,7 +763,7 @@ type TrafficState struct {
 	HeldWrites int      `json:"heldWrites"`
 	InFlight   InFlight `json:"inFlight"`
 
-	// MaxHold held writes are released to the current write backend after this
+	// MaxHold a write held longer than this gets 503 hold_timeout and is never forwarded; the hold itself lasts until release
 	MaxHold string `json:"maxHold"`
 
 	// ReadWeights Share of read requests per backend, summing to 100.
@@ -786,6 +807,9 @@ type Conflict = Error
 // Forbidden defines model for Forbidden.
 type Forbidden = Error
 
+// Internal defines model for Internal.
+type Internal = Error
+
 // NotFound defines model for NotFound.
 type NotFound = Error
 
@@ -816,6 +840,12 @@ type StreamMigrationEventsParams struct {
 	// After Replay events with seq greater than this. Same as Last-Event-ID.
 	After       *int64  `form:"after,omitempty" json:"after,omitempty"`
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
+}
+
+// GetTrafficParams defines parameters for GetTraffic.
+type GetTrafficParams struct {
+	// Window Statistics window, a duration between 1s and 5m.
+	Window *string `form:"window,omitempty" json:"window,omitempty"`
 }
 
 // StartMigrationJSONRequestBody defines body for StartMigration for application/json ContentType.

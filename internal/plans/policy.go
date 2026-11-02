@@ -39,6 +39,9 @@ func DefaultPolicy() Policy {
 	}
 }
 
+// planID becomes part of file names and URLs (engine state file, run id).
+var planID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
 var envRef = regexp.MustCompile(`\$\{([^}]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
 
 // checkRaw runs before parsing: env expansion happens inside plan.Parse.
@@ -54,6 +57,9 @@ func (p Policy) checkRaw(raw []byte) error {
 
 // checkParsed validates fields that reach the filesystem, processes or network.
 func (p Policy) checkParsed(pl *plan.Plan) error {
+	if !planID.MatchString(pl.ID) {
+		return fmt.Errorf("id %q must be lowercase letters, digits and '-' (at most 63)", pl.ID)
+	}
 	for role, ep := range map[string]plan.Endpoint{"source": pl.Source, "target": pl.Target} {
 		if ep.Kubeconfig != "" {
 			return fmt.Errorf("%s.kubeconfig is not allowed; the server uses its own kubeconfig and selects clusters by context", role)

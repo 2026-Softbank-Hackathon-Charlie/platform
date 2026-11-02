@@ -126,7 +126,7 @@ type Store interface {
 
 	// AppendAudit stores an entry and returns its id.
 	AppendAudit(ctx context.Context, a Audit) (int64, error)
-	// ListAudit returns entries with ID < before (before <= 0 means from the newest), newest first, at most limit.
+	// ListAudit returns entries with ID < before (before <= 0 means from the newest), newest first, at most limit (<=0 means no limit).
 	ListAudit(ctx context.Context, before int64, limit int) ([]Audit, error)
 
 	// PutIdempotencyKey records key -> (planRef, runID). If the key exists it

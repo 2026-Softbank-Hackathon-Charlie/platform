@@ -2,230 +2,452 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
-// MaxPlanBytes bounds request bodies.
-const MaxPlanBytes = 1 << 20
+// MaxBodyBytes bounds request bodies.
+const MaxBodyBytes = 1 << 20
 
-func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxPlanBytes))
+func (s *Server) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			writeError(w, http.StatusRequestEntityTooLarge, "too_large", fmt.Sprintf("body exceeds %d bytes", MaxPlanBytes))
+			s.fail(w, r, http.StatusRequestEntityTooLarge, "too_large", fmt.Sprintf("body exceeds %d bytes", MaxBodyBytes))
 		} else {
-			writeError(w, http.StatusBadRequest, "invalid_request", "could not read body")
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", "could not read body")
 		}
 		return nil, false
 	}
 	return body, true
 }
 
-// POST /v1/plans — body is the engine plan JSON as-is.
+// decode reads an optional (empty body allowed) or required JSON body strictly.
+func (s *Server) decode(w http.ResponseWriter, r *http.Request, v any, required bool) bool {
+	body, ok := s.readBody(w, r)
+	if !ok {
+		return false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		if required {
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", "request body is required")
+			return false
+		}
+		return true
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body: "+err.Error())
+		return false
+	}
+	return true
+}
+
+func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.FromContext(r.Context())
+	writeJSON(w, http.StatusOK, apiv1.Principal{Name: p.Name, Role: p.Role})
+}
+
+// --- plans ---
+
+// POST /v1/plans: the body is the engine plan JSON as-is.
 func (s *Server) submitPlan(w http.ResponseWriter, r *http.Request) {
-	body, ok := readBody(w, r)
+	body, ok := s.readBody(w, r)
 	if !ok {
 		return
 	}
-	rec, err := s.plans.Submit(body, s.cfg.Actor)
+	rec, err := s.d.Plans.Submit(r.Context(), body, actor(r))
 	if err != nil {
-		s.planError(w, err)
+		s.planError(w, r, err)
 		return
 	}
+	noteAudit(r, "planRef", rec.Ref)
+	noteAudit(r, "planId", rec.Summary.PlanId)
+	noteAudit(r, "route", rec.Summary.Source.Env+" -> "+rec.Summary.Target.Env)
 	w.Header().Set("Location", "/v1/plans/"+rec.Ref)
 	writeJSON(w, http.StatusCreated, rec)
 }
 
-func (s *Server) listPlans(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"plans": s.plans.List()})
+func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
+	list, err := s.d.Plans.List(r.Context())
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apiv1.PlanList{Plans: list})
 }
 
 func (s *Server) getPlan(w http.ResponseWriter, r *http.Request) {
-	rec, err := s.plans.Get(r.PathValue("ref"))
+	rec, err := s.d.Plans.Get(r.Context(), r.PathValue("ref"))
 	if err != nil {
-		s.planError(w, err)
+		s.planError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rec)
 }
 
-// POST /v1/plans/{ref}/approve — the human gate between AI planning and execution.
+// POST /v1/plans/{ref}/approve: the human gate between AI planning and execution.
 func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
-	rec, err := s.plans.Approve(r.PathValue("ref"), s.cfg.Actor)
+	var req apiv1.ReviewRequest
+	if !s.decode(w, r, &req, false) {
+		return
+	}
+	ref := r.PathValue("ref")
+	noteAudit(r, "planRef", ref)
+	rec, err := s.d.Plans.Approve(r.Context(), ref, actor(r), deref(req.Comment))
 	if err != nil {
-		s.planError(w, err)
+		s.planError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rec)
 }
 
-// StartRequest is the body of POST /v1/migrations.
-type StartRequest struct {
-	PlanRef string `json:"planRef"`
+func (s *Server) rejectPlan(w http.ResponseWriter, r *http.Request) {
+	var req apiv1.ReviewRequest
+	if !s.decode(w, r, &req, true) {
+		return
+	}
+	ref := r.PathValue("ref")
+	noteAudit(r, "planRef", ref)
+	if deref(req.Comment) == "" {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "a comment explaining the rejection is required")
+		return
+	}
+	noteAudit(r, "comment", *req.Comment)
+	rec, err := s.d.Plans.Reject(r.Context(), ref, actor(r), *req.Comment)
+	if err != nil {
+		s.planError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
 }
 
-// StartResponse acknowledges that a run was accepted. Completion is observed via
-// GET /v1/migrations/{runId} or its event stream.
-type StartResponse struct {
-	RunID   string            `json:"runId"`
-	PlanRef string            `json:"planRef"`
-	Links   map[string]string `json:"links"`
-}
+// --- migrations ---
 
 // POST /v1/migrations
 //
 // Retries: send the same Idempotency-Key to get the original run back instead
 // of an error. Reusing a key for a different plan is a conflict.
 func (s *Server) startMigration(w http.ResponseWriter, r *http.Request) {
-	body, ok := readBody(w, r)
-	if !ok {
+	var req apiv1.StartMigrationRequest
+	if !s.decode(w, r, &req, true) {
 		return
 	}
-	var req StartRequest
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil || req.PlanRef == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", `body must be {"planRef": "<ref>"}`)
+	if req.PlanRef == "" {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "planRef is required")
 		return
 	}
+	noteAudit(r, "planRef", req.PlanRef)
 	key := r.Header.Get("Idempotency-Key")
+	if len(key) > 200 {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "Idempotency-Key is longer than 200 characters")
+		return
+	}
+	// From here on every write must finish even if the client goes away:
+	// a plan left in starting, a run without its plan link or a missing
+	// idempotency key would each break the retry the key exists for.
+	ctx := context.WithoutCancel(r.Context())
 
-	// One start at a time keeps the idempotency map and plan reservation consistent.
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
 
 	if key != "" {
-		if prev, ok := s.idem[key]; ok {
-			if prev.planRef != req.PlanRef {
-				writeError(w, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different plan")
-				return
-			}
-			writeJSON(w, http.StatusAccepted, startResponse(prev.runID, prev.planRef))
+		planRef, runID, err := s.d.Store.GetIdempotencyKey(ctx, key)
+		switch {
+		case err == nil && planRef != req.PlanRef:
+			s.fail(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different plan")
+			return
+		case err == nil:
+			noteAudit(r, "runId", runID)
+			noteAudit(r, "idempotentReplay", true)
+			writeJSON(w, http.StatusAccepted, startResponse(runID, planRef))
+			return
+		case !errors.Is(err, store.ErrNotFound):
+			s.internal(w, r, err)
 			return
 		}
 	}
 
-	p, err := s.plans.Reserve(req.PlanRef)
+	p, err := s.d.Plans.Reserve(ctx, req.PlanRef)
 	if err != nil {
-		s.planError(w, err)
+		s.planError(w, r, err)
 		return
 	}
-	runID, err := s.runs.Start(p)
+	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
+		PlanRef:    req.PlanRef,
+		Plan:       p,
+		Actor:      actor(r),
+		AutoSwitch: req.AutoSwitch != nil && *req.AutoSwitch,
+		Canary:     req.Canary,
+	})
 	if err != nil {
-		s.plans.Release(req.PlanRef)
-		s.runError(w, err)
+		s.d.Plans.Release(ctx, req.PlanRef)
+		s.runError(w, r, err)
 		return
 	}
-	s.plans.Started(req.PlanRef, runID)
+	if err := s.d.Plans.Started(ctx, req.PlanRef, run.RunId); err != nil {
+		s.cfg.Log.Error("link plan to run", "plan", req.PlanRef, "run", run.RunId, "err", err)
+	}
 	if key != "" {
-		s.idem[key] = idemEntry{planRef: req.PlanRef, runID: runID}
+		if _, _, err := s.d.Store.PutIdempotencyKey(ctx, key, req.PlanRef, run.RunId); err != nil {
+			s.cfg.Log.Error("store idempotency key", "err", err)
+		}
 	}
-	w.Header().Set("Location", "/v1/migrations/"+runID)
-	writeJSON(w, http.StatusAccepted, startResponse(runID, req.PlanRef))
+	noteAudit(r, "runId", run.RunId)
+	noteAudit(r, "autoSwitch", run.AutoSwitch)
+	noteAudit(r, "canary", req.Canary != nil)
+	w.Header().Set("Location", "/v1/migrations/"+run.RunId)
+	writeJSON(w, http.StatusAccepted, startResponse(run.RunId, req.PlanRef))
 }
 
-func startResponse(runID, planRef string) StartResponse {
-	return StartResponse{RunID: runID, PlanRef: planRef, Links: map[string]string{
-		"self":   "/v1/migrations/" + runID,
-		"events": "/v1/migrations/" + runID + "/events",
-	}}
+func startResponse(runID, planRef string) apiv1.StartMigrationResponse {
+	resp := apiv1.StartMigrationResponse{RunId: runID, PlanRef: planRef}
+	resp.Links.Self = "/v1/migrations/" + runID
+	resp.Links.Events = "/v1/migrations/" + runID + "/events"
+	return resp
 }
 
-func (s *Server) listMigrations(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"runs": s.runs.List()})
+func (s *Server) listMigrations(w http.ResponseWriter, r *http.Request) {
+	list, err := s.d.Runs.List(r.Context())
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apiv1.RunList{Runs: list})
 }
 
 func (s *Server) getMigration(w http.ResponseWriter, r *http.Request) {
-	st, err := s.runs.Get(r.PathValue("runId"))
+	run, err := s.d.Runs.Get(r.Context(), r.PathValue("runId"))
 	if err != nil {
-		s.runError(w, err)
+		s.runError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, st)
+	writeJSON(w, http.StatusOK, run)
 }
 
-// SSEHeartbeat keeps idle connections open through proxies.
-var SSEHeartbeat = 15 * time.Second
-
-// GET /v1/migrations/{runId}/events
-//
-// Stream contract:
-//   - first message: "snapshot" with the full run state (the source of truth)
-//   - then each engine event, with the engine's kind as the SSE event name
-//   - when the run ends: a final "snapshot", then the stream closes
-//
-// The engine does not number its events, so there is no Last-Event-ID resume:
-// a reconnecting client receives a fresh snapshot and continues from there.
-// Events may repeat information already in the snapshot. A client that falls
-// more than runs.SubscriberBuffer events behind is disconnected.
-func (s *Server) migrationEvents(w http.ResponseWriter, r *http.Request) {
+func (s *Server) switchMigration(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("runId")
-	fl, ok := w.(http.Flusher)
-	if !ok {
-		s.internal(w, errors.New("response writer cannot stream"))
-		return
-	}
-	events, cancel, err := s.runs.Subscribe(id) // before the snapshot, so nothing is missed
+	noteAudit(r, "runId", id)
+	run, err := s.d.Runs.Switch(r.Context(), id, actor(r))
 	if err != nil {
-		s.runError(w, err)
+		s.runError(w, r, err)
 		return
 	}
-	defer cancel()
-	st, err := s.runs.Get(id)
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) abortMigration(w http.ResponseWriter, r *http.Request) {
+	var req apiv1.AbortRequest
+	if !s.decode(w, r, &req, false) {
+		return
+	}
+	id := r.PathValue("runId")
+	noteAudit(r, "runId", id)
+	if req.Reason != nil {
+		noteAudit(r, "reason", *req.Reason)
+	}
+	run, err := s.d.Runs.Abort(r.Context(), id, actor(r), deref(req.Reason))
 	if err != nil {
-		s.runError(w, err)
+		s.runError(w, r, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, run)
+}
 
-	h := w.Header()
-	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
-	h.Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	if writeSSE(w, "snapshot", st) != nil {
+func (s *Server) resumeMigration(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("runId")
+	noteAudit(r, "runId", id)
+	ctx := context.WithoutCancel(r.Context())
+	cur, err := s.d.Runs.Get(ctx, id)
+	if err != nil {
+		s.runError(w, r, err)
 		return
 	}
-	fl.Flush()
+	p, err := s.d.Plans.Load(ctx, cur.PlanRef)
+	if err != nil {
+		s.planError(w, r, err)
+		return
+	}
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	run, err := s.d.Runs.Resume(ctx, id, actor(r), p)
+	if err != nil {
+		s.runError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
 
-	tick := time.NewTicker(SSEHeartbeat)
-	defer tick.Stop()
-	for {
-		select {
-		case <-r.Context().Done():
+// --- environments, traffic, matrix, audit ---
+
+func (s *Server) listEnvs(w http.ResponseWriter, r *http.Request) {
+	list := s.d.Envs.List(r.Context())
+	s.markLive(r.Context(), list)
+	writeJSON(w, http.StatusOK, apiv1.EnvironmentList{Environments: list})
+}
+
+func (s *Server) getEnv(w http.ResponseWriter, r *http.Request) {
+	env, err := s.d.Envs.Get(r.Context(), r.PathValue("name"))
+	if err != nil {
+		if s.d.EnvNotFound != nil && errors.Is(err, s.d.EnvNotFound) {
+			s.fail(w, r, http.StatusNotFound, "env_not_found", "environment not found")
 			return
-		case <-tick.C:
-			if _, err := io.WriteString(w, ": keep-alive\n\n"); err != nil {
-				return
-			}
-			fl.Flush()
-		case ev, open := <-events:
-			if !open {
-				// Run finished (or we fell behind): send the authoritative state and end.
-				if st, err := s.runs.Get(id); err == nil {
-					_ = writeSSE(w, "snapshot", st)
-					fl.Flush()
-				}
-				return
-			}
-			if writeSSE(w, ev.Kind, ev) != nil {
-				return
-			}
-			fl.Flush()
+		}
+		s.internal(w, r, err)
+		return
+	}
+	one := []apiv1.Environment{env}
+	s.markLive(r.Context(), one)
+	writeJSON(w, http.StatusOK, one[0])
+}
+
+// markLive sets Live on the environment whose backend receives writes.
+func (s *Server) markLive(ctx context.Context, envs []apiv1.Environment) {
+	if s.d.Traffic == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ts, err := s.d.Traffic.State(ctx, 10*time.Second)
+	if err != nil {
+		return // unknown is shown as not live; /v1/traffic reports the error
+	}
+	for i := range envs {
+		envs[i].Live = envs[i].GatewayBackend == ts.WriteBackend
+	}
+}
+
+func (s *Server) traffic(w http.ResponseWriter, r *http.Request) {
+	if s.d.Traffic == nil {
+		s.fail(w, r, http.StatusServiceUnavailable, "gateway_not_configured", "this server has no traffic gateway configured (PLATFORM_GATEWAY_URL)")
+		return
+	}
+	window := 10 * time.Second
+	if v := r.URL.Query().Get("window"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Second || d > 5*time.Minute {
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", "window must be a duration between 1s and 5m")
+			return
+		}
+		window = d
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	ts, err := s.d.Traffic.State(ctx, window)
+	if err != nil {
+		s.cfg.Log.Warn("gateway state", "err", err)
+		s.fail(w, r, http.StatusBadGateway, "gateway_unreachable", "could not read the traffic gateway state")
+		return
+	}
+	writeJSON(w, http.StatusOK, ts)
+}
+
+var finished = map[apiv1.RunStatus]bool{
+	apiv1.RunStatusSucceeded:  true,
+	apiv1.RunStatusRolledBack: true,
+	apiv1.RunStatusHalted:     true,
+	apiv1.RunStatusFailed:     true,
+	apiv1.RunStatusAborted:    true,
+}
+
+// GET /v1/matrix: the latest finished run for every ordered pair of environments.
+func (s *Server) matrix(w http.ResponseWriter, r *http.Request) {
+	list, err := s.d.Runs.List(r.Context())
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	type pair struct{ src, dst string }
+	latest := map[pair]apiv1.Run{}
+	for _, run := range list {
+		if !finished[run.Status] || run.EndedAt == nil {
+			continue
+		}
+		k := pair{run.Source.Env, run.Target.Env}
+		if cur, ok := latest[k]; !ok || run.EndedAt.After(*cur.EndedAt) {
+			latest[k] = run
 		}
 	}
+	names := s.d.Envs.Names()
+	m := apiv1.Matrix{Environments: names, Routes: []apiv1.MatrixRoute{}}
+	for _, src := range names {
+		for _, dst := range names {
+			if src == dst {
+				continue
+			}
+			row := apiv1.MatrixRoute{Source: src, Target: dst}
+			if run, ok := latest[pair{src, dst}]; ok {
+				id, st, res := run.RunId, run.Status, run.Result
+				row.RunId, row.Status, row.FinishedAt, row.Result = &id, &st, run.EndedAt, &res
+			}
+			m.Routes = append(m.Routes, row)
+		}
+	}
+	writeJSON(w, http.StatusOK, m)
 }
 
-func writeSSE(w io.Writer, event string, v any) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
+func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 100
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 500 {
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", "limit must be between 1 and 500")
+			return
+		}
+		limit = n
 	}
-	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
-	return err
+	var before int64
+	if v := q.Get("before"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", "before must be a positive id")
+			return
+		}
+		before = n
+	}
+	rows, err := s.d.Store.ListAudit(r.Context(), before, limit)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	out := apiv1.AuditList{Entries: make([]apiv1.AuditEntry, 0, len(rows))}
+	for _, a := range rows {
+		e := apiv1.AuditEntry{Id: a.ID, Time: a.Time, Actor: a.Actor, Role: a.Role, Action: a.Action, Target: a.Target, Status: a.Status}
+		if a.RequestID != "" {
+			e.RequestId = &a.RequestID
+		}
+		if len(a.Detail) > 0 {
+			var m map[string]any
+			if json.Unmarshal(a.Detail, &m) == nil {
+				e.Detail = &m
+			}
+		}
+		out.Entries = append(out.Entries, e)
+	}
+	if len(rows) == limit {
+		next := rows[len(rows)-1].ID
+		out.NextBefore = &next
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

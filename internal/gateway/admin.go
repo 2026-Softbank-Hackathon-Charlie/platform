@@ -49,8 +49,11 @@ func (g *Gateway) auth(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// handleHold is idempotent. It answers only once no write is in flight, so
-// the engine can read the source's final LSN right after.
+// handleHold is idempotent. It answers 200 only once no write is in flight
+// and the same hold is still on, so the engine can read the source's final
+// LSN right after. The hold is all or nothing: the engine treats writes as
+// held only after a 200 (and releases nothing otherwise), so a hold that does
+// not drain in time is reverted before answering.
 func (g *Gateway) handleHold(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	g.mu.Lock()
@@ -58,6 +61,7 @@ func (g *Gateway) handleHold(w http.ResponseWriter, r *http.Request) {
 	if changed {
 		g.startHoldLocked(start)
 	}
+	id := g.gen.id
 	inFlight := g.inflightWrites
 	snap := g.snapshotLocked()
 	g.mu.Unlock()
@@ -67,20 +71,41 @@ func (g *Gateway) handleHold(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), g.cfg.DrainTimeout)
 	defer cancel()
-	if err := g.waitWritesDrained(ctx); err != nil {
-		// Stay held: the engine rolls back with route + release.
-		g.mu.Lock()
-		left := g.inflightWrites
+	drainErr := g.waitWritesDrained(ctx)
+
+	g.mu.Lock()
+	if g.gen == nil || g.gen.id != id {
+		// Released (or released and held again) while draining: this call's
+		// hold is over, so it must not report writes as held.
 		g.mu.Unlock()
-		g.log.Warn("admin action", "action", "hold", "changed", changed, "result", "drain_timeout",
-			"inFlightAtHold", inFlight, "inFlightLeft", left, "waitedMillis", time.Since(start).Milliseconds())
-		writeError(w, http.StatusGatewayTimeout, "drain_timeout",
-			fmt.Sprintf("writes are held, but %d in-flight writes did not finish in time (drain timeout %s)", left, g.cfg.DrainTimeout))
+		g.log.Warn("admin action", "action", "hold", "changed", changed, "hold", id, "result", "hold_cancelled",
+			"waitedMillis", time.Since(start).Milliseconds())
+		writeError(w, http.StatusConflict, "hold_cancelled", "the hold was released before in-flight writes drained")
 		return
 	}
-	g.log.Info("admin action", "action", "hold", "changed", changed, "result", "ok",
-		"inFlightAtHold", inFlight, "drainMillis", time.Since(start).Milliseconds())
-	writeJSON(w, http.StatusOK, g.state(defaultWindow))
+	if g.inflightWrites == 0 {
+		// While a hold is on nothing new is forwarded, so this stays true
+		// until release.
+		g.mu.Unlock()
+		g.log.Info("admin action", "action", "hold", "changed", changed, "hold", id, "result", "ok",
+			"inFlightAtHold", inFlight, "drainMillis", time.Since(start).Milliseconds())
+		writeJSON(w, http.StatusOK, g.state(defaultWindow))
+		return
+	}
+	// Drain timeout, or the caller left. Revert. The engine routes only after
+	// a successful hold, so the write backend is still the one the in-flight
+	// writes went to, and the waiting writes can safely follow them.
+	left := g.inflightWrites
+	gen := g.releaseLocked()
+	snap = g.snapshotLocked()
+	g.mu.Unlock()
+	g.save(snap)
+	g.log.Warn("admin action", "action", "hold", "changed", changed, "hold", id, "result", "drain_timeout",
+		"reverted", true, "err", drainErr, "inFlightAtHold", inFlight, "inFlightLeft", left,
+		"released", gen.pending, "backend", gen.backend.name, "waitedMillis", time.Since(start).Milliseconds())
+	writeError(w, http.StatusGatewayTimeout, "drain_timeout",
+		fmt.Sprintf("%d in-flight writes did not finish within %s; the hold was reverted and writes flow to %s again",
+			left, g.cfg.DrainTimeout, gen.backend.name))
 }
 
 // handleRelease is idempotent. Held writes go to the write backend as it is

@@ -29,8 +29,10 @@ type statsBucket struct {
 
 // backendStats keeps per-second counters for one backend.
 type backendStats struct {
-	mu            sync.Mutex
-	ring          [statsKeepSeconds]statsBucket
+	mu sync.Mutex
+	// One more bucket than the longest window, which also covers the
+	// current, partial second.
+	ring          [statsKeepSeconds + 1]statsBucket
 	totalRequests int64
 	totalErrors   int64
 }
@@ -44,7 +46,7 @@ func (s *backendStats) record(now time.Time, d time.Duration, isErr bool) {
 	ms := float64(d) / float64(time.Millisecond)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b := &s.ring[sec%statsKeepSeconds]
+	b := &s.ring[sec%int64(len(s.ring))]
 	if b.sec != sec {
 		*b = statsBucket{sec: sec}
 	}
@@ -57,13 +59,15 @@ func (s *backendStats) record(now time.Time, d time.Duration, isErr bool) {
 	}
 }
 
-// window sums the last `seconds` buckets, including the current one.
+// window sums the last `seconds` completed seconds plus the current, partial
+// one, and divides by the time those actually span, so rps does not read low
+// while the current second has just begun.
 func (s *backendStats) window(now time.Time, seconds int) apiv1.BackendStats {
 	var sum statsBucket
 	end := now.Unix()
 	s.mu.Lock()
-	for sec := end - int64(seconds) + 1; sec <= end; sec++ {
-		b := &s.ring[sec%statsKeepSeconds]
+	for sec := end - int64(seconds); sec <= end; sec++ {
+		b := &s.ring[sec%int64(len(s.ring))]
 		if b.sec != sec {
 			continue
 		}
@@ -74,12 +78,13 @@ func (s *backendStats) window(now time.Time, seconds int) apiv1.BackendStats {
 		}
 	}
 	s.mu.Unlock()
+	span := float64(seconds) + now.Sub(time.Unix(end, 0)).Seconds()
 
 	out := apiv1.BackendStats{
 		WindowSeconds: seconds,
 		Requests:      sum.requests,
 		Errors:        sum.errors,
-		Rps:           float32(float64(sum.requests) / float64(seconds)),
+		Rps:           float32(float64(sum.requests) / span),
 		P50Millis:     float32(percentile(sum.latency[:], sum.requests, 0.50)),
 		P95Millis:     float32(percentile(sum.latency[:], sum.requests, 0.95)),
 		P99Millis:     float32(percentile(sum.latency[:], sum.requests, 0.99)),

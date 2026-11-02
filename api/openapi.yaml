@@ -70,7 +70,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Principal" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/plans:
     post:
       tags: [plans]
@@ -96,6 +96,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "413": { $ref: "#/components/responses/TooLarge" }
+        default: { $ref: "#/components/responses/Internal" }
     get:
       tags: [plans]
       operationId: listPlans
@@ -106,7 +107,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PlanList" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/plans/{ref}:
     parameters:
       - $ref: "#/components/parameters/PlanRef"
@@ -122,7 +123,7 @@ paths:
               schema: { $ref: "#/components/schemas/PlanRecord" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/plans/{ref}/approve:
     parameters:
       - $ref: "#/components/parameters/PlanRef"
@@ -141,11 +142,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PlanRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/plans/{ref}/reject:
     parameters:
       - $ref: "#/components/parameters/PlanRef"
@@ -169,7 +171,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/migrations:
     post:
       tags: [migrations]
@@ -204,7 +206,9 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
         "502": { $ref: "#/components/responses/BadGateway" }
+        default: { $ref: "#/components/responses/Internal" }
     get:
       tags: [migrations]
       operationId: listMigrations
@@ -215,7 +219,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/RunList" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/migrations/{runId}:
     parameters:
       - $ref: "#/components/parameters/RunId"
@@ -230,7 +234,7 @@ paths:
               schema: { $ref: "#/components/schemas/Run" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/migrations/{runId}/events:
     parameters:
       - $ref: "#/components/parameters/RunId"
@@ -241,9 +245,12 @@ paths:
         Server-Sent Events.
 
         - The first message is `snapshot` (data: `Run`), the current state.
+          Snapshots carry no SSE id.
         - Then every `RunEvent`, with the event kind as the SSE event name and
           the event `seq` as the SSE id.
         - When the run ends: a final `snapshot`, then the stream closes.
+          While the run is active (including `awaiting_switch`) the stream stays
+          open, with `: keep-alive` comments.
 
         Reconnect with `Last-Event-ID` (or `?after=`) to replay the events you
         missed; they are stored, so nothing is lost. Browsers cannot set the
@@ -264,9 +271,10 @@ paths:
           content:
             text/event-stream:
               schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/migrations/{runId}/switch:
     parameters:
       - $ref: "#/components/parameters/RunId"
@@ -286,7 +294,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/migrations/{runId}/abort:
     parameters:
       - $ref: "#/components/parameters/RunId"
@@ -309,11 +317,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Run" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/migrations/{runId}/resume:
     parameters:
       - $ref: "#/components/parameters/RunId"
@@ -334,7 +343,7 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "502": { $ref: "#/components/responses/BadGateway" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/envs:
     get:
       tags: [environments]
@@ -347,7 +356,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/EnvironmentList" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/envs/{name}:
     parameters:
       - $ref: "#/components/parameters/EnvName"
@@ -362,18 +371,25 @@ paths:
               schema: { $ref: "#/components/schemas/Environment" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/traffic:
     get:
       tags: [traffic]
       operationId: getTraffic
       description: The traffic gateway's live state and request statistics.
+      parameters:
+        - name: window
+          in: query
+          required: false
+          description: Statistics window, a duration between 1s and 5m.
+          schema: { type: string, default: "10s" }
       responses:
         "200":
           description: Gateway state.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TrafficState" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "502": { $ref: "#/components/responses/BadGateway" }
         "503": { $ref: "#/components/responses/Unavailable" }
@@ -390,7 +406,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Matrix" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-
+        default: { $ref: "#/components/responses/Internal" }
   /v1/audit:
     get:
       tags: [audit]
@@ -412,6 +428,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuditList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
 components:
@@ -470,6 +487,11 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     BadGateway:
       description: "engine_init_failed, gateway_unreachable"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Internal:
+      description: "internal: an unexpected error; details are only in the server log"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -582,6 +604,9 @@ components:
         context: { type: string }
         namespace: { type: string }
         cluster: { type: string }
+        dbHost:
+          type: string
+          description: host:port the DSN connects to, without credentials. Shown so an approver can see where the database password would be sent.
 
     PlanSummary:
       type: object
@@ -830,6 +855,14 @@ components:
         Engine kinds: step_started, step_succeeded, step_failed, step_skipped,
         log, metric, rollback, halt, done.
         Platform kinds: status_changed, canary_step, gate_result.
+
+        `data` by kind (other keys may appear):
+        - step_succeeded: `durationMillis` (integer), `evidence` (object).
+        - metric: `lagBytes` (integer) for replication lag, or `downtimeMillis` (integer) for write downtime.
+        - done: `downtimeMillis` (integer).
+        - status_changed: `status` (RunStatus), `phase` (RunPhase), `reason` (string, may be empty).
+        - canary_step: `weight` (integer; 0 means all reads are back on the source), `readWeights` (object of integers).
+        - gate_result: `weight` (integer), `gate` (GateResult).
       type: object
       required: [seq, time, runId, kind]
       properties:
@@ -851,7 +884,7 @@ components:
 
     Environment:
       type: object
-      required: [name, provider, displayName, gatewayBackend, live, status]
+      required: [name, provider, displayName, kubeContext, gatewayBackend, live, status]
       properties:
         name: { type: string, example: gke }
         provider: { $ref: "#/components/schemas/Provider" }
@@ -863,15 +896,21 @@ components:
         status: { $ref: "#/components/schemas/EnvironmentStatus" }
 
     EnvironmentStatus:
+      description: |
+        Read live from the cluster and cached for a few seconds. Nothing here is
+        filled in when it could not be read.
       type: object
       required: [reachable, checkedAt]
       properties:
-        reachable: { type: boolean }
+        reachable: { type: boolean, description: the API server answered /version }
         checkedAt: { type: string, format: date-time }
-        error: { type: string }
+        error:
+          type: string
+          description: Why the status is incomplete. Can be set while reachable is true (for example nodes forbidden by RBAC); that part is then omitted.
         kubernetesVersion: { type: string }
         nodes: { $ref: "#/components/schemas/NodeSummary" }
         databases:
+          description: CNPG clusters. Empty when there are none or CNPG is not installed; omitted when they could not be read.
           type: array
           items: { $ref: "#/components/schemas/DatabaseCluster" }
 
@@ -920,7 +959,7 @@ components:
         writesHeld: { type: boolean }
         heldSince: { type: string, format: date-time }
         heldWrites: { type: integer, description: write requests waiting right now }
-        maxHold: { type: string, description: held writes are released to the current write backend after this }
+        maxHold: { type: string, description: "a write held longer than this gets 503 hold_timeout and is never forwarded; the hold itself lasts until release" }
         inFlight: { $ref: "#/components/schemas/InFlight" }
         backends:
           type: array

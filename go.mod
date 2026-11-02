@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261101171248-f953d2612ffb
+	github.com/getkin/kin-openapi v0.142.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/prometheus/client_golang v1.25.0
 	k8s.io/api v0.37.2
@@ -19,7 +20,6 @@ require (
 	github.com/dprotaso/go-yit v0.0.0-20220510233725-9ba8df137936 // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
-	github.com/getkin/kin-openapi v0.142.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
 	github.com/go-openapi/jsonreference v1.0.0 // indirect

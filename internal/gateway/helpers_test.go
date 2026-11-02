@@ -49,6 +49,9 @@ func (fb *fakeBackend) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	case "/abort":
 		panic(http.ErrAbortHandler) // drop the connection without answering
+	case "/forwarded-proto":
+		_, _ = io.WriteString(w, r.Header.Get("X-Forwarded-Proto"))
+		return
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
@@ -181,7 +184,7 @@ func (tg *testGW) asyncWrite(ctx context.Context, body string) <-chan writeResul
 		resp, b, err := tg.write(ctx, body)
 		r := writeResult{body: b, err: err}
 		if resp != nil {
-			r.status, r.backend = resp.StatusCode, resp.Header.Get(headerBackend)
+			r.status, r.backend, r.retryAfter = resp.StatusCode, resp.Header.Get(headerBackend), resp.Header.Get("Retry-After")
 		}
 		ch <- r
 	}()
@@ -189,10 +192,17 @@ func (tg *testGW) asyncWrite(ctx context.Context, body string) <-chan writeResul
 }
 
 type writeResult struct {
-	status  int
-	backend string
-	body    string
-	err     error
+	status     int
+	backend    string
+	retryAfter string
+	body       string
+	err        error
+}
+
+// isRetryLater reports a 503 with Retry-After: 1 and the given error code.
+func (r writeResult) isRetryLater(code string) bool {
+	return r.err == nil && r.status == http.StatusServiceUnavailable && r.retryAfter == "1" &&
+		strings.Contains(r.body, `"code":"`+code+`"`)
 }
 
 func (tg *testGW) heldWrites() int {

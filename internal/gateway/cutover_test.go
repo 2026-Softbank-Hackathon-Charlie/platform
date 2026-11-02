@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	enginegw "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/gateway"
 )
 
@@ -24,15 +26,28 @@ const (
 // TestCutoverUnderLoad runs a full cutover while clients keep sending reads
 // and writes: no client request may fail, no write may be lost, duplicated
 // or sent to the old backend after the hold returned.
+//
+// When the fence outlives max-hold, writes that waited that long get 503
+// hold_timeout instead (the client retries); none of them is ever forwarded,
+// and no write reaches the old backend after the hold either way.
 func TestCutoverUnderLoad(t *testing.T) {
 	if testing.Short() {
 		t.Skip("load test")
 	}
+	t.Run("fence within max-hold", func(t *testing.T) {
+		testCutoverUnderLoad(t, Config{}, 300*time.Millisecond, false)
+	})
+	t.Run("fence outlives max-hold", func(t *testing.T) {
+		testCutoverUnderLoad(t, Config{MaxHold: 150 * time.Millisecond}, 800*time.Millisecond, true)
+	})
+}
+
+func testCutoverUnderLoad(t *testing.T, cfg Config, fence time.Duration, wantTimeouts bool) {
 	const (
 		writers = 16
 		readers = 16
 	)
-	tg := newTestGW(t, Config{}, "gke", "eks")
+	tg := newTestGW(t, cfg, "gke", "eks")
 	gke, eks := tg.backends["gke"], tg.backends["eks"]
 	for _, fb := range []*fakeBackend{gke, eks} {
 		fb.delay.Store(int64(3 * time.Millisecond))
@@ -56,6 +71,7 @@ func TestCutoverUnderLoad(t *testing.T) {
 		failMsgs  []string
 		acked     = map[string]bool{}
 		afterHold []string // writes sent after HoldWrites returned
+		timedOut  []string // writes answered 503 hold_timeout
 		reads     [phaseRouted + 1]map[string]int
 	)
 	for i := range reads {
@@ -81,10 +97,17 @@ func TestCutoverUnderLoad(t *testing.T) {
 					fail("write %s: %v", id, err)
 					continue
 				}
-				_, _ = io.Copy(io.Discard, resp.Body)
+				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
+				r := writeResult{status: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After"), body: string(body)}
+				if wantTimeouts && r.isRetryLater("hold_timeout") {
+					mu.Lock()
+					timedOut = append(timedOut, id)
+					mu.Unlock()
+					continue
+				}
 				if resp.StatusCode != http.StatusOK {
-					fail("write %s: status %d", id, resp.StatusCode)
+					fail("write %s: status %d %s", id, resp.StatusCode, body)
 					continue
 				}
 				for d := int64(time.Since(start)); ; {
@@ -144,7 +167,7 @@ func TestCutoverUnderLoad(t *testing.T) {
 	if n := gke.activeWrites.Load(); n != 0 {
 		t.Errorf("HoldWrites returned with %d writes still running on gke", n)
 	}
-	time.Sleep(300 * time.Millisecond) // the engine's fence + switchover
+	time.Sleep(fence) // the engine's fence + switchover
 	st, err := tg.client.State(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +227,17 @@ func TestCutoverUnderLoad(t *testing.T) {
 			t.Errorf("write %s sent after hold: gke=%d eks=%d", id, onGke[id], onEks[id])
 		}
 	}
+	if wantTimeouts && len(timedOut) == 0 {
+		t.Error("no write outlived max-hold; the test did not exercise it")
+	}
+	for _, id := range timedOut {
+		if onGke[id]+onEks[id] != 0 {
+			t.Errorf("write %s got hold_timeout but was forwarded: gke=%d eks=%d", id, onGke[id], onEks[id])
+		}
+	}
+	if n := testutil.ToFloat64(tg.g.metrics.holdExpired); int(n) != len(timedOut) {
+		t.Errorf("hold_expired_total = %v, clients saw %d hold_timeout", n, len(timedOut))
+	}
 	if reads[phaseBefore]["eks"] != 0 {
 		t.Errorf("eks got %d reads before weights were set", reads[phaseBefore]["eks"])
 	}
@@ -216,8 +250,8 @@ func TestCutoverUnderLoad(t *testing.T) {
 		t.Errorf("gke got %d reads after route to eks", reads[phaseRouted]["gke"])
 	}
 
-	t.Logf("writes: %d acked (gke %d, eks %d), %d sent after hold, %d held at release",
-		len(acked), len(onGke), len(onEks), len(afterHold), st.HeldWrites)
+	t.Logf("writes: %d acked (gke %d, eks %d), %d sent after hold, %d held at release, %d hold_timeout",
+		len(acked), len(onGke), len(onEks), len(afterHold), st.HeldWrites, len(timedOut))
 	t.Logf("reads: before weights gke=%d; 50/50 gke=%d eks=%d (gke share %.3f); after route eks=%d",
 		reads[phaseBefore]["gke"], half["gke"], half["eks"], share, reads[phaseRouted]["eks"])
 	t.Logf("hold returned in %s, release in %s, write downtime %s, slowest client write %s, failed requests %d",

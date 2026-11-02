@@ -221,13 +221,12 @@ func (e *env) getProber(build func(EnvConfig) (Prober, error)) (Prober, error) {
 }
 
 func (e *env) environment(st apiv1.EnvironmentStatus) apiv1.Environment {
-	kubeContext := e.cfg.KubeContext
 	out := apiv1.Environment{
 		Name:           e.cfg.Name,
 		Provider:       apiv1.Provider(e.cfg.Provider),
 		DisplayName:    e.cfg.DisplayName,
 		GatewayBackend: e.cfg.GatewayBackend,
-		KubeContext:    &kubeContext,
+		KubeContext:    e.cfg.KubeContext,
 		Status:         st,
 	}
 	if e.cfg.Region != "" {

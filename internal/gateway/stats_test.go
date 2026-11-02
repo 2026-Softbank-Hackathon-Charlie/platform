@@ -43,8 +43,8 @@ func TestStatsRingAndEdges(t *testing.T) {
 	if st := s.window(now, 10); st.Requests != 0 || st.P99Millis != 0 || st.ErrorRate != 0 {
 		t.Fatalf("empty: %+v", st)
 	}
-	// Same ring slot, 300s apart: the old second must not leak into the new one.
-	s.record(now.Add(-statsKeepSeconds*time.Second), time.Millisecond, true)
+	// Same ring slot, one ring apart: the old second must not leak into the new one.
+	s.record(now.Add(-time.Duration(len(s.ring))*time.Second), time.Millisecond, true)
 	s.record(now, time.Millisecond, false)
 	if st := s.window(now, statsKeepSeconds); st.Requests != 1 || st.Errors != 0 {
 		t.Fatalf("stale bucket leaked: %+v", st)
@@ -60,5 +60,32 @@ func TestStatsRingAndEdges(t *testing.T) {
 	}
 	if s.totals().Requests != 3 {
 		t.Fatal("totals keep everything since start")
+	}
+}
+
+// TestStatsWindowSpan: the window covers the current, partial second too, and
+// rps divides by the time actually covered, so a steady rate reads the same
+// at any point within a second.
+func TestStatsWindowSpan(t *testing.T) {
+	const rate = 10 // requests per second, 1 in 10 an error
+	now := time.Unix(1_800_000_000, int64(500*time.Millisecond))
+	var s backendStats
+	for back := 1; back <= statsKeepSeconds; back++ {
+		for i := range rate {
+			s.record(now.Add(-time.Duration(back)*time.Second), time.Millisecond, i == 0)
+		}
+	}
+	for i := range rate / 2 { // half of the current second
+		s.record(now, time.Millisecond, i == 0)
+	}
+	for _, secs := range []int{1, 10, statsKeepSeconds} {
+		st := s.window(now, secs)
+		want := int64(secs*rate + rate/2)
+		if st.Requests != want || !near(st.Rps, rate) || st.WindowSeconds != secs {
+			t.Errorf("%ds window: requests %d (want %d), rps %v (want %d)", secs, st.Requests, want, st.Rps, rate)
+		}
+		if wantRate := float32(secs+1) / float32(want); !near(st.ErrorRate, wantRate) {
+			t.Errorf("%ds window: error rate %v, want %v", secs, st.ErrorRate, wantRate)
+		}
 	}
 }

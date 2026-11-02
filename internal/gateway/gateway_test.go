@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -281,44 +282,43 @@ func TestPersistedHoldResumes(t *testing.T) {
 	}
 }
 
-func TestPersistedHoldKeepsRemainingMaxHold(t *testing.T) {
-	writeState := func(t *testing.T, heldSince time.Time) string {
-		file := filepath.Join(t.TempDir(), "gateway.json")
-		hs := heldSince.UTC()
-		if err := writeFileAtomic(file, persistedState{
-			WriteBackend: "gke", ReadWeights: map[string]int{"gke": 100}, WritesHeld: true, HeldSince: &hs,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		return file
+// TestPersistedHoldNeverExpires: a resumed hold has no timer. Long after
+// heldSince + max-hold it still holds; only the writes themselves time out.
+func TestPersistedHoldNeverExpires(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "gateway.json")
+	heldSince := time.Now().Add(-time.Hour).UTC()
+	if err := writeFileAtomic(file, persistedState{
+		WriteBackend: "gke", ReadWeights: map[string]int{"gke": 100}, WritesHeld: true, HeldSince: &heldSince,
+	}); err != nil {
+		t.Fatal(err)
 	}
+	tg := newTestGW(t, Config{StateFile: file, MaxHold: 100 * time.Millisecond}, "gke")
+	ctx := context.Background()
 
-	t.Run("remaining", func(t *testing.T) {
-		const maxHold = 3 * time.Second
-		file := writeState(t, time.Now().Add(-maxHold+300*time.Millisecond))
-		start := time.Now()
-		tg := newTestGW(t, Config{StateFile: file, MaxHold: maxHold}, "gke")
-		if !tg.g.state(defaultWindow).WritesHeld {
-			t.Fatal("hold not resumed")
-		}
-		waitFor(t, "auto release", func() bool { return !tg.g.state(defaultWindow).WritesHeld })
-		// A timer restarted from zero would hold for the full 3s.
-		if took := time.Since(start); took > 2*time.Second {
-			t.Fatalf("released after %s; max-hold must count from heldSince", took)
-		}
-		if n := testutil.ToFloat64(tg.g.metrics.holdExpired); n != 1 {
-			t.Fatalf("hold_expired_total = %v", n)
-		}
-	})
-
-	t.Run("already expired", func(t *testing.T) {
-		file := writeState(t, time.Now().Add(-time.Hour))
-		tg := newTestGW(t, Config{StateFile: file, MaxHold: time.Minute}, "gke")
-		waitFor(t, "immediate release, persisted", func() bool {
-			b, _ := os.ReadFile(file)
-			return !tg.g.state(defaultWindow).WritesHeld && strings.Contains(string(b), `"writesHeld": false`)
-		})
-	})
+	if r := recv(t, tg.asyncWrite(ctx, "waited")); !r.isRetryLater("hold_timeout") {
+		t.Fatalf("write held past max-hold: %+v", r)
+	}
+	time.Sleep(100 * time.Millisecond)
+	st := tg.g.state(defaultWindow)
+	if !st.WritesHeld || st.HeldSince == nil || !st.HeldSince.Equal(heldSince) {
+		t.Fatalf("resumed hold ended: %+v", st)
+	}
+	if b, _ := os.ReadFile(file); !strings.Contains(string(b), `"writesHeld": true`) {
+		t.Fatalf("state file: %s", b)
+	}
+	if tg.backends["gke"].got("waited") != 0 {
+		t.Fatal("a timed-out write was forwarded")
+	}
+	// Nothing is in flight, so a hold call joins the resumed hold at once.
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.client.ReleaseWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(file); !strings.Contains(string(b), `"writesHeld": false`) {
+		t.Fatalf("state file after release: %s", b)
+	}
 }
 
 func TestHoldWaitsForInFlightWrites(t *testing.T) {
@@ -370,23 +370,108 @@ func TestHoldWaitsForInFlightWrites(t *testing.T) {
 	}
 }
 
-func TestHoldDrainTimeout(t *testing.T) {
-	tg := newTestGW(t, Config{DrainTimeout: 100 * time.Millisecond}, "gke")
+// TestHoldDrainTimeoutReverts: a hold that cannot drain is undone before it
+// answers, because the engine releases nothing after a failed hold.
+func TestHoldDrainTimeoutReverts(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "gateway.json")
+	tg := newTestGW(t, Config{DrainTimeout: 300 * time.Millisecond, StateFile: file}, "gke", "eks")
 	ctx := context.Background()
-	unblock := tg.backends["gke"].blockWrites()
+	gke := tg.backends["gke"]
+	unblock := gke.blockWrites()
 	defer unblock()
-	res := tg.asyncWrite(ctx, "slow")
-	waitFor(t, "write in flight", func() bool { return tg.backends["gke"].activeWrites.Load() == 1 })
+	slow := tg.asyncWrite(ctx, "slow")
+	waitFor(t, "write in flight", func() bool { return gke.activeWrites.Load() == 1 })
+
+	held := make(chan error, 1)
+	go func() { held <- tg.client.HoldWrites(ctx) }()
+	waitFor(t, "hold to start", func() bool { return tg.g.state(defaultWindow).WritesHeld })
+	waiting := tg.asyncWrite(ctx, "waiting")
+	waitFor(t, "write held", func() bool { return tg.heldWrites() == 1 })
 
 	var ae *APIError
-	if err := tg.client.HoldWrites(ctx); !errors.As(err, &ae) || ae.Status != http.StatusGatewayTimeout || ae.Code != "drain_timeout" {
+	if err := <-held; !errors.As(err, &ae) || ae.Status != http.StatusGatewayTimeout || ae.Code != "drain_timeout" {
 		t.Fatalf("got %v, want 504 drain_timeout", err)
 	}
-	if !tg.g.state(defaultWindow).WritesHeld {
-		t.Fatal("a drain timeout must leave writes held")
+	if tg.g.state(defaultWindow).WritesHeld {
+		t.Fatal("a hold that did not drain must be reverted")
 	}
+	if b, _ := os.ReadFile(file); !strings.Contains(string(b), `"writesHeld": false`) {
+		t.Fatalf("revert not persisted: %s", b)
+	}
+	// The waiting write goes where the in-flight one went: routing is unchanged.
+	waitFor(t, "waiting write dispatched", func() bool { return gke.got("waiting") == 1 })
 	unblock()
-	recv(t, res)
+	for _, ch := range []<-chan writeResult{slow, waiting} {
+		if r := recv(t, ch); r.status != http.StatusOK || r.backend != "gke" {
+			t.Fatalf("write: %+v", r)
+		}
+	}
+	if n := len(tg.backends["eks"].writeCounts()); n != 0 {
+		t.Fatalf("eks got %d writes", n)
+	}
+}
+
+// TestHoldRevertedWhenCallerLeaves: the caller giving up while the hold
+// drains counts as a failed hold, too.
+func TestHoldRevertedWhenCallerLeaves(t *testing.T) {
+	tg := newTestGW(t, Config{}, "gke")
+	gke := tg.backends["gke"]
+	unblock := gke.blockWrites()
+	defer unblock()
+	slow := tg.asyncWrite(context.Background(), "slow")
+	waitFor(t, "write in flight", func() bool { return gke.activeWrites.Load() == 1 })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	held := make(chan error, 1)
+	go func() { held <- tg.client.HoldWrites(ctx) }()
+	waitFor(t, "hold to start", func() bool { return tg.g.state(defaultWindow).WritesHeld })
+	cancel()
+	if err := <-held; err == nil {
+		t.Fatal("cancelled hold succeeded")
+	}
+	waitFor(t, "hold reverted", func() bool { return !tg.g.state(defaultWindow).WritesHeld })
+	unblock()
+	recv(t, slow)
+}
+
+// TestHoldCancelledByRelease: hold answers 200 only if the hold it started is
+// still on when draining completes. A release, even one followed by a new
+// hold, ends it.
+func TestHoldCancelledByRelease(t *testing.T) {
+	tg := newTestGW(t, Config{}, "gke")
+	ctx := context.Background()
+	gke := tg.backends["gke"]
+	unblock := gke.blockWrites()
+	defer unblock()
+	slow := tg.asyncWrite(ctx, "slow")
+	waitFor(t, "write in flight", func() bool { return gke.activeWrites.Load() == 1 })
+
+	first := make(chan error, 1)
+	go func() { first <- tg.client.HoldWrites(ctx) }()
+	waitFor(t, "first hold", func() bool { return tg.g.state(defaultWindow).WritesHeld })
+	if err := tg.client.ReleaseWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second := make(chan error, 1)
+	go func() { second <- tg.client.HoldWrites(ctx) }()
+	waitFor(t, "second hold", func() bool {
+		tg.g.mu.Lock()
+		defer tg.g.mu.Unlock()
+		return tg.g.gen != nil && tg.g.gen.id == 2
+	})
+	unblock()
+
+	var ae *APIError
+	if err := <-first; !errors.As(err, &ae) || ae.Status != http.StatusConflict || ae.Code != "hold_cancelled" {
+		t.Fatalf("first hold: got %v, want 409 hold_cancelled", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("second hold: %v", err)
+	}
+	if !tg.g.state(defaultWindow).WritesHeld {
+		t.Fatal("second hold not on")
+	}
+	recv(t, slow)
 	if err := tg.client.ReleaseWrites(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -421,31 +506,48 @@ func TestMaxHeldRejects(t *testing.T) {
 	}
 }
 
-func TestMaxHoldAutoRelease(t *testing.T) {
-	tg := newTestGW(t, Config{MaxHold: 300 * time.Millisecond}, "gke", "eks")
+// TestMaxHoldIsPerWrite: max-hold limits how long one write waits, not the
+// hold. A write past it gets 503 hold_timeout and is never forwarded, and the
+// hold stays on until release.
+func TestMaxHoldIsPerWrite(t *testing.T) {
+	const maxHold = 300 * time.Millisecond
+	tg := newTestGW(t, Config{MaxHold: maxHold}, "gke", "eks")
 	ctx := context.Background()
+	gke, eks := tg.backends["gke"], tg.backends["eks"]
 	if err := tg.client.HoldWrites(ctx); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	res := tg.asyncWrite(ctx, "late")
-	waitFor(t, "write held", func() bool { return tg.heldWrites() == 1 })
-	// Auto release goes to the write backend at that moment.
-	if err := tg.client.Route(ctx, "eks"); err != nil {
-		t.Fatal(err)
+	if r := recv(t, tg.asyncWrite(ctx, "expired")); !r.isRetryLater("hold_timeout") {
+		t.Fatalf("write held past max-hold: %+v", r)
 	}
-	r := recv(t, res)
-	if r.status != http.StatusOK || r.backend != "eks" || tg.backends["eks"].got("late") != 1 {
-		t.Fatalf("auto-released write: %+v", r)
-	}
-	if took := time.Since(start); took < 200*time.Millisecond {
-		t.Fatalf("released after %s, before max-hold", took)
-	}
-	if tg.g.state(defaultWindow).WritesHeld {
-		t.Fatal("still held after max-hold")
+	if took := time.Since(start); took < maxHold {
+		t.Fatalf("answered after %s, before max-hold", took)
 	}
 	if n := testutil.ToFloat64(tg.g.metrics.holdExpired); n != 1 {
 		t.Fatalf("hold_expired_total = %v", n)
+	}
+	if !tg.g.state(defaultWindow).WritesHeld {
+		t.Fatal("max-hold ended the hold")
+	}
+
+	// The hold is now older than max-hold; a new write still waits for release.
+	later := tg.asyncWrite(ctx, "later")
+	waitFor(t, "later write held", func() bool { return tg.heldWrites() == 1 })
+	if gke.got("later") != 0 {
+		t.Fatal("write forwarded while held")
+	}
+	if err := tg.client.Route(ctx, "eks"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.client.ReleaseWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r := recv(t, later); r.status != http.StatusOK || r.backend != "eks" {
+		t.Fatalf("released write: %+v", r)
+	}
+	if gke.got("expired")+eks.got("expired") != 0 || gke.got("later") != 0 || eks.got("later") != 1 {
+		t.Fatalf("gke %v, eks %v", gke.writeCounts(), eks.writeCounts())
 	}
 }
 
@@ -606,5 +708,241 @@ func TestClientErrorsExposeStatusAndCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "unauthorized") {
 		t.Fatalf("message %q", err.Error())
+	}
+}
+
+// TestWriteOutlivesClient: a write whose client leaves keeps running at the
+// backend, which may still commit it, so it stays in flight and hold waits.
+func TestWriteOutlivesClient(t *testing.T) {
+	tg := newTestGW(t, Config{}, "gke")
+	gke := tg.backends["gke"]
+	unblock := gke.blockWrites()
+	defer unblock()
+	cctx, cancel := context.WithCancel(context.Background())
+	res := tg.asyncWrite(cctx, "client-left")
+	waitFor(t, "write at the backend", func() bool { return gke.activeWrites.Load() == 1 })
+	cancel()
+	if r := recv(t, res); r.err == nil {
+		t.Fatalf("cancelled client got %+v", r)
+	}
+
+	ctx := context.Background()
+	held := make(chan error, 1)
+	go func() { held <- tg.client.HoldWrites(ctx) }()
+	select {
+	case err := <-held:
+		t.Fatalf("hold returned (%v) while the backend still ran a write", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if n := tg.g.state(defaultWindow).InFlight.Writes; n != 1 {
+		t.Fatalf("in-flight writes = %d, want 1", n)
+	}
+	unblock()
+	if err := <-held; err != nil {
+		t.Fatal(err)
+	}
+	if st := tg.g.state(defaultWindow); st.InFlight.Writes != 0 || st.Stats["gke"].Requests != 1 || st.Stats["gke"].Errors != 0 {
+		t.Fatalf("after the backend answered: %+v", st)
+	}
+	if err := tg.client.ReleaseWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWriteTimeout(t *testing.T) {
+	tg := newTestGW(t, Config{WriteTimeout: 100 * time.Millisecond}, "gke")
+	unblock := tg.backends["gke"].blockWrites()
+	defer unblock()
+	resp, body, err := tg.write(context.Background(), "stuck")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusGatewayTimeout || resp.Header.Get(headerBackend) != "gke" || !strings.Contains(body, "backend_timeout") {
+		t.Fatalf("stuck write: %d %q", resp.StatusCode, body)
+	}
+	if n := tg.g.state(defaultWindow).InFlight.Writes; n != 0 {
+		t.Fatalf("in-flight writes = %d", n)
+	}
+}
+
+// TestShutdownAnswersHeldWrites: shutting down answers held writes instead of
+// dropping them, and keeps the hold for the next start.
+func TestShutdownAnswersHeldWrites(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "gateway.json")
+	tg := newTestGW(t, Config{StateFile: file}, "gke")
+	ctx := context.Background()
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a, b := tg.asyncWrite(ctx, "a"), tg.asyncWrite(ctx, "b")
+	waitFor(t, "two held writes", func() bool { return tg.heldWrites() == 2 })
+
+	tg.g.BeginShutdown()
+	for _, ch := range []<-chan writeResult{a, b} {
+		if r := recv(t, ch); !r.isRetryLater("shutting_down") {
+			t.Fatalf("held write at shutdown: %+v", r)
+		}
+	}
+	if r := recv(t, tg.asyncWrite(ctx, "c")); !r.isRetryLater("shutting_down") {
+		t.Fatalf("write arriving during shutdown: %+v", r)
+	}
+	if n := len(tg.backends["gke"].writeCounts()); n != 0 {
+		t.Fatalf("%d writes forwarded", n)
+	}
+	if tg.heldWrites() != 0 {
+		t.Fatalf("held writes = %d", tg.heldWrites())
+	}
+
+	tg.g.Close()
+	if b, _ := os.ReadFile(file); !strings.Contains(string(b), `"writesHeld": true`) {
+		t.Fatalf("state file: %s", b)
+	}
+	g2, err := New(Config{Backends: tg.g.cfg.Backends, StateFile: file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g2.Close()
+	if !g2.state(defaultWindow).WritesHeld {
+		t.Fatal("restart did not keep holding")
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("connection reset by peer") }
+
+func TestHeldBodyReadError(t *testing.T) {
+	tg := newTestGW(t, Config{}, "gke")
+	if err := tg.client.HoldWrites(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	tg.g.Proxy().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/orders", errReader{}))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"code":"bad_request"`) {
+		t.Fatalf("body read error: %d %q", rec.Code, rec.Body.String())
+	}
+	if n := tg.heldWrites(); n != 0 {
+		t.Fatalf("slot not given back: held writes = %d", n)
+	}
+	if n := testutil.ToFloat64(tg.g.metrics.heldDropped); n != 1 {
+		t.Fatalf("held_dropped_total = %v", n)
+	}
+}
+
+// TestHeldWriteTakesSlotBeforeBody: a held write counts against max-held
+// while its body is still arriving, so max-held bounds held-write memory.
+func TestHeldWriteTakesSlotBeforeBody(t *testing.T) {
+	tg := newTestGW(t, Config{MaxHeld: 1}, "gke")
+	ctx := context.Background()
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pr, pw := io.Pipe()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tg.proxy.URL+"/orders", pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow := make(chan writeResult, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			slow <- writeResult{err: err}
+			return
+		}
+		resp.Body.Close()
+		slow <- writeResult{status: resp.StatusCode}
+	}()
+	more := make(chan struct{})
+	go func() {
+		_, _ = pw.Write([]byte("part-"))
+		<-more
+		_, _ = pw.Write([]byte("rest"))
+		pw.Close()
+	}()
+	waitFor(t, "slot taken while the body is still arriving", func() bool { return tg.heldWrites() == 1 })
+
+	resp, body, err := tg.write(ctx, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "too_many_held_writes") {
+		t.Fatalf("second write: %d %q", resp.StatusCode, body)
+	}
+	close(more)
+	waitFor(t, "body read", func() bool {
+		tg.g.mu.Lock()
+		defer tg.g.mu.Unlock()
+		return tg.g.buffering == 0 && tg.g.gen.waiting == 1
+	})
+	if err := tg.client.ReleaseWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r := recv(t, slow); r.status != http.StatusOK {
+		t.Fatalf("slow-body write: %+v", r)
+	}
+	if gke := tg.backends["gke"]; gke.got("part-rest") != 1 || gke.got("second") != 0 {
+		t.Fatalf("gke got %v", gke.writeCounts())
+	}
+}
+
+func TestForwardedProto(t *testing.T) {
+	tg := newTestGW(t, Config{}, "gke")
+	get := func(proto string) string {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, tg.proxy.URL+"/forwarded-proto", nil)
+		if proto != "" {
+			req.Header.Set("X-Forwarded-Proto", proto)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	if got := get("https"); got != "https" {
+		t.Fatalf("cloudflared's https became %q", got)
+	}
+	if got := get(""); got != "http" {
+		t.Fatalf("without the header: %q", got)
+	}
+}
+
+// TestRestoreRemovedBackend: a backend dropped from the config does not stop a
+// restart unless it still has reads or writes.
+func TestRestoreRemovedBackend(t *testing.T) {
+	var backends []BackendConfig
+	for _, n := range []string{"gke", "eks"} {
+		backends = append(backends, BackendConfig{Name: n, URL: newFakeBackend(t, n).url(t)})
+	}
+	start := func(st persistedState) (*Gateway, string, error) {
+		file := filepath.Join(t.TempDir(), "gateway.json")
+		if err := writeFileAtomic(file, st); err != nil {
+			t.Fatal(err)
+		}
+		g, err := New(Config{Backends: backends, StateFile: file})
+		return g, file, err
+	}
+
+	g, file, err := start(persistedState{WriteBackend: "eks", ReadWeights: map[string]int{"gke": 30, "eks": 70, "aks": 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if st := g.state(defaultWindow); st.WriteBackend != "eks" || len(st.ReadWeights) != 2 || st.ReadWeights["gke"] != 30 || st.ReadWeights["eks"] != 70 {
+		t.Fatalf("after restart: %+v", st)
+	}
+	if b, _ := os.ReadFile(file); strings.Contains(string(b), "aks") {
+		t.Fatalf("state file still names the removed backend: %s", b)
+	}
+
+	for _, st := range []persistedState{
+		{WriteBackend: "gke", ReadWeights: map[string]int{"gke": 90, "aks": 10}},
+		{WriteBackend: "aks", ReadWeights: map[string]int{"gke": 100, "aks": 0}},
+	} {
+		if _, _, err := start(st); err == nil || !strings.Contains(err.Error(), `"aks"`) || !strings.Contains(err.Error(), "not configured") {
+			t.Errorf("state %+v: got %v, want a refusal naming aks", st, err)
+		}
 	}
 }
