@@ -1,0 +1,26 @@
+# Environments the platform API reports on (GET /v1/envs, charlie env list).
+# Point PLATFORM_ENVS_FILE at this file.
+#
+#   name            id used in URLs and plans, ^[a-z0-9-]+$
+#   provider        aws | gcp | onprem
+#   displayName     optional, defaults to name
+#   region          optional
+#   kubeContext     required, the kubeconfig context of the cluster
+#   kubeconfig      optional path; default loading rules ($KUBECONFIG, ~/.kube/config) otherwise
+#   gatewayBackend  optional, the traffic gateway backend for this environment; defaults to name
+environments:
+  - name: gke
+    provider: gcp
+    displayName: GCP GKE
+    region: asia-northeast3
+    kubeContext: gke-hopcharlie
+  - name: eks
+    provider: aws
+    displayName: AWS EKS
+    region: ap-northeast-2
+    kubeContext: eks-hopcharlie
+  - name: onprem
+    provider: onprem
+    displayName: On-prem k3s
+    region: team server
+    kubeContext: onprem-hopcharlie
