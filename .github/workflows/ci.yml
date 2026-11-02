@@ -55,10 +55,10 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-${{ runner.os }}-
+            go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-race-${{ runner.os }}-
 
       # The runner's own Go switches to the go.mod toolchain by itself
       # (GOTOOLCHAIN=auto). That toolchain is a module, so it comes from the
@@ -74,8 +74,10 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # -race: vet compiles the dependencies the same way the race tests do,
+      # so both share one set of build artifacts in the cache.
       - name: Vet
-        run: go vet ./...
+        run: go vet -race ./...
 
       # gofmt of the go.mod toolchain, not the runner's own Go.
       - name: Formatting
@@ -110,7 +112,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
   terraform:
     runs-on: ubuntu-24.04
