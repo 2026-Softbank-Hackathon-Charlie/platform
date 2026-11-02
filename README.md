@@ -219,6 +219,14 @@ PLATFORM_TEST_DATABASE_URL='postgres://charlie:charlie@localhost:55432/charlie?s
 - 저장소 구현은 `storetest.Conformance`를 통과해야 합니다. 메모리 저장소(`storetest.NewMemory`)는 테스트에서만 씁니다.
 - `api/openapi.yaml`을 고친 뒤에는 `go generate ./pkg/apiv1`로 타입을 다시 만듭니다.
 
+### CI
+
+PR과 main push마다 GitHub Actions(`.github/workflows/ci.yml`)가 vet, gofmt, 생성 코드 확인, `go test -race`(PostgreSQL 포함), Terraform fmt와 validate, 셸 `bash -n`을 돌립니다.
+
+- PR 검사는 1분 안에 끝나는 것이 목표입니다. main push만 Go 캐시를 저장하고, PR은 그 캐시로 바뀐 패키지만 다시 컴파일합니다. 테스트도 입력이 바뀐 패키지만 다시 돌립니다(go test 결과 캐시).
+- `go.sum`이 바뀐 PR도 main의 최근 캐시에서 시작하므로, 바뀐 의존성만 새로 컴파일하는 만큼 더 걸립니다. 캐시가 전혀 없을 때(새 레포, 캐시 만료)는 client-go와 AWS SDK를 처음부터 컴파일하느라 약 10분 걸립니다.
+- private 모듈(migration-engine)을 받기 위해 레포 secret `MODULE_READ_TOKEN`(Contents read 권한의 fine-grained 토큰)을 씁니다.
+
 ### 부하 중 이전 E2E
 
 kind 안의 CNPG 클러스터 두 개를 게이트웨이 부하 속에서 플랫폼 API만으로 이전합니다(카나리, 운영자 전환 승인, 쓰기 기록 검증). docker, kubectl, go가 있으면 한 명령으로 돌고, 끝나면 만든 것을 모두 지웁니다. 자세한 내용은 [test/e2e/README.md](test/e2e/README.md)에 있습니다.
