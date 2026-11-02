@@ -104,7 +104,7 @@ func withApps(gateway string) option {
 		}
 		policy := plans.DefaultPolicy()
 		policy.GatewayURL = gateway
-		policy.EnvAllow = append(policy.EnvAllow, cat.PasswordEnvs()...)
+		policy.HostPasswordEnvs = cat.PasswordHosts()
 		d.Plans = plans.New(policy, h.store)
 		d.Plans.SetStateDir(rc.StateDir)
 		d.Apps = cat
@@ -291,11 +291,31 @@ func TestPlanAttachmentsAPI(t *testing.T) {
 		t.Fatalf("missing attachment: %d %s", code, b)
 	}
 	_, b = h.do("GET", "/v1/plans/"+rec.Ref, viewerToken, nil)
-	if p := decode[apiv1.PlanRecord](t, b); p.Attachments == nil || len(*p.Attachments) != 1 || (*p.Attachments)[0] != info {
+	reviewed := decode[apiv1.PlanRecord](t, b)
+	if reviewed.Attachments == nil || len(*reviewed.Attachments) != 1 || (*reviewed.Attachments)[0] != info || reviewed.Revision != 2 {
 		t.Fatalf("plan attachments: %s", b)
 	}
 
-	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, nil); code != 200 {
+	// The attachment is replaced after the operator reviewed revision 2.
+	if code, b := h.do("PUT", base+"target.yaml", agentToken, manifest+"  instances: 9", octet...); code != 200 {
+		t.Fatalf("second upload: %d %s", code, b)
+	}
+	approve := "/v1/plans/" + rec.Ref + "/approve"
+	if code, b := h.do("POST", approve, opToken, nil); code != 409 || errCode(t, b) != "plan_state_conflict" || !strings.Contains(string(b), "needs the revision you reviewed") {
+		t.Fatalf("approve without a revision: %d %s", code, b)
+	}
+	if code, b := h.do("POST", approve, opToken, map[string]any{"revision": reviewed.Revision}); code != 409 || errCode(t, b) != "plan_state_conflict" ||
+		!strings.Contains(string(b), "changed since you reviewed it (revision 2, now 3)") {
+		t.Fatalf("approve a stale revision: %d %s", code, b)
+	}
+	if code, b := h.do("POST", approve, opToken, map[string]any{"revision": 0}); code != 400 || errCode(t, b) != "invalid_request" {
+		t.Fatalf("approve revision 0: %d %s", code, b)
+	}
+	if code, b := h.do("PUT", base+"target.yaml", agentToken, manifest, octet...); code != 200 {
+		t.Fatalf("third upload: %d %s", code, b)
+	}
+	code, b = h.do("POST", approve, opToken, map[string]any{"revision": 4, "comment": "manifest checked"})
+	if p := decode[apiv1.PlanRecord](t, b); code != 200 || p.Status != apiv1.PlanStatusApproved || p.Revision != 4 {
 		t.Fatalf("approve: %d %s", code, b)
 	}
 	if code, b := h.do("PUT", base+"target.yaml", agentToken, "kind: Changed\n", octet...); code != 409 || errCode(t, b) != "plan_state_conflict" {
@@ -395,7 +415,7 @@ func TestRollback(t *testing.T) {
 	if code, b := h.do("PUT", "/v1/plans/"+rec.Ref+"/attachments/target.yaml", agentToken, "kind: Cluster\n"); code != 200 {
 		t.Fatalf("upload: %d %s", code, b)
 	}
-	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, nil); code != 200 {
+	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, map[string]any{"revision": 2}); code != 200 {
 		t.Fatalf("approve: %d %s", code, b)
 	}
 	id := h.start(apiv1.StartMigrationRequest{PlanRef: rec.Ref, AutoSwitch: ptr(true)})
@@ -425,7 +445,8 @@ func TestRollback(t *testing.T) {
 	}
 	_, b = h.do("GET", "/v1/plans/"+resp.PlanRef, viewerToken, nil)
 	pr := decode[apiv1.PlanRecord](t, b)
-	if pr.Status != apiv1.PlanStatusStarted || deref(pr.ReviewedBy) != "op" || deref(pr.ReviewComment) != "rollback of run "+id+": eks bill too high" || deref(pr.RunId) != resp.RunId {
+	if pr.Status != apiv1.PlanStatusStarted || deref(pr.ReviewedBy) != "op" || deref(pr.ReviewComment) != "rollback of run "+id+": eks bill too high" || deref(pr.RunId) != resp.RunId ||
+		deref(pr.RollbackOf) != id || deref(run.Source.DbHost) != "moimroom-db-eks-rw.moimroom.eks.ts.net:5432" {
 		t.Fatalf("rollback plan: %s", b)
 	}
 	row, err := h.store.GetPlan(t.Context(), resp.PlanRef)

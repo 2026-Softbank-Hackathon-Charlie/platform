@@ -20,6 +20,7 @@ var planToolsCases = []struct {
 	{"AttachmentPutGet", testAttachmentPutGet},
 	{"AttachmentOnlyWhilePending", testAttachmentOnlyWhilePending},
 	{"AttachmentCopies", testAttachmentCopies},
+	{"AttachmentRaisesRevision", testAttachmentRaisesRevision},
 }
 
 // written is a record that happened n minutes after the base and arrived a minute later.
@@ -201,5 +202,33 @@ func testAttachmentCopies(t *testing.T, s store.Store) {
 	must(t, err)
 	if !bytes.Equal(got.Content, []byte("abc")) {
 		t.Errorf("attachment changed through an alias: %q", got.Content)
+	}
+}
+
+func testAttachmentRaisesRevision(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	must(t, s.CreatePlan(ctx, newPlan("pln_1", at(0))))
+	revision := func() int64 {
+		t.Helper()
+		p, err := s.GetPlan(ctx, "pln_1")
+		must(t, err)
+		return p.Revision
+	}
+	// Every put counts, a replacement with the same content too.
+	for i, name := range []string{"target.yaml", "target.yaml", "values.yaml"} {
+		must(t, s.PutPlanAttachment(ctx, attachment("pln_1", name, "same")))
+		if got := revision(); got != int64(i+2) {
+			t.Fatalf("after put %d: revision %d, want %d", i+1, got, i+2)
+		}
+	}
+	// An approval that names an older revision does not apply.
+	_, err := s.TransitionPlan(ctx, "pln_1", []string{store.PlanPending}, store.PlanApproved, store.PlanUpdate{IfRevision: 3})
+	wantErr(t, err, store.ErrConflict)
+	_, err = s.TransitionPlan(ctx, "pln_1", []string{store.PlanPending}, store.PlanApproved, store.PlanUpdate{IfRevision: 4})
+	must(t, err)
+	// A refused put leaves the revision alone.
+	wantErr(t, s.PutPlanAttachment(ctx, attachment("pln_1", "target.yaml", "late")), store.ErrConflict)
+	if got := revision(); got != 4 {
+		t.Fatalf("after a refused put: revision %d, want 4", got)
 	}
 }

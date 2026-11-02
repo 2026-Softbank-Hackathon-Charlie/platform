@@ -32,6 +32,8 @@ func Conformance(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"PlanTransitionFromList", testPlanTransitionFromList},
 		{"PlanTransitionMissing", testPlanTransitionMissing},
 		{"PlanTransitionConcurrent", testPlanTransitionConcurrent},
+		{"PlanTransitionIfRevision", testPlanTransitionIfRevision},
+		{"PlanRollbackOfUnique", testPlanRollbackOfUnique},
 		{"RunCreateGetUpdate", testRunCreateGetUpdate},
 		{"RunCreateDuplicate", testRunCreateDuplicate},
 		{"RunMissing", testRunMissing},
@@ -71,6 +73,7 @@ func newPlan(ref string, submittedAt time.Time) store.Plan {
 		Status:      store.PlanPending,
 		Summary:     []byte(`{"planId": "shop-gke-to-eks", "source": {"env": "gke", "cluster": "db-gke"}, "files": true}`),
 		Raw:         []byte("{\n  \"id\": \"shop-gke-to-eks\",\n  \"dsn\": \"postgres://app:${SRC_PGPASSWORD}@db/app\"\n}\n"),
+		Revision:    1,
 		SubmittedBy: "alice",
 		SubmittedAt: submittedAt,
 	}
@@ -277,6 +280,7 @@ func testPlanCreateGet(t *testing.T, s store.Store) {
 	full := newPlan("pln_2", at(1))
 	full.Status = store.PlanStarted
 	full.ReviewedBy, full.ReviewedAt, full.ReviewComment, full.RunID = "bob", ptr(at(2)), "lgtm", "run_1"
+	full.Revision, full.RollbackOf = 7, "run_0"
 	must(t, s.CreatePlan(ctx, full))
 	got, err = s.GetPlan(ctx, "pln_2")
 	must(t, err)
@@ -455,6 +459,60 @@ func testPlanTransitionConcurrent(t *testing.T, s store.Store) {
 	if got.Status != store.PlanStarting || got.RunID != fmt.Sprintf("run_%d", winner) {
 		t.Fatalf("plan = %s/%s, want %s/run_%d", got.Status, got.RunID, store.PlanStarting, winner)
 	}
+}
+
+func testPlanTransitionIfRevision(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	p := newPlan("pln_1", at(0))
+	p.Revision = 3
+	must(t, s.CreatePlan(ctx, p))
+
+	_, err := s.TransitionPlan(ctx, "pln_1", []string{store.PlanPending}, store.PlanApproved, store.PlanUpdate{ReviewedBy: "bob", IfRevision: 2})
+	if !errors.Is(err, store.ErrConflict) || !strings.Contains(err.Error(), "revision is 3") {
+		t.Fatalf("stale revision: err = %v, want ErrConflict naming revision 3", err)
+	}
+	// A status mismatch is reported as such, whatever the revision.
+	_, err = s.TransitionPlan(ctx, "pln_1", []string{store.PlanApproved}, store.PlanStarting, store.PlanUpdate{IfRevision: 2})
+	if !errors.Is(err, store.ErrConflict) || !strings.Contains(err.Error(), "plan is "+store.PlanPending) {
+		t.Fatalf("wrong status: err = %v", err)
+	}
+	got, err := s.GetPlan(ctx, "pln_1")
+	must(t, err)
+	eqPlan(t, got, p) // nothing applied
+
+	got, err = s.TransitionPlan(ctx, "pln_1", []string{store.PlanPending}, store.PlanApproved, store.PlanUpdate{ReviewedBy: "bob", IfRevision: 3})
+	must(t, err)
+	p.Status, p.ReviewedBy = store.PlanApproved, "bob"
+	eqPlan(t, got, p)
+}
+
+func testPlanRollbackOfUnique(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	a := newPlan("pln_a", at(0))
+	a.Status, a.RollbackOf = store.PlanApproved, "run_1"
+	must(t, s.CreatePlan(ctx, a))
+
+	b := newPlan("pln_b", at(1))
+	b.Status, b.RollbackOf = store.PlanApproved, "run_1"
+	err := s.CreatePlan(ctx, b)
+	if !errors.Is(err, store.ErrConflict) || !strings.Contains(err.Error(), "run_1") {
+		t.Fatalf("second rollback plan of run_1: err = %v, want ErrConflict", err)
+	}
+	_, err = s.GetPlan(ctx, "pln_b")
+	wantErr(t, err, store.ErrNotFound)
+
+	// Other runs, plans that roll back nothing and rejected plans do not collide.
+	c := newPlan("pln_c", at(2))
+	c.RollbackOf = "run_2"
+	must(t, s.CreatePlan(ctx, c))
+	must(t, s.CreatePlan(ctx, newPlan("pln_d", at(3))))
+	must(t, s.CreatePlan(ctx, newPlan("pln_e", at(4))))
+	r := newPlan("pln_r", at(5))
+	r.Status, r.RollbackOf = store.PlanRejected, "run_1"
+	must(t, s.CreatePlan(ctx, r))
+	got, err := s.GetPlan(ctx, "pln_a")
+	must(t, err)
+	eqPlan(t, got, a)
 }
 
 // --- runs ---

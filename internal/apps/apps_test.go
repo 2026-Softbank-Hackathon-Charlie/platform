@@ -32,9 +32,14 @@ func exampleCatalog(t *testing.T, gatewayURL string) *Catalog {
 
 func TestExampleFileLoads(t *testing.T) {
 	c := exampleCatalog(t, "")
-	want := []string{"EKS_MOIMROOM_PGPASSWORD", "GKE_MOIMROOM_PGPASSWORD", "ONPREM_MOIMROOM_PGPASSWORD"}
-	if got := c.PasswordEnvs(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("PasswordEnvs = %v, want %v", got, want)
+	// Each password goes to its own environment's database and nowhere else.
+	want := map[string][]string{
+		"GKE_MOIMROOM_PGPASSWORD":    {"moimroom-db-gke-rw.moimroom.gke.ts.net:5432"},
+		"EKS_MOIMROOM_PGPASSWORD":    {"moimroom-db-eks-rw.moimroom.eks.ts.net:5432"},
+		"ONPREM_MOIMROOM_PGPASSWORD": {"moimroom-db-onprem-rw.moimroom.onprem.ts.net:5432"},
+	}
+	if got := c.PasswordHosts(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("PasswordHosts = %v, want %v", got, want)
 	}
 	list := c.List()
 	if len(list) != 1 || list[0].Name != "moimroom" || list[0].Database.Schemas[0] != "app" {
@@ -117,11 +122,19 @@ func TestDraftRejects(t *testing.T) {
 	}
 }
 
+func passwordEnv(name string) func(*Config) {
+	return func(c *Config) {
+		e := c.Apps[0].Environments["gke"]
+		e.PasswordEnv = name
+		c.Apps[0].Environments["gke"] = e
+	}
+}
+
 func TestConfigRejects(t *testing.T) {
 	environments := []envs.EnvConfig{{Name: "gke"}, {Name: "eks"}}
 	ok := func() App {
 		return App{Name: "moimroom", Namespace: "moimroom", Database: Database{Name: "app", User: "app"},
-			Environments: map[string]Environment{"gke": {CnpgCluster: "db", DBHost: "db.ts.net", PasswordEnv: "PW"}}}
+			Environments: map[string]Environment{"gke": {CnpgCluster: "db", DBHost: "db.ts.net", PasswordEnv: "GKE_MOIMROOM_PGPASSWORD"}}}
 	}
 	cases := map[string]struct {
 		edit func(*Config)
@@ -141,8 +154,15 @@ func TestConfigRejects(t *testing.T) {
 			e.PasswordEnv = "PW}"
 			c.Apps[0].Environments["gke"] = e
 		}, "passwordEnv"},
-		"bad user": {func(c *Config) { c.Apps[0].Database.User = "app:x@" }, "database"},
-		"no envs":  {func(c *Config) { c.Apps[0].Environments = nil }, "no environments"},
+		// A plan can send a password variable to a database host, so it must
+		// not name any other server variable.
+		"gateway token as password": {passwordEnv("GATEWAY_TOKEN"), "_PGPASSWORD"},
+		"platform setting":          {passwordEnv("PLATFORM_DATABASE_URL"), "_PGPASSWORD"},
+		"platform prefix":           {passwordEnv("PLATFORM_DB_PGPASSWORD"), "PLATFORM_"},
+		"aws credentials":           {passwordEnv("AWS_SECRET_ACCESS_KEY"), "_PGPASSWORD"},
+		"aws prefix":                {passwordEnv("AWS_RDS_PGPASSWORD"), "AWS_"},
+		"bad user":                  {func(c *Config) { c.Apps[0].Database.User = "app:x@" }, "database"},
+		"no envs":                   {func(c *Config) { c.Apps[0].Environments = nil }, "no environments"},
 	}
 	for name, tc := range cases {
 		cfg := Config{Apps: []App{ok()}}

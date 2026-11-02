@@ -81,7 +81,13 @@ func main() {
 
 	policy := plans.DefaultPolicy()
 	if v := os.Getenv("PLATFORM_PLAN_ENV_ALLOW"); v != "" {
-		policy.EnvAllow = splitList(v)
+		// Password variables either DSN of any plan may use.
+		policy.PasswordEnvs = splitList(v)
+		for _, name := range policy.PasswordEnvs {
+			if err := plans.CheckPasswordEnv(name); err != nil {
+				fatal("PLATFORM_PLAN_ENV_ALLOW", "err", err)
+			}
+		}
 	}
 	policy.GatewayURL = os.Getenv("PLATFORM_GATEWAY_URL")
 	policy.DSNHostSuffixes = splitList(os.Getenv("PLATFORM_DSN_HOST_SUFFIXES"))
@@ -89,7 +95,8 @@ func main() {
 		log.Warn("PLATFORM_DSN_HOST_SUFFIXES is not set: a plan may point its DSN at any host; approvers must check dbHost in the plan summary")
 	}
 
-	// Optional: apps to draft plans for. Their password variables may appear in plans.
+	// Optional: apps to draft plans for. A plan may use an app's password
+	// variable only in a DSN to that app's database host.
 	var appCat *apps.Catalog
 	if path := os.Getenv("PLATFORM_APPS_FILE"); path != "" {
 		appCfg, err := apps.LoadConfig(path)
@@ -99,7 +106,7 @@ func main() {
 		if err != nil {
 			fatal("PLATFORM_APPS_FILE", "err", err)
 		}
-		policy.EnvAllow = append(policy.EnvAllow, appCat.PasswordEnvs()...)
+		policy.HostPasswordEnvs = appCat.PasswordHosts()
 	}
 
 	// One gateway client for the runner (canary, request counts) and the API.

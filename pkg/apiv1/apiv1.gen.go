@@ -939,7 +939,13 @@ type PlanRecord struct {
 	ReviewedAt    *time.Time `json:"reviewedAt,omitempty"`
 
 	// ReviewedBy who approved or rejected
-	ReviewedBy  *string     `json:"reviewedBy,omitempty"`
+	ReviewedBy *string `json:"reviewedBy,omitempty"`
+
+	// Revision 1 at submit, one more with every attachment upload. Approve with the revision you reviewed.
+	Revision int64 `json:"revision"`
+
+	// RollbackOf the run this plan rolls back (POST /v1/migrations/{runId}/rollback)
+	RollbackOf  *string     `json:"rollbackOf,omitempty"`
 	RunId       *string     `json:"runId,omitempty"`
 	Status      PlanStatus  `json:"status"`
 	SubmittedAt time.Time   `json:"submittedAt"`
@@ -979,6 +985,9 @@ type Provider string
 // ReviewRequest defines model for ReviewRequest.
 type ReviewRequest struct {
 	Comment *string `json:"comment,omitempty"`
+
+	// Revision Approve only. The plan revision the approver reviewed; required when the plan has attachments.
+	Revision *int64 `json:"revision,omitempty"`
 }
 
 // Role defines model for Role.

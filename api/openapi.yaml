@@ -77,8 +77,13 @@ paths:
       operationId: submitPlan
       description: |
         Submit an engine plan as-is. The server applies its security policy
-        (allowed `${VAR}` references, no kubeconfig paths, gateway and DB host
-        allowlists) and stores the plan as `pending_approval`. Roles: agent, operator.
+        (no kubeconfig paths, gateway and DB host allowlists, environment
+        references) and stores the plan as `pending_approval`. A DSN must be a
+        `postgres://` URL and may reference one allowed variable, as its whole
+        password (`postgres://app:${SRC_PGPASSWORD}@host:5432/db`); an app's
+        `passwordEnv` only in a DSN to that app's database host.
+        `gateway.token` may only be `${GATEWAY_TOKEN}`; no other field may
+        contain `$`. Roles: agent, operator.
       requestBody:
         required: true
         content:
@@ -130,7 +135,11 @@ paths:
     post:
       tags: [plans]
       operationId: approvePlan
-      description: The human gate between AI planning and execution. Approving twice is a no-op. Role operator.
+      description: |
+        The human gate between AI planning and execution. Send the plan's
+        `revision` you reviewed: approving a plan that has attachments without
+        it, or with a revision that changed since (an attachment was uploaded),
+        fails with 409 `plan_state_conflict`. Approving twice is a no-op. Role operator.
       requestBody:
         required: false
         content:
@@ -182,7 +191,9 @@ paths:
         of read traffic to the target (canary), and then waits in
         `awaiting_switch` until an operator calls `/switch`, unless `autoSwitch`
         is true. Send the same `Idempotency-Key` to get the original run back on
-        a retry. Role operator.
+        a retry. A plan with `verify.writtenRecords: "stream:<name>"` starts only
+        once the stream has records (400 `invalid_request` before that). A plan
+        with `rollbackOf` gives the run the same `rollbackOf`. Role operator.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -331,13 +342,15 @@ paths:
       operationId: resumeMigration
       description: |
         Continue a run that is `interrupted` (the server restarted), `failed`
-        or `aborted`. Steps that already succeeded are skipped. Role operator.
+        or `aborted`. Steps that already succeeded are skipped. Like a start,
+        it needs records in the plan's written-records stream. Role operator.
       responses:
         "200":
           description: Resumed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Run" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -675,8 +688,9 @@ paths:
         Record writes that a load generator saw succeed. When a run's plan sets
         `verify.writtenRecords: "stream:<name>"`, the server writes every record
         of the stream to a file right before the verify step, and the engine
-        checks that each one exists on the target database. Send records in
-        batches: every request is audited. Roles: agent, operator.
+        checks that each one exists on the target database. Table names are
+        stored in lower case (unquoted PostgreSQL identifiers); control
+        characters in `table` or `pk` are refused. Roles: agent, operator.
       requestBody:
         required: true
         content:
@@ -720,7 +734,8 @@ paths:
       description: |
         Upload a file the plan refers to, such as the target CNPG Cluster
         manifest (`target.manifest: "attachment:<name>"`). Allowed only while the
-        plan is `pending_approval`, so the approver approves fixed content.
+        plan is `pending_approval`, and every upload raises the plan's
+        `revision` by one, so the approver approves fixed content.
         Uploading the same name again replaces it. The body is the raw content,
         at most 1 MiB. Approving a plan that refers to a missing attachment
         fails with 409. Roles: agent, operator.
@@ -811,8 +826,11 @@ paths:
         The server builds the reverse of the run's plan (source and target
         swapped, files and gateway backends swapped, no target manifest because
         the old source still exists as a replica), stores it as a new plan with
-        id `<plan id>-rollback`, approved by the caller, and starts it. The new
-        run has `rollbackOf` set. A run is rolled back at most once. Role operator.
+        id `<plan id>-rollback` and `rollbackOf` set, approved by the caller,
+        and starts it. The new run has `rollbackOf` set. A run is rolled back
+        at most once: when an earlier rollback's start failed (for example
+        `cluster_busy`), its plan is started again instead of a new one, and
+        once that plan has started, 409 `run_state_conflict` names its run. Role operator.
       requestBody:
         required: false
         content:
@@ -1025,10 +1043,15 @@ components:
 
     PlanRecord:
       type: object
-      required: [ref, status, summary, submittedBy, submittedAt]
+      required: [ref, status, revision, summary, submittedBy, submittedAt]
       properties:
         ref: { type: string, example: pln_3f9c1a0b2d4e }
         status: { $ref: "#/components/schemas/PlanStatus" }
+        revision:
+          type: integer
+          format: int64
+          description: 1 at submit, one more with every attachment upload. Approve with the revision you reviewed.
+        rollbackOf: { type: string, description: "the run this plan rolls back (POST /v1/migrations/{runId}/rollback)" }
         summary: { $ref: "#/components/schemas/PlanSummary" }
         submittedBy: { type: string }
         submittedAt: { type: string, format: date-time }
@@ -1053,6 +1076,11 @@ components:
       type: object
       properties:
         comment: { type: string, maxLength: 2000 }
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Approve only. The plan revision the approver reviewed; required when the plan has attachments.
 
     # ---------- migrations ----------
 

@@ -9,12 +9,30 @@ import (
 	"path/filepath"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 )
 
 // writtenPage is how many records are read from the store at a time.
 const writtenPage = 10000
+
+// requireWritten refuses a plan whose verify step reads a written-records
+// stream that has no records yet: verification would pass on no evidence.
+func (r *Runner) requireWritten(ctx context.Context, p *plan.Plan) error {
+	name, ok := plans.WrittenStream(p)
+	if !ok {
+		return nil
+	}
+	st, err := r.cfg.Store.WrittenRecordStats(ctx, name)
+	if err != nil {
+		return err
+	}
+	if st.Count == 0 {
+		return fmt.Errorf("%w: verify.writtenRecords reads stream %s, which has no records yet; start the load generator before the migration", ErrInvalid, name)
+	}
+	return nil
+}
 
 // useWrittenStream points a plan that reads its written records from a
 // stream ("stream:<name>") at <stateDir>/<runID>.written.jsonl. A new run's

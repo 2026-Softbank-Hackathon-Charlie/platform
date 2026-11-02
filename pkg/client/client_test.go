@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	planJSON = `{"ref":"pln_1","status":"approved","summary":{"planId":"p1","source":{"env":"gke","namespace":"shop","cluster":"pg"},"target":{"env":"eks","namespace":"shop","cluster":"pg"},"files":true,"gatewayMode":"http","fenceGate":true,"maxDowntime":"3m"},"submittedBy":"planner","submittedAt":"2026-11-02T09:00:00Z"}`
+	planJSON = `{"ref":"pln_1","status":"approved","revision":1,"summary":{"planId":"p1","source":{"env":"gke","namespace":"shop","cluster":"pg"},"target":{"env":"eks","namespace":"shop","cluster":"pg"},"files":true,"gatewayMode":"http","fenceGate":true,"maxDowntime":"3m"},"submittedBy":"planner","submittedAt":"2026-11-02T09:00:00Z"}`
 	runJSON  = `{"runId":"run_1","planRef":"pln_1","planId":"p1","source":{"env":"gke","namespace":"shop","cluster":"pg"},"target":{"env":"eks","namespace":"shop","cluster":"pg"},"status":"running","phase":"sync","autoSwitch":false,"startedBy":"op","startedAt":"2026-11-02T09:00:00Z","updatedAt":"2026-11-02T09:00:00Z","result":{},"engine":{"runId":"run_1","planId":"p1","createdAt":"2026-11-02T09:00:00Z","updatedAt":"2026-11-02T09:00:00Z","outcome":"running","steps":{},"writesHeld":false,"sourceDemoted":false,"promoteRequested":false,"trafficOnTarget":false}}`
 	envJSON  = `{"name":"gke","provider":"gcp","displayName":"GCP GKE","gatewayBackend":"gke","live":true,"status":{"reachable":true,"checkedAt":"2026-11-02T09:00:00Z"}}`
 )
@@ -72,10 +72,10 @@ func TestOperations(t *testing.T) {
 		{name: "GetPlan escapes", call: func(c *Client) (any, error) { return c.GetPlan(ctx, "pln/../x y?") },
 			method: "GET", path: "/v1/plans/pln%2F..%2Fx%20y%3F", resp: planJSON,
 			got: func(v any) string { return string(v.(*apiv1.PlanRecord).Status) }, want: "approved"},
-		{name: "ApprovePlan", call: func(c *Client) (any, error) { return c.ApprovePlan(ctx, "pln_1", "looks good") },
-			method: "POST", path: "/v1/plans/pln_1/approve", body: `{"comment":"looks good"}`, resp: planJSON,
+		{name: "ApprovePlan", call: func(c *Client) (any, error) { return c.ApprovePlan(ctx, "pln_1", "looks good", 3) },
+			method: "POST", path: "/v1/plans/pln_1/approve", body: `{"comment":"looks good","revision":3}`, resp: planJSON,
 			got: func(v any) string { return v.(*apiv1.PlanRecord).Ref }, want: "pln_1"},
-		{name: "ApprovePlan no comment", call: func(c *Client) (any, error) { return c.ApprovePlan(ctx, "pln_1", "") },
+		{name: "ApprovePlan no comment", call: func(c *Client) (any, error) { return c.ApprovePlan(ctx, "pln_1", "", 0) },
 			method: "POST", path: "/v1/plans/pln_1/approve", body: `{}`, resp: planJSON,
 			got: func(v any) string { return v.(*apiv1.PlanRecord).Ref }, want: "pln_1"},
 		{name: "RejectPlan", call: func(c *Client) (any, error) { return c.RejectPlan(ctx, "pln_1", "wrong target") },

@@ -95,6 +95,14 @@ func (m *memory) CreatePlan(_ context.Context, p store.Plan) error {
 	if _, ok := m.plans[p.Ref]; ok {
 		return fmt.Errorf("%w: plan %s exists", store.ErrConflict, p.Ref)
 	}
+	// Like the partial unique index plans_rollback_of_idx.
+	if p.RollbackOf != "" && p.Status != store.PlanRejected {
+		for _, q := range m.plans {
+			if q.RollbackOf == p.RollbackOf && q.Status != store.PlanRejected {
+				return fmt.Errorf("%w: a plan rolling back run %s exists", store.ErrConflict, p.RollbackOf)
+			}
+		}
+	}
 	p = copyPlan(p)
 	p.SubmittedAt = pgTime(p.SubmittedAt)
 	m.plans[p.Ref] = p
@@ -134,6 +142,9 @@ func (m *memory) TransitionPlan(_ context.Context, ref string, from []string, to
 	}
 	if !slices.Contains(from, p.Status) {
 		return store.Plan{}, fmt.Errorf("%w: plan is %s", store.ErrConflict, p.Status)
+	}
+	if u.IfRevision != 0 && u.IfRevision != p.Revision {
+		return store.Plan{}, fmt.Errorf("%w: plan revision is %d, not %d", store.ErrConflict, p.Revision, u.IfRevision)
 	}
 	p.Status = to
 	if u.ReviewedBy != "" {

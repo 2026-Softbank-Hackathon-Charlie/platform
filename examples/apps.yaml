@@ -9,7 +9,10 @@
 #     dbHost        host of the cluster's -rw service (over Tailscale)
 #     dbPort        optional, default 5432
 #     passwordEnv   server environment variable with the database password; plans
-#                   refer to it as ${VAR} and it is added to the plan env allowlist
+#                   refer to it as ${VAR}, only as the password of a DSN to this
+#                   dbHost:dbPort. Must end in _PGPASSWORD and not start with
+#                   PLATFORM_ or AWS_. The value goes into the URL unescaped, so
+#                   it must be URL-safe (CNPG-generated passwords are)
 #     bucket        optional rclone remote:bucket of the app's files; files move
 #                   when both environments of a route have one
 apps:

@@ -38,6 +38,12 @@ type Plan struct {
 	// Raw is the plan JSON exactly as submitted, with ${VAR} references unexpanded.
 	// It never contains secrets; they are expanded from the server environment at start.
 	Raw []byte
+	// Revision is 1 at submit and grows by one with every attachment upload
+	// (PutPlanAttachment), so an approval can name the content it reviewed.
+	Revision int64
+	// RollbackOf is the run a rollback plan reverses, or empty. At most one
+	// plan that is not rejected rolls back a given run (CreatePlan).
+	RollbackOf string
 
 	SubmittedBy   string
 	SubmittedAt   time.Time
@@ -53,6 +59,9 @@ type PlanUpdate struct {
 	ReviewedAt    *time.Time
 	ReviewComment string
 	RunID         string
+	// IfRevision, when not zero, is one more condition of the transition:
+	// it applies only while the plan's revision equals IfRevision.
+	IfRevision int64
 }
 
 // Run is the platform's record of one migration run.
@@ -96,16 +105,19 @@ type Audit struct {
 
 // Store is the platform's persistence. Implementations must be safe for concurrent use.
 type Store interface {
-	// CreatePlan inserts a plan. ErrConflict if the ref exists.
+	// CreatePlan inserts a plan. ErrConflict if the ref exists, or if
+	// RollbackOf is set and another plan that is not rejected has the same
+	// RollbackOf (unless this plan is rejected).
 	CreatePlan(ctx context.Context, p Plan) error
 	// GetPlan returns ErrNotFound when the ref does not exist.
 	GetPlan(ctx context.Context, ref string) (Plan, error)
 	// ListPlans returns all plans, newest SubmittedAt first.
 	ListPlans(ctx context.Context) ([]Plan, error)
 	// TransitionPlan atomically sets status to `to` when the current status is
-	// one of `from`, applying u in the same write, and returns the updated plan.
-	// ErrNotFound when the ref does not exist; ErrConflict (wrapped, with the
-	// current status in the message) when the status is not in `from`.
+	// one of `from` (and the revision is u.IfRevision, when set), applying u in
+	// the same write, and returns the updated plan. ErrNotFound when the ref
+	// does not exist; ErrConflict (wrapped, with the current status or
+	// revision in the message) when a condition does not hold.
 	TransitionPlan(ctx context.Context, ref string, from []string, to string, u PlanUpdate) (Plan, error)
 
 	// CreateRun inserts a run. ErrConflict if the run id exists.

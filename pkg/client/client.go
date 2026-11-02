@@ -191,10 +191,15 @@ func (c *Client) GetPlan(ctx context.Context, ref string) (*apiv1.PlanRecord, er
 	return call[apiv1.PlanRecord](ctx, c, request{method: http.MethodGet, path: "/v1/plans/%s", params: []string{ref}})
 }
 
-// ApprovePlan approves a pending plan. comment may be empty.
-func (c *Client) ApprovePlan(ctx context.Context, ref, comment string) (*apiv1.PlanRecord, error) {
-	return call[apiv1.PlanRecord](ctx, c, request{method: http.MethodPost, path: "/v1/plans/%s/approve", params: []string{ref},
-		body: apiv1.ReviewRequest{Comment: optional(comment)}})
+// ApprovePlan approves a pending plan at revision, the PlanRecord.Revision
+// the approver reviewed; 0 sends none (only for plans without attachments).
+// comment may be empty.
+func (c *Client) ApprovePlan(ctx context.Context, ref, comment string, revision int64) (*apiv1.PlanRecord, error) {
+	req := apiv1.ReviewRequest{Comment: optional(comment)}
+	if revision != 0 {
+		req.Revision = &revision
+	}
+	return call[apiv1.PlanRecord](ctx, c, request{method: http.MethodPost, path: "/v1/plans/%s/approve", params: []string{ref}, body: req})
 }
 
 // RejectPlan rejects a pending plan.
