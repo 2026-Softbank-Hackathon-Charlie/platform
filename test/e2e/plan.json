@@ -1,0 +1,36 @@
+{
+  "id": "e2e-src-to-dst",
+  "source": {
+    "env": "src",
+    "context": "kind-hop-e2e",
+    "namespace": "hop",
+    "cluster": "pg-src",
+    "dsn": "postgres://app:${SRC_PGPASSWORD}@127.0.0.1:55642/app?sslmode=require"
+  },
+  "target": {
+    "env": "dst",
+    "context": "kind-hop-e2e",
+    "namespace": "hop",
+    "cluster": "pg-dst",
+    "dsn": "postgres://app:${DST_PGPASSWORD}@127.0.0.1:55643/app?sslmode=require",
+    "manifest": "attachment:target.yaml"
+  },
+  "gateway": {
+    "mode": "http",
+    "url": "http://127.0.0.1:19901",
+    "token": "${GATEWAY_TOKEN}",
+    "sourceBackend": "src",
+    "targetBackend": "dst"
+  },
+  "verify": {
+    "schemas": ["public"],
+    "fenceGate": true,
+    "writtenRecords": "stream:e2e"
+  },
+  "thresholds": {
+    "maxLagBytes": 1048576,
+    "catchupTimeout": "10m",
+    "switchoverTimeout": "3m",
+    "maxDowntime": "3m"
+  }
+}
