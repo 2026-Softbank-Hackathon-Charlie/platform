@@ -50,6 +50,14 @@ type Policy struct {
 	DSNHostSuffixes []string
 	// RcloneFlags lists allowed rclone flag names (without values).
 	RcloneFlags []string
+	// Buckets are the only values files.source and files.target may take:
+	// "remote:bucket" or "remote:bucket/path", exactly as registered in the
+	// apps file or PLATFORM_PLAN_BUCKETS. rclone reads a whole backend
+	// definition from the remote part of a path (":local:/data",
+	// ":s3,access_key_id=...:bucket", "gcs,service_account_file=...:b"), so
+	// any other value could copy the server's own files or send them to
+	// storage the team does not own. Empty rejects every plan with files.
+	Buckets []string
 }
 
 // DefaultPolicy matches the variable names used in the engine's example plan.
@@ -78,6 +86,33 @@ func CheckPasswordEnv(name string) error {
 		return fmt.Errorf("password variable %q must not start with PLATFORM_ or AWS_", name)
 	}
 	return nil
+}
+
+// bucketName is a registered bucket: a configured rclone remote, then a
+// bucket and an optional path. No leading ":" (an inline backend), no ","
+// (inline options), no spaces or quotes.
+var bucketName = regexp.MustCompile(`^[A-Za-z0-9_-]+:[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*$`)
+
+// CheckBucket refuses a bucket that is not a plain "remote:bucket[/path]".
+func CheckBucket(b string) error {
+	if !bucketName.MatchString(b) {
+		return fmt.Errorf("bucket %q must be remote:bucket or remote:bucket/path (letters, digits, '.', '_', '-')", b)
+	}
+	_, path, _ := strings.Cut(b, ":")
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("bucket %q must not contain . or .. path segments", b)
+		}
+	}
+	return nil
+}
+
+// RcloneTypeEnv is the variable rclone reads the backend type of a bucket's
+// remote from (RCLONE_CONFIG_<REMOTE>_TYPE). The server's environment, not
+// the plan, defines remotes and their credentials.
+func RcloneTypeEnv(bucket string) string {
+	remote, _, _ := strings.Cut(bucket, ":")
+	return "RCLONE_CONFIG_" + strings.ToUpper(strings.ReplaceAll(remote, "-", "_")) + "_TYPE"
 }
 
 // planID becomes part of file names and URLs (engine state file, run id).
@@ -228,6 +263,17 @@ func (p Policy) checkParsed(pl *plan.Plan) error {
 			if !slices.Contains(p.RcloneFlags, name) {
 				return fmt.Errorf("rclone flag %q is not allowed", name)
 			}
+		}
+		if len(p.Buckets) == 0 {
+			return fmt.Errorf("files is disabled on this server: no bucket is registered (PLATFORM_APPS_FILE or PLATFORM_PLAN_BUCKETS)")
+		}
+		for _, f := range []struct{ field, value string }{{"files.source", pl.Files.Source}, {"files.target", pl.Files.Target}} {
+			if !slices.Contains(p.Buckets, f.value) {
+				return fmt.Errorf("%s %q is not a registered bucket", f.field, f.value)
+			}
+		}
+		if pl.Files.Source == pl.Files.Target {
+			return fmt.Errorf("files.source and files.target must be different buckets")
 		}
 	}
 	if pl.Gateway.Mode == "http" {

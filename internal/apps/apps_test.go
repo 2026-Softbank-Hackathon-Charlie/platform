@@ -41,6 +41,10 @@ func TestExampleFileLoads(t *testing.T) {
 	if got := c.PasswordHosts(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("PasswordHosts = %v, want %v", got, want)
 	}
+	wantBuckets := []string{"gcs:moimroom-photos-gke", "minio:moimroom-photos", "s3:moimroom-photos-eks"}
+	if got := c.Buckets(); !reflect.DeepEqual(got, wantBuckets) {
+		t.Fatalf("Buckets = %v, want %v", got, wantBuckets)
+	}
 	list := c.List()
 	if len(list) != 1 || list[0].Name != "moimroom" || list[0].Database.Schemas[0] != "app" {
 		t.Fatalf("apps = %+v", list)
@@ -130,6 +134,14 @@ func passwordEnv(name string) func(*Config) {
 	}
 }
 
+func bucket(b string) func(*Config) {
+	return func(c *Config) {
+		e := c.Apps[0].Environments["gke"]
+		e.Bucket = b
+		c.Apps[0].Environments["gke"] = e
+	}
+}
+
 func TestConfigRejects(t *testing.T) {
 	environments := []envs.EnvConfig{{Name: "gke"}, {Name: "eks"}}
 	ok := func() App {
@@ -162,7 +174,10 @@ func TestConfigRejects(t *testing.T) {
 		"aws credentials":           {passwordEnv("AWS_SECRET_ACCESS_KEY"), "_PGPASSWORD"},
 		"aws prefix":                {passwordEnv("AWS_RDS_PGPASSWORD"), "AWS_"},
 		"bad user":                  {func(c *Config) { c.Apps[0].Database.User = "app:x@" }, "database"},
-		"no envs":                   {func(c *Config) { c.Apps[0].Environments = nil }, "no environments"},
+		// rclone would read a backend definition from these.
+		"inline backend bucket": {bucket(":local:/data"), "bucket"},
+		"bucket with options":   {bucket("gcs,service_account_file=/x:b"), "bucket"},
+		"no envs":               {func(c *Config) { c.Apps[0].Environments = nil }, "no environments"},
 	}
 	for name, tc := range cases {
 		cfg := Config{Apps: []App{ok()}}

@@ -676,6 +676,7 @@ type EngineOutcome string
 
 // EnginePlan The migration-engine plan (migration-engine/pkg/plan). `${VAR}` references are expanded on the server.
 type EnginePlan struct {
+	// Files Object storage moved with rclone. source and target must each be exactly a bucket the server registers (an app's bucket in PLATFORM_APPS_FILE, or PLATFORM_PLAN_BUCKETS) and must differ; rclone remotes and their credentials come from the server's environment (RCLONE_CONFIG_<REMOTE>_*), never from the plan. rclone must be "rclone" or omitted, and only allowed flags pass.
 	Files *struct {
 		Flags  *[]string `json:"flags,omitempty"`
 		Rclone *string   `json:"rclone,omitempty"`
