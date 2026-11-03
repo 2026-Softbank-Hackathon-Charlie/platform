@@ -1,0 +1,58 @@
+# The test's in-cluster helpers (gitserver, proxy; see their main.go). run.sh
+# replaces KIT_IMAGE. Repositories live in an emptyDir: a restart loses them.
+apiVersion: v1
+kind: Namespace
+metadata: { name: e2e-kit }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: gitserver, namespace: e2e-kit }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: gitserver } }
+  template:
+    metadata: { labels: { app: gitserver } }
+    spec:
+      containers:
+        - name: gitserver
+          image: KIT_IMAGE
+          command: ["gitserver", "-listen", ":8080", "-root", "/srv/git", "-init", "gitops,infra"]
+          env: [{ name: HOME, value: /tmp }]
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, periodSeconds: 2 }
+          volumeMounts: [{ name: repos, mountPath: /srv/git }]
+      volumes: [{ name: repos, emptyDir: {} }]
+---
+# Argo CD fetches http://gitserver.e2e-kit.svc.cluster.local/<name>.git, the
+# host pushes to 127.0.0.1:GIT_PORT (kind.yaml).
+apiVersion: v1
+kind: Service
+metadata: { name: gitserver, namespace: e2e-kit }
+spec:
+  type: NodePort
+  selector: { app: gitserver }
+  ports: [{ port: 80, targetPort: 8080, nodePort: 30390 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: proxy, namespace: e2e-kit }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: proxy } }
+  template:
+    metadata: { labels: { app: proxy } }
+    spec:
+      containers:
+        - name: proxy
+          image: KIT_IMAGE
+          command: ["proxy", "-listen", ":3128"]
+          ports: [{ containerPort: 3128 }]
+          readinessProbe: { httpGet: { path: /healthz, port: 3128 }, periodSeconds: 2 }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: proxy, namespace: e2e-kit }
+spec:
+  type: NodePort
+  selector: { app: proxy }
+  ports: [{ port: 3128, targetPort: 3128, nodePort: 30391 }]

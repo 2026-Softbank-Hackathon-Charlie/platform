@@ -1,0 +1,5 @@
+apiVersion: v2
+name: hopcharlie-apps
+description: The Argo CD AppProject and ApplicationSet that deploy every app in the platform's gitops repository with the hopcharlie-app chart (ADR 0011).
+type: application
+version: 0.1.0

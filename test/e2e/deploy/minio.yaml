@@ -1,0 +1,31 @@
+# The S3-compatible store of the kind environment (profile.s3 in
+# argocd-values.yaml). run.sh replaces MINIO_IMAGE and creates the Secret
+# minio-root; it creates the apps' buckets and their credentials Secrets as
+# infra would.
+apiVersion: v1
+kind: Namespace
+metadata: { name: minio }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: minio, namespace: minio, labels: { app: minio } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: minio } }
+  template:
+    metadata: { labels: { app: minio } }
+    spec:
+      containers:
+        - name: minio
+          image: MINIO_IMAGE
+          args: ["server", "/data"]
+          envFrom: [{ secretRef: { name: minio-root } }]
+          ports: [{ containerPort: 9000 }]
+          readinessProbe: { httpGet: { path: /minio/health/ready, port: 9000 }, periodSeconds: 2 }
+          volumeMounts: [{ name: data, mountPath: /data }]
+      volumes: [{ name: data, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: minio, namespace: minio }
+spec: { selector: { app: minio }, ports: [{ port: 9000, targetPort: 9000 }] }

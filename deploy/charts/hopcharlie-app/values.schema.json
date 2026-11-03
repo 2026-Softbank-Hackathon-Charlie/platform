@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "hopcharlie-app values: the gitops file (ADR 0011, pkg/appspec rules) and the environment profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["values", "profile"],
+  "properties": {
+    "app": { "type": "string" },
+    "env": { "type": "string" },
+    "namespace": { "type": "string" },
+    "commit": { "type": "string" },
+    "deployment": { "type": "string" },
+    "values": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app", "services"],
+      "properties": {
+        "app": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$" },
+        "services": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "image", "port"],
+            "properties": {
+              "name": { "$ref": "#/definitions/partName" },
+              "image": { "type": "string", "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "healthCheck": { "type": "string", "pattern": "^(/[^\\s]*)?$" },
+              "public": { "type": "boolean" },
+              "replicas": { "type": "integer", "minimum": 1, "maximum": 5 },
+              "env": {
+                "type": ["object", "null"],
+                "propertyNames": {
+                  "pattern": "^[A-Z_][A-Z0-9_]*$",
+                  "not": { "anyOf": [{ "enum": ["PORT", "DATABASE_URL"] }, { "pattern": "^S3_" }] }
+                },
+                "additionalProperties": { "type": "string" }
+              }
+            }
+          }
+        },
+        "resources": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "type"],
+            "properties": {
+              "name": { "$ref": "#/definitions/partName" },
+              "type": { "enum": ["postgres", "s3"] }
+            }
+          }
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "publicService": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "imagePullSecrets": { "type": "array", "items": { "type": "string" } },
+        "resources": { "type": "object" },
+        "progressDeadlineSeconds": { "type": "integer", "minimum": 10 },
+        "preStopSleepSeconds": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "podSecurity": { "enum": ["", "privileged", "baseline", "restricted"] },
+        "runAsUser": { "type": "integer", "minimum": 1 },
+        "postgres": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "storageSize": { "type": "string" },
+            "storageClass": { "type": "string" },
+            "resources": { "type": "object" }
+          }
+        },
+        "s3": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": { "type": "string" },
+            "region": { "type": "string" },
+            "pathStyle": { "type": "boolean" },
+            "bucketPrefix": { "type": "string" },
+            "credentialsSecret": { "type": "string" },
+            "accessKeyKey": { "type": "string" },
+            "secretKeyKey": { "type": "string" }
+          }
+        },
+        "quota": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "hard": { "type": "object" }
+          }
+        },
+        "limitRange": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "default": { "type": "object" },
+            "defaultRequest": { "type": "object" },
+            "max": { "type": "object" }
+          }
+        },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "gatewayFrom": { "type": "array", "items": { "type": "object" } },
+            "operatorNamespace": { "type": "string" },
+            "extraEgress": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "partName": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$" }
+  }
+}

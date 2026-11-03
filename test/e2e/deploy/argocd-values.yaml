@@ -1,0 +1,41 @@
+# deploy/argocd for the kind cluster: the gitops and chart repositories on the
+# in-cluster git server (kit.yaml), and one environment "kind" whose apps run
+# in this cluster. The gateway and run.sh reach the ClusterIP Services
+# through the proxy in namespace e2e-kit.
+gitops:
+  repoURL: http://gitserver.e2e-kit.svc.cluster.local/gitops.git
+  requeueAfterSeconds: 5
+chart:
+  repoURL: http://gitserver.e2e-kit.svc.cluster.local/infra.git
+environments:
+  kind:
+    cluster: { server: https://kubernetes.default.svc }
+    profile:
+      publicService: { type: ClusterIP }
+      resources:
+        requests: { cpu: 10m, memory: 32Mi }
+        limits: { memory: 256Mi }
+      # Short, so a version that never gets ready fails within the test.
+      progressDeadlineSeconds: 60
+      postgres: { storageSize: 1Gi }
+      s3:
+        endpoint: http://minio.minio.svc.cluster.local:9000
+        region: us-east-1
+        pathStyle: true
+        credentialsSecret: s3-credentials
+      quota:
+        enabled: true
+        hard: { requests.cpu: "1", requests.memory: 1Gi, limits.memory: 2Gi, pods: "10", persistentvolumeclaims: "2" }
+      limitRange:
+        enabled: true
+        default: { memory: 256Mi }
+        defaultRequest: { cpu: 10m, memory: 32Mi }
+      networkPolicy:
+        enabled: true
+        gatewayFrom: # the proxy the gateway on the host goes through
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: e2e-kit } }
+        extraEgress:
+          - to: # MinIO, on port 9000
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: minio } }
+            ports: [{ protocol: TCP, port: 9000 }]
+          - ports: [{ protocol: TCP, port: 6443 }] # kind's API server, for the CNPG instance

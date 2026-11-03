@@ -1,0 +1,8 @@
+name: demo
+services:
+  - name: web
+    port: 8080
+    healthCheck: /healthz
+    public: true
+    env:
+      DEMO_MESSAGE: hello

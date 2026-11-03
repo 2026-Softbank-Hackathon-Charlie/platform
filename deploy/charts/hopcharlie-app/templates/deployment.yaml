@@ -1,0 +1,113 @@
+{{- include "hopcharlie-app.check" . }}
+{{- $profile := .Values.profile }}
+{{- range $svc := .Values.values.services }}
+{{- $ctx := dict "root" $ "svc" $svc }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-%s" $.Values.values.app $svc.name }}
+  labels:
+    {{- include "hopcharlie-app.labels" $ctx | nindent 4 }}
+  {{- if or $.Values.commit $.Values.deployment }}
+  # Not on the pods: a new deployment of the same commit restarts nothing.
+  annotations:
+    {{- with $.Values.commit }}
+    hopcharlie.dev/commit: {{ . | quote }}
+    {{- end }}
+    {{- with $.Values.deployment }}
+    hopcharlie.dev/deployment: {{ . | quote }}
+    {{- end }}
+  {{- end }}
+spec:
+  replicas: {{ $svc.replicas | default 1 }}
+  revisionHistoryLimit: 3
+  # A new version that never becomes ready stops here; the old pods serve.
+  progressDeadlineSeconds: {{ $profile.progressDeadlineSeconds }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "hopcharlie-app.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hopcharlie-app.labels" $ctx | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT style variables next to the platform's own.
+      enableServiceLinks: false
+      {{- with $profile.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $profile.runAsUser }}
+        runAsGroup: {{ $profile.runAsUser }}
+        fsGroup: {{ $profile.runAsUser }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ $svc.name }}
+          image: {{ $svc.image | quote }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+          env:
+            {{- include "hopcharlie-app.platformEnv" $ctx | nindent 12 }}
+            {{- range $k, $v := $svc.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- if $svc.healthCheck }}
+          # Up to 3 minutes to start (an app may wait for its database)
+          # before liveness applies.
+          startupProbe:
+            httpGet:
+              path: {{ $svc.healthCheck }}
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: {{ $svc.healthCheck }}
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: {{ $svc.healthCheck }}
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          {{- else }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          {{- end }}
+          {{- with $profile.preStopSleepSeconds }}
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ . }}
+          {{- end }}
+          {{- with $profile.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+{{- end }}

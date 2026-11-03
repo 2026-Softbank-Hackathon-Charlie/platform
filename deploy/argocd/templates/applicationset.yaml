@@ -1,0 +1,81 @@
+{{- /*
+Argo CD renders template and templatePatch as Go templates with the gitops
+file's keys and the file's path as parameters (goTemplate), so its own
+expressions are quoted here as {{`...`}}.
+
+The Application has two sources: the chart, and the gitops repository as
+the ref $gitops. The chart reads the gitops file at the revision Argo CD
+tracks, so status.sync.revisions holds the gitops commit that is deployed,
+and refreshing the Application picks up a new commit. The ApplicationSet
+only creates and deletes Applications.
+*/}}
+{{- $envs := .Values.environments }}
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.argocdNamespace }}
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: {{ .Values.gitops.repoURL | quote }}
+        revision: {{ .Values.gitops.revision | quote }}
+        files:
+          {{- range $env, $_ := $envs }}
+          - path: {{ printf "apps/*/%s.yaml" $env | quote }}
+          {{- end }}
+        {{- with .Values.gitops.requeueAfterSeconds }}
+        requeueAfterSeconds: {{ . }}
+        {{- end }}
+  template:
+    metadata:
+      # The namespace is the instance: unique per file, unlike app.
+      name: '{{`{{ .namespace }}-{{ .env }}`}}'
+      labels:
+        hopcharlie.dev/app: '{{`{{ .app }}`}}'
+        hopcharlie.dev/instance: '{{`{{ .namespace }}`}}'
+        hopcharlie.dev/env: '{{`{{ .env }}`}}'
+      # Deleting the Application (its file is gone) deletes what it created.
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: {{ .Values.name }}
+      sources: [] # per environment, in templatePatch
+      destination:
+        namespace: '{{`{{ .namespace }}`}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        # Without retry, a failed automated sync waits for the next commit.
+        retry:
+          limit: 10
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+        # No CreateNamespace: the chart renders the namespace, so deleting
+        # the Application deletes it too.
+  templatePatch: |
+    spec:
+    {{- range $env, $e := $envs }}
+    {{`{{- if eq .env `}}{{ $env | quote }}{{` }}`}}
+      destination:
+        {{- toYaml $e.cluster | nindent 8 }}
+      sources:
+        - repoURL: {{ $.Values.chart.repoURL | quote }}
+          targetRevision: {{ $.Values.chart.revision | quote }}
+          path: {{ $.Values.chart.path | quote }}
+          helm:
+            releaseName: '{{`{{ .namespace }}`}}'
+            valueFiles:
+              - '{{`$gitops/{{ .path.path }}/{{ .path.filename }}`}}'
+            valuesObject:
+              profile: {{ $e.profile | default dict | toJson }}
+        - repoURL: {{ $.Values.gitops.repoURL | quote }}
+          targetRevision: {{ $.Values.gitops.revision | quote }}
+          ref: gitops
+    {{`{{- end }}`}}
+    {{- end }}

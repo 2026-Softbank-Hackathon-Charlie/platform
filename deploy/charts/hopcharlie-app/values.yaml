@@ -1,0 +1,111 @@
+# Argo CD renders this chart with two sets of values (deploy/argocd):
+#
+#   - the gitops file apps/<instance>/<env>.yaml as a values file, exactly as
+#     the platform wrote it (ADR 0011). It is the contract between the
+#     platform and this chart; values.schema.json checks it.
+#   - profile, the environment's profile.
+#
+# The release namespace is the file's namespace: the app's name, or the
+# instance's for a branch deploy. The chart renders that Namespace, so
+# deleting the Application deletes the namespace and everything in it: the
+# database's volumes and any Secret put there, such as the S3 keys. Object
+# names inside it start with the app's name.
+
+# The gitops file's header. Only values is rendered; the commit and the
+# deployment annotate the Deployments.
+app: ""
+env: ""
+namespace: ""
+commit: ""
+deployment: ""
+
+values:
+  app: ""
+  # One Deployment and one Service <app>-<name> per service.
+  #   - name: web
+  #     image: registry/hopcharlie/apps/<app>/web@sha256:...   # pinned by digest
+  #     port: 8080            # containerPort, Service port and PORT
+  #     healthCheck: /healthz # optional HTTP path for the probes
+  #     public: true          # served at https://<app>.<domain>; at most one
+  #     replicas: 1
+  #     env: {KEY: value}     # strings; never PORT, DATABASE_URL or S3_*
+  services: []
+  # At most one of each type.
+  #   - {name: db, type: postgres}   # CNPG Cluster <app>-db; DATABASE_URL
+  #   - {name: photos, type: s3}     # S3_* from profile.s3
+  resources: []
+
+profile:
+  # The Service of the public service, which the traffic gateway reaches.
+  # Production uses an internal load balancer; other services are always
+  # ClusterIP.
+  publicService:
+    type: ClusterIP
+    annotations: {}
+
+  # Names of Secrets in the namespace for pulling the images.
+  imagePullSecrets: []
+
+  # Requests and limits of every service's container.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+  # How long a new version may take to become ready. Past it the Deployment
+  # reports ProgressDeadlineExceeded, which Argo CD shows as Degraded, and
+  # the pods of the old version keep serving (maxUnavailable 0).
+  progressDeadlineSeconds: 180
+
+  # A pod that is stopping keeps serving this long, until every node has
+  # taken it out of its Service, before it gets SIGTERM. 0 turns it off.
+  preStopSleepSeconds: 5
+
+  # Pod Security Standard level of the namespace (enforce, audit, warn);
+  # empty sets no labels.
+  podSecurity: restricted
+
+  # Every container runs as this non-root user, as the restricted Pod
+  # Security Standard requires.
+  runAsUser: 65532
+
+  # postgres resources: a single-instance CloudNativePG Cluster.
+  postgres:
+    storageSize: 1Gi
+    storageClass: ""     # empty: the cluster's default StorageClass
+    resources: {}        # of the Postgres pod
+
+  # s3 resources. The chart sets the variables; the bucket and the Secret
+  # must already exist.
+  s3:
+    endpoint: ""         # S3_ENDPOINT, e.g. https://s3.ap-northeast-2.amazonaws.com
+    region: ""           # S3_REGION
+    pathStyle: false     # S3_PATH_STYLE; true for MinIO
+    bucketPrefix: ""     # S3_BUCKET is <bucketPrefix><namespace>-<resource name>
+    # Secret in the namespace with the key pair (S3_ACCESS_KEY,
+    # S3_SECRET_KEY). Required when the app has an s3 resource.
+    credentialsSecret: ""
+    accessKeyKey: accessKey
+    secretKeyKey: secretKey
+
+  # Guardrails of the namespace, so a new namespace needs no infra change.
+  # With quota, every container needs requests: turn limitRange on too.
+  quota:
+    enabled: false
+    hard: {}             # ResourceQuota spec.hard
+  limitRange:
+    enabled: false       # for containers that set no resources
+    default: {}          # limits
+    defaultRequest: {}   # requests
+    max: {}
+  networkPolicy:
+    enabled: false
+    # Ingress: the namespace itself, the CNPG operator and gatewayFrom
+    # (NetworkPolicyPeers: where the traffic gateway connects from).
+    gatewayFrom: []
+    operatorNamespace: cnpg-system
+    # Egress: the namespace itself, DNS, TCP 443 and extraEgress
+    # (NetworkPolicyEgressRules, e.g. an S3 endpoint on another port).
+    extraEgress: []

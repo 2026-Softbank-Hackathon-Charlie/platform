@@ -92,6 +92,12 @@ jobs:
           go generate ./pkg/apiv1/...
           git diff --exit-code -- pkg/apiv1
 
+      # test/charts runs helm lint and helm template on deploy/charts and
+      # deploy/argocd; pinned so its results do not change with the runner.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.22.1
+
       # No -count=1: packages whose code, test files and environment did not
       # change since main's run reuse their cached result.
       - name: Test (race, PostgreSQL)
