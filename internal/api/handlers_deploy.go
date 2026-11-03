@@ -26,6 +26,13 @@ type AppRemover interface {
 	// gateway holds its writes, deploy.ErrGitOps and deploy.ErrGateway when
 	// those could not be reached.
 	RemoveApp(ctx context.Context, name string) error
+	// RemoveInstance removes the instance of an added branch of an app: it
+	// supersedes the instance's unfinished deployments, commits the removal
+	// of apps/<instance>/ from the gitops repository, removes the instance
+	// from the traffic gateway and deletes the branch with its deployments
+	// from the store. store.ErrNotFound when the app does not have the
+	// branch; otherwise the same errors as RemoveApp.
+	RemoveInstance(ctx context.Context, app, branch string) error
 }
 
 // DeploymentEventPoll is how often a deployment's event stream reads new

@@ -36,6 +36,16 @@ func (f *fakeRemover) RemoveApp(_ context.Context, name string) error {
 	return nil
 }
 
+func (f *fakeRemover) RemoveInstance(_ context.Context, app, branch string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.removed = append(f.removed, app+"@"+branch)
+	return nil
+}
+
 func withRemover(rm *fakeRemover) option {
 	return func(_ *harness, _ *runs.Config, d *Deps) { d.Remover = rm }
 }
