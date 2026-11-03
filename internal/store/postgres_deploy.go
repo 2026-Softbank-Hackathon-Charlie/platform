@@ -80,9 +80,10 @@ func (s *Postgres) UpdateApp(ctx context.Context, a App) error {
 }
 
 // DeleteApp deletes the app row first. Its lock waits for a CreateDeployment
-// that holds the row, so the deployments deleted next include that one; a
-// later create finds no app. Deleting the deployments waits for appends that
-// hold them, so the events deleted last include theirs.
+// or CreateAppBranch that holds the row, so the branches and deployments
+// deleted next include theirs; a later create finds no app. Deleting the
+// deployments waits for appends that hold them, so the events deleted last
+// include theirs.
 func (s *Postgres) DeleteApp(ctx context.Context, name string) error {
 	if !Clean(name) {
 		return fmt.Errorf("%w: app %q", ErrNotFound, name)
@@ -100,7 +101,19 @@ func (s *Postgres) DeleteApp(ctx context.Context, name string) error {
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%w: app %s", ErrNotFound, name)
 	}
-	rows, err := tx.Query(ctx, `DELETE FROM deployments WHERE app = $1 RETURNING id`, name)
+	if _, err := tx.Exec(ctx, `DELETE FROM app_branches WHERE app = $1`, name); err != nil {
+		return err
+	}
+	if err := deleteDeployments(ctx, tx, `app = $1`, name); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// deleteDeployments deletes the deployments that match where, then their
+// events.
+func deleteDeployments(ctx context.Context, tx pgx.Tx, where string, args ...any) error {
+	rows, err := tx.Query(ctx, `DELETE FROM deployments WHERE `+where+` RETURNING id`, args...)
 	if err != nil {
 		return err
 	}
@@ -108,19 +121,133 @@ func (s *Postgres) DeleteApp(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM deployment_events WHERE deployment_id = ANY($1::text[])`, ids); err != nil {
+	_, err = tx.Exec(ctx, `DELETE FROM deployment_events WHERE deployment_id = ANY($1::text[])`, ids)
+	return err
+}
+
+const appBranchColumns = `app, branch, instance, auto_deploy, spec, spec_commit, created_by, created_at`
+
+func scanAppBranch(row pgx.Row) (AppBranch, error) {
+	var b AppBranch
+	err := row.Scan(&b.App, &b.Branch, &b.Instance, &b.AutoDeploy, &b.Spec, &b.SpecCommit, &b.CreatedBy, &b.CreatedAt)
+	if err != nil {
+		return AppBranch{}, err
+	}
+	b.CreatedAt = b.CreatedAt.UTC()
+	return b, nil
+}
+
+// CreateAppBranch holds the app row (FOR SHARE) while it checks and inserts,
+// so a DeleteApp waits for it and then removes the new branch too, and the
+// app's branch cannot change in between.
+func (s *Postgres) CreateAppBranch(ctx context.Context, b AppBranch) error {
+	if !Clean(b.App) {
+		return fmt.Errorf("%w: app %q", ErrNotFound, b.App)
+	}
+	b, err := b.Clean()
+	if err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	var appBranch string
+	err = tx.QueryRow(ctx, `SELECT branch FROM apps WHERE name = $1 FOR SHARE`, b.App).Scan(&appBranch)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: app %s", ErrNotFound, b.App)
+	}
+	if err != nil {
+		return err
+	}
+	if b.Branch == appBranch {
+		return fmt.Errorf("%w: %s is the branch of app %s", ErrConflict, b.Branch, b.App)
+	}
+	var taken bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM apps WHERE name = $1)`, b.Instance).Scan(&taken); err != nil {
+		return err
+	}
+	if taken {
+		return fmt.Errorf("%w: instance name %s is an app's name", ErrConflict, b.Instance)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO app_branches (`+appBranchColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		b.App, b.Branch, b.Instance, b.AutoDeploy, b.Spec, b.SpecCommit, b.CreatedBy, b.CreatedAt)
+	if isUniqueViolation(err) {
+		return fmt.Errorf("%w: app %s has branch %s, or instance %s exists", ErrConflict, b.App, b.Branch, b.Instance)
+	}
+	if err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-const deploymentColumns = `id, app, ref, commit_sha, trigger, triggered_by, status, images, environments,
+func (s *Postgres) ListAppBranches(ctx context.Context, app string) ([]AppBranch, error) {
+	if !Clean(app) {
+		return []AppBranch{}, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+appBranchColumns+` FROM app_branches
+		WHERE app = $1 ORDER BY branch COLLATE "C"`, app)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, scanAppBranch)
+}
+
+func (s *Postgres) UpdateAppBranch(ctx context.Context, b AppBranch) error {
+	if !Clean(b.App) || !Clean(b.Branch) {
+		return fmt.Errorf("%w: app %q branch %q", ErrNotFound, b.App, b.Branch)
+	}
+	b, err := b.Clean()
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE app_branches SET auto_deploy = $3, spec = $4, spec_commit = $5
+		WHERE app = $1 AND branch = $2`, b.App, b.Branch, b.AutoDeploy, b.Spec, b.SpecCommit)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: app %s branch %s", ErrNotFound, b.App, b.Branch)
+	}
+	return nil
+}
+
+// DeleteAppBranch deletes the branch row first. Its lock waits for a
+// CreateDeployment that holds the row, so the deployments deleted next
+// include that one; a later create finds no branch.
+func (s *Postgres) DeleteAppBranch(ctx context.Context, app, branch string) error {
+	if !Clean(app) || !Clean(branch) {
+		return fmt.Errorf("%w: app %q branch %q", ErrNotFound, app, branch)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	var instance string
+	err = tx.QueryRow(ctx, `DELETE FROM app_branches WHERE app = $1 AND branch = $2 RETURNING instance`, app, branch).Scan(&instance)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: app %s branch %s", ErrNotFound, app, branch)
+	}
+	if err != nil {
+		return err
+	}
+	if err := deleteDeployments(ctx, tx, `app = $1 AND instance = $2`, app, instance); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+const deploymentColumns = `id, app, branch, instance, ref, commit_sha, trigger, triggered_by, status, images, environments,
 	error, build_id, created_at, started_at, finished_at`
 
 func scanDeployment(row pgx.Row) (Deployment, error) {
 	var d Deployment
 	var images, envs []byte
-	err := row.Scan(&d.ID, &d.App, &d.Ref, &d.Commit, &d.Trigger, &d.TriggeredBy, &d.Status, &images, &envs,
+	err := row.Scan(&d.ID, &d.App, &d.Branch, &d.Instance, &d.Ref, &d.Commit, &d.Trigger, &d.TriggeredBy, &d.Status, &images, &envs,
 		&d.Error, &d.BuildID, &d.CreatedAt, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return Deployment{}, err
@@ -156,10 +283,12 @@ func deploymentJSON(d Deployment) (images, envs []byte, err error) {
 }
 
 // CreateDeployment holds the app row (FOR SHARE) while it inserts, so a
-// DeleteApp waits for it and then removes the new deployment too.
+// DeleteApp waits for it and then removes the new deployment too. A
+// deployment of an added branch also holds the branch row (FOR SHARE), so a
+// DeleteAppBranch waits for it the same way.
 func (s *Postgres) CreateDeployment(ctx context.Context, d Deployment) error {
-	if !Clean(d.App) {
-		return fmt.Errorf("%w: app %q", ErrNotFound, d.App)
+	if !Clean(d.App) || !Clean(d.Branch) || !Clean(d.Instance) {
+		return fmt.Errorf("%w: app %q instance %q", ErrNotFound, d.App, d.Instance)
 	}
 	d = d.Clean()
 	images, envs, err := deploymentJSON(d)
@@ -172,17 +301,28 @@ func (s *Postgres) CreateDeployment(ctx context.Context, d Deployment) error {
 	}
 	defer tx.Rollback(ctx) // no-op after Commit
 
-	var one int
-	err = tx.QueryRow(ctx, `SELECT 1 FROM apps WHERE name = $1 FOR SHARE`, d.App).Scan(&one)
+	var appBranch string
+	err = tx.QueryRow(ctx, `SELECT branch FROM apps WHERE name = $1 FOR SHARE`, d.App).Scan(&appBranch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: app %s", ErrNotFound, d.App)
 	}
 	if err != nil {
 		return err
 	}
+	if d.Branch != appBranch || d.Instance != d.App {
+		var one int
+		err = tx.QueryRow(ctx, `SELECT 1 FROM app_branches WHERE app = $1 AND branch = $2 AND instance = $3 FOR SHARE`,
+			d.App, d.Branch, d.Instance).Scan(&one)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: app %s has no instance %s of branch %s", ErrNotFound, d.App, d.Instance, d.Branch)
+		}
+		if err != nil {
+			return err
+		}
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO deployments (`+deploymentColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-		d.ID, d.App, d.Ref, d.Commit, d.Trigger, d.TriggeredBy, d.Status, images, envs,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		d.ID, d.App, d.Branch, d.Instance, d.Ref, d.Commit, d.Trigger, d.TriggeredBy, d.Status, images, envs,
 		d.Error, d.BuildID, d.CreatedAt, d.StartedAt, d.FinishedAt)
 	if isUniqueViolation(err) {
 		return fmt.Errorf("%w: deployment %s exists", ErrConflict, d.ID)

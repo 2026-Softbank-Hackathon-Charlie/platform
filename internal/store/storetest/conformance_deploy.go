@@ -21,7 +21,13 @@ func ConformanceDeploy(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"AppList", testAppList},
 		{"AppUpdate", testAppUpdate},
 		{"AppDelete", testAppDelete},
+		{"AppDeleteBranches", testAppDeleteBranches},
+		{"AppBranchCreateList", testAppBranchCreateList},
+		{"AppBranchUpdate", testAppBranchUpdate},
+		{"AppBranchDelete", testAppBranchDelete},
+		{"AppBranchDeleteRace", testAppBranchDeleteRace},
 		{"DeploymentCreateGet", testDeploymentCreateGet},
+		{"DeploymentInstance", testDeploymentInstance},
 		{"DeploymentList", testDeploymentList},
 		{"DeploymentUpdate", testDeploymentUpdate},
 		{"DeploymentSupersedeRace", testDeploymentSupersedeRace},
@@ -56,10 +62,27 @@ func newApp(name string, createdAt int) store.App {
 	}
 }
 
+func newAppBranch(app, branch, instance string, createdAt int) store.AppBranch {
+	return store.AppBranch{
+		App:        app,
+		Branch:     branch,
+		Instance:   instance,
+		AutoDeploy: true,
+		Spec:       []byte(`{"name": "` + app + `", "services": [{"name": "web", "path": ".", "dockerfile": "Dockerfile", "port": 8080, "public": true, "replicas": 1}]}`),
+		SpecCommit: "1e4d0f8c2b7a9e3f5d6c8b1a0f2e4d6c8b0a1f3e",
+		CreatedBy:  "seohyun",
+		CreatedAt:  at(createdAt),
+	}
+}
+
+// newDeployment is a deployment into app's default instance, as newApp
+// registers it.
 func newDeployment(id, app string, createdAt int) store.Deployment {
 	return store.Deployment{
 		ID:          id,
 		App:         app,
+		Branch:      "main",
+		Instance:    app,
 		Ref:         "main",
 		Commit:      "9fceb02d0ae598e95dc970b74767f19372d61af8",
 		Trigger:     "push",
@@ -102,6 +125,20 @@ func eqDeployment(t *testing.T, got, want store.Deployment) {
 	eqFields(t, "deployment "+want.ID, got, want)
 }
 
+// branchDeployment is a deployment into an added branch's instance.
+func branchDeployment(id string, b store.AppBranch, createdAt int) store.Deployment {
+	d := newDeployment(id, b.App, createdAt)
+	d.Branch, d.Instance, d.Ref = b.Branch, b.Instance, b.Branch
+	return d
+}
+
+func eqAppBranch(t *testing.T, got, want store.AppBranch) {
+	t.Helper()
+	got.Spec, want.Spec = canonJSON(t, got.Spec), canonJSON(t, want.Spec)
+	want.CreatedAt = pg(want.CreatedAt)
+	eqFields(t, "app "+want.App+" branch "+want.Branch, got, want)
+}
+
 func eqDeploymentEvent(t *testing.T, got, want store.DeploymentEvent) {
 	t.Helper()
 	want.Time = pg(want.Time)
@@ -112,6 +149,14 @@ func appNames(as []store.App) []string {
 	out := []string{}
 	for _, a := range as {
 		out = append(out, a.Name)
+	}
+	return out
+}
+
+func branchNames(bs []store.AppBranch) []string {
+	out := []string{}
+	for _, b := range bs {
+		out = append(out, b.Branch)
 	}
 	return out
 }
@@ -244,6 +289,270 @@ func testAppDelete(t *testing.T, s store.Store) {
 	}
 }
 
+// testAppDeleteBranches deletes an app with added branches: they go with
+// it, with their deployments, and their instance names are free again.
+func testAppDeleteBranches(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
+	must(t, s.CreateApp(ctx, newApp("shop", 0)))
+	dev := newAppBranch("moimroom", "dev", "moimroom--dev", 0)
+	must(t, s.CreateAppBranch(ctx, dev))
+	must(t, s.CreateAppBranch(ctx, newAppBranch("shop", "dev", "shop--dev", 0)))
+	must(t, s.CreateDeployment(ctx, branchDeployment("dep_dev", dev, 1)))
+	_, err := s.AppendDeploymentEvent(ctx, store.DeploymentEvent{DeploymentID: "dep_dev", Time: at(2), Type: "log"})
+	must(t, err)
+
+	must(t, s.DeleteApp(ctx, "moimroom"))
+	list, err := s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	if list == nil || len(list) != 0 {
+		t.Fatalf("a deleted app lists branches %v, want an empty non-nil slice", branchNames(list))
+	}
+	_, err = s.GetDeployment(ctx, "dep_dev")
+	wantErr(t, err, store.ErrNotFound)
+	events, err := s.ListDeploymentEvents(ctx, "dep_dev", 0, 0)
+	must(t, err)
+	if len(events) != 0 {
+		t.Fatalf("dep_dev keeps %d events after its app was deleted", len(events))
+	}
+	wantErr(t, s.CreateAppBranch(ctx, dev), store.ErrNotFound)
+	list, err = s.ListAppBranches(ctx, "shop")
+	must(t, err)
+	eqList(t, "the other app's branches", branchNames(list), []string{"dev"})
+
+	// Registering the name again starts with no branches, and the instance
+	// name is free.
+	must(t, s.CreateApp(ctx, newApp("moimroom", 3)))
+	list, err = s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	if len(list) != 0 {
+		t.Fatalf("a re-registered app lists branches %v", branchNames(list))
+	}
+	must(t, s.CreateAppBranch(ctx, dev))
+}
+
+func testAppBranchCreateList(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
+	must(t, s.CreateApp(ctx, newApp("shop", 0)))
+	for _, app := range []string{"moimroom", "shop", "nobody"} {
+		list, err := s.ListAppBranches(ctx, app)
+		must(t, err)
+		if list == nil || len(list) != 0 {
+			t.Fatalf("ListAppBranches(%s) = %v before any branch, want an empty non-nil slice", app, list)
+		}
+	}
+
+	// By branch in byte order, not by creation and not by a locale collation
+	// that ignores case or hyphens.
+	for i, branch := range []string{"feature/x", "dev", "Dev", "a-z", "az"} {
+		must(t, s.CreateAppBranch(ctx, newAppBranch("moimroom", branch, fmt.Sprintf("moimroom--b%d", i), -i)))
+	}
+	all := []string{"Dev", "a-z", "az", "dev", "feature/x"}
+	list, err := s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	eqList(t, "ListAppBranches(moimroom)", branchNames(list), all)
+	eqAppBranch(t, list[3], newAppBranch("moimroom", "dev", "moimroom--b1", -1))
+
+	// The same branch in another app is another instance. No spec: nil comes
+	// back.
+	must(t, s.CreateAppBranch(ctx, newAppBranch("shop", "dev", "shop--dev", 1)))
+	bare := store.AppBranch{App: "shop", Branch: "bare", Instance: "shop--bare", CreatedAt: at(2)}
+	must(t, s.CreateAppBranch(ctx, bare))
+	list, err = s.ListAppBranches(ctx, "shop")
+	must(t, err)
+	eqList(t, "ListAppBranches(shop)", branchNames(list), []string{"bare", "dev"})
+	eqAppBranch(t, list[0], bare)
+
+	for _, c := range []struct {
+		name string
+		b    store.AppBranch
+		want error
+	}{
+		{"the app's own branch", newAppBranch("moimroom", "main", "moimroom--main", 3), store.ErrConflict},
+		{"a branch the app has", newAppBranch("moimroom", "dev", "moimroom--dev", 3), store.ErrConflict},
+		{"an instance another app's branch has", newAppBranch("shop", "feature/x", "moimroom--b0", 3), store.ErrConflict},
+		{"an instance another branch of the app has", newAppBranch("moimroom", "release", "moimroom--b0", 3), store.ErrConflict},
+		{"an instance that is another app's name", newAppBranch("moimroom", "release", "shop", 3), store.ErrConflict},
+		{"an instance that is the app's name", newAppBranch("moimroom", "release", "moimroom", 3), store.ErrConflict},
+		{"an app that does not exist", newAppBranch("nobody", "dev", "nobody--dev", 3), store.ErrNotFound},
+	} {
+		if err := s.CreateAppBranch(ctx, c.b); !errors.Is(err, c.want) {
+			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)
+		}
+	}
+	if err := s.CreateAppBranch(ctx, store.AppBranch{App: "moimroom", Branch: "badspec", Instance: "moimroom--badspec", Spec: []byte(`{"name":`), CreatedAt: at(4)}); err == nil {
+		t.Fatal("a branch whose spec is not JSON was stored")
+	}
+	// The refused creates changed nothing.
+	list, err = s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	eqList(t, "ListAppBranches(moimroom) after refused creates", branchNames(list), all)
+	eqAppBranch(t, list[3], newAppBranch("moimroom", "dev", "moimroom--b1", -1))
+}
+
+func testAppBranchUpdate(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
+	b := newAppBranch("moimroom", "dev", "moimroom--dev", 1)
+	must(t, s.CreateAppBranch(ctx, b))
+	get := func() store.AppBranch {
+		t.Helper()
+		list, err := s.ListAppBranches(ctx, "moimroom")
+		must(t, err)
+		if len(list) != 1 {
+			t.Fatalf("branches %v, want dev", branchNames(list))
+		}
+		return list[0]
+	}
+
+	u := b
+	u.AutoDeploy, u.Spec, u.SpecCommit = false, []byte(`{"name": "moimroom", "services": []}`), "2222222222222222222222222222222222222222"
+	// Instance, CreatedBy and CreatedAt are not updated.
+	u.Instance, u.CreatedBy, u.CreatedAt = "moimroom--other", "mallory", at(9)
+	must(t, s.UpdateAppBranch(ctx, u))
+	want := b
+	want.AutoDeploy, want.Spec, want.SpecCommit = u.AutoDeploy, u.Spec, u.SpecCommit
+	eqAppBranch(t, get(), want)
+
+	// The spec can go back to none.
+	u.Spec = nil
+	must(t, s.UpdateAppBranch(ctx, u))
+	want.Spec = nil
+	eqAppBranch(t, get(), want)
+
+	wantErr(t, s.UpdateAppBranch(ctx, newAppBranch("moimroom", "missing", "moimroom--missing", 0)), store.ErrNotFound)
+	// The default instance is the app's; UpdateApp changes it.
+	wantErr(t, s.UpdateAppBranch(ctx, newAppBranch("moimroom", "main", "moimroom", 0)), store.ErrNotFound)
+	wantErr(t, s.UpdateAppBranch(ctx, newAppBranch("nobody", "dev", "nobody--dev", 0)), store.ErrNotFound)
+	bad := want
+	bad.Spec = []byte(`{"name":`)
+	if err := s.UpdateAppBranch(ctx, bad); err == nil {
+		t.Fatal("a branch spec that is not JSON was stored")
+	}
+	eqAppBranch(t, get(), want)
+}
+
+// testAppBranchDelete deletes an added branch: the deployments into its
+// instance go with it, and nothing of the app's other instances or of the
+// other app's branch of the same name.
+func testAppBranchDelete(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
+	must(t, s.CreateApp(ctx, newApp("shop", 0)))
+	dev := newAppBranch("moimroom", "dev", "moimroom--dev", 0)
+	feature := newAppBranch("moimroom", "feature/x", "moimroom--feature-x", 0)
+	shopDev := newAppBranch("shop", "dev", "shop--dev", 0)
+	for _, b := range []store.AppBranch{dev, feature, shopDev} {
+		must(t, s.CreateAppBranch(ctx, b))
+	}
+	for i, d := range []store.Deployment{
+		newDeployment("dep_main", "moimroom", 1),
+		branchDeployment("dep_dev1", dev, 2),
+		branchDeployment("dep_dev2", dev, 3),
+		branchDeployment("dep_feature", feature, 4),
+		newDeployment("dep_shop", "shop", 5),
+		branchDeployment("dep_shopdev", shopDev, 6),
+	} {
+		must(t, s.CreateDeployment(ctx, d))
+		_, err := s.AppendDeploymentEvent(ctx, store.DeploymentEvent{DeploymentID: d.ID, Time: at(7 + i), Type: "phase", Phase: store.DeployBuilding})
+		must(t, err)
+	}
+
+	must(t, s.DeleteAppBranch(ctx, "moimroom", "dev"))
+	list, err := s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	eqList(t, "moimroom branches after delete", branchNames(list), []string{"feature/x"})
+	for _, id := range []string{"dep_dev1", "dep_dev2"} {
+		_, err := s.GetDeployment(ctx, id)
+		wantErr(t, err, store.ErrNotFound)
+		events, err := s.ListDeploymentEvents(ctx, id, 0, 0)
+		must(t, err)
+		if len(events) != 0 {
+			t.Fatalf("%s keeps %d events after its branch was deleted", id, len(events))
+		}
+	}
+	deps, err := s.ListDeployments(ctx, "moimroom", 0)
+	must(t, err)
+	eqList(t, "moimroom deployments after delete", deploymentIDs(deps), []string{"dep_feature", "dep_main"})
+	for _, id := range []string{"dep_main", "dep_feature", "dep_shop", "dep_shopdev"} {
+		events, err := s.ListDeploymentEvents(ctx, id, 0, 0)
+		must(t, err)
+		if len(events) != 1 {
+			t.Fatalf("%s has %d events after another branch was deleted, want 1", id, len(events))
+		}
+	}
+	list, err = s.ListAppBranches(ctx, "shop")
+	must(t, err)
+	eqList(t, "shop branches", branchNames(list), []string{"dev"})
+
+	wantErr(t, s.DeleteAppBranch(ctx, "moimroom", "dev"), store.ErrNotFound)
+	// The default instance is not an added branch; it goes with the app.
+	wantErr(t, s.DeleteAppBranch(ctx, "moimroom", "main"), store.ErrNotFound)
+	wantErr(t, s.DeleteAppBranch(ctx, "nobody", "dev"), store.ErrNotFound)
+	wantErr(t, s.CreateDeployment(ctx, branchDeployment("dep_dev3", dev, 9)), store.ErrNotFound)
+	if _, err := s.GetApp(ctx, "moimroom"); err != nil {
+		t.Fatalf("deleting a branch touched the app: %v", err)
+	}
+
+	// Adding the branch again starts with no history.
+	must(t, s.CreateAppBranch(ctx, dev))
+	deps, err = s.ListDeployments(ctx, "moimroom", 0)
+	must(t, err)
+	eqList(t, "moimroom deployments after adding dev again", deploymentIDs(deps), []string{"dep_feature", "dep_main"})
+}
+
+// testAppBranchDeleteRace deletes a branch while deployments into its
+// instance are created, and an app while branches are added to it: each
+// create either fails as not found or is deleted with the rest, so nothing
+// of the branch or the app is left.
+func testAppBranchDeleteRace(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
+	dev := newAppBranch("moimroom", "dev", "moimroom--dev", 0)
+	must(t, s.CreateAppBranch(ctx, dev))
+
+	const n = 8
+	errs := make([]error, n+1)
+	parallel(n+1, func(i int) {
+		if i == n {
+			errs[i] = s.DeleteAppBranch(ctx, "moimroom", "dev")
+			return
+		}
+		if err := s.CreateDeployment(ctx, branchDeployment(fmt.Sprintf("dep_%d", i), dev, i)); !errors.Is(err, store.ErrNotFound) {
+			errs[i] = err
+		}
+	})
+	for _, err := range errs {
+		must(t, err)
+	}
+	deps, err := s.ListDeployments(ctx, "moimroom", 0)
+	must(t, err)
+	if len(deps) != 0 {
+		t.Fatalf("deployments %v outlived their branch", deploymentIDs(deps))
+	}
+
+	errs = make([]error, n+1)
+	parallel(n+1, func(i int) {
+		if i == n {
+			errs[i] = s.DeleteApp(ctx, "moimroom")
+			return
+		}
+		b := newAppBranch("moimroom", fmt.Sprintf("b%d", i), fmt.Sprintf("moimroom--b%d", i), i)
+		if err := s.CreateAppBranch(ctx, b); !errors.Is(err, store.ErrNotFound) {
+			errs[i] = err
+		}
+	})
+	for _, err := range errs {
+		must(t, err)
+	}
+	branches, err := s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	if len(branches) != 0 {
+		t.Fatalf("branches %v outlived their app", branchNames(branches))
+	}
+}
+
 func testDeploymentCreateGet(t *testing.T, s store.Store) {
 	ctx := t.Context()
 	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
@@ -279,6 +588,43 @@ func testDeploymentCreateGet(t *testing.T, s store.Store) {
 	wantErr(t, s.CreateDeployment(ctx, newDeployment("dep_9", "nobody", 5)), store.ErrNotFound)
 	_, err = s.GetDeployment(ctx, "dep_missing")
 	wantErr(t, err, store.ErrNotFound)
+}
+
+// testDeploymentInstance creates deployments into an app's instances: the
+// default one (the app's branch and name) and an added branch's. Any other
+// branch and instance is not found.
+func testDeploymentInstance(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
+	must(t, s.CreateApp(ctx, newApp("shop", 0)))
+	dev := newAppBranch("moimroom", "dev", "moimroom--dev", 0)
+	must(t, s.CreateAppBranch(ctx, dev))
+	must(t, s.CreateAppBranch(ctx, newAppBranch("shop", "release", "shop--release", 0)))
+
+	for _, d := range []store.Deployment{newDeployment("dep_main", "moimroom", 1), branchDeployment("dep_dev", dev, 2)} {
+		must(t, s.CreateDeployment(ctx, d))
+		got, err := s.GetDeployment(ctx, d.ID)
+		must(t, err)
+		eqDeployment(t, got, d)
+	}
+	for i, c := range []struct{ name, branch, instance string }{
+		{"the app's branch with the added branch's instance", "main", "moimroom--dev"},
+		{"the added branch with the app's instance", "dev", "moimroom"},
+		{"a branch the app does not deploy", "feature/x", "moimroom--feature-x"},
+		{"another app's default instance", "main", "shop"},
+		{"another app's added branch", "release", "shop--release"},
+		{"no branch and no instance", "", ""},
+	} {
+		d := newDeployment(fmt.Sprintf("dep_x%d", i), "moimroom", 3)
+		d.Branch, d.Instance = c.branch, c.instance
+		if err := s.CreateDeployment(ctx, d); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s: err = %v, want %v", c.name, err, store.ErrNotFound)
+		}
+	}
+	// An app's deployments are those of all its instances.
+	list, err := s.ListDeployments(ctx, "moimroom", 0)
+	must(t, err)
+	eqList(t, "ListDeployments(moimroom)", deploymentIDs(list), []string{"dep_dev", "dep_main"})
 }
 
 func testDeploymentList(t *testing.T, s store.Store) {
@@ -319,8 +665,9 @@ func testDeploymentUpdate(t *testing.T, s store.Store) {
 	u.Status, u.BuildID, u.StartedAt = store.DeployBuilding, "build-1", ptr(at(1))
 	u.Images = []store.DeploymentImage{{Service: "web", Image: "r/hopcharlie/apps/moimroom/web@sha256:aa"}}
 	u.Environments = []store.DeploymentEnvironment{{Env: "gke", Status: "syncing", SyncStatus: "OutOfSync"}, {Env: "eks", Status: "pending"}}
-	// App, Ref, Commit, Trigger, TriggeredBy and CreatedAt are not updated.
-	u.App, u.Ref, u.Commit, u.Trigger, u.TriggeredBy, u.CreatedAt = "shop", "dev", "0000", "manual", "mallory", at(5)
+	// App, Branch, Instance, Ref, Commit, Trigger, TriggeredBy and CreatedAt
+	// are not updated.
+	u.App, u.Branch, u.Instance, u.Ref, u.Commit, u.Trigger, u.TriggeredBy, u.CreatedAt = "shop", "dev", "shop--dev", "dev", "0000", "manual", "mallory", at(5)
 	got, err := s.UpdateDeployment(ctx, u)
 	must(t, err)
 	want := d
@@ -599,6 +946,26 @@ func testDeployCopies(t *testing.T, s store.Store) {
 	out, err = s.GetDeployment(ctx, "dep_1")
 	must(t, err)
 	eqDeployment(t, out, want)
+
+	branch := func() store.AppBranch { return newAppBranch("moimroom", "dev", "moimroom--dev", 0) }
+	b := branch()
+	must(t, s.CreateAppBranch(ctx, b))
+	b.Spec[2] = 'X' // the caller's spec
+	list, err := s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	list[0].Spec[2] = 'X' // a reader's spec
+	list, err = s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	eqAppBranch(t, list[0], branch())
+	ub := branch()
+	ub.SpecCommit = "3333333333333333333333333333333333333333"
+	must(t, s.UpdateAppBranch(ctx, ub))
+	ub.Spec[2] = 'X' // the updater's spec
+	wantB := branch()
+	wantB.SpecCommit = ub.SpecCommit
+	list, err = s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	eqAppBranch(t, list[0], wantB)
 }
 
 // testDeployText stores strings with NUL and invalid UTF-8, which PostgreSQL
@@ -638,6 +1005,32 @@ func testDeployText(t *testing.T, s store.Store) {
 		t.Fatalf("updated status %q error %q", gotD.Status, gotD.Error)
 	}
 
+	b := newAppBranch("moimroom", "de\x00v", "moimroom--d\x00ev", 2)
+	b.SpecCommit, b.CreatedBy = "cd\xfe", "seo\x00hyun"
+	b.Spec = []byte(`{"name": "moim\u0000room", "x": "\ud800"}`)
+	must(t, s.CreateAppBranch(ctx, b))
+	wantB := newAppBranch("moimroom", "dev", "moimroom--dev", 2)
+	wantB.SpecCommit, wantB.CreatedBy = "cd�", "seohyun"
+	wantB.Spec = []byte(`{"name": "moimroom", "x": "�"}`)
+	branches, err := s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	if len(branches) != 1 {
+		t.Fatalf("branches %v, want dev", branchNames(branches))
+	}
+	eqAppBranch(t, branches[0], wantB)
+	ub := wantB
+	ub.SpecCommit, ub.Spec = "ef\x00", []byte(`{"name": "\u0000"}`)
+	must(t, s.UpdateAppBranch(ctx, ub))
+	wantB.SpecCommit, wantB.Spec = "ef", []byte(`{"name": ""}`)
+	branches, err = s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	eqAppBranch(t, branches[0], wantB)
+	bd := branchDeployment("dep_b", wantB, 2)
+	must(t, s.CreateDeployment(ctx, bd))
+	gotD, err = s.GetDeployment(ctx, "dep_b")
+	must(t, err)
+	eqDeployment(t, gotD, bd)
+
 	e, err := s.AppendDeploymentEvent(ctx, store.DeploymentEvent{DeploymentID: "dep_1", Time: at(2), Type: "l\x00og", Phase: "build\xffing", Env: "e\x00ks",
 		Message: "#5 \x1b[31mred\x1b[0m \x00\xff"})
 	must(t, err)
@@ -658,6 +1051,15 @@ func testDeployText(t *testing.T, s store.Store) {
 	wantErr(t, s.UpdateApp(ctx, upd), store.ErrNotFound)
 	wantErr(t, s.DeleteApp(ctx, "moimroom\x00"), store.ErrNotFound)
 	wantErr(t, s.CreateDeployment(ctx, newDeployment("dep_2", "moim\x00room", 3)), store.ErrNotFound)
+	for _, d := range []store.Deployment{branchDeployment("dep_3", b, 3), newDeployment("dep_4", "moimroom", 3)} {
+		d.Instance += "\xff"
+		wantErr(t, s.CreateDeployment(ctx, d), store.ErrNotFound)
+	}
+	wantErr(t, s.CreateAppBranch(ctx, newAppBranch("moim\x00room", "rel", "moimroom--rel", 3)), store.ErrNotFound)
+	for _, u := range []store.AppBranch{{App: "moimroom\xff", Branch: "dev"}, {App: "moimroom", Branch: "d\x00ev"}} {
+		wantErr(t, s.UpdateAppBranch(ctx, u), store.ErrNotFound)
+		wantErr(t, s.DeleteAppBranch(ctx, u.App, u.Branch), store.ErrNotFound)
+	}
 	_, err = s.GetDeployment(ctx, "dep\x00_1")
 	wantErr(t, err, store.ErrNotFound)
 	_, err = s.UpdateDeployment(ctx, newDeployment("dep_1\xff", "moimroom", 1))
@@ -668,12 +1070,20 @@ func testDeployText(t *testing.T, s store.Store) {
 	must(t, err)
 	evs, err := s.ListDeploymentEvents(ctx, "dep_1\xff", 0, 0)
 	must(t, err)
-	if deps == nil || len(deps) != 0 || evs == nil || len(evs) != 0 {
-		t.Fatalf("lookups by unclean keys: deployments %v, events %v", deps, evs)
+	brs, err := s.ListAppBranches(ctx, "moimroom\x00")
+	must(t, err)
+	if deps == nil || len(deps) != 0 || evs == nil || len(evs) != 0 || brs == nil || len(brs) != 0 {
+		t.Fatalf("lookups by unclean keys: deployments %v, events %v, branches %v", deps, evs, brs)
 	}
 	if _, err := s.GetApp(ctx, "moimroom"); err != nil {
 		t.Fatalf("refused writes by unclean keys touched the app: %v", err)
 	}
+	branches, err = s.ListAppBranches(ctx, "moimroom")
+	must(t, err)
+	if len(branches) != 1 {
+		t.Fatalf("refused writes by unclean keys left branches %v, want dev", branchNames(branches))
+	}
+	eqAppBranch(t, branches[0], wantB)
 }
 
 func testWebhookDeliveries(t *testing.T, s store.Store) {

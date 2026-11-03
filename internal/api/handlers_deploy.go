@@ -72,6 +72,10 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if req.Branch != nil && *req.Branch != app.Branch {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("app %s does not deploy branch %q (it deploys %s)", name, *req.Branch, app.Branch))
+		return
+	}
 	targets := app.Environments
 	if req.Environments != nil {
 		asked := *req.Environments

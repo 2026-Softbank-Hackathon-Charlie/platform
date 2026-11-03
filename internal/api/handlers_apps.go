@@ -263,7 +263,8 @@ func registeredOnly(name string, deploy *apiv1.AppDeploy) apiv1.App {
 
 // appDeploy is a registered app's deploy section. deps are its newest
 // deployments, newest first; each environment shows the newest one that
-// reached it.
+// reached it. instances holds the default instance only, built from the
+// same fields.
 func (s *Server) appDeploy(a store.App, deps []store.Deployment) apiv1.AppDeploy {
 	var spec apiv1.AppSpec
 	if err := json.Unmarshal(a.Spec, &spec); err != nil {
@@ -307,6 +308,11 @@ func (s *Server) appDeploy(a store.App, deps []store.Deployment) apiv1.AppDeploy
 		}
 		out.Status = append(out.Status, st)
 	}
+	out.Instances = []apiv1.AppInstance{{
+		Name: a.Name, Branch: out.Branch, Default: true, AutoDeploy: out.AutoDeploy,
+		Spec: out.Spec, SpecCommit: out.SpecCommit, Url: out.Url, CreatedAt: out.CreatedAt, CreatedBy: out.CreatedBy,
+		LastDeployment: out.LastDeployment, Status: out.Status,
+	}}
 	return out
 }
 
@@ -584,14 +590,15 @@ func storeTime() time.Time { return time.Now().UTC().Truncate(time.Microsecond) 
 // newDeploymentID is "dep_" and 12 hex digits.
 func newDeploymentID() string { return "dep_" + randomHex(6) }
 
-// newDeployment is a queued deployment of commit to all of a's environments.
+// newDeployment is a queued deployment of commit into a's default instance,
+// to all of a's environments.
 func newDeployment(a store.App, ref, commit string, trigger apiv1.DeploymentTrigger, by string, now time.Time) store.Deployment {
 	envs := make([]store.DeploymentEnvironment, len(a.Environments))
 	for i, e := range a.Environments {
 		envs[i] = store.DeploymentEnvironment{Env: e, Status: string(apiv1.DeploymentEnvironmentStatusPending)}
 	}
 	return store.Deployment{
-		ID: newDeploymentID(), App: a.Name, Ref: ref, Commit: commit, Trigger: string(trigger), TriggeredBy: by,
+		ID: newDeploymentID(), App: a.Name, Branch: a.Branch, Instance: a.Name, Ref: ref, Commit: commit, Trigger: string(trigger), TriggeredBy: by,
 		Status: store.DeployQueued, Images: []store.DeploymentImage{}, Environments: envs, CreatedAt: now,
 	}
 }
@@ -611,7 +618,7 @@ func (s *Server) enqueue(ctx context.Context, id string) {
 // deploymentJSON is the API form of a stored deployment.
 func deploymentJSON(d store.Deployment) apiv1.Deployment {
 	out := apiv1.Deployment{
-		Id: d.ID, App: d.App, Ref: d.Ref, Commit: d.Commit,
+		Id: d.ID, App: d.App, Branch: d.Branch, Instance: d.Instance, Ref: d.Ref, Commit: d.Commit,
 		Trigger: apiv1.DeploymentTrigger(d.Trigger), TriggeredBy: d.TriggeredBy, Status: apiv1.DeploymentStatus(d.Status),
 		Images:       make([]apiv1.DeploymentImage, len(d.Images)),
 		Environments: make([]apiv1.DeploymentEnvironment, len(d.Environments)),

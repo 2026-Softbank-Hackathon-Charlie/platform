@@ -649,10 +649,15 @@ type AgentSessionTotals struct {
 type App struct {
 	Database AppDatabase `json:"database"`
 
-	// Deploy How the platform deploys a registered app from GitHub. `spec` is the
-	// newest platform.yaml that passed the check, read at `specCommit`: at
-	// registration, and again by every deployment. `lastDeployment` is the
-	// newest deployment, finished or not.
+	// Deploy How the platform deploys a registered app from GitHub. The app
+	// deploys its own `branch` as the default instance, named after the
+	// app, and every branch added with `POST /v1/apps/{name}/instances` as
+	// another instance; `instances` lists them all. The other fields
+	// except `repo`, `environments`, `createdAt` and `createdBy` describe
+	// the default instance. `spec` is the newest platform.yaml on `branch`
+	// that passed the check, read at `specCommit`: at registration, and
+	// again by every deployment. `lastDeployment` is the default
+	// instance's newest deployment, finished or not.
 	Deploy *AppDeploy `json:"deploy,omitempty"`
 
 	// Environments The environments the app runs in according to PLATFORM_APPS_FILE, in PLATFORM_ENVS_FILE order. Empty for an app that is only registered from GitHub (see deploy.environments).
@@ -694,7 +699,7 @@ type AppCreated struct {
 	// `environments`.
 	App App `json:"app"`
 
-	// Deployment One deployment of an app's commit to one or more environments.
+	// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
 	Deployment Deployment `json:"deployment"`
 }
 
@@ -710,10 +715,15 @@ type AppDatabase struct {
 	User string `json:"user"`
 }
 
-// AppDeploy How the platform deploys a registered app from GitHub. `spec` is the
-// newest platform.yaml that passed the check, read at `specCommit`: at
-// registration, and again by every deployment. `lastDeployment` is the
-// newest deployment, finished or not.
+// AppDeploy How the platform deploys a registered app from GitHub. The app
+// deploys its own `branch` as the default instance, named after the
+// app, and every branch added with `POST /v1/apps/{name}/instances` as
+// another instance; `instances` lists them all. The other fields
+// except `repo`, `environments`, `createdAt` and `createdBy` describe
+// the default instance. `spec` is the newest platform.yaml on `branch`
+// that passed the check, read at `specCommit`: at registration, and
+// again by every deployment. `lastDeployment` is the default
+// instance's newest deployment, finished or not.
 type AppDeploy struct {
 	// AutoDeploy every push to branch deploys
 	AutoDeploy bool `json:"autoDeploy"`
@@ -730,7 +740,10 @@ type AppDeploy struct {
 	// Example: ["gke","eks"]
 	Environments []string `json:"environments"`
 
-	// LastDeployment One deployment of an app's commit to one or more environments.
+	// Instances Every instance of the app, the default one first, then the others by branch name.
+	Instances []AppInstance `json:"instances"`
+
+	// LastDeployment One deployment of an app's commit into one of its instances, in one or more environments.
 	LastDeployment *Deployment `json:"lastDeployment,omitempty"`
 
 	// Repo Example: 2026-Softbank-Hackathon-Charlie/moimroom
@@ -740,10 +753,13 @@ type AppDeploy struct {
 	// applied. pkg/appspec parses it strictly (unknown keys are an error)
 	// and checks these rules:
 	//
-	// - `name` matches `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It names the
-	//   namespace, the Argo CD Applications `<name>-<env>`, the images
-	//   `<registry>/hopcharlie/apps/<name>/<service>` and the public URL
-	//   `https://<name>.hopcharlie.dev`.
+	// - `name` matches `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$` (3 to 32
+	//   characters) and has no `--`, which separates the app from the
+	//   branch in instance names (`<name>--<branch slug>`). It names the
+	//   default instance (the namespace, the Argo CD Applications
+	//   `<name>-<env>` and the public URL `https://<name>.hopcharlie.dev`)
+	//   and the images `<registry>/hopcharlie/apps/<name>/<service>`,
+	//   which every instance shares.
 	// - 1 to 5 services and at most one resource per type. Service names,
 	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 	//   are unique.
@@ -791,8 +807,9 @@ type AppEnvironment struct {
 	Env string `json:"env"`
 }
 
-// AppEnvironmentStatus The app's live state in one environment, from the Argo CD Application
-// `<app>-<env>`. `pending` until a deployment reaches the environment.
+// AppEnvironmentStatus An instance's live state in one environment, from the Argo CD
+// Application `<instance>-<env>`. `pending` until a deployment reaches
+// the environment.
 type AppEnvironmentStatus struct {
 	// Commit the app commit running there
 	Commit *string `json:"commit,omitempty"`
@@ -806,9 +823,9 @@ type AppEnvironmentStatus struct {
 	HealthStatus *string `json:"healthStatus,omitempty"`
 
 	// Status pending: nothing deployed to the environment yet.
-	// syncing: apps/<app>/<env>.yaml is committed and Argo CD is applying it.
+	// syncing: apps/<instance>/<env>.yaml is committed and Argo CD is applying it.
 	// healthy: Argo CD reports Synced and Healthy for the commit.
-	// degraded: synced, but Argo CD reports the Application Degraded.
+	// degraded: synced, but Argo CD reports the Application <instance>-<env> Degraded.
 	// failed: the sync failed, or the environment did not become healthy in time.
 	Status DeploymentEnvironmentStatus `json:"status"`
 
@@ -822,6 +839,100 @@ type AppEnvironmentStatus struct {
 	Url *string `json:"url,omitempty"`
 }
 
+// AppInstance One deployed branch of a registered app (ADR 0015). The default
+// instance deploys the app's `branch` and is named after the app; the
+// other instances deploy a branch the operator added and are named
+// `<app>--<slug>`. The name is the namespace, the gitops directory
+// `apps/<instance>/`, the Argo CD Applications `<instance>-<env>` and
+// the host `<instance>.<app domain>`. `spec` is the newest
+// platform.yaml on the branch that passed the check, read at
+// `specCommit`.
+type AppInstance struct {
+	// AutoDeploy every push to branch deploys the instance
+	AutoDeploy bool `json:"autoDeploy"`
+
+	// Branch Example: dev
+	Branch    string    `json:"branch"`
+	CreatedAt time.Time `json:"createdAt"`
+
+	// CreatedBy the token name that registered the app (default instance) or added the branch
+	CreatedBy string `json:"createdBy"`
+
+	// Default the app's own branch; the instance is deleted only with the app
+	Default bool `json:"default"`
+
+	// LastDeployment One deployment of an app's commit into one of its instances, in one or more environments.
+	LastDeployment *Deployment `json:"lastDeployment,omitempty"`
+
+	// Name Example: moimroom--dev
+	Name string `json:"name"`
+
+	// Spec `platform.yaml` at the root of an app's repository, with defaults
+	// applied. pkg/appspec parses it strictly (unknown keys are an error)
+	// and checks these rules:
+	//
+	// - `name` matches `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$` (3 to 32
+	//   characters) and has no `--`, which separates the app from the
+	//   branch in instance names (`<name>--<branch slug>`). It names the
+	//   default instance (the namespace, the Argo CD Applications
+	//   `<name>-<env>` and the public URL `https://<name>.hopcharlie.dev`)
+	//   and the images `<registry>/hopcharlie/apps/<name>/<service>`,
+	//   which every instance shares.
+	// - 1 to 5 services and at most one resource per type. Service names,
+	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
+	//   are unique.
+	// - `port` is 1 to 65535, `replicas` 1 to 5, at most one service is
+	//   `public`, and `healthCheck`, when set, starts with `/`.
+	// - `path` and `dockerfile` are relative and have no `..`.
+	// - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
+	//   variables the platform sets: `PORT`, `DATABASE_URL` and `S3_*`.
+	//
+	// The rules are not repeated as schema keywords, because
+	// AppSpecValidation returns the spec of a file that breaks them.
+	//
+	//
+	// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1}]}
+	Spec AppSpec `json:"spec"`
+
+	// SpecCommit Example: 9fceb02d0ae598e95dc970b74767f19372d61af8
+	SpecCommit string `json:"specCommit"`
+
+	// Status One entry per environment of the app, in the app's order.
+	Status []AppEnvironmentStatus `json:"status"`
+
+	// Url `https://<instance>.<domain>`, where the public service answers through the traffic gateway. Absent when no service is public.
+	//
+	// Example: https://moimroom--dev.hopcharlie.dev
+	Url *string `json:"url,omitempty"`
+}
+
+// AppInstanceCreateRequest defines model for AppInstanceCreateRequest.
+type AppInstanceCreateRequest struct {
+	// AutoDeploy deploy every push to branch
+	AutoDeploy *bool `json:"autoDeploy,omitempty"`
+
+	// Branch A branch of the app's repository; not the app's own branch.
+	//
+	// Example: dev
+	Branch string `json:"branch"`
+}
+
+// AppInstanceCreated The added instance and its first deployment (trigger register), queued.
+type AppInstanceCreated struct {
+	// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
+	Deployment Deployment `json:"deployment"`
+
+	// Instance One deployed branch of a registered app (ADR 0015). The default
+	// instance deploys the app's `branch` and is named after the app; the
+	// other instances deploy a branch the operator added and are named
+	// `<app>--<slug>`. The name is the namespace, the gitops directory
+	// `apps/<instance>/`, the Argo CD Applications `<instance>-<env>` and
+	// the host `<instance>.<app domain>`. `spec` is the newest
+	// platform.yaml on the branch that passed the check, read at
+	// `specCommit`.
+	Instance AppInstance `json:"instance"`
+}
+
 // AppList defines model for AppList.
 type AppList struct {
 	Apps []App `json:"apps"`
@@ -831,10 +942,13 @@ type AppList struct {
 // applied. pkg/appspec parses it strictly (unknown keys are an error)
 // and checks these rules:
 //
-//   - `name` matches `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It names the
-//     namespace, the Argo CD Applications `<name>-<env>`, the images
-//     `<registry>/hopcharlie/apps/<name>/<service>` and the public URL
-//     `https://<name>.hopcharlie.dev`.
+//   - `name` matches `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$` (3 to 32
+//     characters) and has no `--`, which separates the app from the
+//     branch in instance names (`<name>--<branch slug>`). It names the
+//     default instance (the namespace, the Argo CD Applications
+//     `<name>-<env>` and the public URL `https://<name>.hopcharlie.dev`)
+//     and the images `<registry>/hopcharlie/apps/<name>/<service>`,
+//     which every instance shares.
 //   - 1 to 5 services and at most one resource per type. Service names,
 //     and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 //     are unique.
@@ -958,10 +1072,13 @@ type AppSpecValidation struct {
 	// applied. pkg/appspec parses it strictly (unknown keys are an error)
 	// and checks these rules:
 	//
-	// - `name` matches `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It names the
-	//   namespace, the Argo CD Applications `<name>-<env>`, the images
-	//   `<registry>/hopcharlie/apps/<name>/<service>` and the public URL
-	//   `https://<name>.hopcharlie.dev`.
+	// - `name` matches `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$` (3 to 32
+	//   characters) and has no `--`, which separates the app from the
+	//   branch in instance names (`<name>--<branch slug>`). It names the
+	//   default instance (the namespace, the Argo CD Applications
+	//   `<name>-<env>` and the public URL `https://<name>.hopcharlie.dev`)
+	//   and the images `<registry>/hopcharlie/apps/<name>/<service>`,
+	//   which every instance shares.
 	// - 1 to 5 services and at most one resource per type. Service names,
 	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 	//   are unique.
@@ -1094,10 +1211,15 @@ type DatabaseCluster struct {
 	Replica bool `json:"replica"`
 }
 
-// Deployment One deployment of an app's commit to one or more environments.
+// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
 type Deployment struct {
 	// App Example: moimroom
 	App string `json:"app"`
+
+	// Branch the branch whose instance this deploys: the app's branch or an added one
+	//
+	// Example: main
+	Branch string `json:"branch"`
 
 	// BuildId the AWS CodeBuild build id, or the local docker build's id (E2E)
 	BuildId *string `json:"buildId,omitempty"`
@@ -1125,7 +1247,12 @@ type Deployment struct {
 	// image is also tagged with the commit.
 	Images []DeploymentImage `json:"images"`
 
-	// Ref what was asked for: a branch or a commit sha
+	// Instance the instance it deploys (AppInstance name)
+	//
+	// Example: moimroom
+	Instance string `json:"instance"`
+
+	// Ref what was asked for: a branch, tag or commit sha
 	//
 	// Example: main
 	Ref string `json:"ref"`
@@ -1135,17 +1262,17 @@ type Deployment struct {
 
 	// Status queued: waiting for the deployer. A server without a deployer leaves deployments queued.
 	// building: building and pushing one image per service.
-	// committing: writing apps/<app>/<env>.yaml to the gitops repository.
+	// committing: writing apps/<instance>/<env>.yaml to the gitops repository.
 	// syncing: Argo CD is applying the commit; waiting for every environment to be healthy.
 	// healthy: every environment is synced and healthy. Final.
 	// failed: the deployment stopped; `error` says why. Final.
-	// superseded: a newer deployment of the app to the same environments (or more) was created
+	// superseded: a newer deployment of the same instance to the same environments (or more) was created
 	//   before this one finished. This one stopped, and writes nothing to the gitops repository
 	//   after that. Final.
 	Status DeploymentStatus `json:"status"`
 
-	// Trigger register: the first deployment, created by POST /v1/apps.
-	// push: a push to the app's branch (the GitHub webhook).
+	// Trigger register: the first deployment of an app (POST /v1/apps) or of an added instance (POST /v1/apps/{name}/instances).
+	// push: a push to a branch the app deploys (the GitHub webhook).
 	// manual: POST /v1/apps/{name}/deployments.
 	Trigger DeploymentTrigger `json:"trigger"`
 
@@ -1157,10 +1284,15 @@ type Deployment struct {
 
 // DeploymentCreateRequest defines model for DeploymentCreateRequest.
 type DeploymentCreateRequest struct {
+	// Branch A branch the app deploys: its own branch or one added with POST /v1/apps/{name}/instances. It picks the instance; defaults to the app's branch.
+	//
+	// Example: dev
+	Branch *string `json:"branch,omitempty"`
+
 	// Environments A subset of the app's environments; defaults to all of them.
 	Environments *[]string `json:"environments,omitempty"`
 
-	// Ref a branch or a commit sha of the app's repository; defaults to the app's branch
+	// Ref a branch, tag or commit sha of the app's repository to deploy into that instance; defaults to branch
 	//
 	// Example: main
 	Ref *string `json:"ref,omitempty"`
@@ -1171,7 +1303,7 @@ type DeploymentEnvironment struct {
 	// Env Example: eks
 	Env string `json:"env"`
 
-	// HealthStatus Argo CD health status of the Application <app>-<env>
+	// HealthStatus Argo CD health status of the Application <instance>-<env>
 	//
 	// Example: Healthy
 	HealthStatus *string `json:"healthStatus,omitempty"`
@@ -1180,13 +1312,13 @@ type DeploymentEnvironment struct {
 	Message *string `json:"message,omitempty"`
 
 	// Status pending: nothing deployed to the environment yet.
-	// syncing: apps/<app>/<env>.yaml is committed and Argo CD is applying it.
+	// syncing: apps/<instance>/<env>.yaml is committed and Argo CD is applying it.
 	// healthy: Argo CD reports Synced and Healthy for the commit.
-	// degraded: synced, but Argo CD reports the Application Degraded.
+	// degraded: synced, but Argo CD reports the Application <instance>-<env> Degraded.
 	// failed: the sync failed, or the environment did not become healthy in time.
 	Status DeploymentEnvironmentStatus `json:"status"`
 
-	// SyncStatus Argo CD sync status of the Application <app>-<env>
+	// SyncStatus Argo CD sync status of the Application <instance>-<env>
 	//
 	// Example: Synced
 	SyncStatus *string `json:"syncStatus,omitempty"`
@@ -1196,9 +1328,9 @@ type DeploymentEnvironment struct {
 }
 
 // DeploymentEnvironmentStatus pending: nothing deployed to the environment yet.
-// syncing: apps/<app>/<env>.yaml is committed and Argo CD is applying it.
+// syncing: apps/<instance>/<env>.yaml is committed and Argo CD is applying it.
 // healthy: Argo CD reports Synced and Healthy for the commit.
-// degraded: synced, but Argo CD reports the Application Degraded.
+// degraded: synced, but Argo CD reports the Application <instance>-<env> Degraded.
 // failed: the sync failed, or the environment did not become healthy in time.
 type DeploymentEnvironmentStatus string
 
@@ -1214,11 +1346,11 @@ type DeploymentEvent struct {
 
 	// Phase queued: waiting for the deployer. A server without a deployer leaves deployments queued.
 	// building: building and pushing one image per service.
-	// committing: writing apps/<app>/<env>.yaml to the gitops repository.
+	// committing: writing apps/<instance>/<env>.yaml to the gitops repository.
 	// syncing: Argo CD is applying the commit; waiting for every environment to be healthy.
 	// healthy: every environment is synced and healthy. Final.
 	// failed: the deployment stopped; `error` says why. Final.
-	// superseded: a newer deployment of the app to the same environments (or more) was created
+	// superseded: a newer deployment of the same instance to the same environments (or more) was created
 	//   before this one finished. This one stopped, and writes nothing to the gitops repository
 	//   after that. Final.
 	Phase *DeploymentStatus   `json:"phase,omitempty"`
@@ -1246,18 +1378,18 @@ type DeploymentList struct {
 
 // DeploymentStatus queued: waiting for the deployer. A server without a deployer leaves deployments queued.
 // building: building and pushing one image per service.
-// committing: writing apps/<app>/<env>.yaml to the gitops repository.
+// committing: writing apps/<instance>/<env>.yaml to the gitops repository.
 // syncing: Argo CD is applying the commit; waiting for every environment to be healthy.
 // healthy: every environment is synced and healthy. Final.
 // failed: the deployment stopped; `error` says why. Final.
-// superseded: a newer deployment of the app to the same environments (or more) was created
+// superseded: a newer deployment of the same instance to the same environments (or more) was created
 //
 //	before this one finished. This one stopped, and writes nothing to the gitops repository
 //	after that. Final.
 type DeploymentStatus string
 
-// DeploymentTrigger register: the first deployment, created by POST /v1/apps.
-// push: a push to the app's branch (the GitHub webhook).
+// DeploymentTrigger register: the first deployment of an app (POST /v1/apps) or of an added instance (POST /v1/apps/{name}/instances).
+// push: a push to a branch the app deploys (the GitHub webhook).
 // manual: POST /v1/apps/{name}/deployments.
 type DeploymentTrigger string
 
@@ -2080,6 +2212,9 @@ type DeploymentId = string
 // EnvName defines model for EnvName.
 type EnvName = string
 
+// InstanceName Example: moimroom--dev
+type InstanceName = string
+
 // PlanRef defines model for PlanRef.
 type PlanRef = string
 
@@ -2137,6 +2272,9 @@ type StreamAgentEventsParamsFormat string
 // ListDeploymentsParams defines parameters for ListDeployments.
 type ListDeploymentsParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Branch Only the deployments of this branch's instance.
+	Branch *string `form:"branch,omitempty" json:"branch,omitempty"`
 }
 
 // ListAuditParams defines parameters for ListAudit.
@@ -2218,6 +2356,9 @@ type ValidateAppSpecJSONRequestBody = AppSpecValidateRequest
 
 // CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
 type CreateDeploymentJSONRequestBody = DeploymentCreateRequest
+
+// CreateAppInstanceJSONRequestBody defines body for CreateAppInstance for application/json ContentType.
+type CreateAppInstanceJSONRequestBody = AppInstanceCreateRequest
 
 // StartMigrationJSONRequestBody defines body for StartMigration for application/json ContentType.
 type StartMigrationJSONRequestBody = StartMigrationRequest

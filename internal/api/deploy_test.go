@@ -64,7 +64,7 @@ func TestCreateDeployment(t *testing.T) {
 		t.Fatalf("deploy: %d %s", code, b)
 	}
 	d := decode[apiv1.Deployment](t, b)
-	if d.Trigger != apiv1.DeploymentTriggerManual || d.TriggeredBy != "op" || d.Ref != "main" || d.Commit != headSHA ||
+	if d.Trigger != apiv1.DeploymentTriggerManual || d.TriggeredBy != "op" || d.Branch != "main" || d.Instance != "shop" || d.Ref != "main" || d.Commit != headSHA ||
 		d.Status != apiv1.DeploymentStatusQueued || len(d.Environments) != 2 || d.Environments[0].Env != "gke" || d.Id == first.Id {
 		t.Fatalf("deployment %+v", d)
 	}
@@ -76,9 +76,10 @@ func TestCreateDeployment(t *testing.T) {
 		t.Fatalf("audit %+v %s", a, a.Detail)
 	}
 
-	// A subset, in the app's order whatever the order asked.
-	code, b = h.do("POST", "/v1/apps/shop/deployments", opToken, map[string]any{"environments": []string{"eks"}, "ref": "main"})
-	if d := decode[apiv1.Deployment](t, b); code != 202 || len(d.Environments) != 1 || d.Environments[0].Env != "eks" || d.Ref != "main" {
+	// A subset, in the app's order whatever the order asked. The app's own
+	// branch may be named.
+	code, b = h.do("POST", "/v1/apps/shop/deployments", opToken, map[string]any{"environments": []string{"eks"}, "ref": "main", "branch": "main"})
+	if d := decode[apiv1.Deployment](t, b); code != 202 || len(d.Environments) != 1 || d.Environments[0].Env != "eks" || d.Ref != "main" || d.Instance != "shop" {
 		t.Fatalf("subset: %d %s", code, b)
 	}
 	code, b = h.do("POST", "/v1/apps/shop/deployments", opToken, map[string]any{"environments": []string{"eks", "gke"}})
@@ -97,7 +98,8 @@ func TestCreateDeployment(t *testing.T) {
 		{"no environments", "shop", map[string]any{"environments": []string{}}, 400, "invalid_request"},
 		{"empty ref", "shop", map[string]any{"ref": ""}, 400, "invalid_request"},
 		{"unknown ref", "shop", map[string]any{"ref": "nope"}, 400, "invalid_request"},
-		{"unknown field", "shop", map[string]any{"branch": "main"}, 400, "invalid_request"},
+		{"unknown field", "shop", map[string]any{"bogus": "main"}, 400, "invalid_request"},
+		{"branch the app does not deploy", "shop", map[string]any{"branch": "dev"}, 400, "invalid_request"},
 		{"invalid spec", "shop", map[string]any{"ref": "broken"}, 422, "invalid_app_spec"},
 		{"renamed app", "shop", map[string]any{"ref": "renamed"}, 422, "invalid_app_spec"},
 		{"file app", "moimroom", nil, 409, "app_not_registered"},

@@ -343,9 +343,9 @@ func TestListAppsMergesFileAndRegistered(t *testing.T) {
 	// reached gke only and is still syncing there.
 	finished := created.Add(10 * time.Minute)
 	for _, d := range []store.Deployment{
-		{ID: "dep_old", App: "moimroom", Ref: "main", Commit: headSHA, Trigger: "register", TriggeredBy: "op", Status: store.DeployQueued, CreatedAt: created,
+		{ID: "dep_old", App: "moimroom", Branch: "main", Instance: "moimroom", Ref: "main", Commit: headSHA, Trigger: "register", TriggeredBy: "op", Status: store.DeployQueued, CreatedAt: created,
 			Environments: []store.DeploymentEnvironment{{Env: "gke", Status: "healthy", SyncStatus: "Synced", HealthStatus: "Healthy"}, {Env: "eks", Status: "degraded", URL: "https://moimroom.eks.example"}}},
-		{ID: "dep_new", App: "moimroom", Ref: "main", Commit: pushSHA, Trigger: "push", TriggeredBy: "github:dev", Status: store.DeployQueued, CreatedAt: created.Add(time.Hour),
+		{ID: "dep_new", App: "moimroom", Branch: "main", Instance: "moimroom", Ref: "main", Commit: pushSHA, Trigger: "push", TriggeredBy: "github:dev", Status: store.DeployQueued, CreatedAt: created.Add(time.Hour),
 			Environments: []store.DeploymentEnvironment{{Env: "gke", Status: "syncing"}, {Env: "eks", Status: "pending"}}},
 	} {
 		if err := h.store.CreateDeployment(ctx, d); err != nil {
@@ -380,6 +380,11 @@ func TestListAppsMergesFileAndRegistered(t *testing.T) {
 	}
 	if moim.Deploy.LastDeployment.Id != "dep_new" || *moim.Deploy.Url != "https://moimroom.hopcharlie.dev" {
 		t.Fatalf("moimroom deploy %s", mustJSON(t, moim.Deploy))
+	}
+	// The default instance repeats the top-level fields.
+	if in := moim.Deploy.Instances; len(in) != 1 || in[0].Name != "moimroom" || !in[0].Default || in[0].Branch != "main" ||
+		*in[0].Url != *moim.Deploy.Url || in[0].LastDeployment.Id != "dep_new" || string(mustJSON(t, in[0].Status)) != string(mustJSON(t, st)) {
+		t.Fatalf("moimroom instances %s", mustJSON(t, moim.Deploy.Instances))
 	}
 	alpha, zeta := list[1], list[2]
 	if alpha.Namespace != "alpha" || alpha.Database.User != "app" || len(alpha.Environments) != 0 ||
