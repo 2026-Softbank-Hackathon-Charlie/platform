@@ -259,6 +259,21 @@ func (e ObserveStepVerdict) Valid() bool {
 	}
 }
 
+// Defines values for PlanDraftResultSourceStatsReason.
+const (
+	PlanDraftResultSourceStatsReasonNotMeasured PlanDraftResultSourceStatsReason = "not_measured"
+)
+
+// Valid indicates whether the value is a known member of the PlanDraftResultSourceStatsReason enum.
+func (e PlanDraftResultSourceStatsReason) Valid() bool {
+	switch e {
+	case PlanDraftResultSourceStatsReasonNotMeasured:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PlanStatus.
 const (
 	PlanStatusApproved        PlanStatus = "approved"
@@ -1716,12 +1731,33 @@ type PlanDraftRequest struct {
 	// Source Example: gke
 	Source string `json:"source"`
 
+	// SourceStats also measure the source database; the response becomes a PlanDraftResult
+	SourceStats *bool `json:"sourceStats,omitempty"`
+
 	// Target Example: eks
 	Target string `json:"target"`
 
 	// WrittenRecordsStream sets verify.writtenRecords to "stream:<name>"
 	WrittenRecordsStream *string `json:"writtenRecordsStream,omitempty"`
 }
+
+// PlanDraftResult defines model for PlanDraftResult.
+type PlanDraftResult struct {
+	// Plan The migration-engine plan (migration-engine/pkg/plan). `${VAR}` references are expanded on the server.
+	Plan EnginePlan `json:"plan"`
+
+	// SourceStats The source database as the capacity gate measures it. A hot standby
+	// target needs max_connections and max_worker_processes of at least the
+	// source's to start, and the gate wants max_connections of at least
+	// sessions x 1.2.
+	SourceStats *SourceStats `json:"sourceStats,omitempty"`
+
+	// SourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query.
+	SourceStatsReason *PlanDraftResultSourceStatsReason `json:"sourceStatsReason,omitempty"`
+}
+
+// PlanDraftResultSourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query.
+type PlanDraftResultSourceStatsReason string
 
 // PlanEndpoint The non-secret view of a plan endpoint.
 type PlanEndpoint struct {
@@ -2078,6 +2114,39 @@ type SeverityCounts struct {
 	Low      int `json:"low"`
 	Medium   int `json:"medium"`
 	Total    int `json:"total"`
+}
+
+// SourceStats The source database as the capacity gate measures it. A hot standby
+// target needs max_connections and max_worker_processes of at least the
+// source's to start, and the gate wants max_connections of at least
+// sessions x 1.2.
+type SourceStats struct {
+	// Bytes total size of the databases that accept connections; absent when not measured
+	//
+	// Example: 2147483648
+	Bytes *int64 `json:"bytes,omitempty"`
+
+	// MaxConnections Example: 200
+	MaxConnections int `json:"maxConnections"`
+
+	// MaxWorkerProcesses Example: 8
+	MaxWorkerProcesses int       `json:"maxWorkerProcesses"`
+	MeasuredAt         time.Time `json:"measuredAt"`
+
+	// Sessions client sessions now (pg_stat_activity client backends)
+	//
+	// Example: 80
+	Sessions int `json:"sessions"`
+
+	// WalBytesPerSecond WAL written per second over the window; absent when not measured
+	//
+	// Example: 1048576
+	WalBytesPerSecond *float64 `json:"walBytesPerSecond,omitempty"`
+
+	// WindowSeconds length of the WAL window
+	//
+	// Example: 5
+	WindowSeconds float64 `json:"windowSeconds"`
 }
 
 // StartMigrationRequest defines model for StartMigrationRequest.

@@ -52,9 +52,20 @@ func (c *Client) ListApps(ctx context.Context) (*apiv1.AppList, error) {
 }
 
 // DraftPlan builds an engine plan from the server's app configuration. The
-// draft is not stored; submit it with SubmitPlan.
+// draft is not stored; submit it with SubmitPlan. req.SourceStats is ignored:
+// use DraftPlanWithSourceStats for the source's numbers.
 func (c *Client) DraftPlan(ctx context.Context, req apiv1.PlanDraftRequest) (*apiv1.EnginePlan, error) {
+	req.SourceStats = nil
 	return call[apiv1.EnginePlan](ctx, c, request{method: http.MethodPost, path: "/v1/plans/draft", body: req})
+}
+
+// DraftPlanWithSourceStats is DraftPlan that also measures the source
+// database (about five seconds). The plan is in Plan; SourceStats is nil and
+// SourceStatsReason set when the server could not measure.
+func (c *Client) DraftPlanWithSourceStats(ctx context.Context, req apiv1.PlanDraftRequest) (*apiv1.PlanDraftResult, error) {
+	on := true
+	req.SourceStats = &on
+	return call[apiv1.PlanDraftResult](ctx, c, request{method: http.MethodPost, path: "/v1/plans/draft", body: req})
 }
 
 // RollbackMigration migrates a succeeded run back and returns the new run.

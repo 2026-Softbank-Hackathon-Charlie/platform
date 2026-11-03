@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -153,7 +154,52 @@ func (s *Server) draftPlan(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, p)
+	if req.SourceStats == nil || !*req.SourceStats {
+		writeJSON(w, http.StatusOK, p)
+		return
+	}
+	res := apiv1.PlanDraftResult{Plan: p}
+	if st, ok := s.measureSource(r.Context(), p.Source.Dsn); ok {
+		res.SourceStats = st
+	} else {
+		reason := apiv1.PlanDraftResultSourceStatsReasonNotMeasured
+		res.SourceStatsReason = &reason
+	}
+	noteAudit(r, "sourceStats", res.SourceStats != nil)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// measureSource expands a draft's source DSN with the server's environment, as
+// a submitted plan is expanded at start, and measures it. A DSN that names an
+// unset variable is not tried.
+func (s *Server) measureSource(ctx context.Context, dsn string) (*apiv1.SourceStats, bool) {
+	if s.d.SourceStats == nil {
+		return nil, false
+	}
+	missing := false
+	dsn = os.Expand(dsn, func(name string) string {
+		v, ok := os.LookupEnv(name)
+		if !ok || v == "" {
+			missing = true
+		}
+		return v
+	})
+	if missing {
+		return nil, false
+	}
+	st, ok := s.d.SourceStats.MeasureSource(ctx, dsn)
+	if !ok {
+		return nil, false
+	}
+	return &apiv1.SourceStats{
+		Sessions:           st.Sessions,
+		MaxConnections:     st.MaxConnections,
+		MaxWorkerProcesses: st.MaxWorkerProcesses,
+		Bytes:              st.Bytes,
+		WalBytesPerSecond:  st.WALBytesPerSecond,
+		WindowSeconds:      st.Window.Seconds(),
+		MeasuredAt:         st.MeasuredAt,
+	}, true
 }
 
 // --- rollback ---

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -404,6 +407,82 @@ func TestAppsAndPlanDrafts(t *testing.T) {
 	}
 	if code, b := h3.do("POST", "/v1/plans/draft", agentToken, map[string]any{"app": "moimroom", "source": "gke", "target": "eks"}); code != 400 {
 		t.Fatalf("draft without a file: %d %s", code, b)
+	}
+}
+
+// fakeSource answers MeasureSource and records the DSN it was given.
+type fakeSource struct {
+	mu   sync.Mutex
+	dsns []string
+	ok   bool
+}
+
+func (f *fakeSource) MeasureSource(_ context.Context, dsn string) (capacity.SourceStats, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dsns = append(f.dsns, dsn)
+	if !f.ok {
+		return capacity.SourceStats{}, false
+	}
+	size, wal := int64(2147483648), 1048576.0
+	return capacity.SourceStats{Sessions: 80, MaxConnections: 200, MaxWorkerProcesses: 8, Bytes: &size, WALBytesPerSecond: &wal,
+		Window: 5 * time.Second, MeasuredAt: time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)}, true
+}
+
+func TestPlanDraftSourceStats(t *testing.T) {
+	src := &fakeSource{ok: true}
+	h := newHarness(t, withApps(gatewayURL), func(_ *harness, _ *runs.Config, d *Deps) { d.SourceStats = src })
+	body := map[string]any{"app": "moimroom", "source": "gke", "target": "eks", "sourceStats": true}
+
+	// The password variable is unset: the source is not tried.
+	t.Setenv("GKE_MOIMROOM_PGPASSWORD", "")
+	code, b := h.do("POST", "/v1/plans/draft", agentToken, body)
+	res := decode[apiv1.PlanDraftResult](t, b)
+	if code != 200 || res.Plan.Id != "moimroom-gke-to-eks" || res.SourceStats != nil ||
+		res.SourceStatsReason == nil || *res.SourceStatsReason != apiv1.PlanDraftResultSourceStatsReasonNotMeasured || len(src.dsns) != 0 {
+		t.Fatalf("unset password: %d %s (tried %d)", code, b, len(src.dsns))
+	}
+
+	t.Setenv("GKE_MOIMROOM_PGPASSWORD", "s3cret-pw")
+	code, b = h.do("POST", "/v1/plans/draft", agentToken, body)
+	res = decode[apiv1.PlanDraftResult](t, b)
+	if code != 200 || res.SourceStats == nil || res.SourceStatsReason != nil ||
+		res.SourceStats.Sessions != 80 || res.SourceStats.MaxConnections != 200 || res.SourceStats.MaxWorkerProcesses != 8 ||
+		res.SourceStats.Bytes == nil || *res.SourceStats.Bytes != 2147483648 || res.SourceStats.WindowSeconds != 5 {
+		t.Fatalf("measured: %d %s", code, b)
+	}
+	// Measured with the expanded DSN; the response keeps ${VAR} and never the password.
+	if src.dsns[0] != "postgres://app:s3cret-pw@moimroom-db-gke-rw.moimroom.gke.ts.net:5432/app?sslmode=require" {
+		t.Fatalf("measured DSN %q", src.dsns[0])
+	}
+	if strings.Contains(string(b), "s3cret-pw") || !strings.Contains(string(b), "${GKE_MOIMROOM_PGPASSWORD}") {
+		t.Fatalf("response leaks or loses the password reference: %s", b)
+	}
+	// The plan inside is submitted as is.
+	draft, _ := json.Marshal(res.Plan)
+	if rec := h.submit(string(draft)); rec.Summary.PlanId != "moimroom-gke-to-eks" {
+		t.Fatalf("submitted: %+v", rec.Summary)
+	}
+
+	// A source that cannot be measured.
+	src.ok = false
+	_, b = h.do("POST", "/v1/plans/draft", agentToken, body)
+	if res := decode[apiv1.PlanDraftResult](t, b); res.SourceStats != nil || res.SourceStatsReason == nil {
+		t.Fatalf("unmeasured: %s", b)
+	}
+
+	// Without the flag the response is the plan, and nothing is measured.
+	n := len(src.dsns)
+	_, b = h.do("POST", "/v1/plans/draft", agentToken, map[string]any{"app": "moimroom", "source": "gke", "target": "eks"})
+	if d := decode[apiv1.EnginePlan](t, b); d.Id != "moimroom-gke-to-eks" || len(src.dsns) != n {
+		t.Fatalf("plain draft: %s", b)
+	}
+
+	// No measurer configured.
+	h2 := newHarness(t, withApps(gatewayURL))
+	_, b = h2.do("POST", "/v1/plans/draft", agentToken, body)
+	if res := decode[apiv1.PlanDraftResult](t, b); res.SourceStats != nil || res.SourceStatsReason == nil {
+		t.Fatalf("no measurer: %s", b)
 	}
 }
 

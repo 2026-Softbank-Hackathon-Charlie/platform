@@ -64,9 +64,19 @@ func (pr Prober) Measure(ctx context.Context, p *plan.Plan) Measurements {
 			m.TargetMaxConnections, m.TargetMaxConnectionsFrom = &n, "target"
 		}
 	}
+	if dst != nil {
+		if n, ok := showInt(ctx, dst, "max_worker_processes"); ok {
+			m.TargetMaxWorkerProcesses, m.TargetMaxWorkerProcessesFrom = &n, "target"
+		}
+	}
 	if m.TargetMaxConnections == nil {
 		if n, ok := ManifestMaxConnections(p.Target.Manifest); ok {
 			m.TargetMaxConnections, m.TargetMaxConnectionsFrom = &n, "manifest"
+		}
+	}
+	if m.TargetMaxWorkerProcesses == nil {
+		if n, ok := ManifestParameter(p.Target.Manifest, "max_worker_processes"); ok {
+			m.TargetMaxWorkerProcesses, m.TargetMaxWorkerProcessesFrom = &n, "manifest"
 		}
 	}
 	if src == nil {
@@ -85,6 +95,9 @@ func (pr Prober) Measure(ctx context.Context, p *plan.Plan) Measurements {
 	}
 	if n, ok := showInt(ctx, src, "max_connections"); ok {
 		m.SourceMaxConnections = &n
+	}
+	if n, ok := showInt(ctx, src, "max_worker_processes"); ok {
+		m.SourceMaxWorkerProcesses = &n
 	}
 
 	// Two samples a window apart: the source's WAL position and, when the
@@ -124,9 +137,48 @@ func (pr Prober) Measure(ctx context.Context, p *plan.Plan) Measurements {
 	return m
 }
 
+// SourceStats is what MeasureSource read from a source database: numbers only,
+// so a planner can size the target without the database's address or password.
+type SourceStats struct {
+	Sessions           int
+	MaxConnections     int
+	MaxWorkerProcesses int
+	Bytes              *int64   // nil: not measured
+	WALBytesPerSecond  *float64 // nil: not measured
+	Window             time.Duration
+	MeasuredAt         time.Time
+}
+
+// MeasureSource measures one source database with the same queries Measure
+// (and so the capacity gate) uses. ok is false when it could not connect or
+// read the connection settings; the reason is not returned, so the DSN and
+// server messages stay out of the result.
+func (pr Prober) MeasureSource(ctx context.Context, dsn string) (SourceStats, bool) {
+	at := time.Now().UTC()
+	m := pr.Measure(ctx, &plan.Plan{Source: plan.Endpoint{DSN: dsn}})
+	if m.SourceSessions == nil || m.SourceMaxConnections == nil || m.SourceMaxWorkerProcesses == nil {
+		return SourceStats{}, false
+	}
+	return SourceStats{
+		Sessions:           *m.SourceSessions,
+		MaxConnections:     *m.SourceMaxConnections,
+		MaxWorkerProcesses: *m.SourceMaxWorkerProcesses,
+		Bytes:              m.SourceBytes,
+		WALBytesPerSecond:  m.WALBytesPerSecond,
+		Window:             m.Window,
+		MeasuredAt:         at,
+	}, true
+}
+
 // ManifestMaxConnections reads spec.postgresql.parameters.max_connections
 // from a CNPG Cluster manifest file. It does not assume a default.
 func ManifestMaxConnections(path string) (int, bool) {
+	return ManifestParameter(path, "max_connections")
+}
+
+// ManifestParameter reads a positive integer spec.postgresql.parameters.<name>
+// from a CNPG Cluster manifest file. It does not assume a default.
+func ManifestParameter(path, name string) (int, bool) {
 	if path == "" {
 		return 0, false
 	}
@@ -144,7 +196,7 @@ func ManifestMaxConnections(path string) (int, bool) {
 	if yaml.Unmarshal(raw, &doc) != nil {
 		return 0, false
 	}
-	v, ok := doc.Spec.PostgreSQL.Parameters["max_connections"]
+	v, ok := doc.Spec.PostgreSQL.Parameters[name]
 	if !ok {
 		return 0, false
 	}

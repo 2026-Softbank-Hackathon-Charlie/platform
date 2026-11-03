@@ -196,6 +196,9 @@ func main() {
 
 	deps := api.Deps{Plans: planSvc, Runs: runner, Store: st, Envs: envSvc, EnvNotFound: envs.ErrNotFound}
 	deps.Apps = appCat
+	// Draft plans can carry the source's numbers (POST /v1/plans/draft with
+	// sourceStats), measured like the capacity gate does, on request only.
+	deps.SourceStats = capacity.Prober{}
 	if gw != nil {
 		deps.Traffic = gw
 	}

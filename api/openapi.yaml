@@ -209,8 +209,11 @@ paths:
         Rollback plans (`rollbackOf`) are exempt. When the server measures
         capacity, it reads the source and target for a few seconds first and
         answers 409 `capacity_insufficient` (measured numbers in the message)
-        if the target accepts too few connections or the replica cannot catch
-        up within `thresholds.catchupTimeout`; values it cannot measure never
+        if the target accepts too few connections (fewer than the source's
+        client sessions x 1.2), has a `max_connections` or
+        `max_worker_processes` below the source's (a hot standby will not
+        start then), or the replica cannot catch up within
+        `thresholds.catchupTimeout`; values it cannot measure never
         refuse. Rollback plans are exempt here too. Role operator.
       parameters:
         - name: Idempotency-Key
@@ -928,6 +931,15 @@ paths:
         - DSNs read the password from the environment's `passwordEnv` as `${VAR}`.
         - `files` is set when both environments have a bucket, unless `files` is false.
         - `gateway` is mode `http` with the platform gateway when the server has one, otherwise `none`.
+        - With `sourceStats: true` the server also measures the source database
+          and the response is a `PlanDraftResult`: the plan under `plan`, the
+          numbers under `sourceStats`. This takes about five seconds (the WAL
+          rate window). It uses the queries of the capacity gate, so a target
+          sized from these numbers passes the same check at start. Only numbers
+          are returned, never the address, password or a server message; when
+          the source cannot be measured, `sourceStats` is absent and
+          `sourceStatsReason` is `not_measured`. Without the flag the response
+          is the plan itself, as before.
 
         Roles: agent, operator.
       requestBody:
@@ -937,10 +949,16 @@ paths:
             schema: { $ref: "#/components/schemas/PlanDraftRequest" }
       responses:
         "200":
-          description: The draft plan.
+          description: The draft plan, or with `sourceStats` a `PlanDraftResult`.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/EnginePlan" }
+              schema:
+                # One of two shapes chosen by the request's sourceStats; Go
+                # callers decode into EnginePlan or PlanDraftResult themselves.
+                x-go-type: json.RawMessage
+                oneOf:
+                  - $ref: "#/components/schemas/EnginePlan"
+                  - $ref: "#/components/schemas/PlanDraftResult"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -2434,6 +2452,35 @@ components:
         target: { type: string, example: eks }
         files: { type: boolean, description: "false leaves object storage out even when both environments have a bucket" }
         writtenRecordsStream: { type: string, description: 'sets verify.writtenRecords to "stream:<name>"' }
+        sourceStats: { type: boolean, default: false, description: "also measure the source database; the response becomes a PlanDraftResult" }
+
+    PlanDraftResult:
+      type: object
+      required: [plan]
+      properties:
+        plan: { $ref: "#/components/schemas/EnginePlan" }
+        sourceStats: { $ref: "#/components/schemas/SourceStats" }
+        sourceStatsReason:
+          type: string
+          enum: [not_measured]
+          description: Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query.
+
+    SourceStats:
+      description: |
+        The source database as the capacity gate measures it. A hot standby
+        target needs max_connections and max_worker_processes of at least the
+        source's to start, and the gate wants max_connections of at least
+        sessions x 1.2.
+      type: object
+      required: [sessions, maxConnections, maxWorkerProcesses, windowSeconds, measuredAt]
+      properties:
+        sessions: { type: integer, description: "client sessions now (pg_stat_activity client backends)", example: 80 }
+        maxConnections: { type: integer, example: 200 }
+        maxWorkerProcesses: { type: integer, example: 8 }
+        bytes: { type: integer, format: int64, description: "total size of the databases that accept connections; absent when not measured", example: 2147483648 }
+        walBytesPerSecond: { type: number, format: double, description: "WAL written per second over the window; absent when not measured", example: 1048576 }
+        windowSeconds: { type: number, format: double, description: "length of the WAL window", example: 5 }
+        measuredAt: { type: string, format: date-time }
 
     RollbackRequest:
       type: object

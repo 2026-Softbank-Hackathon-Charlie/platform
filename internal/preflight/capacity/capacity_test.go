@@ -54,6 +54,43 @@ func TestConnections(t *testing.T) {
 	}
 }
 
+func TestStandbySettings(t *testing.T) {
+	for name, tc := range map[string]struct {
+		m      Measurements
+		status Status
+		code   string
+	}{
+		"both equal": {Measurements{SourceMaxConnections: i(200), TargetMaxConnections: i(200), SourceMaxWorkerProcesses: i(8), TargetMaxWorkerProcesses: i(8)}, Pass, "ok"},
+		"both above": {Measurements{SourceMaxConnections: i(100), TargetMaxConnections: i(300), SourceMaxWorkerProcesses: i(8), TargetMaxWorkerProcesses: i(16)}, Pass, "ok"},
+		"connections below": {Measurements{SourceMaxConnections: i(200), TargetMaxConnections: i(199), SourceMaxWorkerProcesses: i(8), TargetMaxWorkerProcesses: i(8)},
+			Fail, "target_below_source"},
+		"workers below": {Measurements{SourceMaxConnections: i(100), TargetMaxConnections: i(100), SourceMaxWorkerProcesses: i(16), TargetMaxWorkerProcesses: i(8)},
+			Fail, "target_below_source"},
+		"workers unknown, connections ok": {Measurements{SourceMaxConnections: i(100), TargetMaxConnections: i(100), SourceMaxWorkerProcesses: i(8)}, Pass, "ok"},
+		"workers unknown, connections below": {Measurements{SourceMaxConnections: i(100), TargetMaxConnections: i(50), SourceMaxWorkerProcesses: i(8)},
+			Fail, "target_below_source"},
+		"source unknown": {Measurements{TargetMaxConnections: i(100), TargetMaxWorkerProcesses: i(8)}, Unknown, "not_measured"},
+		"nothing":        {Measurements{}, Unknown, "not_measured"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := Evaluate(tc.m, defaults)
+			c := check(r, CheckStandbySettings)
+			if c.Status != tc.status || c.Code != tc.code || r.Allowed != (tc.status != Fail) {
+				t.Fatalf("%+v allowed=%v", c, r.Allowed)
+			}
+		})
+	}
+	// The sessions check passes here (2 x 1.2 <= 150); only the standby rule fails.
+	r := Evaluate(Measurements{SourceSessions: i(2), SourceMaxConnections: i(200), TargetMaxConnections: i(150), TargetMaxConnectionsFrom: "manifest",
+		SourceMaxWorkerProcesses: i(8), TargetMaxWorkerProcesses: i(4), TargetMaxWorkerProcessesFrom: "manifest"}, defaults)
+	if check(r, CheckConnections).Status != Pass || r.Allowed {
+		t.Fatalf("%+v", r)
+	}
+	if c := check(r, CheckStandbySettings); c.Message != "a hot standby needs at least the source's value: max_connections 150 (from manifest), source 200; max_worker_processes 4 (from manifest), source 8" {
+		t.Fatalf("message %q", c.Message)
+	}
+}
+
 func TestCatchup(t *testing.T) {
 	window := 5 * time.Second
 	for name, tc := range map[string]struct {
@@ -115,6 +152,13 @@ func TestManifestMaxConnections(t *testing.T) {
 	set := write("set.yaml", "apiVersion: postgresql.cnpg.io/v1\nkind: Cluster\nspec:\n  postgresql:\n    parameters:\n      max_connections: \"300\"\n      shared_buffers: 256MB\n")
 	if n, ok := ManifestMaxConnections(set); !ok || n != 300 {
 		t.Fatalf("set: %d %v", n, ok)
+	}
+	workers := write("workers.yaml", "spec:\n  postgresql:\n    parameters:\n      max_worker_processes: \"16\"\n")
+	if n, ok := ManifestParameter(workers, "max_worker_processes"); !ok || n != 16 {
+		t.Fatalf("workers: %d %v", n, ok)
+	}
+	if _, ok := ManifestParameter(set, "max_worker_processes"); ok {
+		t.Fatal("max_worker_processes read from a manifest that does not set it")
 	}
 	for name, path := range map[string]string{
 		"unset":      write("unset.yaml", "kind: Cluster\nspec:\n  instances: 2\n"),
