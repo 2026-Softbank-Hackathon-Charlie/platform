@@ -136,14 +136,6 @@ func (s *Server) getPlanAttachment(w http.ResponseWriter, r *http.Request) {
 
 // --- apps and plan drafts ---
 
-func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
-	list := []apiv1.App{}
-	if s.d.Apps != nil {
-		list = s.d.Apps.List()
-	}
-	writeJSON(w, http.StatusOK, apiv1.AppList{Apps: list})
-}
-
 // POST /v1/plans/draft: an engine plan built from the apps file. Not stored.
 func (s *Server) draftPlan(w http.ResponseWriter, r *http.Request) {
 	var req apiv1.PlanDraftRequest

@@ -145,6 +145,7 @@ go run ./cmd/gateway
 | `RCLONE_CONFIG_<원격>_*` | rclone 원격의 종류와 자격 증명 (예: `RCLONE_CONFIG_GCS_TYPE=google cloud storage`). 등록된 버킷의 원격에 `_TYPE`이 없으면 시작할 때 경고 |
 | `PLATFORM_AWS_REGION` | 보안 뷰가 읽는 AWS 리전 (기본 `ap-northeast-2`) |
 | `PLATFORM_AGENT_IDLE` | 이벤트 없이 이 시간이 지난 `running` 에이전트 세션을 `cancelled`로 닫음 (기본 `30m`) |
+| `PLATFORM_GITHUB_*`, `PLATFORM_APP_DOMAIN` | 앱을 등록하고 배포하는 GitHub App. [GitHub App 설정](#github-app-설정) 참고 |
 
 ### Plan의 환경 변수 참조
 
@@ -371,3 +372,26 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 
 - 배포 상태는 `queued`, `building`, `committing`, `syncing`을 거쳐 `healthy`, `failed`, `superseded`로 끝납니다. 같은 환경으로 새 배포가 생기면 끝나지 않은 이전 배포는 `superseded`가 됩니다.
 - 테이블은 마이그레이션 `0005_app_deploy.sql`이 만듭니다.
+
+### GitHub App 설정
+
+플랫폼은 GitHub App 하나로 앱 저장소를 읽고, gitops 저장소에 커밋하고, push webhook을 받습니다. 조직 설정에서 App을 만들어 조직에 설치합니다.
+
+- 권한은 Repository permissions의 Contents를 Read and write로, Metadata를 Read-only로 둡니다.
+- 이벤트는 Push 하나만 구독합니다.
+- Webhook URL은 `https://api.hopcharlie.dev/v1/webhooks/github`, content type은 `application/json`입니다. secret에는 `PLATFORM_GITHUB_WEBHOOK_SECRET`과 같은 값을 넣습니다.
+- App 설정 페이지에서 private key를 만들어 서버에만 넣습니다. 키와 webhook secret은 어느 저장소에도 커밋하지 않습니다.
+
+| 변수 | 설명 |
+| --- | --- |
+| `PLATFORM_GITHUB_APP_ID` | App ID(숫자). App ID와 키를 모두 비우면 GitHub이 필요한 요청은 503 `github_not_configured`. 하나만 넣으면 서버가 시작하지 않음 |
+| `PLATFORM_GITHUB_APP_PRIVATE_KEY` | private key PEM 내용. `PLATFORM_GITHUB_APP_PRIVATE_KEY_FILE`(PEM 파일 경로)과 둘 중 하나만 |
+| `PLATFORM_GITHUB_INSTALLATION_ID` | 설치 ID. 비우면 `PLATFORM_GITHUB_ORG`에 설치된 것을 찾아 씀 |
+| `PLATFORM_GITHUB_ORG` | App을 설치한 조직 (기본 `2026-Softbank-Hackathon-Charlie`) |
+| `PLATFORM_GITHUB_WEBHOOK_SECRET` | webhook secret. 비우면 webhook이 503으로 답하고 push가 배포되지 않음 |
+| `PLATFORM_GITHUB_API_URL` | GitHub API 주소 (기본 `https://api.github.com`) |
+| `PLATFORM_APP_DOMAIN` | 공개 서비스 주소 `https://<app>.<도메인>`의 도메인 (기본 `hopcharlie.dev`) |
+
+- 서버는 App 키로 JWT를 서명해 설치 토큰을 받고, 만료 5분 전까지 같은 토큰을 씁니다.
+- webhook은 bearer 토큰 대신 `X-Hub-Signature-256`을 확인합니다. 서명이 없거나 틀리면 401 `invalid_signature`이고 감사 로그에 `anonymous`로 남습니다. 배포를 만든 push는 `github`으로 남고, payload는 감사 로그에 넣지 않습니다.
+- 같은 `X-GitHub-Delivery`로 다시 온 push는 204로 답하고 배포를 만들지 않습니다.

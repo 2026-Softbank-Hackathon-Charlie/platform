@@ -18,6 +18,7 @@ import (
 	specdoc "github.com/2026-Softbank-Hackathon-Charlie/platform/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -45,6 +46,19 @@ type Deployer interface {
 	Enqueue(ctx context.Context, deploymentID string) error
 }
 
+// GitHub reads app repositories through the platform's GitHub App
+// (internal/github). An error that wraps fs.ErrNotExist means the
+// repository, ref or file does not exist or the installation cannot see it;
+// any other error means GitHub could not be reached.
+type GitHub interface {
+	// ResolveRef returns the full commit sha of a branch, tag or sha of repo (owner/name).
+	ResolveRef(ctx context.Context, repo, ref string) (string, error)
+	// ReadFile returns the file at path (from the repository root) at ref.
+	ReadFile(ctx context.Context, repo, ref, path string) ([]byte, error)
+	// ListRepos returns the repositories the installation can see.
+	ListRepos(ctx context.Context) ([]github.Repo, error)
+}
+
 // Config configures the API.
 type Config struct {
 	// Tokens authenticates callers. When Insecure is set and Tokens is empty,
@@ -54,7 +68,16 @@ type Config struct {
 	// CORSOrigins lists browser origins allowed to call the API ("*" allows any).
 	CORSOrigins []string
 	Log         *slog.Logger
+	// GitHubWebhookSecret checks X-Hub-Signature-256 on POST
+	// /v1/webhooks/github; empty answers it 503.
+	GitHubWebhookSecret string
+	// AppDomain is where public services of registered apps answer, as
+	// https://<app>.<AppDomain>. Default DefaultAppDomain.
+	AppDomain string
 }
+
+// DefaultAppDomain is Config.AppDomain's default.
+const DefaultAppDomain = "hopcharlie.dev"
 
 // Deps are the services behind the API.
 type Deps struct {
@@ -74,6 +97,8 @@ type Deps struct {
 	Agents AgentLog
 	// Deployer runs deployments; nil leaves them queued.
 	Deployer Deployer
+	// GitHub reads app repositories; nil answers the endpoints that need it 503 github_not_configured.
+	GitHub GitHub
 }
 
 // Server is the HTTP handler.
@@ -92,6 +117,9 @@ func New(cfg Config, d Deps) *Server {
 	}
 	if cfg.Tokens == nil {
 		cfg.Tokens = &auth.Tokens{}
+	}
+	if cfg.AppDomain == "" {
+		cfg.AppDomain = DefaultAppDomain
 	}
 	s := &Server{cfg: cfg, d: d, mux: http.NewServeMux()}
 	if d.Runs != nil {
@@ -140,6 +168,13 @@ func New(cfg Config, d Deps) *Server {
 	s.route("POST /v1/agent/sessions/{id}/events", agent, s.appendAgentEvent)
 	s.route("GET /v1/agent/sessions/{id}/events", viewer, s.agentEvents)
 	s.route("POST /v1/agent/sessions/{id}/finish", agent, s.finishAgentSession)
+	s.route("POST /v1/apps", operator, s.createApp)
+	s.route("GET /v1/apps/{name}", viewer, s.getApp)
+	s.route("POST /v1/apps/validate", viewer, s.validateAppSpec)
+	s.route("GET /v1/github/repos", viewer, s.listGitHubRepos)
+	// GitHub signs the webhook instead of sending a token; the handler
+	// checks the signature and writes its own audit entries.
+	s.route("POST /v1/webhooks/github", "", s.githubWebhook)
 	return s
 }
 
