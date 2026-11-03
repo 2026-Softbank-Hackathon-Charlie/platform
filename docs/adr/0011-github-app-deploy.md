@@ -39,6 +39,7 @@
 ### 등록과 트리거
 
 - operator가 `POST /v1/apps`로 저장소, 브랜치, 대상 환경을 보낸다. 플랫폼은 GitHub App으로 브랜치 head의 `platform.yaml`을 읽어 검사하고(각 서비스의 Dockerfile이 있는지도 본다), 앱을 PostgreSQL에 저장하고, 첫 배포(trigger `register`)를 큐에 넣는다. 앱 이름은 `platform.yaml`의 `name`이다.
+- `api`, `console`과 게이트웨이의 기본 앱 이름 `app`은 플랫폼이 `hopcharlie.dev` 아래에서 직접 쓰므로 등록할 수 없다(409 `app_exists`, ADR 0012).
 - `PLATFORM_APPS_FILE`의 앱(이전용)은 그대로 둔다. 파일에만 있는 이름은 등록을 막지 않는다. 같은 이름이 양쪽에 있으면 `GET /v1/apps`는 파일의 항목에 `deploy`를 붙여 한 번만 보여 준다. 등록만 된 앱은 `namespace`가 이름, `database`가 CNPG 기본값 `{name: app, user: app}`, `environments`가 빈 목록이다.
 - 배포는 GitHub App의 push webhook(등록한 브랜치, `autoDeploy`)이나 수동 배포(`POST /v1/apps/{name}/deployments`)로 시작한다. webhook은 bearer 토큰 대신 `X-Hub-Signature-256` HMAC으로 확인하고, `X-GitHub-Delivery`로 다시 온 배달을 거른다. push가 아닌 이벤트와 관계없는 push는 204로 답한다.
 - `platform.yaml`이 잘못되면 422 `invalid_app_spec`이다. 본문은 `Error`에 `validation`(`AppSpecValidation`)을 더한 `AppSpecInvalid`다.

@@ -834,8 +834,10 @@ paths:
 
         Error codes: invalid_request (400: an environment that is not in
         PLATFORM_ENVS_FILE, a repo that is not owner/name), app_exists (409:
-        another registered app has the name; a name only in PLATFORM_APPS_FILE
-        is not taken), invalid_app_spec (422: the repository, the branch or
+        another registered app has the name, or the platform serves the name
+        itself under the app domain: `api`, `console` and the gateway's
+        default app `app`; a name only in PLATFORM_APPS_FILE is not taken),
+        invalid_app_spec (422: the repository, the branch or
         platform.yaml could not be read, or platform.yaml breaks a rule),
         github_unreachable (502), github_not_configured (503). Role operator.
       requestBody:
