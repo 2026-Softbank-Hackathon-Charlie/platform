@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
@@ -95,7 +96,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteAudit(r, "commit", commit)
-	v, spec, err := checkSpec(ctx, s.d.GitHub, req.Repo, commit)
+	v, spec, err := deploy.CheckSpec(ctx, s.d.GitHub, req.Repo, commit)
 	if err != nil {
 		s.githubUnreachable(w, r, err)
 		return
@@ -359,57 +360,12 @@ func (s *Server) validateAppSpec(w http.ResponseWriter, r *http.Request) {
 		s.githubUnreachable(w, r, err)
 		return
 	}
-	v, _, err := checkSpec(r.Context(), s.d.GitHub, repo, commit)
+	v, _, err := deploy.CheckSpec(r.Context(), s.d.GitHub, repo, commit)
 	if err != nil {
 		s.githubUnreachable(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, v)
-}
-
-// checkSpec reads platform.yaml at commit of repo (owner/name) and checks
-// it: it must be at the repository root, decode and follow the rules, and
-// every service's Dockerfile must exist at that commit. The spec is nil
-// unless it passed. The error is GitHub's, when it could not be reached; a
-// missing file is a validation error, not an error.
-func checkSpec(ctx context.Context, gh GitHub, repo, commit string) (apiv1.AppSpecValidation, *appspec.Spec, error) {
-	data, err := gh.ReadFile(ctx, repo, commit, appspec.FileName)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		msg := fmt.Sprintf("%s is not at the root of %s at %s", appspec.FileName, repo, commit)
-		return validation(nil, []appspec.FieldError{{Message: msg}}, &commit), nil, nil
-	case err != nil:
-		return apiv1.AppSpecValidation{}, nil, err
-	}
-	spec, errs := appspec.Check(data)
-	if spec != nil && len(errs) == 0 {
-		missing := map[string]bool{}
-		for i, sv := range spec.Services {
-			p := sv.DockerfilePath()
-			gone, known := missing[p]
-			if !known {
-				gone = p == "." // path . with dockerfile . names the root, not a file
-				if !gone {
-					_, err := gh.ReadFile(ctx, repo, commit, p)
-					switch {
-					case errors.Is(err, fs.ErrNotExist):
-						gone = true
-					case err != nil:
-						return apiv1.AppSpecValidation{}, nil, err
-					}
-				}
-				missing[p] = gone
-			}
-			if gone {
-				errs = append(errs, appspec.FieldError{Path: fmt.Sprintf("services[%d].dockerfile", i), Message: fmt.Sprintf("%s does not exist at %s", p, commit)})
-			}
-		}
-	}
-	v := validation(spec, errs, &commit)
-	if !v.Valid {
-		return v, nil, nil
-	}
-	return v, spec, nil
 }
 
 // validation is the API form of a check's result.
