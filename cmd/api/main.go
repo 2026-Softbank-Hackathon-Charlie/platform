@@ -21,13 +21,19 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
+	"k8s.io/client-go/kubernetes"
 )
 
 func main() {
@@ -151,6 +157,32 @@ func main() {
 	planSvc := plans.New(policy, st)
 	planSvc.SetStateDir(*stateDir)
 
+	// Optional: the residency policy. With it every new run (not a rollback)
+	// starts only if the source's live inventory may be copied to the target.
+	if path := os.Getenv("PLATFORM_RESIDENCY_POLICY_FILE"); path != "" {
+		g, err := residencyGate(ctx, path, envSvc.Names())
+		if err != nil {
+			fatal("PLATFORM_RESIDENCY_POLICY_FILE", "err", err)
+		}
+		planSvc.SetResidencyGate(g)
+		log.Info("residency gate enabled", "policyDigest", g.PolicyDigest())
+	} else {
+		log.Warn("PLATFORM_RESIDENCY_POLICY_FILE is not set: residency gate disabled; migrations start without a data residency check")
+	}
+
+	// Optional: measure the source and target before every new run and refuse
+	// one that would clearly fail (too few target connections, a replica that
+	// cannot catch up). Adds a few seconds to each start.
+	switch v := os.Getenv("PLATFORM_CAPACITY_GATE"); v {
+	case "on":
+		planSvc.SetCapacityGate(capacity.Gate{})
+		log.Info("capacity gate enabled", "window", capacity.DefaultWindow)
+	case "", "off":
+		log.Info("PLATFORM_CAPACITY_GATE is not on: migrations start without a capacity check")
+	default:
+		fatal("PLATFORM_CAPACITY_GATE must be on or off", "value", v)
+	}
+
 	if n, err := planSvc.RecoverStarting(ctx); err != nil {
 		fatal("recover plans", "err", err)
 	} else if n > 0 {
@@ -189,6 +221,55 @@ func main() {
 	agents := agentlog.New(st)
 	deps.Agents = agents
 	go agents.RunSweeper(runCtx, agentIdle, log)
+	// Optional: the GitHub App that apps are registered and deployed from.
+	gh, err := github.FromEnv(os.Getenv)
+	if err != nil {
+		fatal("GitHub App", "err", err)
+	}
+	if gh != nil {
+		deps.GitHub = gh
+	} else {
+		log.Warn("PLATFORM_GITHUB_APP_ID is not set: registering apps from GitHub answers 503 github_not_configured")
+	}
+	webhookSecret := os.Getenv("PLATFORM_GITHUB_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		log.Warn("PLATFORM_GITHUB_WEBHOOK_SECRET is not set: the GitHub webhook answers 503 and pushes do not deploy")
+	}
+
+	// Deployments of apps registered from GitHub. Without
+	// PLATFORM_DEPLOY_BUILDER there is no deployer and they stay queued.
+	// Deployments are not tied to requests either; on shutdown they stop and
+	// resume after the restart.
+	deployCtx, cancelDeploy := context.WithCancel(ctx)
+	defer cancelDeploy()
+	deployOpts := deploy.EnvOptions{
+		Store:     st,
+		AppDomain: envOr("PLATFORM_APP_DOMAIN", api.DefaultAppDomain),
+		Log:       log,
+		Kube: func(env string) (kubernetes.Interface, error) {
+			c, ok := envSvc.Config(env)
+			if !ok {
+				return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
+			}
+			return envs.NewKubeClient(c, 10*time.Second)
+		},
+	}
+	if gh != nil {
+		deployOpts.GitHub = gh
+	}
+	if gw != nil {
+		deployOpts.Gateway = gw
+	}
+	deployer, err := deploy.FromEnv(ctx, os.Getenv, deployOpts)
+	if err != nil {
+		fatal("deployments", "err", err)
+	}
+	if deployer != nil {
+		if err := deployer.Start(deployCtx); err != nil {
+			fatal("start deployments", "err", err)
+		}
+		deps.Deployer, deps.Remover = deployer, deployer
+	}
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{
@@ -196,6 +277,9 @@ func main() {
 			Insecure:    *insecure,
 			CORSOrigins: splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
 			Log:         log,
+
+			GitHubWebhookSecret: webhookSecret,
+			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
 		}, deps),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -217,6 +301,12 @@ func main() {
 	shCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	_ = srv.Shutdown(shCtx)
 	cancel()
+	if deployer != nil {
+		cancelDeploy() // unfinished deployments resume after the restart
+		waitDeploy, cancelWaitDeploy := context.WithTimeout(ctx, 30*time.Second)
+		_ = deployer.Wait(waitDeploy)
+		cancelWaitDeploy()
+	}
 
 	// Let active migrations finish instead of interrupting a switchover.
 	waitCtx, cancelWait := context.WithTimeout(ctx, *drain)
@@ -228,6 +318,25 @@ func main() {
 		defer cancelFinal()
 		_ = runner.Wait(final)
 	}
+}
+
+// residencyGate loads the reviewed residency policy. Every environment it
+// names must be registered, or a typo would silently deny every migration.
+func residencyGate(ctx context.Context, path string, registered []string) (*gate.Gate, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.New("cannot read the residency policy file")
+	}
+	cfg, err := residency.ParseConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range cfg.EnvironmentIDs() {
+		if !slices.Contains(registered, id) {
+			return nil, errors.New("residency policy names environment " + id + ", which is not in PLATFORM_ENVS_FILE")
+		}
+	}
+	return gate.New(ctx, cfg, nil)
 }
 
 func envOr(k, def string) string {

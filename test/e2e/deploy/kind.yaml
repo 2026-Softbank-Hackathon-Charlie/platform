@@ -1,0 +1,18 @@
+# One kind cluster: Argo CD, the git server and proxy (kit.yaml), CNPG, MinIO
+# and the apps. Host ports reach the git server and the proxy (lib.sh). The
+# containerd patch reads registry mirrors from certs.d, where run.sh maps
+# localhost:REGISTRY_PORT to the local registry container (kind's
+# local-registry pattern).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: hop-deploy
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    extraPortMappings:
+      - { containerPort: 30390, hostPort: 18390, listenAddress: "127.0.0.1" }
+      - { containerPort: 30391, hostPort: 18391, listenAddress: "127.0.0.1" }

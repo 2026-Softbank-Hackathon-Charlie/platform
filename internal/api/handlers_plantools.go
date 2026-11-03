@@ -136,14 +136,6 @@ func (s *Server) getPlanAttachment(w http.ResponseWriter, r *http.Request) {
 
 // --- apps and plan drafts ---
 
-func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
-	list := []apiv1.App{}
-	if s.d.Apps != nil {
-		list = s.d.Apps.List()
-	}
-	writeJSON(w, http.StatusOK, apiv1.AppList{Apps: list})
-}
-
 // POST /v1/plans/draft: an engine plan built from the apps file. Not stored.
 func (s *Server) draftPlan(w http.ResponseWriter, r *http.Request) {
 	var req apiv1.PlanDraftRequest
@@ -188,6 +180,12 @@ func (s *Server) rollbackMigration(w http.ResponseWriter, r *http.Request) {
 		noteAudit(r, "planRef", res.ref)
 		noteAudit(r, "reusedPlan", res.reused)
 	}
+	if res.residency != "" {
+		noteAudit(r, "residency", res.residency)
+	}
+	if res.capacity != "" {
+		noteAudit(r, "capacity", map[string]any{"outcome": res.capacity})
+	}
 	if f != nil {
 		switch f.kind {
 		case failRun:
@@ -224,9 +222,11 @@ func (f *rollbackFailure) Error() string { return f.err.Error() }
 func (f *rollbackFailure) Unwrap() error { return f.err }
 
 type rollbackStarted struct {
-	run    apiv1.Run
-	ref    string
-	reused bool
+	run       apiv1.Run
+	ref       string
+	reused    bool
+	residency string // plans.Residency*, set once the plan is reserved
+	capacity  string // plans.Capacity*, set once the plan is reserved
 }
 
 // startRollback builds (or reuses) the reverse plan of a succeeded run and
@@ -278,6 +278,7 @@ func (s *Server) startRollback(ctx context.Context, id, who, reason string, auto
 	if err != nil {
 		return out, &rollbackFailure{failPlan, err}
 	}
+	out.residency, out.capacity = res.Residency.Outcome, res.Capacity.Outcome
 	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
 		PlanRef:    ref,
 		Plan:       res.Plan,
@@ -310,6 +311,12 @@ func (s *Server) autoRollback(ctx context.Context, id, reason string) (string, e
 	status := http.StatusAccepted
 	if res.ref != "" {
 		note["planRef"], note["reusedPlan"] = res.ref, res.reused
+	}
+	if res.residency != "" {
+		note["residency"] = res.residency
+	}
+	if res.capacity != "" {
+		note["capacity"] = map[string]any{"outcome": res.capacity}
 	}
 	if f != nil {
 		status = http.StatusInternalServerError

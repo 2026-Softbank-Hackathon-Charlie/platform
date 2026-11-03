@@ -88,6 +88,111 @@ func (e AgentSessionStatus) Valid() bool {
 	}
 }
 
+// Defines values for DeploymentEnvironmentStatus.
+const (
+	DeploymentEnvironmentStatusDegraded DeploymentEnvironmentStatus = "degraded"
+	DeploymentEnvironmentStatusFailed   DeploymentEnvironmentStatus = "failed"
+	DeploymentEnvironmentStatusHealthy  DeploymentEnvironmentStatus = "healthy"
+	DeploymentEnvironmentStatusPending  DeploymentEnvironmentStatus = "pending"
+	DeploymentEnvironmentStatusSyncing  DeploymentEnvironmentStatus = "syncing"
+)
+
+// Valid indicates whether the value is a known member of the DeploymentEnvironmentStatus enum.
+func (e DeploymentEnvironmentStatus) Valid() bool {
+	switch e {
+	case DeploymentEnvironmentStatusDegraded:
+		return true
+	case DeploymentEnvironmentStatusFailed:
+		return true
+	case DeploymentEnvironmentStatusHealthy:
+		return true
+	case DeploymentEnvironmentStatusPending:
+		return true
+	case DeploymentEnvironmentStatusSyncing:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeploymentEventType.
+const (
+	DeploymentEventTypeDone        DeploymentEventType = "done"
+	DeploymentEventTypeEnvironment DeploymentEventType = "environment"
+	DeploymentEventTypeLog         DeploymentEventType = "log"
+	DeploymentEventTypePhase       DeploymentEventType = "phase"
+)
+
+// Valid indicates whether the value is a known member of the DeploymentEventType enum.
+func (e DeploymentEventType) Valid() bool {
+	switch e {
+	case DeploymentEventTypeDone:
+		return true
+	case DeploymentEventTypeEnvironment:
+		return true
+	case DeploymentEventTypeLog:
+		return true
+	case DeploymentEventTypePhase:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeploymentStatus.
+const (
+	DeploymentStatusBuilding   DeploymentStatus = "building"
+	DeploymentStatusCommitting DeploymentStatus = "committing"
+	DeploymentStatusFailed     DeploymentStatus = "failed"
+	DeploymentStatusHealthy    DeploymentStatus = "healthy"
+	DeploymentStatusQueued     DeploymentStatus = "queued"
+	DeploymentStatusSuperseded DeploymentStatus = "superseded"
+	DeploymentStatusSyncing    DeploymentStatus = "syncing"
+)
+
+// Valid indicates whether the value is a known member of the DeploymentStatus enum.
+func (e DeploymentStatus) Valid() bool {
+	switch e {
+	case DeploymentStatusBuilding:
+		return true
+	case DeploymentStatusCommitting:
+		return true
+	case DeploymentStatusFailed:
+		return true
+	case DeploymentStatusHealthy:
+		return true
+	case DeploymentStatusQueued:
+		return true
+	case DeploymentStatusSuperseded:
+		return true
+	case DeploymentStatusSyncing:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeploymentTrigger.
+const (
+	DeploymentTriggerManual   DeploymentTrigger = "manual"
+	DeploymentTriggerPush     DeploymentTrigger = "push"
+	DeploymentTriggerRegister DeploymentTrigger = "register"
+)
+
+// Valid indicates whether the value is a known member of the DeploymentTrigger enum.
+func (e DeploymentTrigger) Valid() bool {
+	switch e {
+	case DeploymentTriggerManual:
+		return true
+	case DeploymentTriggerPush:
+		return true
+	case DeploymentTriggerRegister:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EngineOutcome.
 const (
 	EngineOutcomeFailed     EngineOutcome = "failed"
@@ -535,11 +640,22 @@ type AgentSessionTotals struct {
 	ToolCalls      int64 `json:"toolCalls"`
 }
 
-// App An application from PLATFORM_APPS_FILE.
+// App An application from PLATFORM_APPS_FILE, registered from GitHub, or
+// both under one name. `namespace`, `database` and `environments` are
+// what migrations use; `deploy` is set for registered apps. A
+// registered app that is not in the file has `namespace` = name,
+// `database` = `{name: app, user: app, schemas: []}` and no
+// `environments`.
 type App struct {
 	Database AppDatabase `json:"database"`
 
-	// Environments The environments the app runs in, in PLATFORM_ENVS_FILE order.
+	// Deploy How the platform deploys a registered app from GitHub. `spec` is the
+	// newest platform.yaml that passed the check, read at `specCommit`: at
+	// registration, and again by every deployment. `lastDeployment` is the
+	// newest deployment, finished or not.
+	Deploy *AppDeploy `json:"deploy,omitempty"`
+
+	// Environments The environments the app runs in according to PLATFORM_APPS_FILE, in PLATFORM_ENVS_FILE order. Empty for an app that is only registered from GitHub (see deploy.environments).
 	Environments []AppEnvironment `json:"environments"`
 
 	// Name Example: shop
@@ -547,6 +663,39 @@ type App struct {
 
 	// Namespace Example: shop
 	Namespace string `json:"namespace"`
+}
+
+// AppCreateRequest defines model for AppCreateRequest.
+type AppCreateRequest struct {
+	// AutoDeploy deploy every push to branch
+	AutoDeploy *bool `json:"autoDeploy,omitempty"`
+
+	// Branch the branch platform.yaml is read from and pushes deploy from
+	Branch *string `json:"branch,omitempty"`
+
+	// Environments Where to deploy, by name from PLATFORM_ENVS_FILE.
+	//
+	// Example: ["eks"]
+	Environments []string `json:"environments"`
+
+	// Repo owner/name of a repository the GitHub App installation can see.
+	//
+	// Example: 2026-Softbank-Hackathon-Charlie/moimroom
+	Repo string `json:"repo"`
+}
+
+// AppCreated The registered app and its first deployment (trigger register), queued.
+type AppCreated struct {
+	// App An application from PLATFORM_APPS_FILE, registered from GitHub, or
+	// both under one name. `namespace`, `database` and `environments` are
+	// what migrations use; `deploy` is set for registered apps. A
+	// registered app that is not in the file has `namespace` = name,
+	// `database` = `{name: app, user: app, schemas: []}` and no
+	// `environments`.
+	App App `json:"app"`
+
+	// Deployment One deployment of an app's commit to one or more environments.
+	Deployment Deployment `json:"deployment"`
 }
 
 // AppDatabase defines model for AppDatabase.
@@ -559,6 +708,68 @@ type AppDatabase struct {
 
 	// User Example: app
 	User string `json:"user"`
+}
+
+// AppDeploy How the platform deploys a registered app from GitHub. `spec` is the
+// newest platform.yaml that passed the check, read at `specCommit`: at
+// registration, and again by every deployment. `lastDeployment` is the
+// newest deployment, finished or not.
+type AppDeploy struct {
+	// AutoDeploy every push to branch deploys
+	AutoDeploy bool `json:"autoDeploy"`
+
+	// Branch Example: main
+	Branch    string    `json:"branch"`
+	CreatedAt time.Time `json:"createdAt"`
+
+	// CreatedBy the token name that registered the app
+	CreatedBy string `json:"createdBy"`
+
+	// Environments The environments the app is deployed to, in PLATFORM_ENVS_FILE order.
+	//
+	// Example: ["gke","eks"]
+	Environments []string `json:"environments"`
+
+	// LastDeployment One deployment of an app's commit to one or more environments.
+	LastDeployment *Deployment `json:"lastDeployment,omitempty"`
+
+	// Repo Example: 2026-Softbank-Hackathon-Charlie/moimroom
+	Repo string `json:"repo"`
+
+	// Spec `platform.yaml` at the root of an app's repository, with defaults
+	// applied. pkg/appspec parses it strictly (unknown keys are an error)
+	// and checks these rules:
+	//
+	// - `name` matches `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It names the
+	//   namespace, the Argo CD Applications `<name>-<env>`, the images
+	//   `<registry>/hopcharlie/apps/<name>/<service>` and the public URL
+	//   `https://<name>.hopcharlie.dev`.
+	// - 1 to 5 services and at most one resource per type. Service names,
+	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
+	//   are unique.
+	// - `port` is 1 to 65535, `replicas` 1 to 5, at most one service is
+	//   `public`, and `healthCheck`, when set, starts with `/`.
+	// - `path` and `dockerfile` are relative and have no `..`.
+	// - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
+	//   variables the platform sets: `PORT`, `DATABASE_URL` and `S3_*`.
+	//
+	// The rules are not repeated as schema keywords, because
+	// AppSpecValidation returns the spec of a file that breaks them.
+	//
+	//
+	// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1}]}
+	Spec AppSpec `json:"spec"`
+
+	// SpecCommit Example: 9fceb02d0ae598e95dc970b74767f19372d61af8
+	SpecCommit string `json:"specCommit"`
+
+	// Status One entry per environment in `environments`, in that order.
+	Status []AppEnvironmentStatus `json:"status"`
+
+	// Url Where the public service answers, through the traffic gateway. Absent when no service is public.
+	//
+	// Example: https://moimroom.hopcharlie.dev
+	Url *string `json:"url,omitempty"`
 }
 
 // AppEnvironment defines model for AppEnvironment.
@@ -580,9 +791,193 @@ type AppEnvironment struct {
 	Env string `json:"env"`
 }
 
+// AppEnvironmentStatus The app's live state in one environment, from the Argo CD Application
+// `<app>-<env>`. `pending` until a deployment reaches the environment.
+type AppEnvironmentStatus struct {
+	// Commit the app commit running there
+	Commit *string `json:"commit,omitempty"`
+
+	// Env Example: eks
+	Env string `json:"env"`
+
+	// HealthStatus Argo CD health status: Healthy, Progressing, Degraded, Suspended, Missing or Unknown
+	//
+	// Example: Healthy
+	HealthStatus *string `json:"healthStatus,omitempty"`
+
+	// Status pending: nothing deployed to the environment yet.
+	// syncing: apps/<app>/<env>.yaml is committed and Argo CD is applying it.
+	// healthy: Argo CD reports Synced and Healthy for the commit.
+	// degraded: synced, but Argo CD reports the Application Degraded.
+	// failed: the sync failed, or the environment did not become healthy in time.
+	Status DeploymentEnvironmentStatus `json:"status"`
+
+	// SyncStatus Argo CD sync status: Synced, OutOfSync or Unknown
+	//
+	// Example: Synced
+	SyncStatus *string    `json:"syncStatus,omitempty"`
+	UpdatedAt  *time.Time `json:"updatedAt,omitempty"`
+
+	// Url where the public service answers in this environment, when known
+	Url *string `json:"url,omitempty"`
+}
+
 // AppList defines model for AppList.
 type AppList struct {
 	Apps []App `json:"apps"`
+}
+
+// AppSpec `platform.yaml` at the root of an app's repository, with defaults
+// applied. pkg/appspec parses it strictly (unknown keys are an error)
+// and checks these rules:
+//
+//   - `name` matches `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It names the
+//     namespace, the Argo CD Applications `<name>-<env>`, the images
+//     `<registry>/hopcharlie/apps/<name>/<service>` and the public URL
+//     `https://<name>.hopcharlie.dev`.
+//   - 1 to 5 services and at most one resource per type. Service names,
+//     and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
+//     are unique.
+//   - `port` is 1 to 65535, `replicas` 1 to 5, at most one service is
+//     `public`, and `healthCheck`, when set, starts with `/`.
+//   - `path` and `dockerfile` are relative and have no `..`.
+//   - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
+//     variables the platform sets: `PORT`, `DATABASE_URL` and `S3_*`.
+//
+// The rules are not repeated as schema keywords, because
+// AppSpecValidation returns the spec of a file that breaks them.
+//
+// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1}]}
+type AppSpec struct {
+	// Name Example: moimroom
+	Name      string             `json:"name"`
+	Resources *[]AppSpecResource `json:"resources,omitempty"`
+	Services  []AppSpecService   `json:"services"`
+}
+
+// AppSpecFieldError defines model for AppSpecFieldError.
+type AppSpecFieldError struct {
+	// Message Example: must be between 1 and 65535
+	Message string `json:"message"`
+
+	// Path Where in platform.yaml. Empty for the file as a whole (not found, not YAML, an unknown key).
+	//
+	// Example: services[0].port
+	Path string `json:"path"`
+}
+
+// AppSpecInvalid The body of a 422 invalid_app_spec. `error` is the usual Error body; `validation` lists what failed.
+type AppSpecInvalid struct {
+	Error ErrorBody `json:"error"`
+
+	// Validation The result of checking a platform.yaml. `spec` is set when the file
+	// decodes, with defaults applied, even when it breaks a rule. `commit`
+	// is the commit the file was read at, for a check of a repository once
+	// the branch was found.
+	Validation AppSpecValidation `json:"validation"`
+}
+
+// AppSpecResource defines model for AppSpecResource.
+type AppSpecResource struct {
+	// Name Example: db
+	Name string `json:"name"`
+
+	// Type postgres: a CNPG Cluster `<app>-<name>`; every service gets
+	// DATABASE_URL from key `uri` of its secret `<app>-<name>-app`.
+	// s3: a bucket; every service gets S3_ENDPOINT, S3_BUCKET,
+	// S3_REGION, S3_PATH_STYLE, S3_ACCESS_KEY and S3_SECRET_KEY.
+	//
+	//
+	// Example: postgres
+	Type string `json:"type"`
+}
+
+// AppSpecService defines model for AppSpecService.
+type AppSpecService struct {
+	// Dockerfile relative to path
+	Dockerfile string `json:"dockerfile"`
+
+	// Env Environment variables besides the ones the platform sets. Values
+	// are strings: a value YAML reads as a number, boolean or null
+	// (`4`, `yes`, `0755`, `~`) is an error, so quote it. platform.yaml
+	// is in git, so it holds no secrets.
+	Env *map[string]string `json:"env,omitempty"`
+
+	// HealthCheck an HTTP path that answers 2xx once the service is ready
+	//
+	// Example: /healthz
+	HealthCheck *string `json:"healthCheck,omitempty"`
+
+	// Name Example: web
+	Name string `json:"name"`
+
+	// Path the docker build context, relative to the repository root
+	Path string `json:"path"`
+
+	// Port the port the service listens on; the service gets it as PORT
+	//
+	// Example: 8080
+	Port int `json:"port"`
+
+	// Public served at https://<app>.hopcharlie.dev through the traffic gateway
+	Public   bool `json:"public"`
+	Replicas int  `json:"replicas"`
+}
+
+// AppSpecValidateRequest Either `repo` (with `branch`) or `spec`.
+type AppSpecValidateRequest struct {
+	Branch *string `json:"branch,omitempty"`
+
+	// Repo owner/name; platform.yaml is read at the head of branch through the GitHub App
+	//
+	// Example: 2026-Softbank-Hackathon-Charlie/moimroom
+	Repo *string `json:"repo,omitempty"`
+
+	// Spec platform.yaml content to check instead, at most 64 KiB.
+	//
+	// Example: name: moimroom
+	// services:
+	//   - name: web
+	//     port: 8080
+	//     public: true
+	Spec *string `json:"spec,omitempty"`
+}
+
+// AppSpecValidation The result of checking a platform.yaml. `spec` is set when the file
+// decodes, with defaults applied, even when it breaks a rule. `commit`
+// is the commit the file was read at, for a check of a repository once
+// the branch was found.
+type AppSpecValidation struct {
+	// Commit Example: 9fceb02d0ae598e95dc970b74767f19372d61af8
+	Commit *string `json:"commit,omitempty"`
+
+	// Errors Empty when valid.
+	Errors []AppSpecFieldError `json:"errors"`
+
+	// Spec `platform.yaml` at the root of an app's repository, with defaults
+	// applied. pkg/appspec parses it strictly (unknown keys are an error)
+	// and checks these rules:
+	//
+	// - `name` matches `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It names the
+	//   namespace, the Argo CD Applications `<name>-<env>`, the images
+	//   `<registry>/hopcharlie/apps/<name>/<service>` and the public URL
+	//   `https://<name>.hopcharlie.dev`.
+	// - 1 to 5 services and at most one resource per type. Service names,
+	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
+	//   are unique.
+	// - `port` is 1 to 65535, `replicas` 1 to 5, at most one service is
+	//   `public`, and `healthCheck`, when set, starts with `/`.
+	// - `path` and `dockerfile` are relative and have no `..`.
+	// - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
+	//   variables the platform sets: `PORT`, `DATABASE_URL` and `S3_*`.
+	//
+	// The rules are not repeated as schema keywords, because
+	// AppSpecValidation returns the spec of a file that breaks them.
+	//
+	//
+	// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1}]}
+	Spec  *AppSpec `json:"spec,omitempty"`
+	Valid bool     `json:"valid"`
 }
 
 // AuditEntry defines model for AuditEntry.
@@ -698,6 +1093,173 @@ type DatabaseCluster struct {
 	// Replica spec.replica.enabled, or the topology names another cluster as primary
 	Replica bool `json:"replica"`
 }
+
+// Deployment One deployment of an app's commit to one or more environments.
+type Deployment struct {
+	// App Example: moimroom
+	App string `json:"app"`
+
+	// BuildId the AWS CodeBuild build id, or the local docker build's id (E2E)
+	BuildId *string `json:"buildId,omitempty"`
+
+	// Commit the full commit sha ref resolved to
+	//
+	// Example: 9fceb02d0ae598e95dc970b74767f19372d61af8
+	Commit    string    `json:"commit"`
+	CreatedAt time.Time `json:"createdAt"`
+
+	// Environments One per target environment, in the app's order.
+	Environments []DeploymentEnvironment `json:"environments"`
+
+	// Error why the deployment failed
+	Error *string `json:"error,omitempty"`
+
+	// FinishedAt when it reached a final status
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+
+	// Id Example: dep_3f9c1a0b2d4e
+	Id string `json:"id"`
+
+	// Images One per service whose image is built, pinned by digest:
+	// `<registry>/hopcharlie/apps/<app>/<service>@sha256:<digest>`. The
+	// image is also tagged with the commit.
+	Images []DeploymentImage `json:"images"`
+
+	// Ref what was asked for: a branch or a commit sha
+	//
+	// Example: main
+	Ref string `json:"ref"`
+
+	// StartedAt when the deployer took it from the queue
+	StartedAt *time.Time `json:"startedAt,omitempty"`
+
+	// Status queued: waiting for the deployer. A server without a deployer leaves deployments queued.
+	// building: building and pushing one image per service.
+	// committing: writing apps/<app>/<env>.yaml to the gitops repository.
+	// syncing: Argo CD is applying the commit; waiting for every environment to be healthy.
+	// healthy: every environment is synced and healthy. Final.
+	// failed: the deployment stopped; `error` says why. Final.
+	// superseded: a newer deployment of the app to the same environments (or more) was created
+	//   before this one finished. This one stopped, and writes nothing to the gitops repository
+	//   after that. Final.
+	Status DeploymentStatus `json:"status"`
+
+	// Trigger register: the first deployment, created by POST /v1/apps.
+	// push: a push to the app's branch (the GitHub webhook).
+	// manual: POST /v1/apps/{name}/deployments.
+	Trigger DeploymentTrigger `json:"trigger"`
+
+	// TriggeredBy the token name (register, manual), or github:<login> of the pusher (push)
+	//
+	// Example: seohyun
+	TriggeredBy string `json:"triggeredBy"`
+}
+
+// DeploymentCreateRequest defines model for DeploymentCreateRequest.
+type DeploymentCreateRequest struct {
+	// Environments A subset of the app's environments; defaults to all of them.
+	Environments *[]string `json:"environments,omitempty"`
+
+	// Ref a branch or a commit sha of the app's repository; defaults to the app's branch
+	//
+	// Example: main
+	Ref *string `json:"ref,omitempty"`
+}
+
+// DeploymentEnvironment defines model for DeploymentEnvironment.
+type DeploymentEnvironment struct {
+	// Env Example: eks
+	Env string `json:"env"`
+
+	// HealthStatus Argo CD health status of the Application <app>-<env>
+	//
+	// Example: Healthy
+	HealthStatus *string `json:"healthStatus,omitempty"`
+
+	// Message the latest detail, such as Argo CD's sync message or why the environment failed
+	Message *string `json:"message,omitempty"`
+
+	// Status pending: nothing deployed to the environment yet.
+	// syncing: apps/<app>/<env>.yaml is committed and Argo CD is applying it.
+	// healthy: Argo CD reports Synced and Healthy for the commit.
+	// degraded: synced, but Argo CD reports the Application Degraded.
+	// failed: the sync failed, or the environment did not become healthy in time.
+	Status DeploymentEnvironmentStatus `json:"status"`
+
+	// SyncStatus Argo CD sync status of the Application <app>-<env>
+	//
+	// Example: Synced
+	SyncStatus *string `json:"syncStatus,omitempty"`
+
+	// Url where the public service answers in this environment, when known
+	Url *string `json:"url,omitempty"`
+}
+
+// DeploymentEnvironmentStatus pending: nothing deployed to the environment yet.
+// syncing: apps/<app>/<env>.yaml is committed and Argo CD is applying it.
+// healthy: Argo CD reports Synced and Healthy for the commit.
+// degraded: synced, but Argo CD reports the Application Degraded.
+// failed: the sync failed, or the environment did not become healthy in time.
+type DeploymentEnvironmentStatus string
+
+// DeploymentEvent One step of a deployment.
+// - phase: the deployment entered `phase`; `message` may say more.
+// - log: one line of build or deploy output in `message`, from `phase`.
+// - environment: `env` changed state; `message` says how (for example "Synced, Healthy").
+// - done: the deployment ended with `phase` (healthy, failed or superseded); `message` is the error when it failed. It is the deployment's last event.
+type DeploymentEvent struct {
+	DeploymentId string  `json:"deploymentId"`
+	Env          *string `json:"env,omitempty"`
+	Message      *string `json:"message,omitempty"`
+
+	// Phase queued: waiting for the deployer. A server without a deployer leaves deployments queued.
+	// building: building and pushing one image per service.
+	// committing: writing apps/<app>/<env>.yaml to the gitops repository.
+	// syncing: Argo CD is applying the commit; waiting for every environment to be healthy.
+	// healthy: every environment is synced and healthy. Final.
+	// failed: the deployment stopped; `error` says why. Final.
+	// superseded: a newer deployment of the app to the same environments (or more) was created
+	//   before this one finished. This one stopped, and writes nothing to the gitops repository
+	//   after that. Final.
+	Phase *DeploymentStatus   `json:"phase,omitempty"`
+	Seq   int64               `json:"seq"`
+	Time  time.Time           `json:"time"`
+	Type  DeploymentEventType `json:"type"`
+}
+
+// DeploymentEventType defines model for DeploymentEventType.
+type DeploymentEventType string
+
+// DeploymentImage defines model for DeploymentImage.
+type DeploymentImage struct {
+	// Image Example: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/hopcharlie/apps/moimroom/web@sha256:4c2e1a...
+	Image string `json:"image"`
+
+	// Service Example: web
+	Service string `json:"service"`
+}
+
+// DeploymentList defines model for DeploymentList.
+type DeploymentList struct {
+	Deployments []Deployment `json:"deployments"`
+}
+
+// DeploymentStatus queued: waiting for the deployer. A server without a deployer leaves deployments queued.
+// building: building and pushing one image per service.
+// committing: writing apps/<app>/<env>.yaml to the gitops repository.
+// syncing: Argo CD is applying the commit; waiting for every environment to be healthy.
+// healthy: every environment is synced and healthy. Final.
+// failed: the deployment stopped; `error` says why. Final.
+// superseded: a newer deployment of the app to the same environments (or more) was created
+//
+//	before this one finished. This one stopped, and writes nothing to the gitops repository
+//	after that. Final.
+type DeploymentStatus string
+
+// DeploymentTrigger register: the first deployment, created by POST /v1/apps.
+// push: a push to the app's branch (the GitHub webhook).
+// manual: POST /v1/apps/{name}/deployments.
+type DeploymentTrigger string
 
 // EngineOutcome defines model for EngineOutcome.
 type EngineOutcome string
@@ -865,6 +1427,24 @@ type GateThresholds struct {
 
 	// MinRequests fewer requests than this fails the gate
 	MinRequests *int `json:"minRequests,omitempty"`
+}
+
+// GitHubRepo defines model for GitHubRepo.
+type GitHubRepo struct {
+	// DefaultBranch Example: main
+	DefaultBranch string `json:"defaultBranch"`
+
+	// FullName Example: 2026-Softbank-Hackathon-Charlie/moimroom
+	FullName string `json:"fullName"`
+
+	// HtmlUrl Example: https://github.com/2026-Softbank-Hackathon-Charlie/moimroom
+	HtmlUrl string `json:"htmlUrl"`
+	Private bool   `json:"private"`
+}
+
+// GitHubRepoList defines model for GitHubRepoList.
+type GitHubRepoList struct {
+	Repos []GitHubRepo `json:"repos"`
 }
 
 // Health defines model for Health.
@@ -1275,6 +1855,23 @@ type SecurityFinding struct {
 	Title  string `json:"title"`
 }
 
+// SecurityOCSFExport defines model for SecurityOCSFExport.
+type SecurityOCSFExport struct {
+	// Findings OCSF Detection Finding (2004) and Compliance Finding (2003) events,
+	// as the OCSF schema defines them (snake_case keys, `time` in epoch
+	// milliseconds). Their shape is the OCSF standard's, not this API's,
+	// so it is not repeated here.
+	Findings []map[string]interface{} `json:"findings"`
+
+	// GeneratedAt when the sources were read (as `SecurityReport.generatedAt`)
+	GeneratedAt time.Time `json:"generatedAt"`
+
+	// OcsfVersion OCSF version the events follow
+	//
+	// Example: 1.9.0
+	OcsfVersion string `json:"ocsfVersion"`
+}
+
 // SecurityProvider defines model for SecurityProvider.
 type SecurityProvider string
 
@@ -1474,6 +2071,12 @@ type WrittenRecordsRequest struct {
 	Records []WrittenRecord `json:"records"`
 }
 
+// AppName defines model for AppName.
+type AppName = string
+
+// DeploymentId defines model for DeploymentId.
+type DeploymentId = string
+
 // EnvName defines model for EnvName.
 type EnvName = string
 
@@ -1531,12 +2134,24 @@ type StreamAgentEventsParams struct {
 // StreamAgentEventsParamsFormat defines parameters for StreamAgentEvents.
 type StreamAgentEventsParamsFormat string
 
+// ListDeploymentsParams defines parameters for ListDeployments.
+type ListDeploymentsParams struct {
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // ListAuditParams defines parameters for ListAudit.
 type ListAuditParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Before Return entries with id lower than this (pagination).
 	Before *int64 `form:"before,omitempty" json:"before,omitempty"`
+}
+
+// StreamDeploymentEventsParams defines parameters for StreamDeploymentEvents.
+type StreamDeploymentEventsParams struct {
+	// After Replay events with seq greater than this. Same as Last-Event-ID.
+	After       *int64  `form:"after,omitempty" json:"after,omitempty"`
+	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
 // StartMigrationParams defines parameters for StartMigration.
@@ -1561,10 +2176,29 @@ type GetSecurityParams struct {
 	Refresh  *bool             `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 
+// GetSecurityOCSFParams defines parameters for GetSecurityOCSF.
+type GetSecurityOCSFParams struct {
+	Environment *string           `form:"environment,omitempty" json:"environment,omitempty"`
+	Severity    *SecuritySeverity `form:"severity,omitempty" json:"severity,omitempty"`
+	Refresh     *bool             `form:"refresh,omitempty" json:"refresh,omitempty"`
+}
+
 // GetTrafficParams defines parameters for GetTraffic.
 type GetTrafficParams struct {
 	// Window Statistics window, a duration between 1s and 5m.
 	Window *string `form:"window,omitempty" json:"window,omitempty"`
+}
+
+// ReceiveGitHubWebhookJSONBody defines parameters for ReceiveGitHubWebhook.
+type ReceiveGitHubWebhookJSONBody map[string]interface{}
+
+// ReceiveGitHubWebhookParams defines parameters for ReceiveGitHubWebhook.
+type ReceiveGitHubWebhookParams struct {
+	XGitHubEvent string `json:"X-GitHub-Event"`
+
+	// XGitHubDelivery GitHub's delivery id; a delivery that was already handled is a 204.
+	XGitHubDelivery  string `json:"X-GitHub-Delivery"`
+	XHubSignature256 string `json:"X-Hub-Signature-256"`
 }
 
 // CreateAgentSessionJSONRequestBody defines body for CreateAgentSession for application/json ContentType.
@@ -1575,6 +2209,15 @@ type AppendAgentEventJSONRequestBody = AgentEventRequest
 
 // FinishAgentSessionJSONRequestBody defines body for FinishAgentSession for application/json ContentType.
 type FinishAgentSessionJSONRequestBody = FinishAgentSessionRequest
+
+// CreateAppJSONRequestBody defines body for CreateApp for application/json ContentType.
+type CreateAppJSONRequestBody = AppCreateRequest
+
+// ValidateAppSpecJSONRequestBody defines body for ValidateAppSpec for application/json ContentType.
+type ValidateAppSpecJSONRequestBody = AppSpecValidateRequest
+
+// CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
+type CreateDeploymentJSONRequestBody = DeploymentCreateRequest
 
 // StartMigrationJSONRequestBody defines body for StartMigration for application/json ContentType.
 type StartMigrationJSONRequestBody = StartMigrationRequest
@@ -1596,6 +2239,9 @@ type ApprovePlanJSONRequestBody = ReviewRequest
 
 // RejectPlanJSONRequestBody defines body for RejectPlan for application/json ContentType.
 type RejectPlanJSONRequestBody = ReviewRequest
+
+// ReceiveGitHubWebhookJSONRequestBody defines body for ReceiveGitHubWebhook for application/json ContentType.
+type ReceiveGitHubWebhookJSONRequestBody ReceiveGitHubWebhookJSONBody
 
 // AppendWrittenRecordsJSONRequestBody defines body for AppendWrittenRecords for application/json ContentType.
 type AppendWrittenRecordsJSONRequestBody = WrittenRecordsRequest

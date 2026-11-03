@@ -1,0 +1,26 @@
+{{- $pg := include "hopcharlie-app.resource" (dict "root" $ "type" "postgres") | fromJson }}
+{{- with $pg.name }}
+{{- $profile := $.Values.profile.postgres }}
+# CNPG creates the database app owned by user app and the Secret
+# <name>-app, whose uri is the services' DATABASE_URL.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ printf "%s-%s" $.Values.values.app . }}
+  labels:
+    hopcharlie.dev/app: {{ $.Values.values.app }}
+    hopcharlie.dev/resource: {{ . }}
+    app.kubernetes.io/part-of: {{ $.Values.values.app }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+spec:
+  instances: 1
+  storage:
+    size: {{ $profile.storageSize | default "1Gi" }}
+    {{- with $profile.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  {{- with $profile.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

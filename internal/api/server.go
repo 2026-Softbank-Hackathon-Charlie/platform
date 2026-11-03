@@ -18,7 +18,9 @@ import (
 	specdoc "github.com/2026-Softbank-Hackathon-Charlie/platform/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
@@ -36,6 +38,28 @@ type Traffic interface {
 	State(ctx context.Context, window time.Duration) (apiv1.TrafficState, error)
 }
 
+// Deployer runs deployments of apps registered from GitHub: it builds the
+// images, commits apps/<app>/<env>.yaml to the gitops repository and follows
+// Argo CD, recording progress in the store. Enqueue hands it a stored
+// deployment in status queued and returns once the deployer has taken it,
+// not when the deployment finishes.
+type Deployer interface {
+	Enqueue(ctx context.Context, deploymentID string) error
+}
+
+// GitHub reads app repositories through the platform's GitHub App
+// (internal/github). An error that wraps fs.ErrNotExist means the
+// repository, ref or file does not exist or the installation cannot see it;
+// any other error means GitHub could not be reached.
+type GitHub interface {
+	// ResolveRef returns the full commit sha of a branch, tag or sha of repo (owner/name).
+	ResolveRef(ctx context.Context, repo, ref string) (string, error)
+	// ReadFile returns the file at path (from the repository root) at ref.
+	ReadFile(ctx context.Context, repo, ref, path string) ([]byte, error)
+	// ListRepos returns the repositories the installation can see.
+	ListRepos(ctx context.Context) ([]github.Repo, error)
+}
+
 // Config configures the API.
 type Config struct {
 	// Tokens authenticates callers. When Insecure is set and Tokens is empty,
@@ -45,13 +69,22 @@ type Config struct {
 	// CORSOrigins lists browser origins allowed to call the API ("*" allows any).
 	CORSOrigins []string
 	Log         *slog.Logger
+	// GitHubWebhookSecret checks X-Hub-Signature-256 on POST
+	// /v1/webhooks/github; empty answers it 503.
+	GitHubWebhookSecret string
+	// AppDomain is where public services of registered apps answer, as
+	// https://<app>.<AppDomain>. Default DefaultAppDomain.
+	AppDomain string
 }
+
+// DefaultAppDomain is Config.AppDomain's default.
+const DefaultAppDomain = "hopcharlie.dev"
 
 // Deps are the services behind the API.
 type Deps struct {
 	Plans *plans.Service
 	Runs  *runs.Runner
-	Store store.Store // audit log and idempotency keys
+	Store store.Store // audit log, idempotency keys, apps from GitHub and their deployments
 	Envs  Envs
 	// Traffic is nil when no gateway is configured.
 	Traffic Traffic
@@ -63,6 +96,12 @@ type Deps struct {
 	Security SecurityReporter
 	// Agents is the AI agent's activity log; nil turns /v1/agent off.
 	Agents AgentLog
+	// Deployer runs deployments; nil leaves them queued.
+	Deployer Deployer
+	// Remover removes registered apps (DELETE /v1/apps/{name}); nil answers 503.
+	Remover AppRemover
+	// GitHub reads app repositories; nil answers the endpoints that need it 503 github_not_configured.
+	GitHub GitHub
 }
 
 // Server is the HTTP handler.
@@ -81,6 +120,9 @@ func New(cfg Config, d Deps) *Server {
 	}
 	if cfg.Tokens == nil {
 		cfg.Tokens = &auth.Tokens{}
+	}
+	if cfg.AppDomain == "" {
+		cfg.AppDomain = DefaultAppDomain
 	}
 	s := &Server{cfg: cfg, d: d, mux: http.NewServeMux()}
 	if d.Runs != nil {
@@ -123,12 +165,25 @@ func New(cfg Config, d Deps) *Server {
 	s.route("POST /v1/migrations/{runId}/rollback", operator, s.rollbackMigration)
 	s.route("GET /{$}", "", s.root)
 	s.route("GET /v1/security", viewer, s.security)
+	s.route("GET /v1/security/ocsf", viewer, s.securityOCSF)
 	s.route("POST /v1/agent/sessions", agent, s.createAgentSession)
 	s.route("GET /v1/agent/sessions", viewer, s.listAgentSessions)
 	s.route("GET /v1/agent/sessions/{id}", viewer, s.getAgentSession)
 	s.route("POST /v1/agent/sessions/{id}/events", agent, s.appendAgentEvent)
 	s.route("GET /v1/agent/sessions/{id}/events", viewer, s.agentEvents)
 	s.route("POST /v1/agent/sessions/{id}/finish", agent, s.finishAgentSession)
+	s.route("POST /v1/apps", operator, s.createApp)
+	s.route("GET /v1/apps/{name}", viewer, s.getApp)
+	s.route("POST /v1/apps/validate", viewer, s.validateAppSpec)
+	s.route("GET /v1/github/repos", viewer, s.listGitHubRepos)
+	// GitHub signs the webhook instead of sending a token; the handler
+	// checks the signature and writes its own audit entries.
+	s.route("POST /v1/webhooks/github", "", s.githubWebhook)
+	s.route("DELETE /v1/apps/{name}", operator, s.deleteApp)
+	s.route("POST /v1/apps/{name}/deployments", operator, s.createDeployment)
+	s.route("GET /v1/apps/{name}/deployments", viewer, s.listDeployments)
+	s.route("GET /v1/deployments/{id}", viewer, s.getDeployment)
+	s.route("GET /v1/deployments/{id}/events", viewer, s.deploymentEvents)
 	return s
 }
 
@@ -224,7 +279,7 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request) bool {
 	h.Add("Vary", "Origin")
 	h.Set("Access-Control-Expose-Headers", "Location, X-Request-Id")
 	if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, Last-Event-ID, X-Request-Id")
 		h.Set("Access-Control-Max-Age", "600")
 		w.WriteHeader(http.StatusNoContent)
@@ -319,8 +374,54 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_plan", err.Error())
 	case errors.Is(err, plans.ErrWrongStatus):
 		s.fail(w, r, http.StatusConflict, "plan_state_conflict", err.Error())
+	case errors.Is(err, plans.ErrResidencyDenied):
+		// The verdict holds fixed codes and validated identifiers only.
+		var denied *plans.ResidencyDenied
+		if errors.As(err, &denied) {
+			noteAudit(r, "residencyDigest", denied.Verdict.PolicyDigest)
+			noteAudit(r, "residencyReasons", plans.ReasonTexts(denied.Verdict.Reasons))
+		}
+		s.fail(w, r, http.StatusConflict, "residency_denied", err.Error())
+	case errors.Is(err, plans.ErrCapacityInsufficient):
+		// The report holds measured numbers only, never addresses.
+		var short *plans.CapacityInsufficient
+		if errors.As(err, &short) {
+			noteAudit(r, "capacity", capacityNote(&short.Report))
+		}
+		s.fail(w, r, http.StatusConflict, "capacity_insufficient", err.Error())
 	default:
 		s.internal(w, r, err)
+	}
+}
+
+// noteCapacity records what the capacity gate measured for a started plan.
+func noteCapacity(r *http.Request, c plans.CapacityCheck) {
+	switch {
+	case c.Report != nil:
+		noteAudit(r, "capacity", capacityNote(c.Report))
+	case c.Outcome != "":
+		noteAudit(r, "capacity", map[string]any{"outcome": c.Outcome})
+	}
+}
+
+// capacityNote is the audit form of a capacity report: each check's status,
+// code and message, and the raw measurements.
+func capacityNote(rep *capacity.Report) map[string]any {
+	checks := make([]string, 0, len(rep.Checks))
+	for _, c := range rep.Checks {
+		checks = append(checks, c.ID+" "+string(c.Status)+" "+c.Code+": "+c.Message)
+	}
+	return map[string]any{"allowed": rep.Allowed, "checks": checks, "measurements": rep.Measurements}
+}
+
+// noteResidency records what the residency gate decided for a started plan.
+func noteResidency(r *http.Request, c plans.ResidencyCheck) {
+	if c.Outcome == "" {
+		return
+	}
+	noteAudit(r, "residency", c.Outcome)
+	if c.PolicyDigest != "" {
+		noteAudit(r, "residencyDigest", c.PolicyDigest)
 	}
 }
 

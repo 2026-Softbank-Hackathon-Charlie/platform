@@ -9,12 +9,16 @@ on:
   pull_request:
   push:
     branches: [main]
+  # publish-image.yml runs the same checks on the commit it publishes.
+  workflow_call:
 
 permissions:
   contents: read
 
+# github.workflow is the caller's name when publish-image.yml calls this, so
+# a publish run and a push run on main do not cancel each other.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -92,6 +96,12 @@ jobs:
           go generate ./pkg/apiv1/...
           git diff --exit-code -- pkg/apiv1
 
+      # test/charts runs helm lint and helm template on deploy/charts and
+      # deploy/argocd; pinned so its results do not change with the runner.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.22.1
+
       # No -count=1: packages whose code, test files and environment did not
       # change since main's run reuse their cached result.
       - name: Test (race, PostgreSQL)
@@ -114,31 +124,6 @@ jobs:
             ~/.cache/go-build
           key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
-  terraform:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    env:
-      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugins
-    steps:
-      - uses: actions/checkout@v5
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.17.1
-          terraform_wrapper: false
-      - name: Restore provider cache
-        uses: actions/cache@v4
-        with:
-          path: .terraform-plugins
-          key: tf-${{ runner.os }}-${{ hashFiles('deploy/aws/.terraform.lock.hcl', 'deploy/aws/state/.terraform.lock.hcl') }}
-      - name: Format and validate (no backend, no AWS)
-        run: |
-          mkdir -p "$TF_PLUGIN_CACHE_DIR"
-          terraform fmt -check -recursive deploy/aws
-          for dir in deploy/aws deploy/aws/state; do
-            terraform -chdir="$dir" init -backend=false -input=false >/dev/null
-            terraform -chdir="$dir" validate
-          done
-
   shell:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -149,3 +134,7 @@ jobs:
           for f in $(git ls-files '*.sh' '*.tftpl'); do
             bash -n "$f" || exit 1
           done
+      - name: Terraform handoff compatibility (fake tools, no AWS)
+        run: bash test/tf-handoff.sh
+      - name: Infra PR helper tests
+        run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'

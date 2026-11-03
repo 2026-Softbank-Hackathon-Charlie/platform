@@ -9,6 +9,7 @@ platform/
 ├── cmd/gateway/       트래픽 게이트웨이: 쓰기 보류, 환경 전환, 읽기 가중치, 요청 통계
 ├── pkg/apiv1/         openapi.yaml에서 생성한 Go 타입 (CLI가 import)
 ├── pkg/client/        Go 클라이언트 (CLI가 import)
+├── pkg/appspec/       앱 저장소의 platform.yaml 해석과 검사 (CLI가 import)
 ├── internal/
 │   ├── api/           HTTP 핸들러, 역할 검사, 감사 로그, SSE
 │   ├── auth/          토큰과 역할
@@ -16,12 +17,17 @@ platform/
 │   ├── runs/          이전 실행 단계 (동기화, 카나리, 전환 승인, 전환, 관찰), 이벤트 저장
 │   ├── envs/          환경 등록, 클러스터 실시간 상태
 │   ├── gateway/       게이트웨이 본체와 관리 API 클라이언트
+│   ├── deploy/        GitHub 앱 배포 실행기 (빌드, gitops 커밋, Argo CD 대기, 게이트웨이 등록)
 │   └── store/         PostgreSQL 저장소
-├── examples/envs.yaml 환경 설정 예시
+├── examples/envs.yaml 로컬 개발용 환경 설정 예시
 └── docs/adr/          설계 결정 기록
 ```
 
 CLI는 별도 레포 [cli](https://github.com/2026-Softbank-Hackathon-Charlie/cli)에 있습니다.
+
+이전 전 동등성·레지던시 검사는 [internal/preflight](internal/preflight/README.md)에 있습니다. **레지던시는 `PLATFORM_RESIDENCY_POLICY_FILE`을 설정하면 새 run 시작을 막는 게이트로 동작합니다**([ADR 0013](docs/adr/0013-residency-start-gate.md)). 동등성은 아직 실행 경로에 연결되지 않았습니다. 구현된 검사와 미검증 범위는 해당 문서에 구분합니다.
+
+AWS 관리 호스트, EKS Pod Identity, 상태 버킷(`state/`), ACM·Cloudflare(`dns/`)의 Terraform과 운영 호스트 설정은 [infra/terraform/platform/aws](https://github.com/2026-Softbank-Hackathon-Charlie/infra/tree/main/terraform/platform/aws)에서 관리합니다. 이 레포에는 [애플리케이션 배포 도우미](deploy/aws/README.md)와 로컬 개발 예시만 남습니다. `examples/envs.yaml`, `examples/apps.yaml`을 고쳐도 운영 설정은 바뀌지 않습니다. 운영 설정은 infra의 `terraform/platform/aws/host/envs.yaml`, `host/apps.yaml`을 고칩니다.
 
 ## 이전 한 번의 흐름
 
@@ -130,7 +136,7 @@ go run ./cmd/gateway
 | `PLATFORM_DATABASE_URL` | 필수. 플랫폼 DB. 시작할 때 스키마를 자동으로 적용 |
 | `PLATFORM_TOKENS` | `이름:역할:토큰`을 쉼표로 구분. 역할은 viewer, agent, operator. 토큰은 16자 이상 |
 | `PLATFORM_API_TOKEN` | 첫 버전 호환용. operator 토큰 하나로 추가됨 |
-| `PLATFORM_ENVS_FILE` | 필수. 환경 설정 파일 ([examples/envs.yaml](examples/envs.yaml)) |
+| `PLATFORM_ENVS_FILE` | 필수. 환경 설정 파일 ([로컬 개발 예시](examples/envs.yaml); 운영 설정은 infra에서 관리) |
 | `PLATFORM_GATEWAY_URL`, `GATEWAY_TOKEN` | 게이트웨이 관리 API 주소와 토큰. 비우면 카나리와 `/v1/traffic`이 꺼지고 `gateway.mode: http` Plan을 거부 |
 | `PLATFORM_CORS_ORIGINS` | 콘솔 주소. 쉼표 구분, `*`는 전부 허용 |
 | `PLATFORM_ADDR`, `PLATFORM_STATE_DIR` | 주소(기본 `:8080`), 엔진 상태 디렉터리 |
@@ -140,6 +146,9 @@ go run ./cmd/gateway
 | `RCLONE_CONFIG_<원격>_*` | rclone 원격의 종류와 자격 증명 (예: `RCLONE_CONFIG_GCS_TYPE=google cloud storage`). 등록된 버킷의 원격에 `_TYPE`이 없으면 시작할 때 경고 |
 | `PLATFORM_AWS_REGION` | 보안 뷰가 읽는 AWS 리전 (기본 `ap-northeast-2`) |
 | `PLATFORM_AGENT_IDLE` | 이벤트 없이 이 시간이 지난 `running` 에이전트 세션을 `cancelled`로 닫음 (기본 `30m`) |
+| `PLATFORM_RESIDENCY_POLICY_FILE` | 레지던시 정책 파일 ([예시](examples/residency-policy.yaml), [ADR 0013](docs/adr/0013-residency-start-gate.md)). 설정하면 새 run을 시작하기 전에 원본 전체 테이블 목록을 수집해 검사하고, 위반이면 409 `residency_denied`. `files`는 정책의 `buckets`에 등록된 버킷끼리만, 원본 버킷 분류가 대상 버킷 국가를 허용할 때만 통과. 롤백은 면제. 비우면 검사 없음(시작 시 경고) |
+| `PLATFORM_CAPACITY_GATE` | `on`이면 새 run을 시작하기 전에 원본·대상 DB를 몇 초 동안 측정해, 대상 접속 한도가 부족하거나 replica가 `catchupTimeout` 안에 따라잡지 못하면 409 `capacity_insufficient` ([ADR 0014](docs/adr/0014-capacity-preflight.md)). 측정하지 못한 값은 막지 않음. 롤백은 면제. 기본 `off` |
+| `PLATFORM_GITHUB_*`, `PLATFORM_APP_DOMAIN` | 앱을 등록하고 배포하는 GitHub App. [GitHub App 설정](#github-app-설정) 참고 |
 
 ### Plan의 환경 변수 참조
 
@@ -189,6 +198,10 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 | `POST /v1/weights {"readWeights":{...}}` | 읽기 비율만 바꿈 (합 100) |
 | `GET /v1/state?window=10s` | `TrafficState`: 환경별 요청 수, 오류율, p50/p95/p99, 누적 수. 지난 10초와 지금 진행 중인 초를 합쳐 세고, rps는 그 실제 길이로 나눔 |
 | `GET /metrics` | Prometheus 지표 (`charlie_gateway_*`) |
+| `GET /apps` | `{"domain","apps":[...]}`. 기본 앱이 먼저, 등록한 앱은 이름순. 앱마다 `name`, `default`, `host`, `backends`(비밀번호를 가린 주소), `writeBackend`, `readWeights`, `writesHeld` |
+| `PUT /apps/{app} {"backends":{"gke":"http://shop.gke.ts.net"},"writeBackend":"gke","readWeights":{"gke":100}}` | 앱을 등록하면 201, 교체하면 200, 본문은 목록의 앱 하나와 같음. `readWeights`를 빼면 읽기도 전부 `writeBackend`로. 그 앱의 쓰기를 보류하는 동안 409 `writes_held`, 기본 앱 이름이면 409 `default_app` |
+| `DELETE /apps/{app}` | 등록한 앱을 지움(204). 보류하는 동안 409 `writes_held`, 없으면 404 `unknown_app` |
+| `/apps/{app}/healthz`, `/apps/{app}/v1/state`, `/apps/{app}/v1/writes/hold`, `/apps/{app}/v1/writes/release`, `/apps/{app}/v1/route`, `/apps/{app}/v1/weights` | 위의 같은 요청을 그 앱에만. `/apps/{app}/healthz`도 토큰이 필요하고, 없는 앱이면 404 `unknown_app` |
 
 | 변수 (플래그) | 설명 |
 | --- | --- |
@@ -197,6 +210,8 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 | `GATEWAY_LISTEN` (`-listen`), `GATEWAY_ADMIN_ADDR` (`-admin-addr`) | 사용자 요청 주소(기본 `:8000`), 관리 주소(기본 `:9901`) |
 | `GATEWAY_INITIAL_BACKEND` (`-initial-backend`) | 상태 파일이 없을 때 처음 쓸 환경 (기본: 첫 번째) |
 | `GATEWAY_STATE_FILE` (`-state-file`) | 상태 파일 (기본 `.hopcharlie/gateway-state.json`) |
+| `GATEWAY_APP_DOMAIN` (`-app-domain`) | 앱 도메인 (예: `hopcharlie.dev`). 비우면(기본) 호스트와 관계없이 모든 요청이 기본 앱으로 감 |
+| `GATEWAY_DEFAULT_APP` (`-default-app`) | `-backends`가 서빙하는 기본 앱의 이름 (기본 `app`, 그래서 `app.hopcharlie.dev`가 기본 앱) |
 | `-max-hold` | 쓰기 하나가 보류 중에 기다리는 최대 시간 (기본 90s, Cloudflare의 원본 응답 제한 약 100초보다 짧게). 넘긴 쓰기는 보내지 않고 503 `hold_timeout`(`Retry-After: 1`)으로 답하고 `charlie_gateway_hold_expired_total`에 셈. 보류 자체는 release까지 이어짐 |
 | `-drain-timeout` | hold가 처리 중인 쓰기를 기다리는 시간 (기본 30s) |
 | `-max-held` | 대기 쓰기 상한 (기본 2000). 쓰기마다 본문을 64KiB까지 메모리에 두며, 본문을 읽기 전에 자리를 잡음. 넘으면 503 `too_many_held_writes` |
@@ -207,6 +222,16 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 - SIGINT나 SIGTERM을 받으면 대기 중인 쓰기와 그 뒤에 들어온 보류 대상 쓰기에 503 `shutting_down`(`Retry-After: 1`)으로 답하고 환경에는 보내지 않습니다. 사용자 요청 서버가 처리 중인 요청을 끝낸 뒤에 관리 API를 닫습니다.
 - 보류 중이었다면 상태 파일에 보류가 그대로 남고, 다시 시작해도 보류가 이어집니다. 시간이 지나도 저절로 풀리지 않으므로 엔진의 롤백이나 운영자가 release를 불러야 쓰기가 다시 흐릅니다.
 - 설정에서 뺀 환경이 상태 파일에 읽기 비율 0으로 남아 있으면 지우고 시작합니다. 그 환경이 `writeBackend`이거나 읽기 비율이 0보다 크면 시작하지 않습니다.
+
+앱마다 따로 라우팅하기 (ADR 0012):
+
+- `-backends`의 환경이 기본 앱입니다. `/v1/...` 관리 API, `gateway.Client`의 기존 메서드, 기존 지표는 모두 기본 앱만 다룹니다. 플랫폼 API(`internal/runs`)도 기본 앱을 이전합니다.
+- 다른 앱은 `PUT /apps/{app}`으로 등록합니다. 앱마다 환경, 쓰기 환경, 읽기 비율, 쓰기 보류, 통계가 따로 있어서, 한 앱의 hold는 다른 앱의 쓰기를 기다리지도 붙잡지도 않습니다. 이름은 `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`입니다.
+- `-app-domain`을 정하면 `Host`가 `<앱>.<도메인>`인 요청(대소문자와 포트 무시)이 그 앱으로 갑니다. `<기본 앱 이름>.<도메인>`은 기본 앱입니다. 도메인 아래인데 등록하지 않은 이름이면 404 `unknown_app`으로 답하고 어느 환경에도 보내지 않습니다. 오타가 다른 앱의 환경에 닿지 않게 하기 위해서입니다. 도메인 밖의 호스트(IP, 다른 도메인, 도메인 자체)는 기본 앱으로 갑니다.
+- `<관리 주소>/apps/<앱>`을 게이트웨이 주소로 쓰면 엔진의 HTTP 클라이언트가 그 앱에 hold, route, release를 그대로 부릅니다. Go에서는 `client.App("shop")`이 그 주소를 쓰는 `*gateway.Client`를 돌려주고, `client.Apps`, `client.PutApp(ctx, "shop", gateway.AppSpec{...})`, `client.DeleteApp`로 앱을 관리합니다.
+- 상태 파일에는 기본 앱을 예전과 같은 최상위 필드에, 등록한 앱을 `apps`에 환경 주소와 함께 씁니다. 예전 상태 파일은 그대로 읽고, 앱을 등록하지 않으면 파일 내용도 예전과 같습니다. 재시작하면 앱마다 쓰기 환경, 읽기 비율, 보류가 기본 앱과 같은 규칙으로 이어집니다.
+- 등록한 앱의 지표는 `charlie_gateway_app_*`이고 `app` 라벨이 맨 앞에 붙습니다(예: `charlie_gateway_app_requests_total{app="shop",backend="gke",class="read",code="200"}`). 기본 앱의 `charlie_gateway_*`에는 등록한 앱의 요청이 들어가지 않습니다. 앱을 지우면 그 앱의 시계열도 지웁니다.
+- 등록한 앱의 헬스 체크도 `-health-path`를 씁니다.
 
 ## 테스트
 
@@ -221,7 +246,7 @@ PLATFORM_TEST_DATABASE_URL='postgres://charlie:charlie@localhost:55432/charlie?s
 
 ### CI
 
-PR과 main push마다 GitHub Actions(`.github/workflows/ci.yml`)가 vet, gofmt, 생성 코드 확인, `go test -race`(PostgreSQL 포함), Terraform fmt와 validate, 셸 `bash -n`을 돌립니다.
+PR과 main push마다 GitHub Actions(`.github/workflows/ci.yml`)가 vet, gofmt, 생성 코드 확인, `go test -race`(PostgreSQL 포함, `test/charts`의 helm lint와 helm template 포함), 셸 `bash -n`, AWS 접속 없는 Terraform output 호환 테스트를 돌립니다. Terraform fmt와 validate는 infra 레포 CI가 담당합니다.
 
 - PR 검사는 1분 안에 끝나는 것이 목표입니다. main push만 Go 캐시를 저장하고, PR은 그 캐시로 바뀐 패키지만 다시 컴파일합니다. 테스트도 입력이 바뀐 패키지만 다시 돌립니다(go test 결과 캐시).
 - `go.sum`이 바뀐 PR도 main의 최근 캐시에서 시작하므로, 바뀐 의존성만 새로 컴파일하는 만큼 더 걸립니다. 캐시가 전혀 없을 때(새 레포, 캐시 만료)는 client-go와 AWS SDK를 처음부터 컴파일하느라 약 10분 걸립니다.
@@ -233,6 +258,14 @@ kind 안의 CNPG 클러스터 두 개를 게이트웨이 부하 속에서 플랫
 
 ```bash
 test/e2e/run.sh          # KEEP=1이면 끝난 뒤에도 남기고, test/e2e/down.sh로 지움
+```
+
+### 배포 E2E
+
+앱 차트 `deploy/charts/hopcharlie-app`과 AppProject, ApplicationSet `deploy/argocd`를 kind의 Argo CD v3.5.3에 올립니다. 먼저 gitops 파일을 손으로 커밋하고, 다음에는 플랫폼 API(가짜 GitHub, docker 빌드, git gitops)로 앱을 등록하고 push webhook을 보내고 지웁니다. 앱이 뜨고, 바뀌고, 지워지는지 봅니다. 헬스 체크가 실패하는 버전을 배포하는 동안 게이트웨이 요청이 하나도 실패하지 않는지도 봅니다. 자세한 내용은 [test/e2e/deploy/README.md](test/e2e/deploy/README.md)에 있습니다.
+
+```bash
+test/e2e/deploy/run.sh   # KEEP=1이면 끝난 뒤에도 남기고, test/e2e/deploy/down.sh로 지움
 ```
 
 ## 알려진 한계
@@ -248,7 +281,7 @@ Plan JSON을 손으로 쓰지 않고 이전을 준비하고, 검증에 쓸 쓰�
 
 | 요청 | 역할 | 설명 |
 | --- | --- | --- |
-| `GET /v1/apps` | viewer | `PLATFORM_APPS_FILE`의 앱과 앱이 있는 환경 |
+| `GET /v1/apps` | viewer | `PLATFORM_APPS_FILE`의 앱과 앱이 있는 환경, 그리고 GitHub에서 등록한 앱 (아래 GitHub 앱 배포) |
 | `POST /v1/plans/draft` | agent | `{"app","source","target"}`로 엔진 Plan 초안을 만듦. 저장하지 않으므로 그대로 또는 고쳐서 `POST /v1/plans`로 제출 |
 | `PUT /v1/plans/{ref}/attachments/{name}` | agent | Plan이 참조하는 파일(대상 CNPG 매니페스트) 업로드. 본문 그대로 1 MiB까지, `pending_approval`일 때만 |
 | `GET /v1/plans/{ref}/attachments/{name}` | viewer | 첨부 내용. Plan 응답의 `attachments`에 이름, 크기, SHA-256이 있음 |
@@ -258,7 +291,7 @@ Plan JSON을 손으로 쓰지 않고 이전을 준비하고, 검증에 쓸 쓰�
 
 ### 앱 설정과 Plan 초안
 
-- `PLATFORM_APPS_FILE`에 앱 설정 파일([examples/apps.yaml](examples/apps.yaml))을 지정합니다. 비워 두면 앱 목록이 비고 초안 요청은 400입니다.
+- `PLATFORM_APPS_FILE`에 앱 설정 파일([로컬 개발 예시](examples/apps.yaml))을 지정합니다. 운영 파일은 infra의 `terraform/platform/aws/host/apps.yaml`입니다. 비워 두면 앱 목록이 비고 초안 요청은 400입니다.
 - 앱의 환경 이름은 `PLATFORM_ENVS_FILE`에 있어야 합니다. 환경별 `passwordEnv`는 그 환경의 `dbHost:dbPort`로 가는 DSN의 비밀번호로만 쓸 수 있습니다. 이름은 `_PGPASSWORD`로 끝나야 하고 `PLATFORM_`, `AWS_`로 시작하면 안 됩니다. 그래야 `GATEWAY_TOKEN`이나 `PLATFORM_DATABASE_URL` 같은 다른 용도의 서버 변수를 비밀번호로 내보낼 수 없습니다.
 - 초안의 id는 `<app>-<source>-to-<target>`이고, 컨텍스트는 환경의 `kubeContext`에서, 네임스페이스와 클러스터와 DB 호스트는 앱에서 가져옵니다.
 - DSN은 `postgres://<user>:${<passwordEnv>}@<host>:<port>/<db>?sslmode=require`입니다. 비밀번호는 실행할 때 서버 환경에서 채웁니다. 값을 이스케이프하지 않고 URL에 그대로 넣으므로 비밀번호는 URL에 그대로 쓸 수 있는 문자(영문, 숫자, `-._~`)여야 합니다. CNPG가 만든 비밀번호는 그렇습니다. `@`, `/`, `:`, `#`, `?`, `%`가 들어가면 엔진이 다른 호스트로 접속하거나 접속 오류에 비밀번호 일부가 보일 수 있습니다.
@@ -301,11 +334,20 @@ CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks -
 - 401로 막힌 요청은 호출자가 경로를 마음대로 쓸 수 있으므로 경로를 보여 주지 않고 라우트(`GET /v1/plans/{ref}`)만 보여 줍니다. 403의 경로는 제어 문자를 지우고 80자에서 자르며, 3개까지만 적고 나머지는 개수만 적습니다.
 - 결과는 60초 동안 캐시합니다. `?refresh=true`는 다시 읽지만 10초에 한 번까지입니다. `?environment=gke`, `?severity=high`(그 이상만)로 거릅니다.
 - 수집기는 소스마다 하나이고 동시에 실행하며, 하나가 느려도 25초에서 끊습니다. 새 공급자는 `security.Collector` 구현 하나를 추가하면 됩니다.
-- AWS는 SDK 기본 자격 증명 체인(환경 변수, `AWS_PROFILE`, 인스턴스 역할)을 쓰고 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) 한 리전을 읽습니다. Describe, List, Get 호출만 하며 아무것도 켜거나 바꾸지 않습니다. 관리 호스트 역할에는 Terraform이 수집기가 부르는 읽기 API 17개만 허용하는 인라인 정책(`read-security-configuration`)을 붙입니다.
+- AWS는 SDK 기본 자격 증명 체인(환경 변수, `AWS_PROFILE`, 인스턴스 역할)을 쓰고 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) 한 리전을 읽습니다. Describe, List, Get 호출만 하며 아무것도 켜거나 바꾸지 않습니다. 관리 호스트 역할에는 infra 레포의 Terraform이 수집기가 부르는 읽기 API 17개만 허용하는 인라인 정책(`read-security-configuration`)을 붙입니다.
 - 자격 증명이 정말 없을 때(인스턴스에 역할이 없거나 메타데이터 서비스가 꺼짐)만 `not_configured`입니다. 메타데이터 서비스 시간 초과나 네트워크 오류로 가져오지 못하면 `error`이고, 메시지에는 SDK 원문 대신 실패 종류만 적습니다.
 - GuardDuty 탐지는 심각한 것부터 50개까지 읽고, 더 있으면 메시지에 그렇게 적습니다.
 - Kubernetes는 `GET /v1/envs`와 같은 kubeconfig와 컨텍스트를 씁니다. 서버 계정에 모든 네임스페이스의 pods, services, networkpolicies 목록과 clusterrolebindings 목록 권한이 필요합니다.
 - 실제 계정 점검을 다시 해 보려면 `PLATFORM_TEST_AWS_LIVE=1 AWS_PROFILE=hopcharlie go test -run TestAWSLive -v ./internal/security`를 실행합니다.
+
+### `GET /v1/security/ocsf` (viewer)
+
+같은 탐지 결과를 업계 공통 형식인 [OCSF](https://schema.ocsf.io) 1.9.0 이벤트로 돌려줍니다. 수집, 캐시, 필터(`environment`, `severity`, `refresh`)는 `/v1/security`와 같고, 새로 읽는 것은 없습니다.
+
+- 위협 탐지(`threat`, 예: GuardDuty)는 **Detection Finding**(class 2004), 나머지 설정 점검은 **Compliance Finding**(class 2003)입니다. Compliance Finding의 `compliance.status_id`는 Fail(3)이고, info 심각도는 Warning(2)입니다.
+- 심각도는 info→1, low→2, medium→3, high→4, critical→5(`severity_id`)입니다. `finding_info.uid`는 `SecurityFinding.id`, `finding_info.analytic.name`은 검사 이름, `data_sources`는 소스, `cloud.provider`는 AWS, GCP 같은 공급자입니다. 모든 이벤트에 `metadata.version: 1.9.0`과 `cloud` 프로필을 적습니다.
+- 테스트는 OCSF 공식 클래스 스키마(`internal/security/testdata/ocsf-1.9.0`, schema.ocsf.io에서 받은 원본)로 모든 종류의 이벤트를 검증합니다. 스키마에 없는 필드는 쓰지 않습니다.
+- Security Lake 같은 특정 저장소에는 보내지 않습니다. OCSF를 읽는 도구(SIEM 등)가 이 JSON을 가져가면 됩니다.
 
 ### 에이전트 활동 기록 `/v1/agent/sessions`
 
@@ -330,3 +372,81 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 - 이벤트 없이 `PLATFORM_AGENT_IDLE`(기본 30분)이 지난 `running` 세션은 플랫폼이 `cancelled`로 닫고 요약에 `no activity for 30m; closed by the platform`을 남깁니다. 보고 있던 스트림은 마지막 `snapshot`을 보내고 닫힙니다.
 - 쓰기 요청은 모두 감사 로그에 남습니다. 감사 로그에는 세션 id, 이벤트 종류, 도구 이름만 남고 내용은 남기지 않습니다.
 - 테이블은 마이그레이션 `0003_agent_activity.sql`이 만듭니다.
+
+## GitHub 앱 배포
+
+앱 저장소(서비스마다 Dockerfile, 루트에 `platform.yaml`)를 등록하면, 플랫폼이 서비스마다 이미지를 빌드하고 gitops 저장소에 `apps/<app>/<env>.yaml`을 커밋합니다. Argo CD가 Application `<app>-<env>`를 네임스페이스 `<app>`에 배포합니다. 설계와 `platform.yaml` 규칙은 [ADR 0011](docs/adr/0011-github-app-deploy.md)에 있습니다.
+
+| 요청 | 역할 | 설명 |
+| --- | --- | --- |
+| `POST /v1/apps` | operator | `{repo, branch?, environments, autoDeploy?}`. 브랜치 head의 `platform.yaml`을 읽어 앱을 등록하고 첫 배포를 큐에 넣음. 201 + `{app, deployment}`. 잘못된 `platform.yaml`은 422 `invalid_app_spec` (`validation`에 위치별 오류) |
+| `POST /v1/apps/validate` | viewer | `{repo, branch?}` 또는 `{spec}`의 `platform.yaml`을 검사만 함. 항상 200 + `valid` |
+| `GET /v1/apps/{name}` | viewer | 앱 하나. 등록한 앱은 `deploy`에 저장소, spec, 환경별 상태, 마지막 배포 |
+| `DELETE /v1/apps/{name}` | operator | 등록 해제. gitops 파일을 지우면 Argo CD가 워크로드를 지움. 202. 파일에만 있는 앱은 409 |
+| `POST /v1/apps/{name}/deployments` | operator | `{ref?, environments?}`로 지금 배포. 202 + Deployment |
+| `GET /v1/apps/{name}/deployments` | viewer | 최신순, `?limit=` (기본 20) |
+| `GET /v1/deployments/{id}` | viewer | 배포 하나 (상태, 이미지 digest, 환경별 상태) |
+| `GET /v1/deployments/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속) |
+| `GET /v1/github/repos` | viewer | GitHub App 설치가 볼 수 있는 저장소 |
+| `POST /v1/webhooks/github` | 없음 | GitHub App webhook. `X-Hub-Signature-256`으로 확인. 등록한 브랜치의 push만 배포(202), 나머지는 204 |
+
+- 배포 상태는 `queued`, `building`, `committing`, `syncing`을 거쳐 `healthy`, `failed`, `superseded`로 끝납니다. 같은 환경으로 새 배포가 생기면 끝나지 않은 이전 배포는 `superseded`가 됩니다.
+- 테이블은 마이그레이션 `0005_app_deploy.sql`이 만듭니다.
+
+### GitHub App 설정
+
+플랫폼은 GitHub App 하나로 앱 저장소를 읽고, gitops 저장소에 커밋하고, push webhook을 받습니다. 조직 설정에서 App을 만들어 조직에 설치합니다.
+
+- 권한은 Repository permissions의 Contents를 Read and write로, Metadata를 Read-only로 둡니다.
+- 이벤트는 Push 하나만 구독합니다.
+- Webhook URL은 `https://api.hopcharlie.dev/v1/webhooks/github`, content type은 `application/json`입니다. secret에는 `PLATFORM_GITHUB_WEBHOOK_SECRET`과 같은 값을 넣습니다.
+- App 설정 페이지에서 private key를 만들어 서버에만 넣습니다. 키와 webhook secret은 어느 저장소에도 커밋하지 않습니다.
+
+| 변수 | 설명 |
+| --- | --- |
+| `PLATFORM_GITHUB_APP_ID` | App ID(숫자). App ID와 키를 모두 비우면 GitHub이 필요한 요청은 503 `github_not_configured`. 하나만 넣으면 서버가 시작하지 않음 |
+| `PLATFORM_GITHUB_APP_PRIVATE_KEY` | private key PEM 내용. `PLATFORM_GITHUB_APP_PRIVATE_KEY_FILE`(PEM 파일 경로)과 둘 중 하나만 |
+| `PLATFORM_GITHUB_INSTALLATION_ID` | 설치 ID. 비우면 `PLATFORM_GITHUB_ORG`에 설치된 것을 찾아 씀 |
+| `PLATFORM_GITHUB_ORG` | App을 설치한 조직 (기본 `2026-Softbank-Hackathon-Charlie`) |
+| `PLATFORM_GITHUB_WEBHOOK_SECRET` | webhook secret. 비우면 webhook이 503으로 답하고 push가 배포되지 않음 |
+| `PLATFORM_GITHUB_API_URL` | GitHub API 주소 (기본 `https://api.github.com`) |
+| `PLATFORM_APP_DOMAIN` | 공개 서비스 주소 `https://<app>.<도메인>`의 도메인 (기본 `hopcharlie.dev`) |
+
+- 서버는 App 키로 JWT를 서명해 설치 토큰을 받고, 만료 5분 전까지 같은 토큰을 씁니다.
+- webhook은 bearer 토큰 대신 `X-Hub-Signature-256`을 확인합니다. 서명이 없거나 틀리면 401 `invalid_signature`이고 감사 로그에 `anonymous`로 남습니다. 배포를 만든 push는 `github`으로 남고, payload는 감사 로그에 넣지 않습니다.
+- 같은 `X-GitHub-Delivery`로 다시 온 push는 204로 답하고 배포를 만들지 않습니다.
+
+### 배포 실행기
+
+`PLATFORM_DEPLOY_BUILDER`를 넣으면 서버가 배포 실행기(`internal/deploy`)를 띄웁니다. 비우면 실행기가 없고 배포는 `queued`에 머뭅니다.
+
+- 작업자 `PLATFORM_DEPLOY_WORKERS`개가 큐에서 배포를 하나씩 꺼냅니다. 서버가 시작할 때 끝나지 않은 배포를 오래된 것부터 이어 갑니다. 이미지를 이미 만든 배포는 다시 빌드하지 않습니다.
+- 새 배포를 큐에 넣을 때, 같은 앱의 끝나지 않은 이전 배포 가운데 환경이 모두 새 배포에 들어가는 것을 `superseded`로 끝냅니다. 그 배포의 작업자는 다음 저장에서 멈춥니다. gitops 커밋과 게이트웨이 등록은 앱마다 잠금을 잡고, 배포가 아직 끝나지 않았음을 저장소에 쓴 직후에만 합니다. 그래서 밀려난 배포가 새 배포보다 늦게 커밋하지 않습니다.
+- building: 커밋의 `platform.yaml`을 등록과 같은 규칙(`deploy.CheckSpec`)으로 검사합니다. 틀리면 위치별 오류를 `log` 이벤트로 남기고 `failed`로 끝납니다. 통과했고 앱의 가장 새 배포이면 앱의 spec을 그 커밋의 것으로 바꿉니다. 그다음 서비스마다 `<registry>/hopcharlie/apps/<app>/<service>:<commit>`을 빌드해 push하고, digest(`...@sha256:...`)로 고정합니다.
+- committing: 대상 환경마다 `apps/<app>/<env>.yaml`을 ADR 0011 형식으로 만들어 커밋 하나로 씁니다. 키 순서가 정해져 있고 문자열은 모두 큰따옴표로 감싸므로, 같은 배포를 다시 쓰면 커밋이 생기지 않습니다. 다른 커밋이 먼저 들어가 push가 거부되면 새 head에서 다시 씁니다.
+- syncing: ApplicationSet과 Application `<namespace>-<env>`에 refresh를 요청하고, 모든 환경의 Application이 그 gitops 커밋이나 그 뒤의 커밋을 `Synced`, `Healthy`로 보고할 때까지 기다립니다. multi-source Application은 `status.sync.revisions`에서 gitops 커밋을 찾습니다. Application이 아직 없으면 계속 기다립니다. `Degraded`는 환경 상태 `degraded`, 동기화 실패는 `failed`이고, `PLATFORM_ARGOCD_TIMEOUT` 안에 모두 healthy가 되지 않으면 배포가 `failed`로 끝납니다.
+- 모든 환경이 healthy이고, 공개 서비스가 있고, 게이트웨이(`PLATFORM_GATEWAY_URL`)가 설정돼 있으면 환경마다 공개 서비스 주소를 찾아 게이트웨이에 앱을 등록합니다(`PUT /apps/<app>`). 처음 등록하는 앱은 첫 환경으로 쓰기를 보냅니다. 이미 있는 앱은 이전이 옮긴 쓰기 환경과 읽기 비율을 그대로 둡니다. 이전 중이라 쓰기가 보류돼 있으면 게이트웨이를 바꾸지 않고 배포를 `failed`로 끝냅니다.
+- 백엔드 주소는 `PLATFORM_APP_BACKEND_TEMPLATE`가 있으면 그 틀로 만들고, 없으면 환경 클러스터에서 Service `<app>-<service>`(네임스페이스 `<app>`)의 LoadBalancer 주소를 읽습니다. 게이트웨이의 백엔드 이름은 환경 이름입니다.
+- `DELETE /v1/apps/{name}`은 끝나지 않은 배포를 `superseded`로 끝내고, gitops 저장소에서 `apps/<name>/`을 지우는 커밋을 하고, 게이트웨이에서 앱을 지우고, 앱과 배포 기록을 지웁니다. 게이트웨이가 쓰기를 보류 중이면 409 `cluster_busy`이고 앱은 남습니다. 다시 부르면 처음부터 하되, 이미 지운 것은 건너뜁니다.
+- 빌드 출력은 배포마다 2000줄까지 `log` 이벤트로 남깁니다. 배포 이벤트 스트림(`GET /v1/deployments/{id}/events`)은 저장소를 0.5초마다 읽어 새 이벤트를 보냅니다.
+
+| 변수 | 설명 |
+| --- | --- |
+| `PLATFORM_DEPLOY_BUILDER` | `codebuild` 또는 `docker`. 비우면 실행기가 없고 배포가 `queued`에 머묾. 넣으면 GitHub App 설정이 필요하고, 없으면 서버가 시작하지 않음 |
+| `PLATFORM_IMAGE_REGISTRY` | 실행기를 켜면 필수. 이미지를 push할 레지스트리 (예: `<계정>.dkr.ecr.ap-northeast-2.amazonaws.com`, E2E는 `localhost:5001`) |
+| `PLATFORM_CODEBUILD_PROJECT` | `codebuild`이면 필수. 빌드를 돌릴 CodeBuild 프로젝트. 리전은 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) |
+| `PLATFORM_DOCKER_CLONE_URL` | `docker`일 때 저장소 주소의 틀. `{repo}`와 `{token}`을 바꿈 (기본 `https://x-access-token:{token}@github.com/{repo}.git`). 로컬 경로도 됨 |
+| `PLATFORM_DEPLOY_WORKERS` | 동시에 실행하는 배포 수 (기본 2, 최대 32) |
+| `PLATFORM_GITOPS_MODE` | `github`(기본, GitHub Git Data API) 또는 `git`(git CLI) |
+| `PLATFORM_GITOPS_REPO` | `github` 모드의 gitops 저장소 (기본 `2026-Softbank-Hackathon-Charlie/gitops`). App 설치 토큰으로 쓰고, API 주소는 `PLATFORM_GITHUB_API_URL` |
+| `PLATFORM_GITOPS_BRANCH` | gitops 브랜치 (기본 `main`, 두 모드 모두) |
+| `PLATFORM_GITOPS_URL` | `git` 모드이면 필수. clone하고 push할 주소 (E2E의 로컬 git 서버) |
+| `PLATFORM_ARGOCD_KUBECONTEXT` | Argo CD가 있는 클러스터의 kubeconfig 컨텍스트. 비우면 in-cluster 설정 |
+| `PLATFORM_ARGOCD_NAMESPACE` | Application과 ApplicationSet이 있는 네임스페이스 (기본 `argocd`) |
+| `PLATFORM_ARGOCD_APPSET` | 커밋 뒤 refresh를 요청할 ApplicationSet (기본 `hopcharlie-apps`) |
+| `PLATFORM_ARGOCD_TIMEOUT` | 커밋 뒤 모든 환경이 healthy가 되기를 기다리는 시간 (기본 `10m`) |
+| `PLATFORM_APP_BACKEND_TEMPLATE` | 게이트웨이 백엔드 주소의 틀. `{app}`, `{service}`, `{port}`, `{env}`를 바꿈 (예: `http://{app}-{service}.{app}.svc.cluster.local:{port}`). 비우면 Service의 LoadBalancer 주소를 읽음 |
+
+- CodeBuild 프로젝트는 소스 없이 인라인 buildspec으로 돌고, docker를 쓰므로 privileged 모드가 필요합니다. 프로젝트 역할에는 ECR push와 `hopcharlie/apps/*` 저장소를 만드는 권한이, 플랫폼 역할에는 `codebuild:StartBuild`, `codebuild:BatchGetBuilds`와 빌드 로그 그룹의 `logs:GetLogEvents`가 필요합니다.
+- clone 토큰은 CodeBuild 환경 변수(PLAINTEXT)로 넘깁니다. 한 시간 뒤 만료되는 설치 토큰이지만 빌드 설정 화면에서는 보입니다. buildspec은 토큰을 출력하지 않고, fetch가 끝나면 remote 주소에서 토큰을 지운 뒤에 Dockerfile을 빌드합니다.
+- Argo CD를 읽는 계정에는 `applications.argoproj.io`의 get, patch와 `applicationsets.argoproj.io`의 patch가 필요합니다. ApplicationSet patch가 거부되면 배포 이벤트에 한 번 남기고, ApplicationSet이 스스로 다시 도는 것을 기다립니다.

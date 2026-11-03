@@ -1,0 +1,74 @@
+# E2E: GitHub 저장소에서 Argo CD까지 앱 배포
+
+GitHub 앱 배포(ADR 0011)를 kind 하나에서 처음부터 끝까지 돌린다. AWS와 GitHub은 쓰지 않는다. 앞부분은 플랫폼 없이 gitops 파일을 손으로 커밋해, 앱 차트 `deploy/charts/hopcharlie-app`과 AppProject, ApplicationSet `deploy/argocd`를 운영과 같은 Argo CD v3.5.3에서 확인한다. 뒷부분은 같은 일을 플랫폼 API로 한다. 플랫폼이 가짜 GitHub에서 `platform.yaml`을 읽고, docker로 빌드하고, gitops 저장소에 커밋하고, Argo CD를 기다린 뒤 게이트웨이에 앱을 등록한다.
+
+```bash
+test/e2e/deploy/run.sh          # 실행하고 끝나면 전부 지운다
+KEEP=1 test/e2e/deploy/run.sh   # 끝난 뒤에도 그대로 둔다 (다시 실행하면 클러스터를 다시 씀)
+test/e2e/deploy/down.sh         # 남긴 것을 지운다
+```
+
+필요한 것은 docker, kubectl, helm, go, git, curl, tar다. 그리고 platform과 나란히 있는 moimroom 체크아웃이 있어야 하고, 그 체크아웃에 `platform.yaml`이 있어야 한다. 위치는 `MOIMROOM_DIR`로 바꿀 수 있다. kind는 `go install`로 작업 디렉터리(`.hopcharlie/e2e-deploy/bin`)에만 설치한다. Windows(Git Bash, Docker Desktop)와 Linux에서 같은 스크립트를 쓴다.
+
+## 구성
+
+포트는 모두 127.0.0.1에만 연다. 번호는 `lib.sh`에 모아 두었다.
+
+| 무엇 | 어디 | 하는 일 |
+| --- | --- | --- |
+| kind 클러스터 `hop-deploy` | kubeconfig `.hopcharlie/e2e-deploy/kubeconfig` | Argo CD core(v3.5.3), CNPG 1.25.1, MinIO, 앱 |
+| 레지스트리 컨테이너 `hop-deploy-registry` | `localhost:18393` | kind의 local registry 방식. 파드도 같은 `localhost:18393/...` 이름으로 받음 |
+| git 서버 `gitserver` (네임스페이스 `e2e-kit`) | `18390`, 클러스터 안 `http://gitserver.e2e-kit.svc.cluster.local` | `git http-backend`로 `gitops.git`과 `infra.git`을 인증 없이 제공. 차트는 `infra.git`의 `helm/charts/hopcharlie-app`에 둠. 호스트와 플랫폼이 push하고 Argo CD가 fetch |
+| 프록시 `proxy` (같은 네임스페이스) | `18391` | 호스트의 게이트웨이(`HTTP_PROXY`)와 `curl -x`가 `*.svc.cluster.local`을 클러스터 안 이름 그대로 부름 |
+| 게이트웨이 | `18300`, 관리 `19903` | `-app-domain e2e.test`. `Host: <app>.e2e.test`를 앱의 Service로 보냄 |
+| 플랫폼 저장소 컨테이너 `hop-deploy-store` | `55852` | 플랫폼 DB |
+| `fakegithub` | `18392` | 플랫폼의 GitHub App 클라이언트가 부르는 API(설치 토큰, ref, 파일, 저장소 목록)를 `.hopcharlie/e2e-deploy/github/<owner>/<name>`의 git 체크아웃으로 답함 |
+| 플랫폼 API | `18380` | `PLATFORM_DEPLOY_BUILDER=docker`, `PLATFORM_GITOPS_MODE=git`, `PLATFORM_ARGOCD_KUBECONTEXT=kind-hop-deploy`, `PLATFORM_APP_BACKEND_TEMPLATE=http://{app}-{service}.{app}.svc.cluster.local:{port}`. clone은 `PLATFORM_DOCKER_CLONE_URL`로 같은 체크아웃에서 |
+| `probe`, `driver` | 호스트 | `probe`는 게이트웨이로 50ms마다 요청하고 실패 수와 받은 버전을 센다. `driver`는 `pkg/client`로 앱을 등록하고, 서명한 push webhook을 보내고, 배포 SSE를 따라가고, 앱을 지운다 |
+
+테스트 앱 `demo/`는 그 자체로 앱 저장소다(`platform.yaml`, `Dockerfile`, Go 모듈 하나). `/`는 `version.txt`와 `DEMO_MESSAGE`를 답한다. `/healthz`는 200을 답하고, `DEMO_HEALTHY=false`이면 500을 답한다.
+
+## 흐름
+
+손으로 쓴 gitops 파일:
+
+1. 이미지 네 개를 빌드해 레지스트리에 push한다: git 서버와 프록시, demo v1, demo v2, moimroom. gitops 파일에는 digest로 고정한 이름을 쓴다.
+2. kind, CNPG, git 서버와 프록시, Argo CD를 올린다. `infra.git`에 차트를, `gitops.git`에 빈 커밋을 push하고, `helm template deploy/argocd -f argocd-values.yaml`을 적용한다.
+3. demo v1의 gitops 파일을 커밋하고, 플랫폼처럼 ApplicationSet과 Application에 refresh를 요청한다. 확인하는 것:
+   - Application `demo-kind`가 gitops head(`status.sync.revisions`)에서 `Synced Healthy`가 된다.
+   - 차트가 만든 네임스페이스 `demo`에 Pod Security `restricted`와 ResourceQuota, LimitRange, NetworkPolicy가 있다.
+   - NetworkPolicy는 프록시의 네임스페이스는 들이고, 다른 네임스페이스의 파드는 막는다.
+4. 게이트웨이를 띄우고, 관리 API로 `demo`를 등록한다(플랫폼이 할 일).
+5. 헬스 체크가 실패하는 버전(같은 이미지, `DEMO_HEALTHY=false`)을 커밋한다. 새 파드는 준비되지 않는다. `progressDeadlineSeconds`(kind 프로필 60초)가 지나면 Deployment가 `ProgressDeadlineExceeded`, Application이 `Degraded`가 된다. 그동안과 그 뒤 5초까지 게이트웨이로 보낸 요청이 모두 200이고, 모두 v1이 답해야 한다.
+6. demo v2를 커밋한다. `Healthy`가 되고, 요청이 하나도 실패하지 않은 채 마지막 응답이 v2여야 한다.
+7. MinIO를 올리고 버킷 `moimroom-photos`를 만든다. moimroom의 gitops 파일(`postgres`, `s3` 리소스)을 커밋하고, 네임스페이스가 생기면 S3 키 Secret `s3-credentials`를 넣는다. 버킷과 Secret은 운영에서 infra가 준비할 것이다. `Healthy`가 된 뒤 `/readyz`(DB 핑, 키로 버킷 확인)가 200이고, `/api/spaces`가 DB의 공간을 돌려줘야 한다.
+8. `apps/`를 지우는 커밋을 한다. Application 둘과 네임스페이스 둘이 지워져야 한다. 네임스페이스는 차트의 객체라서, 그 안의 DB 볼륨과 테스트가 넣은 S3 Secret도 함께 사라져야 한다.
+
+플랫폼:
+
+9. 저장소, 가짜 GitHub(저장소 `e2e/demo` = `demo/`), 플랫폼 API를 띄운다. 게이트웨이의 `demo`는 지워서 플랫폼이 다시 등록하게 한다.
+10. `POST /v1/apps`로 `e2e/demo`를 등록하고 배포 SSE를 `healthy`까지 따라간다. gitops 파일에 그 배포 id, 앱 커밋, digest 이미지가 있어야 하고, `Host: demo.e2e.test`가 v1을 답해야 한다.
+11. `DEMO_HEALTHY: "false"`로 바꾼 커밋을 push webhook으로 보낸다. 배포는 `PLATFORM_ARGOCD_TIMEOUT`(100초) 뒤에 `failed`로 끝나야 한다. 그동안 게이트웨이 요청이 하나도 실패하지 않고, 모두 v1이 답해야 한다.
+12. v2와 v3 커밋을 잇달아 push한다. v2 배포는 `superseded`, v3 배포는 `healthy`로 끝나야 하고, 요청 실패 없이 마지막 응답이 v3여야 한다.
+13. `DELETE /v1/apps/demo`. Application, 네임스페이스, gitops 파일이 사라져야 한다.
+14. moimroom 체크아웃(HEAD의 `platform.yaml`)을 저장소 `e2e/moimroom`으로 등록한다. 네임스페이스가 생기면 S3 Secret을 넣는다. `healthy` 뒤 `Host: moimroom.e2e.test`의 `/readyz`가 200이고 공간 목록이 비어 있지 않아야 한다. 마지막에 지운다.
+
+## 통과 조건
+
+모두 만족해야 종료 코드 0이다. 하나라도 어기면 `FAIL:` 줄을 찍는다.
+
+- 각 단계의 Application이 gitops head 커밋에서 기대한 상태가 된다.
+- 실패하는 버전을 배포하는 동안(손으로 쓴 것과 플랫폼 둘 다) 게이트웨이 요청 실패가 0이고, 응답이 모두 v1이다.
+- 새 버전으로 바꾸는 동안 요청 실패가 0이고, 마지막 응답이 새 버전이다.
+- 플랫폼 배포가 `healthy`, `failed`, `superseded` 가운데 기대한 상태로 끝난다.
+- moimroom `/readyz`가 200이고, 공간 목록이 비어 있지 않다.
+- 지운 뒤 Application, 네임스페이스, moimroom의 PV, S3 Secret, gitops 파일이 없다.
+
+## 실제 환경과 다른 점
+
+- 앱이 Argo CD와 같은 클러스터에 있다. 게이트웨이는 호스트에서 프록시를 거쳐 ClusterIP Service로 간다. 운영은 공개 Service를 internal LoadBalancer로 내고, 플랫폼이 그 주소를 읽어 게이트웨이에 등록한다(`PLATFORM_APP_BACKEND_TEMPLATE`를 비우면 그렇게 함).
+- Argo CD는 core 설치라서 API 서버와 UI가 없다. 플랫폼은 Kubernetes API로 Application을 읽고 refresh annotation을 붙이므로 그것으로 충분하다.
+- ApplicationSet은 5초마다 gitops 저장소를 다시 읽는다(운영 기본값 30초). 그래도 새 커밋은 refresh 요청이 있어야 바로 보인다. 요청이 없으면 repo server가 revision 캐시(3분)로 답한다.
+- 버킷과 S3 키 Secret은 테스트가 만든다. 차트는 만들지 않는다.
+- kind의 NetworkPolicy 구현은 kindnet이다. egress에 API 서버 포트 6443과 MinIO 포트 9000을 더했다. 운영에서는 둘 다 443이다.
+- GitHub은 가짜다. App JWT와 설치 토큰을 검사하지 않고, clone은 로컬 경로에서 한다.

@@ -1,0 +1,20 @@
+{{- /*
+The release namespace belongs to the app: Argo CD creates it first (wave
+-1) and deletes it with the Application, with everything in it.
+*/}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    hopcharlie.dev/app: {{ .Values.values.app }}
+    hopcharlie.dev/instance: {{ .Release.Namespace }}
+    app.kubernetes.io/part-of: {{ .Values.values.app }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- with .Values.profile.podSecurity }}
+    pod-security.kubernetes.io/enforce: {{ . }}
+    pod-security.kubernetes.io/audit: {{ . }}
+    pod-security.kubernetes.io/warn: {{ . }}
+    {{- end }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"

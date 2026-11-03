@@ -3,6 +3,7 @@
 # it to ECR as hopcharlie/console:<frontend sha> and :latest. Then ./redeploy.sh.
 #   ./push-console.sh                      # frontend checked out next to platform
 #   FRONTEND_DIR=/path/to/frontend ./push-console.sh
+#   API_URL=https://api.hopcharlie.dev ./push-console.sh   # the management EKS cluster
 # Needs Node, Docker and the AWS CLI. AWS_PROFILE defaults to hopcharlie.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -10,7 +11,7 @@ cd "$(dirname "$0")"
 profile="${AWS_PROFILE:-hopcharlie}"
 region="${AWS_REGION:-ap-northeast-2}"
 frontend="$(cd "${FRONTEND_DIR:-../../../frontend}" && pwd)"
-api_url="$(./tf.sh output -raw api_url)"
+api_url="${API_URL:-$(./tf.sh output -raw api_url)}"
 repo="$(./tf.sh output -raw console_repository_url)"
 registry="${repo%%/*}"
 tag="$(git -C "$frontend" rev-parse --short HEAD)"

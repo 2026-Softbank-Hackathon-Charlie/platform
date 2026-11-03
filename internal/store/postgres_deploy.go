@@ -1,0 +1,327 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// Ids and names break ties in byte order (COLLATE "C"), the same order the
+// memory store uses, whatever the database's collation.
+
+const appColumns = `name, repo, branch, environments, auto_deploy, spec, spec_commit, created_by, created_at`
+
+func scanApp(row pgx.Row) (App, error) {
+	var a App
+	err := row.Scan(&a.Name, &a.Repo, &a.Branch, &a.Environments, &a.AutoDeploy, &a.Spec, &a.SpecCommit, &a.CreatedBy, &a.CreatedAt)
+	if err != nil {
+		return App{}, err
+	}
+	if a.Environments == nil {
+		a.Environments = []string{}
+	}
+	a.CreatedAt = a.CreatedAt.UTC()
+	return a, nil
+}
+
+func (s *Postgres) CreateApp(ctx context.Context, a App) error {
+	a, err := a.Clean()
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO apps (`+appColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		a.Name, a.Repo, a.Branch, a.Environments, a.AutoDeploy, a.Spec, a.SpecCommit, a.CreatedBy, a.CreatedAt)
+	if isUniqueViolation(err) {
+		return fmt.Errorf("%w: app %s exists", ErrConflict, a.Name)
+	}
+	return err
+}
+
+func (s *Postgres) GetApp(ctx context.Context, name string) (App, error) {
+	if !Clean(name) { // PostgreSQL would reject the parameter
+		return App{}, fmt.Errorf("%w: app %q", ErrNotFound, name)
+	}
+	a, err := scanApp(s.pool.QueryRow(ctx, `SELECT `+appColumns+` FROM apps WHERE name = $1`, name))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return App{}, fmt.Errorf("%w: app %s", ErrNotFound, name)
+	}
+	return a, err
+}
+
+func (s *Postgres) ListApps(ctx context.Context) ([]App, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+appColumns+` FROM apps ORDER BY name COLLATE "C"`)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, scanApp)
+}
+
+func (s *Postgres) UpdateApp(ctx context.Context, a App) error {
+	if !Clean(a.Name) {
+		return fmt.Errorf("%w: app %q", ErrNotFound, a.Name)
+	}
+	a, err := a.Clean()
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE apps SET branch = $2, environments = $3, auto_deploy = $4, spec = $5, spec_commit = $6
+		WHERE name = $1`, a.Name, a.Branch, a.Environments, a.AutoDeploy, a.Spec, a.SpecCommit)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: app %s", ErrNotFound, a.Name)
+	}
+	return nil
+}
+
+// DeleteApp deletes the app row first. Its lock waits for a CreateDeployment
+// that holds the row, so the deployments deleted next include that one; a
+// later create finds no app. Deleting the deployments waits for appends that
+// hold them, so the events deleted last include theirs.
+func (s *Postgres) DeleteApp(ctx context.Context, name string) error {
+	if !Clean(name) {
+		return fmt.Errorf("%w: app %q", ErrNotFound, name)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	tag, err := tx.Exec(ctx, `DELETE FROM apps WHERE name = $1`, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: app %s", ErrNotFound, name)
+	}
+	rows, err := tx.Query(ctx, `DELETE FROM deployments WHERE app = $1 RETURNING id`, name)
+	if err != nil {
+		return err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM deployment_events WHERE deployment_id = ANY($1::text[])`, ids); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+const deploymentColumns = `id, app, ref, commit_sha, trigger, triggered_by, status, images, environments,
+	error, build_id, created_at, started_at, finished_at`
+
+func scanDeployment(row pgx.Row) (Deployment, error) {
+	var d Deployment
+	var images, envs []byte
+	err := row.Scan(&d.ID, &d.App, &d.Ref, &d.Commit, &d.Trigger, &d.TriggeredBy, &d.Status, &images, &envs,
+		&d.Error, &d.BuildID, &d.CreatedAt, &d.StartedAt, &d.FinishedAt)
+	if err != nil {
+		return Deployment{}, err
+	}
+	d.Images, d.Environments = []DeploymentImage{}, []DeploymentEnvironment{}
+	if err := json.Unmarshal(images, &d.Images); err != nil {
+		return Deployment{}, fmt.Errorf("deployment %s images: %w", d.ID, err)
+	}
+	if err := json.Unmarshal(envs, &d.Environments); err != nil {
+		return Deployment{}, fmt.Errorf("deployment %s environments: %w", d.ID, err)
+	}
+	d.CreatedAt, d.StartedAt, d.FinishedAt = d.CreatedAt.UTC(), utcPtr(d.StartedAt), utcPtr(d.FinishedAt)
+	return d, nil
+}
+
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
+// deploymentJSON encodes the jsonb columns of a cleaned deployment.
+func deploymentJSON(d Deployment) (images, envs []byte, err error) {
+	if images, err = json.Marshal(d.Images); err != nil {
+		return nil, nil, err
+	}
+	if envs, err = json.Marshal(d.Environments); err != nil {
+		return nil, nil, err
+	}
+	return images, envs, nil
+}
+
+// CreateDeployment holds the app row (FOR SHARE) while it inserts, so a
+// DeleteApp waits for it and then removes the new deployment too.
+func (s *Postgres) CreateDeployment(ctx context.Context, d Deployment) error {
+	if !Clean(d.App) {
+		return fmt.Errorf("%w: app %q", ErrNotFound, d.App)
+	}
+	d = d.Clean()
+	images, envs, err := deploymentJSON(d)
+	if err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	var one int
+	err = tx.QueryRow(ctx, `SELECT 1 FROM apps WHERE name = $1 FOR SHARE`, d.App).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: app %s", ErrNotFound, d.App)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO deployments (`+deploymentColumns+`)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		d.ID, d.App, d.Ref, d.Commit, d.Trigger, d.TriggeredBy, d.Status, images, envs,
+		d.Error, d.BuildID, d.CreatedAt, d.StartedAt, d.FinishedAt)
+	if isUniqueViolation(err) {
+		return fmt.Errorf("%w: deployment %s exists", ErrConflict, d.ID)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Postgres) GetDeployment(ctx context.Context, id string) (Deployment, error) {
+	if !Clean(id) {
+		return Deployment{}, fmt.Errorf("%w: deployment %q", ErrNotFound, id)
+	}
+	d, err := scanDeployment(s.pool.QueryRow(ctx, `SELECT `+deploymentColumns+` FROM deployments WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Deployment{}, fmt.Errorf("%w: deployment %s", ErrNotFound, id)
+	}
+	return d, err
+}
+
+func (s *Postgres) ListDeployments(ctx context.Context, app string, limit int) ([]Deployment, error) {
+	if !Clean(app) {
+		return []Deployment{}, nil
+	}
+	var lim *int // LIMIT NULL means no limit
+	if limit > 0 {
+		lim = &limit
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+deploymentColumns+` FROM deployments
+		WHERE app = $1 ORDER BY created_at DESC, id COLLATE "C" DESC LIMIT $2`, app, lim)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, scanDeployment)
+}
+
+// UpdateDeployment is one conditional UPDATE: a writer that marks the
+// deployment superseded and its worker serialize on the row lock, and the
+// one that comes second re-checks the status against the first one's write.
+func (s *Postgres) UpdateDeployment(ctx context.Context, d Deployment) (Deployment, error) {
+	if !Clean(d.ID) {
+		return Deployment{}, fmt.Errorf("%w: deployment %q", ErrNotFound, d.ID)
+	}
+	d = d.Clean()
+	images, envs, err := deploymentJSON(d)
+	if err != nil {
+		return Deployment{}, err
+	}
+	out, err := scanDeployment(s.pool.QueryRow(ctx, `UPDATE deployments SET
+			status = $2, images = $3, environments = $4, error = $5, build_id = $6, started_at = $7, finished_at = $8
+		WHERE id = $1 AND status <> ALL($9::text[])
+		RETURNING `+deploymentColumns,
+		d.ID, d.Status, images, envs, d.Error, d.BuildID, d.StartedAt, d.FinishedAt, finishedDeployment))
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return out, err
+	}
+	var current string
+	err = s.pool.QueryRow(ctx, `SELECT status FROM deployments WHERE id = $1`, d.ID).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Deployment{}, fmt.Errorf("%w: deployment %s", ErrNotFound, d.ID)
+	}
+	if err != nil {
+		return Deployment{}, err
+	}
+	return Deployment{}, fmt.Errorf("%w: deployment is %s", ErrConflict, current)
+}
+
+func (s *Postgres) ListUnfinishedDeployments(ctx context.Context) ([]Deployment, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+deploymentColumns+` FROM deployments
+		WHERE status <> ALL($1::text[]) ORDER BY created_at, id COLLATE "C"`, finishedDeployment)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, scanDeployment)
+}
+
+const deploymentEventColumns = `seq, deployment_id, time, type, phase, env, message`
+
+func scanDeploymentEvent(row pgx.Row) (DeploymentEvent, error) {
+	var e DeploymentEvent
+	if err := row.Scan(&e.Seq, &e.DeploymentID, &e.Time, &e.Type, &e.Phase, &e.Env, &e.Message); err != nil {
+		return DeploymentEvent{}, err
+	}
+	e.Time = e.Time.UTC()
+	return e, nil
+}
+
+// AppendDeploymentEvent locks the deployment row for the insert, so
+// concurrent appends to one deployment commit one at a time in Seq order.
+func (s *Postgres) AppendDeploymentEvent(ctx context.Context, e DeploymentEvent) (DeploymentEvent, error) {
+	if !Clean(e.DeploymentID) {
+		return DeploymentEvent{}, fmt.Errorf("%w: deployment %q", ErrNotFound, e.DeploymentID)
+	}
+	e = e.Clean()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return DeploymentEvent{}, err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	var one int
+	err = tx.QueryRow(ctx, `SELECT 1 FROM deployments WHERE id = $1 FOR UPDATE`, e.DeploymentID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DeploymentEvent{}, fmt.Errorf("%w: deployment %s", ErrNotFound, e.DeploymentID)
+	}
+	if err != nil {
+		return DeploymentEvent{}, err
+	}
+	out, err := scanDeploymentEvent(tx.QueryRow(ctx, `INSERT INTO deployment_events (deployment_id, time, type, phase, env, message)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+deploymentEventColumns,
+		e.DeploymentID, e.Time, e.Type, e.Phase, e.Env, e.Message))
+	if err != nil {
+		return DeploymentEvent{}, err
+	}
+	return out, tx.Commit(ctx)
+}
+
+func (s *Postgres) ListDeploymentEvents(ctx context.Context, deploymentID string, afterSeq int64, limit int) ([]DeploymentEvent, error) {
+	if !Clean(deploymentID) {
+		return []DeploymentEvent{}, nil
+	}
+	var lim *int
+	if limit > 0 {
+		lim = &limit
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+deploymentEventColumns+` FROM deployment_events
+		WHERE deployment_id = $1 AND seq > $2 ORDER BY seq LIMIT $3`, deploymentID, afterSeq, lim)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, scanDeploymentEvent)
+}
+
+func (s *Postgres) RecordWebhookDelivery(ctx context.Context, id string, at time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `INSERT INTO webhook_deliveries (id, received_at) VALUES ($1, $2)
+		ON CONFLICT (id) DO NOTHING`, CleanText(id), at)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}

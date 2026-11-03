@@ -122,7 +122,7 @@ GATEWAY_ADMIN_TOKEN=$gw_token \
   GATEWAY_BACKENDS="src=http://127.0.0.1:$SRC_APP_PORT,dst=http://127.0.0.1:$DST_APP_PORT" \
   GATEWAY_INITIAL_BACKEND=src \
   GATEWAY_LISTEN=127.0.0.1:$GW_PORT GATEWAY_ADMIN_ADDR=127.0.0.1:$GW_ADMIN_PORT \
-  GATEWAY_STATE_FILE=$work/gateway-state.json \
+  GATEWAY_STATE_FILE=$work/gateway-state.json GATEWAY_APP_DOMAIN=$APP_DOMAIN \
   start gateway "$bin/gateway$exe"
 PLATFORM_DATABASE_URL="postgres://platform:$store_pw@127.0.0.1:$STORE_PORT/platform?sslmode=disable" \
   PLATFORM_TOKENS="operator:operator:$op_token,planner:agent:$agent_token" \
@@ -141,3 +141,28 @@ echo "== migrate under load"
 E2E_AGENT_TOKEN=$agent_token E2E_OPERATOR_TOKEN=$op_token E2E_TARGET_DSN=$(dsn "$DST_DB_PORT") \
   "$bin/driver$exe" -api "http://127.0.0.1:$API_PORT" -gateway "http://127.0.0.1:$GW_PORT" \
   -plan "$here/plan.json" -manifest "$here/target.yaml"
+
+echo "== second app by host name"
+# The load above went to 127.0.0.1, outside the app domain, so the default app
+# served the migration. A second app registered through the admin API is
+# reached by its own host name, and an unknown name reaches no backend.
+gw_admin() { # method path [json]
+  curl -sSf -o /dev/null -X "$1" -H "Authorization: Bearer $gw_token" -H "Content-Type: application/json" \
+    ${3:+-d "$3"} "http://127.0.0.1:$GW_ADMIN_PORT$2"
+}
+expect_host() { # host want: want is "<status> <X-Charlie-Backend or ->"
+  local code backend
+  code=$(curl -sS -o /dev/null -D "$work/headers" -w '%{http_code}' -H "Host: $1" "http://127.0.0.1:$GW_PORT/healthz")
+  backend=$(tr -d '\r' <"$work/headers" | grep -i '^x-charlie-backend:' | cut -d' ' -f2 || true)
+  echo "Host $1: $code ${backend:--}"
+  [ "$code ${backend:--}" = "$2" ] || { echo "FAIL: Host $1 answered $code ${backend:--}, want $2" >&2; exit 1; }
+}
+gw_admin PUT /apps/second "{\"backends\":{\"blue\":\"http://127.0.0.1:$SRC_APP_PORT\"},\"writeBackend\":\"blue\"}"
+expect_host "second.$APP_DOMAIN" "200 blue"
+expect_host "SECOND.$APP_DOMAIN:443" "200 blue"
+expect_host "app.$APP_DOMAIN" "200 dst"
+expect_host "127.0.0.1:$GW_PORT" "200 dst"
+expect_host "sceond.$APP_DOMAIN" "404 -"
+gw_admin DELETE /apps/second
+expect_host "second.$APP_DOMAIN" "404 -"
+echo "== E2E passed"

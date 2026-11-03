@@ -312,7 +312,10 @@ func constraints(s *yaml.Node) []string {
 }
 
 func esc(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "|", "\\|"), "\n", " ")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	return strings.ReplaceAll(s, "$", "&#36;")
 }
 
 func joinNonEmpty(parts []string, sep string) string {

@@ -33,6 +33,9 @@ type Service struct {
 	now    func() time.Time
 
 	stateDir string // attachments are written below it before a run (attachments.go)
+
+	residency ResidencyGate // nil: no residency policy (residency.go)
+	capacity  CapacityGate  // nil: no capacity measurement (capacity.go)
 }
 
 // New returns a Service enforcing policy.
@@ -185,24 +188,39 @@ type Reserved struct {
 	Summary apiv1.PlanSummary
 	// RollbackOf is the run this plan rolls back, if any.
 	RollbackOf string
+	// Residency is what the residency gate decided.
+	Residency ResidencyCheck
+	// Capacity is what the capacity gate measured and decided.
+	Capacity CapacityCheck
 }
 
-// Reserve moves an approved plan to starting and parses it.
-// Exactly one caller wins; it must call Started or Release afterwards.
+// Reserve moves an approved plan to starting and parses it. With a residency
+// gate it then checks the policy against the source's live inventory, before
+// the engine can create a replica; a denial (*ResidencyDenied) returns the
+// plan to approved. Exactly one caller wins; it must call Started or Release
+// afterwards.
 func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 	row, err := s.transition(ctx, ref, []string{store.PlanApproved}, store.PlanStarting, store.PlanUpdate{})
 	if err != nil {
 		return Reserved{}, err
 	}
+	var check ResidencyCheck
+	var capCheck CapacityCheck
 	p, sum, err := s.parse(row.Raw) // re-parse: secrets come from the environment at start time
 	if err == nil {
+		check, err = s.checkResidency(ctx, row.RollbackOf, p)
+	}
+	if err == nil {
 		err = s.materialize(ctx, ref, p)
+	}
+	if err == nil { // after materialize: a new target's manifest is a local file now
+		capCheck, err = s.checkCapacity(ctx, row.RollbackOf, p)
 	}
 	if err != nil {
 		s.Release(ctx, ref)
 		return Reserved{}, err
 	}
-	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf}, nil
+	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf, Residency: check, Capacity: capCheck}, nil
 }
 
 // Load re-parses a started plan, for resuming its run.

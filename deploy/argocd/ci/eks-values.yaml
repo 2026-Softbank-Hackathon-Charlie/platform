@@ -1,0 +1,30 @@
+# An example for production: one EKS environment whose apps run in the
+# cluster Argo CD runs in, behind internal load balancers, with guardrails.
+environments:
+  eks:
+    cluster: {server: https://kubernetes.default.svc}
+    profile:
+      publicService:
+        type: LoadBalancer
+        annotations:
+          service.beta.kubernetes.io/aws-load-balancer-type: external
+          service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+          service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+      progressDeadlineSeconds: 300
+      postgres: {storageClass: gp3, storageSize: 1Gi}
+      s3:
+        endpoint: https://s3.ap-northeast-2.amazonaws.com
+        region: ap-northeast-2
+        bucketPrefix: hopcharlie-eks-
+        credentialsSecret: app-s3
+      quota:
+        enabled: true
+        hard: {requests.cpu: "2", requests.memory: 4Gi, limits.memory: 8Gi, pods: "20", persistentvolumeclaims: "4", requests.storage: 20Gi, services.loadbalancers: "1"}
+      limitRange:
+        enabled: true
+        default: {memory: 256Mi}
+        defaultRequest: {cpu: 50m, memory: 64Mi}
+      networkPolicy:
+        enabled: true
+        gatewayFrom:
+          - ipBlock: {cidr: 10.0.0.0/16} # the VPC: the internal load balancer's targets see VPC addresses

@@ -14,12 +14,13 @@ test/e2e/down.sh         # KEEP=1로 남긴 것, 중간에 끊긴 실행이 남�
 
 1. kind 클러스터 `hop-e2e` 하나에 CNPG 1.25.1 operator를 올리고, 원본 `pg-src`(primary)를 만든다. `items` 테이블에 2만 행을 넣는다. 매니페스트는 엔진의 `test/rehearsal`과 같고, 엔진 PR #4의 수정(`smartShutdownTimeout: 5`, 대상이 원본의 app Secret을 씀)이 들어 있다.
 2. 플랫폼 저장소로 쓸 PostgreSQL 컨테이너 `hop-e2e-store`를 새로 띄운다.
-3. 호스트에서 `go build`한 프로세스를 띄운다. 테스트 앱 두 개(`test/e2e/app`, 원본용과 대상용), 게이트웨이(backend `src`, `dst`), 플랫폼 API. 토큰과 비밀번호는 실행할 때마다 새로 만들고 파일에 남기지 않는다.
+3. 호스트에서 `go build`한 프로세스를 띄운다. 테스트 앱 두 개(`test/e2e/app`, 원본용과 대상용), 게이트웨이(backend `src`, `dst`, 앱 도메인 `e2e.test`), 플랫폼 API. 토큰과 비밀번호는 실행할 때마다 새로 만들고 파일에 남기지 않는다. 부하는 `127.0.0.1`로 보내므로 앱 도메인 밖이고, 이전은 기본 앱에서 일어난다.
 4. 드라이버(`test/e2e/driver`)가 쓰기 4개, 읽기 4개를 게이트웨이로 계속 보낸다. 쓰기는 고유한 키로 행을 넣고, 성공한 키를 1초마다 `POST /v1/written-records/e2e`로 보낸다. 읽기는 성공한 키를 무작위로 다시 읽는다.
 5. 드라이버가 플랫폼 API로만 이전을 진행한다.
    - agent 토큰: `POST /v1/plans`(`plan.json`), `PUT /v1/plans/{ref}/attachments/target.yaml`
    - operator 토큰: `GET /v1/plans/{ref}`에서 본 `revision`으로 승인, `POST /v1/migrations`(카나리 10%, 50%, 단계마다 10초), SSE로 이벤트를 보다가 `awaiting_switch`가 되면 `/switch`
 6. run이 끝나면 5초 더 부하를 보내고 멈춘 뒤, 기록한 키를 새 primary(`pg-dst`)에서 직접 센다. verify 단계 뒤에 들어온 쓰기까지 확인하기 위해서다.
+7. 게이트웨이 관리 API로 두 번째 앱 `second`(환경 `blue`, 원본 테스트 앱)를 등록하고, `Host: second.e2e.test`가 `blue`로, `app.e2e.test`와 `127.0.0.1`이 기본 앱의 `dst`로 가는지, 등록하지 않은 이름이 404인지 본다. 앱을 지운 뒤에는 `second.e2e.test`도 404여야 한다.
 
 ## 통과 조건
 
@@ -29,6 +30,7 @@ test/e2e/down.sh         # KEEP=1로 남긴 것, 중간에 끊긴 실행이 남�
 - run 결과의 `missingWrites`가 0 (엔진 verify가 written-records 스트림으로 확인한 값)
 - 보낸 기록 수와 스트림의 기록 수가 같음
 - 기록한 키가 새 primary에 전부 있음
+- 7번의 호스트마다 상태 코드와 `X-Charlie-Backend`가 기대한 값
 
 실패한 요청 수와 다운타임은 통과 조건이 아니고 결과로 찍는다.
 

@@ -1,0 +1,36 @@
+{{- if not .Values.environments }}
+{{- fail "environments must name at least one environment" }}
+{{- end }}
+# Apps may only use the hopcharlie-app chart (and read their gitops files),
+# only in their environments' clusters, in any namespace but the denied ones,
+# and only create what the chart renders.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.argocdNamespace }}
+spec:
+  description: Apps the HopCharlie platform deploys from GitHub
+  sourceRepos:
+    - {{ .Values.chart.repoURL | quote }}
+    - {{ .Values.gitops.repoURL | quote }}
+  destinations:
+    {{- range $env, $e := .Values.environments }}
+    {{- $cluster := required (printf "environments.%s.cluster needs server or name" $env) $e.cluster }}
+    {{- range $.Values.deniedNamespaces }}
+    - {{ merge (dict "namespace" (printf "!%s" .)) $cluster | toJson }}
+    {{- end }}
+    - {{ merge (dict "namespace" "*") $cluster | toJson }}
+    {{- end }}
+  # The only cluster-scoped object: the app's own namespace, which the chart
+  # renders. The denied namespaces above keep an app from adopting a
+  # platform one.
+  clusterResourceWhitelist:
+    - { group: "", kind: Namespace }
+  namespaceResourceWhitelist:
+    - { group: apps, kind: Deployment }
+    - { group: "", kind: Service }
+    - { group: postgresql.cnpg.io, kind: Cluster }
+    - { group: "", kind: ResourceQuota }
+    - { group: "", kind: LimitRange }
+    - { group: networking.k8s.io, kind: NetworkPolicy }
