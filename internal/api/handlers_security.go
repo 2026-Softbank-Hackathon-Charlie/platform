@@ -25,33 +25,49 @@ func (s *Server) root(w http.ResponseWriter, _ *http.Request) {
 
 // GET /v1/security?environment=&severity=&refresh=
 func (s *Server) security(w http.ResponseWriter, r *http.Request) {
+	if rep, ok := s.securityReport(w, r); ok {
+		writeJSON(w, http.StatusOK, rep)
+	}
+}
+
+// GET /v1/security/ocsf?environment=&severity=&refresh=: the same findings as
+// OCSF Detection and Compliance Finding events.
+func (s *Server) securityOCSF(w http.ResponseWriter, r *http.Request) {
+	if rep, ok := s.securityReport(w, r); ok {
+		writeJSON(w, http.StatusOK, security.ToOCSF(rep))
+	}
+}
+
+// securityReport collects (or reads the cached) report and applies the
+// query's filters. It writes the error itself; ok is false then.
+func (s *Server) securityReport(w http.ResponseWriter, r *http.Request) (apiv1.SecurityReport, bool) {
 	if s.d.Security == nil {
 		s.fail(w, r, http.StatusServiceUnavailable, "security_not_configured", "this server has no security collectors configured")
-		return
+		return apiv1.SecurityReport{}, false
 	}
 	q := r.URL.Query()
 	atLeast := apiv1.SecuritySeverity(q.Get("severity"))
 	if atLeast != "" && !atLeast.Valid() {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", "severity must be critical, high, medium, low or info")
-		return
+		return apiv1.SecurityReport{}, false
 	}
 	refresh := false
 	if v := q.Get("refresh"); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
 			s.fail(w, r, http.StatusBadRequest, "invalid_request", "refresh must be true or false")
-			return
+			return apiv1.SecurityReport{}, false
 		}
 		refresh = b
 	}
 	rep, err := s.d.Security.Report(r.Context(), refresh)
 	if err != nil {
-		return // the client went away; the collection goes on for the cache
+		return apiv1.SecurityReport{}, false // the client went away; the collection goes on for the cache
 	}
 	env := q.Get("environment")
 	if known := security.Environments(rep); env != "" && !slices.Contains(known, env) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", "unknown environment "+strconv.Quote(env)+"; known: "+strings.Join(known, ", "))
-		return
+		return apiv1.SecurityReport{}, false
 	}
-	writeJSON(w, http.StatusOK, security.Filter(rep, env, atLeast))
+	return security.Filter(rep, env, atLeast), true
 }

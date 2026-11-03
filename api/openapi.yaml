@@ -519,6 +519,45 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
 
+  /v1/security/ocsf:
+    get:
+      tags: [security]
+      operationId: getSecurityOCSF
+      description: |
+        The findings of `GET /v1/security` (same collection, cache and
+        filters) as Open Cybersecurity Schema Framework events, for tools that
+        read OCSF. A threat detection is a Detection Finding (class 2004); a
+        configuration check is a Compliance Finding (class 2003) whose
+        `compliance.status_id` is Fail, or Warning for an informational one.
+        Every event declares `metadata.version` and the `cloud` profile and
+        follows the official class schema of that version; the platform's
+        tests validate the mapping against it. Nothing new is read: each value
+        comes from the matching `SecurityFinding`. Error codes as for
+        `/v1/security`.
+      parameters:
+        - name: environment
+          in: query
+          required: false
+          schema: { type: string }
+        - name: severity
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/SecuritySeverity" }
+        - name: refresh
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: OCSF events, most severe first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityOCSFExport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
   /v1/agent/sessions:
     post:
       tags: [agent]
@@ -2049,6 +2088,28 @@ components:
           type: object
           additionalProperties: { $ref: "#/components/schemas/SeverityCounts" }
 
+    SecurityOCSFExport:
+      type: object
+      required: [ocsfVersion, generatedAt, findings]
+      properties:
+        ocsfVersion:
+          type: string
+          description: OCSF version the events follow
+          example: "1.9.0"
+        generatedAt:
+          type: string
+          format: date-time
+          description: when the sources were read (as `SecurityReport.generatedAt`)
+        findings:
+          type: array
+          description: |
+            OCSF Detection Finding (2004) and Compliance Finding (2003) events,
+            as the OCSF schema defines them (snake_case keys, `time` in epoch
+            milliseconds). Their shape is the OCSF standard's, not this API's,
+            so it is not repeated here.
+          items:
+            type: object
+            additionalProperties: true
     SecurityReport:
       type: object
       required: [generatedAt, summary, sources, findings]

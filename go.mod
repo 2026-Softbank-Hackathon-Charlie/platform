@@ -20,6 +20,7 @@ require (
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/open-policy-agent/opa v1.22.0
 	github.com/prometheus/client_golang v1.25.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
@@ -87,7 +88,6 @@ require (
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/speakeasy-api/jsonpath v0.6.3 // indirect
