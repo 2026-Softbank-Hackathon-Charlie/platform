@@ -9,12 +9,15 @@
 # Argo CD makes of them: a stateless app, an update that never gets ready
 # while the old version keeps serving through the gateway, a good update, a
 # stateful app (moimroom with a database and a bucket) and the deletions.
-# See README.md.
+# Then the platform does the same from a fake GitHub, and deploys a branch
+# of moimroom as its own instance (ADR 0015). See README.md.
 #
 # Needs: docker, kubectl, helm, go, git, curl, and the moimroom checkout
 # next to this repository (MOIMROOM_DIR).
-#   test/e2e/deploy/run.sh          # run, then remove everything
-#   KEEP=1 test/e2e/deploy/run.sh   # leave everything running
+#   test/e2e/deploy/run.sh                  # run, then remove everything
+#   KEEP=1 test/e2e/deploy/run.sh           # leave everything running
+#   ONLY=instances test/e2e/deploy/run.sh   # only the platform's moimroom and its branch instance
+#   INSTANCES=0 test/e2e/deploy/run.sh      # everything but the branch instance
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 here=test/e2e/deploy
@@ -22,6 +25,12 @@ here=test/e2e/deploy
 export KUBECONFIG="$work/kubeconfig" # never touches ~/.kube/config
 export GIT_TERMINAL_PROMPT=0
 began=$(date +%s)
+only=${ONLY:-}
+instances=${INSTANCES:-1}
+case "$only/$instances" in
+/0 | /1 | instances/1) ;;
+*) echo "ONLY must be empty or instances, INSTANCES 0 or 1, and ONLY=instances needs INSTANCES=1" >&2; exit 1 ;;
+esac
 rand() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n'; }
 busy() { (echo >"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 wait_http() { # url [seconds]
@@ -79,13 +88,16 @@ incluster_says() { [ "$(curl -s --max-time 3 -x "http://127.0.0.1:$PROXY_PORT" "
 incluster_status() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -x "http://127.0.0.1:$PROXY_PORT" "$1")" = "$2" ]; }
 
 argo() { kubectl -n argocd "$@"; }
-# app_status app: "<sync> <health>" of the Application <app>-kind, "-" if there is none
+# app_status instance: "<sync> <health>" of the Application <instance>-kind,
+# "-" if there is none. The default instance is named after the app, a
+# branch's <app>--<slug> (ADR 0015).
 app_status() { argo get application "$1-$ENV_NAME" -o jsonpath='{.status.sync.status} {.status.health.status}' 2>/dev/null || echo -; }
 app_is() { [ "$(app_status "$1")" = "$2" ]; }
 no_namespace() { ! kubectl get namespace "$1" >/dev/null 2>&1; }
-# rolled_out app service image: the Deployment runs only image, all pods ready
+# rolled_out instance service image: the Deployment <app>-<service> in the
+# instance's namespace runs only image, all pods ready
 rolled_out() {
-  [ "$(kubectl -n "$1" get deploy "$1-$2" -o jsonpath='{.spec.template.spec.containers[0].image} {.status.replicas} {.status.updatedReplicas} {.status.readyReplicas}')" = "$3 1 1 1" ]
+  [ "$(kubectl -n "$1" get deploy "${1%%--*}-$2" -o jsonpath='{.spec.template.spec.containers[0].image} {.status.replicas} {.status.updatedReplicas} {.status.readyReplicas}')" = "$3 1 1 1" ]
 }
 # at_head app: Argo CD compared the Application at the gitops repository's
 # head, the check the platform makes (status.sync.revisions holds the chart's
@@ -98,6 +110,14 @@ at_head() {
 }
 healthy_with() { at_head "$1" && app_is "$1" "Synced Healthy" && rolled_out "$1" web "$2"; }
 no_apps() { [ -z "$(argo get applications -o name)" ]; }
+# app_gone instance...: no Application is left, nor the instances' namespaces
+app_gone() {
+  local i
+  no_apps || return 1
+  for i in "$@"; do no_namespace "$i" || return 1; done
+}
+# instance_gone instance: its Application and namespace are gone
+instance_gone() { ! argo get application "$1-$ENV_NAME" >/dev/null 2>&1 && no_namespace "$1"; }
 # argo_refresh app...: after a gitops commit, what the platform does: refresh
 # the ApplicationSet (new and removed files) and the apps' Applications.
 argo_refresh() {
@@ -107,7 +127,10 @@ argo_refresh() {
     argo annotate application "$a-$ENV_NAME" argocd.argoproj.io/refresh=normal --overwrite >/dev/null 2>&1 || true
   done
 }
-gateway_says() { [ "$(curl -s -H "Host: demo.$APP_DOMAIN" "http://127.0.0.1:$GW_PORT/")" = "$1" ]; }
+# gateway_says instance body [path]: Host <instance>.e2e.test answers body
+gateway_says() { [ "$(curl -s -H "Host: $1.$APP_DOMAIN" "http://127.0.0.1:$GW_PORT${3:-/}")" = "$2" ]; }
+# gateway_status instance path code: Host <instance>.e2e.test answers with code
+gateway_status() { [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $1.$APP_DOMAIN" "http://127.0.0.1:$GW_PORT$2")" = "$3" ]; }
 show_app() { # app: why it is not there yet
   echo "== Application $1-$ENV_NAME: $(app_status "$1")" >&2
   argo get application "$1-$ENV_NAME" -o jsonpath='{.status.conditions}{"\n"}{.status.operationState.message}{"\n"}' >&2 2>/dev/null || true
@@ -195,7 +218,7 @@ finish() {
     for f in gateway api fakegithub; do
       [ -s "$work/$f.log" ] && { echo "== last lines of $f.log"; tail -n 15 "$work/$f.log"; }
     done
-    for a in demo moimroom; do argo get application "$a-$ENV_NAME" >/dev/null 2>&1 && show_app "$a"; done
+    for a in demo moimroom moimroom--dev; do argo get application "$a-$ENV_NAME" >/dev/null 2>&1 && show_app "$a"; done
     echo "== Argo CD"; argo logs deploy/argocd-applicationset-controller --tail=10 2>/dev/null || true
   fi
   echo "== wall time $(($(date +%s) - began))s"
@@ -253,13 +276,15 @@ push() {
   docker inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$reg/$1" | grep -m1 "^$reg/${1%%:*}@"
 }
 kit_image=$(push hopcharlie-e2e/kit:dev "$work/kit")
-demo_v1=$(push hopcharlie/apps/demo/web:v1 "$here/demo")
-cp -r "$here/demo" "$work/demo-v2"
-echo v2 >"$work/demo-v2/version.txt"
-demo_v2=$(push hopcharlie/apps/demo/web:v2 "$work/demo-v2")
-moimroom_image=$(push hopcharlie/apps/moimroom/web:e2e "$MOIMROOM_DIR")
-echo "demo v1 $demo_v1"
-echo "demo v2 $demo_v2"
+if [ -z "$only" ]; then
+  demo_v1=$(push hopcharlie/apps/demo/web:v1 "$here/demo")
+  cp -r "$here/demo" "$work/demo-v2"
+  echo v2 >"$work/demo-v2/version.txt"
+  demo_v2=$(push hopcharlie/apps/demo/web:v2 "$work/demo-v2")
+  moimroom_image=$(push hopcharlie/apps/moimroom/web:e2e "$MOIMROOM_DIR")
+  echo "demo v1 $demo_v1"
+  echo "demo v2 $demo_v2"
+fi
 
 echo "== kind cluster $CLUSTER"
 if ! "$kind" get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
@@ -318,33 +343,7 @@ argo_refresh
 # A kept cluster may still have the apps of the last run: the empty gitops
 # repository makes the ApplicationSet delete them.
 wait_for 300 "Applications of an earlier run are deleted" no_apps
-kubectl delete namespace demo moimroom --ignore-not-found --wait=true >/dev/null
-
-echo "== demo v1: commit apps/demo/$ENV_NAME.yaml"
-demo_file "$demo_v1"
-commit_gitops "deploy demo v1" demo
-t0=$(date +%s)
-wait_for 300 "demo-$ENV_NAME is Synced Healthy with v1" healthy_with demo "$demo_v1" || { show_app demo; exit 1; }
-v1_healthy=$(since "$t0")
-# A connection opened before kube-proxy knew the new Service stays
-# unanswered, so the first answer may take a few tries.
-wait_for 60 "demo-web answers 'v1 hello' in the cluster" incluster_says "http://demo-web.demo.svc.cluster.local:8080/" "v1 hello"
-body="v1 hello"
-psa=$(kubectl get namespace demo -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')
-[ "$psa" = restricted ] || fail "namespace demo enforces '$psa', want restricted"
-guards=$(kubectl -n demo get resourcequota,limitrange,networkpolicy -o name | tr '\n' ' ')
-[ "$(echo "$guards" | wc -w | tr -d ' ')" = 3 ] || fail "namespace demo has guardrails '$guards', want a ResourceQuota, a LimitRange and a NetworkPolicy"
-echo "demo v1 Synced Healthy ${v1_healthy}s after the commit; demo-web answers '$body'; namespace demo enforces $psa; $guards"
-# The NetworkPolicy lets in the proxy's namespace (the gateway's path) and
-# keeps out the rest of the cluster.
-reach() { # namespace: a pod there gets an answer from demo-web
-  kubectl -n "$1" run "reach-$(rand 3)" --image="$kit_image" --restart=Never --rm -i --quiet --command -- \
-    wget -q -T 5 -O - http://demo-web.demo.svc.cluster.local:8080/ >/dev/null 2>&1
-}
-kubectl create namespace e2e-outside --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-reach e2e-kit || fail "a pod in namespace e2e-kit (gatewayFrom) did not reach demo-web"
-! reach e2e-outside || fail "a pod in namespace e2e-outside reached demo-web through the NetworkPolicy"
-echo "NetworkPolicy: a pod in e2e-kit reaches demo-web, one in e2e-outside does not"
+kubectl delete namespace demo moimroom moimroom--dev --ignore-not-found --wait=true >/dev/null
 
 echo "== gateway (app domain $APP_DOMAIN, backends through the proxy)"
 gw_token=$(rand 24)
@@ -358,38 +357,8 @@ gw_admin() { # method path [json]
   curl -sSf -o /dev/null -X "$1" -H "Authorization: Bearer $gw_token" -H "Content-Type: application/json" \
     ${3:+-d "$3"} "http://127.0.0.1:$GW_ADMIN_PORT$2"
 }
-gw_admin PUT /apps/demo '{"backends":{"kind":"http://demo-web.demo.svc.cluster.local:8080"},"writeBackend":"kind"}'
-wait_for 30 "the gateway serves demo" gateway_says "v1 hello"
-echo "Host demo.$APP_DOMAIN answers 'v1 hello'"
 
-echo "== a version that never gets ready (DEMO_HEALTHY=false): v1 keeps serving"
-probe_start probe-bad -only "v1 hello"
-sleep 2
-demo_file "$demo_v1" false
-commit_gitops "deploy demo with a failing health check" demo
-t0=$(date +%s)
-wait_for 300 "demo-$ENV_NAME is Degraded" degraded demo || { show_app demo; exit 1; }
-bad_degraded=$(since "$t0")
-reason=$(kubectl -n demo get deploy demo-web -o jsonpath='{.status.conditions[?(@.type=="Progressing")].reason}')
-[ "$reason" = ProgressDeadlineExceeded ] || fail "demo-web Progressing reason $reason, want ProgressDeadlineExceeded"
-sleep 5 # and after
-probe_stop probe-bad
-echo "Degraded ${bad_degraded}s after the commit ($reason); the old pod served every request"
-
-echo "== demo v2: becomes healthy, still without a failed request"
-probe_start probe-v2 -last "v2 hello"
-sleep 2
-demo_file "$demo_v2"
-commit_gitops "deploy demo v2" demo
-t0=$(date +%s)
-wait_for 300 "demo-$ENV_NAME is Synced Healthy with v2" healthy_with demo "$demo_v2" || { show_app demo; exit 1; }
-v2_healthy=$(since "$t0")
-wait_for 30 "the gateway serves v2" gateway_says "v2 hello"
-sleep 8 # the old pod's preStop sleep and shutdown
-probe_stop probe-v2
-echo "demo v2 Synced Healthy ${v2_healthy}s after the commit"
-
-echo "== moimroom with a postgres and an s3 resource (MinIO)"
+echo "== CNPG, MinIO and the buckets"
 kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=300s
 s3_user=moimroom
 s3_key=$(rand 16)
@@ -402,12 +371,82 @@ kubectl -n minio create secret generic minio-root --from-literal=MINIO_ROOT_USER
   --from-literal=MINIO_ROOT_PASSWORD="$s3_key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 sed "s|MINIO_IMAGE|$MINIO_IMAGE|" "$here/minio.yaml" | kubectl apply -f - >/dev/null
 kubectl -n minio rollout status deploy/minio --timeout=300s
-# infra's part: the bucket <prefix><namespace>-<resource> (no prefix here)
+# infra's part: the bucket <prefix><namespace>-<resource> (no prefix here),
+# for moimroom and for its branch instance moimroom--dev
 s3() { incluster -f -o /dev/null --aws-sigv4 "aws:amz:us-east-1:s3" --user "$s3_user:$s3_key" "$@"; }
-retry 30 s3 -X PUT "http://minio.minio.svc.cluster.local:9000/moimroom-photos"
-s3 -I "http://minio.minio.svc.cluster.local:9000/moimroom-photos" || fail "bucket moimroom-photos is not there"
-mkdir -p "$gitops/apps/moimroom"
-cat >"$gitops/apps/moimroom/$ENV_NAME.yaml" <<EOF
+for b in moimroom-photos moimroom--dev-photos; do
+  retry 30 s3 -X PUT "http://minio.minio.svc.cluster.local:9000/$b"
+  s3 -I "http://minio.minio.svc.cluster.local:9000/$b" || fail "bucket $b is not there"
+done
+# s3_secret namespace: infra's other part, the bucket's keys in the namespace
+s3_secret() {
+  kubectl -n "$1" create secret generic s3-credentials --from-literal=accessKey=$s3_user \
+    --from-literal=secretKey="$s3_key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# By hand: the gitops files as run.sh writes them (skipped with ONLY=instances).
+if [ -z "$only" ]; then
+  echo "== demo v1: commit apps/demo/$ENV_NAME.yaml"
+  demo_file "$demo_v1"
+  commit_gitops "deploy demo v1" demo
+  t0=$(date +%s)
+  wait_for 300 "demo-$ENV_NAME is Synced Healthy with v1" healthy_with demo "$demo_v1" || { show_app demo; exit 1; }
+  v1_healthy=$(since "$t0")
+  # A connection opened before kube-proxy knew the new Service stays
+  # unanswered, so the first answer may take a few tries.
+  wait_for 60 "demo-web answers 'v1 hello' in the cluster" incluster_says "http://demo-web.demo.svc.cluster.local:8080/" "v1 hello"
+  body="v1 hello"
+  psa=$(kubectl get namespace demo -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')
+  [ "$psa" = restricted ] || fail "namespace demo enforces '$psa', want restricted"
+  guards=$(kubectl -n demo get resourcequota,limitrange,networkpolicy -o name | tr '\n' ' ')
+  [ "$(echo "$guards" | wc -w | tr -d ' ')" = 3 ] || fail "namespace demo has guardrails '$guards', want a ResourceQuota, a LimitRange and a NetworkPolicy"
+  echo "demo v1 Synced Healthy ${v1_healthy}s after the commit; demo-web answers '$body'; namespace demo enforces $psa; $guards"
+  # The NetworkPolicy lets in the proxy's namespace (the gateway's path) and
+  # keeps out the rest of the cluster.
+  reach() { # namespace: a pod there gets an answer from demo-web
+    kubectl -n "$1" run "reach-$(rand 3)" --image="$kit_image" --restart=Never --rm -i --quiet --command -- \
+      wget -q -T 5 -O - http://demo-web.demo.svc.cluster.local:8080/ >/dev/null 2>&1
+  }
+  kubectl create namespace e2e-outside --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  reach e2e-kit || fail "a pod in namespace e2e-kit (gatewayFrom) did not reach demo-web"
+  ! reach e2e-outside || fail "a pod in namespace e2e-outside reached demo-web through the NetworkPolicy"
+  echo "NetworkPolicy: a pod in e2e-kit reaches demo-web, one in e2e-outside does not"
+
+  gw_admin PUT /apps/demo '{"backends":{"kind":"http://demo-web.demo.svc.cluster.local:8080"},"writeBackend":"kind"}'
+  wait_for 30 "the gateway serves demo" gateway_says demo "v1 hello"
+  echo "Host demo.$APP_DOMAIN answers 'v1 hello'"
+
+  echo "== a version that never gets ready (DEMO_HEALTHY=false): v1 keeps serving"
+  probe_start probe-bad -only "v1 hello"
+  sleep 2
+  demo_file "$demo_v1" false
+  commit_gitops "deploy demo with a failing health check" demo
+  t0=$(date +%s)
+  wait_for 300 "demo-$ENV_NAME is Degraded" degraded demo || { show_app demo; exit 1; }
+  bad_degraded=$(since "$t0")
+  reason=$(kubectl -n demo get deploy demo-web -o jsonpath='{.status.conditions[?(@.type=="Progressing")].reason}')
+  [ "$reason" = ProgressDeadlineExceeded ] || fail "demo-web Progressing reason $reason, want ProgressDeadlineExceeded"
+  sleep 5 # and after
+  probe_stop probe-bad
+  echo "Degraded ${bad_degraded}s after the commit ($reason); the old pod served every request"
+
+  echo "== demo v2: becomes healthy, still without a failed request"
+  probe_start probe-v2 -last "v2 hello"
+  sleep 2
+  demo_file "$demo_v2"
+  commit_gitops "deploy demo v2" demo
+  t0=$(date +%s)
+  wait_for 300 "demo-$ENV_NAME is Synced Healthy with v2" healthy_with demo "$demo_v2" || { show_app demo; exit 1; }
+  v2_healthy=$(since "$t0")
+  wait_for 30 "the gateway serves v2" gateway_says demo "v2 hello"
+  sleep 8 # the old pod's preStop sleep and shutdown
+  probe_stop probe-v2
+  echo "demo v2 Synced Healthy ${v2_healthy}s after the commit"
+
+  echo "== moimroom with a postgres and an s3 resource (MinIO)"
+  mkdir -p "$gitops/apps/moimroom"
+  cat >"$gitops/apps/moimroom/$ENV_NAME.yaml" <<EOF
 # Generated by the HopCharlie platform. Do not edit.
 app: moimroom
 env: $ENV_NAME
@@ -422,42 +461,43 @@ values:
     - {name: db, type: postgres}
     - {name: photos, type: s3}
 EOF
-commit_gitops "deploy moimroom" moimroom
-t0=$(date +%s)
-# infra's other part: the credentials Secret in the app's namespace
-wait_for 120 "namespace moimroom exists" kubectl get namespace moimroom
-kubectl -n moimroom create secret generic s3-credentials --from-literal=accessKey=$s3_user \
-  --from-literal=secretKey="$s3_key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-wait_for 600 "moimroom-$ENV_NAME is Synced Healthy" healthy_with moimroom "$moimroom_image" || { show_app moimroom; exit 1; }
-moimroom_healthy=$(since "$t0")
-# /readyz pings the database (DATABASE_URL) and checks the bucket with the keys (S3_*).
-wait_for 60 "moimroom /readyz answers 200" incluster_status "http://moimroom-web.moimroom.svc.cluster.local:8080/readyz" 200
-spaces=$(incluster "http://moimroom-web.moimroom.svc.cluster.local:8080/api/spaces?limit=50" | grep -o '"id":' | wc -l | tr -d ' ')
-[ "$spaces" -gt 0 ] || fail "moimroom lists no spaces (its seed did not reach the database)"
-echo "moimroom Synced Healthy ${moimroom_healthy}s after the commit; /readyz 200; $spaces spaces from the database"
+  commit_gitops "deploy moimroom" moimroom
+  t0=$(date +%s)
+  # infra's other part: the credentials Secret in the app's namespace
+  wait_for 120 "namespace moimroom exists" kubectl get namespace moimroom
+  kubectl -n moimroom create secret generic s3-credentials --from-literal=accessKey=$s3_user \
+    --from-literal=secretKey="$s3_key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  wait_for 600 "moimroom-$ENV_NAME is Synced Healthy" healthy_with moimroom "$moimroom_image" || { show_app moimroom; exit 1; }
+  moimroom_healthy=$(since "$t0")
+  # /readyz pings the database (DATABASE_URL) and checks the bucket with the keys (S3_*).
+  wait_for 60 "moimroom /readyz answers 200" incluster_status "http://moimroom-web.moimroom.svc.cluster.local:8080/readyz" 200
+  spaces=$(incluster "http://moimroom-web.moimroom.svc.cluster.local:8080/api/spaces?limit=50" | grep -o '"id":' | wc -l | tr -d ' ')
+  [ "$spaces" -gt 0 ] || fail "moimroom lists no spaces (its seed did not reach the database)"
+  echo "moimroom Synced Healthy ${moimroom_healthy}s after the commit; /readyz 200; $spaces spaces from the database"
 
-echo "== delete: remove apps/*/ from the gitops repository"
-g "$gitops" rm -rq apps
-commit_gitops "remove demo and moimroom" demo moimroom
-t0=$(date +%s)
-# The chart owns the namespace, so it goes with the Application, and with it
-# the database's volume and the S3 Secret the test put there.
-wait_for 300 "the Applications are deleted" no_apps
-apps_gone=$(since "$t0")
-wait_for 300 "namespace demo is deleted" no_namespace demo
-wait_for 300 "namespace moimroom is deleted" no_namespace moimroom
-ns_gone=$(since "$t0")
-no_volumes() { [ -z "$(kubectl get pv -o jsonpath="{range .items[?(@.spec.claimRef.namespace==\"$1\")]}{.metadata.name}{end}")" ]; }
-wait_for 120 "the volumes of moimroom are deleted" no_volumes moimroom
-! kubectl -n moimroom get secret s3-credentials >/dev/null 2>&1 || fail "the S3 Secret outlived its namespace"
-echo "Applications gone ${apps_gone}s, namespaces (with the database volume and the S3 Secret) ${ns_gone}s after the commit"
+  echo "== delete: remove apps/*/ from the gitops repository"
+  g "$gitops" rm -rq apps
+  commit_gitops "remove demo and moimroom" demo moimroom
+  t0=$(date +%s)
+  # The chart owns the namespace, so it goes with the Application, and with it
+  # the database's volume and the S3 Secret the test put there.
+  wait_for 300 "the Applications are deleted" no_apps
+  apps_gone=$(since "$t0")
+  wait_for 300 "namespace demo is deleted" no_namespace demo
+  wait_for 300 "namespace moimroom is deleted" no_namespace moimroom
+  ns_gone=$(since "$t0")
+  no_volumes() { [ -z "$(kubectl get pv -o jsonpath="{range .items[?(@.spec.claimRef.namespace==\"$1\")]}{.metadata.name}{end}")" ]; }
+  wait_for 120 "the volumes of moimroom are deleted" no_volumes moimroom
+  ! kubectl -n moimroom get secret s3-credentials >/dev/null 2>&1 || fail "the S3 Secret outlived its namespace"
+  echo "Applications gone ${apps_gone}s, namespaces (with the database volume and the S3 Secret) ${ns_gone}s after the commit"
+fi
 
 # ---------------------------------------------------------------------------
 # The same through the platform: it reads platform.yaml from "GitHub",
 # builds, commits the gitops file and registers the app at the gateway.
 
 echo "== the platform: store, fake GitHub, API (docker builder, git gitops, Argo CD, template backends)"
-gw_admin DELETE /apps/demo # the platform registers it itself
+[ -n "$only" ] || gw_admin DELETE /apps/demo # the platform registers it itself
 store_pw=$(rand 16)
 for i in 1 2 3; do # Docker's port proxy can hit the Windows bind error of serve()
   docker run -d --name "$STORE" --label "$LABEL=1" -p "127.0.0.1:$STORE_PORT:5432" \
@@ -492,7 +532,7 @@ PLATFORM_DATABASE_URL="postgres://platform:$store_pw@127.0.0.1:$STORE_PORT/platf
   PLATFORM_DEPLOY_BUILDER=docker PLATFORM_IMAGE_REGISTRY=$reg PLATFORM_DOCKER_CLONE_URL="$ghroot/{repo}" \
   PLATFORM_GITOPS_MODE=git PLATFORM_GITOPS_URL=http://127.0.0.1:$GIT_PORT/gitops.git \
   PLATFORM_ARGOCD_KUBECONTEXT=kind-$CLUSTER PLATFORM_ARGOCD_TIMEOUT=100s \
-  PLATFORM_APP_BACKEND_TEMPLATE='http://{app}-{service}.{app}.svc.cluster.local:{port}' \
+  PLATFORM_APP_BACKEND_TEMPLATE='http://{app}-{service}.{instance}.svc.cluster.local:{port}' \
   serve api "http://127.0.0.1:$API_PORT/healthz" "$bin/api$exe"
 export E2E_OPERATOR_TOKEN=$op_token E2E_WEBHOOK_SECRET=$hook_secret
 drv() { "$bin/driver$exe" "$1" -api "http://127.0.0.1:$API_PORT" "${@:2}"; }
@@ -517,54 +557,55 @@ EOF
   g "$demo_repo" commit -q -m "demo $1${2:+, healthy $2}"
   g "$demo_repo" rev-parse HEAD
 }
-gitops_file() { # app: apps/<app>/kind.yaml at the gitops repository's main
+gitops_file() { # instance: apps/<instance>/kind.yaml at the gitops repository's main
   g "$gitops" fetch -q origin
   g "$gitops" show "origin/main:apps/$1/$ENV_NAME.yaml"
 }
 
-echo "== register e2e/demo (POST /v1/apps) and follow its first deployment"
-t0=$(date +%s)
-dep=$(drv register -repo e2e/demo -env "$ENV_NAME")
-follow "$dep" healthy
-p_register=$(since "$t0")
-file=$(gitops_file demo)
-for want in "deployment: \"$dep\"" "commit: \"$(g "$demo_repo" rev-parse HEAD)\"" \
-  "image: \"$reg/hopcharlie/apps/demo/web@sha256:" '"DEMO_MESSAGE": "hello"'; do
-  case "$file" in *"$want"*) ;; *) fail "apps/demo/$ENV_NAME.yaml lacks $want; it is:"$'\n'"$file" ;; esac
-done
-wait_for 30 "the gateway serves demo" gateway_says "v1 hello"
-echo "registered to healthy in ${p_register}s; the gitops file names the deployment, the commit and the image by digest; Host demo.$APP_DOMAIN answers 'v1 hello'"
+if [ -z "$only" ]; then
+  echo "== register e2e/demo (POST /v1/apps) and follow its first deployment"
+  t0=$(date +%s)
+  dep=$(drv register -repo e2e/demo -env "$ENV_NAME")
+  follow "$dep" healthy
+  p_register=$(since "$t0")
+  file=$(gitops_file demo)
+  for want in "deployment: \"$dep\"" "commit: \"$(g "$demo_repo" rev-parse HEAD)\"" \
+    "image: \"$reg/hopcharlie/apps/demo/web@sha256:" '"DEMO_MESSAGE": "hello"'; do
+    case "$file" in *"$want"*) ;; *) fail "apps/demo/$ENV_NAME.yaml lacks $want; it is:"$'\n'"$file" ;; esac
+  done
+  wait_for 30 "the gateway serves demo" gateway_says demo "v1 hello"
+  echo "registered to healthy in ${p_register}s; the gitops file names the deployment, the commit and the image by digest; Host demo.$APP_DOMAIN answers 'v1 hello'"
 
-echo "== push a version whose health check fails (webhook): the deployment fails, v1 keeps serving"
-probe_start probe-platform-bad -only "v1 hello"
-sleep 2
-t0=$(date +%s)
-dep=$(drv push -repo e2e/demo -after "$(demo_commit v1 false)")
-follow "$dep" failed
-p_bad=$(since "$t0")
-probe_stop probe-platform-bad
+  echo "== push a version whose health check fails (webhook): the deployment fails, v1 keeps serving"
+  probe_start probe-platform-bad -only "v1 hello"
+  sleep 2
+  t0=$(date +%s)
+  dep=$(drv push -repo e2e/demo -after "$(demo_commit v1 false)")
+  follow "$dep" failed
+  p_bad=$(since "$t0")
+  probe_stop probe-platform-bad
 
-echo "== push twice in a row: the first deployment is superseded, the second becomes healthy"
-probe_start probe-platform-v3 -last "v3 hello"
-sleep 2
-t0=$(date +%s)
-dep_a=$(drv push -repo e2e/demo -after "$(demo_commit v2)")
-dep_b=$(drv push -repo e2e/demo -after "$(demo_commit v3)")
-follow "$dep_a" superseded
-follow "$dep_b" healthy
-p_v3=$(since "$t0")
-wait_for 30 "the gateway serves v3" gateway_says "v3 hello"
-sleep 8 # the old pod's preStop sleep and shutdown
-probe_stop probe-platform-v3
+  echo "== push twice in a row: the first deployment is superseded, the second becomes healthy"
+  probe_start probe-platform-v3 -last "v3 hello"
+  sleep 2
+  t0=$(date +%s)
+  dep_a=$(drv push -repo e2e/demo -after "$(demo_commit v2)")
+  dep_b=$(drv push -repo e2e/demo -after "$(demo_commit v3)")
+  follow "$dep_a" superseded
+  follow "$dep_b" healthy
+  p_v3=$(since "$t0")
+  wait_for 30 "the gateway serves v3" gateway_says demo "v3 hello"
+  sleep 8 # the old pod's preStop sleep and shutdown
+  probe_stop probe-platform-v3
 
-echo "== DELETE /v1/apps/demo"
-t0=$(date +%s)
-drv delete -app demo
-app_gone() { no_apps && no_namespace "$1"; }
-wait_for 90 "demo-$ENV_NAME and namespace demo are deleted" app_gone demo
-p_delete=$(since "$t0")
-! gitops_file demo >/dev/null 2>&1 || fail "apps/demo/$ENV_NAME.yaml is still in the gitops repository"
-echo "Application and namespace gone ${p_delete}s after the DELETE; apps/demo/ is gone from the gitops repository"
+  echo "== DELETE /v1/apps/demo"
+  t0=$(date +%s)
+  drv delete -app demo
+  wait_for 90 "demo-$ENV_NAME and namespace demo are deleted" app_gone demo
+  p_delete=$(since "$t0")
+  ! gitops_file demo >/dev/null 2>&1 || fail "apps/demo/$ENV_NAME.yaml is still in the gitops repository"
+  echo "Application and namespace gone ${p_delete}s after the DELETE; apps/demo/ is gone from the gitops repository"
+fi
 
 echo "== register e2e/moimroom ($MOIMROOM_DIR at HEAD: postgres and s3)"
 moim_repo=$ghroot/e2e/moimroom
@@ -578,34 +619,124 @@ dep=$(drv register -repo e2e/moimroom -env "$ENV_NAME")
 follow "$dep" healthy >"$work/watch-moimroom.out" 2>&1 &
 watcher=$!
 # infra's part again: the S3 keys in the namespace once Argo CD made it (the
-# bucket moimroom-photos is still in MinIO)
+# bucket moimroom-photos is in MinIO)
 wait_for 300 "namespace moimroom exists" kubectl get namespace moimroom
-kubectl -n moimroom create secret generic s3-credentials --from-literal=accessKey=$s3_user \
-  --from-literal=secretKey="$s3_key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+s3_secret moimroom
 wait "$watcher" || { cat "$work/watch-moimroom.out"; fail "moimroom's first deployment did not become healthy"; }
 cat "$work/watch-moimroom.out"
 p_moimroom=$(since "$t0")
-moimroom_status() { [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: moimroom.$APP_DOMAIN" "http://127.0.0.1:$GW_PORT$1")" = 200 ]; }
-wait_for 60 "Host moimroom.$APP_DOMAIN /readyz answers 200" moimroom_status /readyz
-spaces=$(curl -s -H "Host: moimroom.$APP_DOMAIN" "http://127.0.0.1:$GW_PORT/api/spaces?limit=50" | grep -o '"id":' | wc -l | tr -d ' ')
+wait_for 60 "Host moimroom.$APP_DOMAIN /readyz answers 200" gateway_status moimroom /readyz 200
+# spaces instance: how many spaces the instance lists through the gateway
+spaces() { curl -s -H "Host: $1.$APP_DOMAIN" "http://127.0.0.1:$GW_PORT/api/spaces?limit=50" | grep -o '"id":' | wc -l | tr -d ' '; }
+spaces=$(spaces moimroom)
 [ "$spaces" -gt 0 ] || fail "moimroom through the gateway lists no spaces"
+echo "moimroom registered to healthy in ${p_moimroom}s; through the gateway /readyz 200 and $spaces spaces"
+
+if [ "$instances" = 1 ]; then
+  # Branch dev differs from main by one file that the SPA build copies, so
+  # /e2e-branch.txt answers on dev and is a 404 on main.
+  # dev_commit text: commit text as that file on branch dev; prints the commit
+  dev_commit() {
+    g "$moim_repo" checkout -q dev 2>/dev/null || g "$moim_repo" checkout -q -b dev
+    echo "$1" >"$moim_repo/web/public/e2e-branch.txt"
+    g "$moim_repo" add -A
+    g "$moim_repo" commit -q -m "$1"
+    g "$moim_repo" rev-parse HEAD
+    g "$moim_repo" checkout -q main
+  }
+  # add_dev: POST /v1/apps/moimroom/instances {"branch":"dev"}, then follow
+  # the first deployment to healthy, putting the S3 keys in the new namespace
+  add_dev() {
+    local out dep watcher
+    out=$(drv add-instance -app moimroom -branch dev)
+    dep=${out% *}
+    [ "${out#* }" = moimroom--dev ] || fail "branch dev became instance '${out#* }', want moimroom--dev"
+    follow "$dep" healthy >"$work/watch-dev.out" 2>&1 &
+    watcher=$!
+    wait_for 300 "namespace moimroom--dev exists" kubectl get namespace moimroom--dev
+    s3_secret moimroom--dev
+    wait "$watcher" || { cat "$work/watch-dev.out"; fail "the first deployment of moimroom--dev did not become healthy"; }
+    cat "$work/watch-dev.out"
+  }
+
+  echo "== branch instance: add moimroom's branch dev (POST /v1/apps/moimroom/instances)"
+  main_last=$(drv last -app moimroom -branch main)
+  dev_commit "dev 1" >/dev/null
+  t0=$(date +%s)
+  add_dev
+  p_dev=$(since "$t0")
+  app_is moimroom--dev "Synced Healthy" || fail "moimroom--dev-$ENV_NAME is $(app_status moimroom--dev)"
+  [ -n "$(kubectl -n moimroom--dev get cluster moimroom-db -o name 2>/dev/null)" ] ||
+    fail "namespace moimroom--dev has no CNPG Cluster moimroom-db of its own"
+  wait_for 60 "Host moimroom--dev.$APP_DOMAIN serves dev's file" gateway_says moimroom--dev "dev 1" /e2e-branch.txt
+  gateway_status moimroom /e2e-branch.txt 404 || fail "Host moimroom.$APP_DOMAIN serves dev's file"
+  wait_for 60 "Host moimroom--dev.$APP_DOMAIN /readyz answers 200" gateway_status moimroom--dev /readyz 200
+  dev_spaces=$(spaces moimroom--dev)
+  [ "$dev_spaces" -gt 0 ] || fail "moimroom--dev through the gateway lists no spaces (its database is not seeded)"
+  gateway_status moimroom /readyz 200 || fail "moimroom stopped answering /readyz"
+  echo "moimroom--dev healthy ${p_dev}s after POST instances, with its own database ($dev_spaces spaces); Host moimroom--dev.$APP_DOMAIN serves dev, moimroom.$APP_DOMAIN still main"
+
+  echo "== push to dev: only moimroom--dev deploys, main's last deployment stays"
+  t0=$(date +%s)
+  dep=$(drv push -repo e2e/moimroom -branch dev -after "$(dev_commit "dev 2")" -instance moimroom--dev)
+  follow "$dep" healthy
+  p_dev_push=$(since "$t0")
+  wait_for 60 "Host moimroom--dev.$APP_DOMAIN serves dev 2" gateway_says moimroom--dev "dev 2" /e2e-branch.txt
+  [ "$(drv last -app moimroom -branch main)" = "$main_last" ] ||
+    fail "main's last deployment changed from '$main_last' to '$(drv last -app moimroom -branch main)'"
+  case "$main_last" in *" healthy") ;; *) fail "main's last deployment is '$main_last', want healthy" ;; esac
+  gateway_status moimroom /e2e-branch.txt 404 || fail "Host moimroom.$APP_DOMAIN serves dev's file"
+  echo "push to dev healthy in ${p_dev_push}s; main's last deployment is still $main_last"
+
+  echo "== DELETE /v1/apps/moimroom/instances/moimroom--dev: main keeps serving"
+  t0=$(date +%s)
+  drv delete-instance -app moimroom -instance moimroom--dev
+  wait_for 180 "moimroom--dev-$ENV_NAME and namespace moimroom--dev are deleted" instance_gone moimroom--dev
+  p_dev_delete=$(since "$t0")
+  ! gitops_file moimroom--dev >/dev/null 2>&1 || fail "apps/moimroom--dev/$ENV_NAME.yaml is still in the gitops repository"
+  gateway_status moimroom--dev / 404 || fail "the gateway still serves moimroom--dev"
+  app_is moimroom "Synced Healthy" || fail "moimroom-$ENV_NAME is $(app_status moimroom) after deleting moimroom--dev"
+  gateway_status moimroom /readyz 200 || fail "moimroom stopped answering /readyz after deleting moimroom--dev"
+  echo "moimroom--dev gone ${p_dev_delete}s after the DELETE (Application, namespace, gitops file, gateway); moimroom still serves"
+
+  echo "== add dev again, so deleting the app removes both instances"
+  t0=$(date +%s)
+  add_dev
+  p_dev_again=$(since "$t0")
+  wait_for 60 "Host moimroom--dev.$APP_DOMAIN serves dev 2" gateway_says moimroom--dev "dev 2" /e2e-branch.txt
+fi
+
+echo "== DELETE /v1/apps/moimroom"
 t0=$(date +%s)
 drv delete -app moimroom
-wait_for 120 "moimroom-$ENV_NAME and namespace moimroom are deleted" app_gone moimroom
+wait_for 180 "the Applications and the namespaces of moimroom are deleted" app_gone moimroom moimroom--dev
 p_moimroom_delete=$(since "$t0")
-echo "moimroom registered to healthy in ${p_moimroom}s; through the gateway /readyz 200 and $spaces spaces; deleted with its namespace in ${p_moimroom_delete}s"
+for i in moimroom moimroom--dev; do
+  ! gitops_file "$i" >/dev/null 2>&1 || fail "apps/$i/$ENV_NAME.yaml is still in the gitops repository"
+  gateway_status "$i" / 404 || fail "the gateway still serves $i"
+done
+echo "moimroom deleted with its namespaces in ${p_moimroom_delete}s"
 
 echo "== results"
-echo "by hand (gitops files committed by run.sh):"
-echo "  demo v1 healthy     ${v1_healthy}s after the commit"
-echo "  failing version     Degraded after ${bad_degraded}s; $(cat "$work/probe-bad.log")"
-echo "  demo v2 healthy     ${v2_healthy}s after the commit; $(cat "$work/probe-v2.log")"
-echo "  moimroom healthy    ${moimroom_healthy}s after the commit (CNPG and MinIO)"
-echo "  deleted             Applications ${apps_gone}s, namespaces ${ns_gone}s"
+if [ -z "$only" ]; then
+  echo "by hand (gitops files committed by run.sh):"
+  echo "  demo v1 healthy     ${v1_healthy}s after the commit"
+  echo "  failing version     Degraded after ${bad_degraded}s; $(cat "$work/probe-bad.log")"
+  echo "  demo v2 healthy     ${v2_healthy}s after the commit; $(cat "$work/probe-v2.log")"
+  echo "  moimroom healthy    ${moimroom_healthy}s after the commit (CNPG and MinIO)"
+  echo "  deleted             Applications ${apps_gone}s, namespaces ${ns_gone}s"
+fi
 echo "through the platform:"
-echo "  demo registered     healthy ${p_register}s after POST /v1/apps"
-echo "  failing push        failed ${p_bad}s after the webhook; $(cat "$work/probe-platform-bad.log")"
-echo "  two pushes          first superseded, second healthy ${p_v3}s after the webhooks; $(cat "$work/probe-platform-v3.log")"
-echo "  DELETE              Application and namespace gone in ${p_delete}s"
-echo "  moimroom            healthy ${p_moimroom}s after POST /v1/apps; deleted with its namespace in ${p_moimroom_delete}s"
+if [ -z "$only" ]; then
+  echo "  demo registered     healthy ${p_register}s after POST /v1/apps"
+  echo "  failing push        failed ${p_bad}s after the webhook; $(cat "$work/probe-platform-bad.log")"
+  echo "  two pushes          first superseded, second healthy ${p_v3}s after the webhooks; $(cat "$work/probe-platform-v3.log")"
+  echo "  DELETE              Application and namespace gone in ${p_delete}s"
+fi
+echo "  moimroom            healthy ${p_moimroom}s after POST /v1/apps"
+if [ "$instances" = 1 ]; then
+  echo "  instance dev        healthy ${p_dev}s after POST instances; a push to dev healthy in ${p_dev_push}s, main untouched"
+  echo "  DELETE instance     Application and namespace gone in ${p_dev_delete}s, main kept serving; added again in ${p_dev_again}s"
+fi
+echo "  DELETE moimroom     every instance's Application and namespace gone in ${p_moimroom_delete}s"
 echo "== E2E passed"
