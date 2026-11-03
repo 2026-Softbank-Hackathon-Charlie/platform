@@ -20,6 +20,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
@@ -380,9 +381,36 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 			noteAudit(r, "residencyReasons", plans.ReasonTexts(denied.Verdict.Reasons))
 		}
 		s.fail(w, r, http.StatusConflict, "residency_denied", err.Error())
+	case errors.Is(err, plans.ErrCapacityInsufficient):
+		// The report holds measured numbers only, never addresses.
+		var short *plans.CapacityInsufficient
+		if errors.As(err, &short) {
+			noteAudit(r, "capacity", capacityNote(&short.Report))
+		}
+		s.fail(w, r, http.StatusConflict, "capacity_insufficient", err.Error())
 	default:
 		s.internal(w, r, err)
 	}
+}
+
+// noteCapacity records what the capacity gate measured for a started plan.
+func noteCapacity(r *http.Request, c plans.CapacityCheck) {
+	switch {
+	case c.Report != nil:
+		noteAudit(r, "capacity", capacityNote(c.Report))
+	case c.Outcome != "":
+		noteAudit(r, "capacity", map[string]any{"outcome": c.Outcome})
+	}
+}
+
+// capacityNote is the audit form of a capacity report: each check's status,
+// code and message, and the raw measurements.
+func capacityNote(rep *capacity.Report) map[string]any {
+	checks := make([]string, 0, len(rep.Checks))
+	for _, c := range rep.Checks {
+		checks = append(checks, c.ID+" "+string(c.Status)+" "+c.Code+": "+c.Message)
+	}
+	return map[string]any{"allowed": rep.Allowed, "checks": checks, "measurements": rep.Measurements}
 }
 
 // noteResidency records what the residency gate decided for a started plan.

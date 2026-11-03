@@ -26,6 +26,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
@@ -167,6 +168,19 @@ func main() {
 		log.Info("residency gate enabled", "policyDigest", g.PolicyDigest())
 	} else {
 		log.Warn("PLATFORM_RESIDENCY_POLICY_FILE is not set: residency gate disabled; migrations start without a data residency check")
+	}
+
+	// Optional: measure the source and target before every new run and refuse
+	// one that would clearly fail (too few target connections, a replica that
+	// cannot catch up). Adds a few seconds to each start.
+	switch v := os.Getenv("PLATFORM_CAPACITY_GATE"); v {
+	case "on":
+		planSvc.SetCapacityGate(capacity.Gate{})
+		log.Info("capacity gate enabled", "window", capacity.DefaultWindow)
+	case "", "off":
+		log.Info("PLATFORM_CAPACITY_GATE is not on: migrations start without a capacity check")
+	default:
+		fatal("PLATFORM_CAPACITY_GATE must be on or off", "value", v)
 	}
 
 	if n, err := planSvc.RecoverStarting(ctx); err != nil {

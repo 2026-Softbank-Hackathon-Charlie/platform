@@ -183,6 +183,9 @@ func (s *Server) rollbackMigration(w http.ResponseWriter, r *http.Request) {
 	if res.residency != "" {
 		noteAudit(r, "residency", res.residency)
 	}
+	if res.capacity != "" {
+		noteAudit(r, "capacity", map[string]any{"outcome": res.capacity})
+	}
 	if f != nil {
 		switch f.kind {
 		case failRun:
@@ -223,6 +226,7 @@ type rollbackStarted struct {
 	ref       string
 	reused    bool
 	residency string // plans.Residency*, set once the plan is reserved
+	capacity  string // plans.Capacity*, set once the plan is reserved
 }
 
 // startRollback builds (or reuses) the reverse plan of a succeeded run and
@@ -274,7 +278,7 @@ func (s *Server) startRollback(ctx context.Context, id, who, reason string, auto
 	if err != nil {
 		return out, &rollbackFailure{failPlan, err}
 	}
-	out.residency = res.Residency.Outcome
+	out.residency, out.capacity = res.Residency.Outcome, res.Capacity.Outcome
 	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
 		PlanRef:    ref,
 		Plan:       res.Plan,
@@ -310,6 +314,9 @@ func (s *Server) autoRollback(ctx context.Context, id, reason string) (string, e
 	}
 	if res.residency != "" {
 		note["residency"] = res.residency
+	}
+	if res.capacity != "" {
+		note["capacity"] = map[string]any{"outcome": res.capacity}
 	}
 	if f != nil {
 		status = http.StatusInternalServerError

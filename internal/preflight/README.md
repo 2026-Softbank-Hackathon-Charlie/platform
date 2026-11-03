@@ -13,6 +13,7 @@
 5. `inventory.Collector`가 확장된 `source.dsn`으로 모든 DB를 순회해 테이블·파티션·구체화 뷰 목록을 만든다. 목록이 불완전하면 거부한다(`inventory_incomplete`, `inventory:<code>`).
 6. 내장 Rego가 catalog와 대조한다.
 7. 거부되면 Plan은 `approved`로 돌아가고 409 `residency_denied`를 반환한다. 사유와 policy digest는 감사 로그에 남는다.
+8. 레지던시를 통과하고 manifest를 파일로 쓴 뒤, `PLATFORM_CAPACITY_GATE=on`이면 `capacity`가 원본·대상을 5초 동안 측정한다. 측정해서 명백히 실패하면 409 `capacity_insufficient`를 반환한다. 측정값은 통과·차단 모두 감사 로그에 남는다.
 
 ## 구현 범위
 
@@ -20,6 +21,7 @@
 |---|---|---|
 | `residency` | 실제 내장 OPA/Rego, catalog/환경 설정 검증, 전체 클러스터 국가 제약 판정, 정책 digest | 실행 Plan 해시, 결과 저장, 승인 화면 미리보기 |
 | `inventory` | 실제 PostgreSQL 카탈로그 조회로 모든 DB의 테이블·파티션·구체화 뷰 수집, 접속 불가 DB·대용량 객체·미지원 식별자·timeout은 불완전 | DSN이 그 CNPG 클러스터를 가리키는지의 독립 검증, 이미 존재하는 replica 감지 |
+| `capacity` | `PLATFORM_CAPACITY_GATE=on`일 때 시작 전 실측. 대상 접속 한도 부족, replica가 `catchupTimeout` 안에 따라잡지 못함을 차단. 측정 못 한 값은 unknown이며 차단 안 함 ([ADR 0014](../../docs/adr/0014-capacity-preflight.md)) | 7일 피크 접속 수, 대상이 없을 때 회선 처리량, 승인 화면 미리보기 |
 | `gate` | Plan → 물리 복제 + 버킷 복사 요청 변환, 시작 경로 연결 | 버킷 실제 리전 조회, 경로별 버킷 분류, parity 연결 |
 | `parity` | 원본 요구 + 조직 필수 capability의 합집합, 5종 결과와 필수 검사 fail-closed | 실제 원본 dependency 자동 발견, 운영 API/UI 연결 |
 | `probes.RBAC` | 실제 Kubernetes client로 앱 SA의 허용/금지 SubjectAccessReview | 클라우드 IAM 권한, 리소스 동작 자체의 성공 |
