@@ -30,7 +30,7 @@ cd ../infra/terraform/platform/aws
 
 ## 애플리케이션 코드 배포
 
-관리 EKS에 내보낼 플랫폼 이미지는 GitHub Actions의 **Publish platform image**(`.github/workflows/publish-image.yml`)가 만듭니다. main에 push해서 `ci`가 통과하면 자동으로 실행되고, 이미지를 ECR에 `:<커밋 7자리>`로 올린 뒤 infra main에 그 이미지를 고정하는 커밋을 바로 넣습니다. 연달아 push하면 마지막 커밋만 올라갑니다. Argo CD가 infra main을 배포합니다(infra ADR 0024). 필요한 Actions 변수와 secret은 workflow 파일 머리말에 있습니다. 콘솔 이미지는 frontend 저장소의 **Deploy frontend** workflow가 같은 방식으로 만듭니다.
+관리 EKS에 내보낼 플랫폼 이미지는 GitHub Actions의 **Publish platform image**(`.github/workflows/publish-image.yml`)가 만듭니다. main에 push해서 `ci`가 통과하면 자동으로 실행되고, 이미지를 ECR에 `:<커밋 7자리>`로 올린 뒤 infra main에 그 이미지를 고정하는 커밋을 바로 넣습니다. 연달아 push하면 마지막 커밋만 올라갑니다. Argo CD가 infra main을 배포합니다(infra ADR 0025). 필요한 Actions 변수와 secret은 workflow 파일 머리말에 있습니다. 콘솔 이미지는 frontend 저장소의 **Deploy frontend** workflow가 같은 방식으로 만듭니다.
 
 아래 도우미는 workflow를 쓸 수 없을 때와 EC2 호스트용입니다. 이 도우미는 실제 AWS에 쓰기 작업을 합니다. Docker와 AWS CLI가 필요하고, 플랫폼 이미지는 Go, 콘솔 이미지는 Node도 필요합니다. 콘솔 소스는 기본적으로 platform 옆의 `frontend`이며, 다른 경로는 `FRONTEND_DIR`로 지정합니다.
 

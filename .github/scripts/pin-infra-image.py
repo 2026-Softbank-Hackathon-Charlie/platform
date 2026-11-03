@@ -2,7 +2,7 @@
 """Pin a published platform image in infra main with one direct commit.
 
 The commit changes only images.platform in the management cluster's values
-and that image's images.lock.json entry (infra ADR 0024); Argo CD deploys
+and that image's images.lock.json entry (infra ADR 0025); Argo CD deploys
 infra main from there. The ref update is fast-forward only: if infra main
 moved since it was read, the pin starts again from the new main.
 """
