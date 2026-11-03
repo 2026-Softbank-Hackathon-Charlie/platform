@@ -42,6 +42,10 @@ func newCountedGW(t *testing.T, cfg Config) (*testGW, *atomic.Int64) {
 	return tg, conns
 }
 
+// read sends one read through the gateway and waits until the gateway's
+// backend connection is back in its pool: ReverseProxy returns it only after
+// the client already has the whole answer, so a read sent right away could
+// otherwise dial a second connection.
 func (tg *testGW) read(t *testing.T) {
 	t.Helper()
 	resp, err := http.Get(tg.proxy.URL + "/items")
@@ -52,6 +56,7 @@ func (tg *testGW) read(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
+	time.Sleep(100 * time.Millisecond)
 }
 
 // Every health check dials (and so resolves the backend's name) again; it
@@ -67,7 +72,6 @@ func TestHealthChecksDialEveryTime(t *testing.T) {
 	// Proxied requests still reuse their connection.
 	tg.read(t)
 	tg.read(t)
-	time.Sleep(20 * time.Millisecond)
 	if n := conns.Load(); n != 4 {
 		t.Fatalf("connections after two proxied reads: %d, want 4 (one reused)", n)
 	}
