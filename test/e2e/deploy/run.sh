@@ -192,7 +192,9 @@ probe_stop() {
 finish() {
   local code=$?
   if [ "$code" != 0 ]; then
-    [ -s "$work/gateway.log" ] && { echo "== last lines of gateway.log"; tail -n 15 "$work/gateway.log"; }
+    for f in gateway api fakegithub; do
+      [ -s "$work/$f.log" ] && { echo "== last lines of $f.log"; tail -n 15 "$work/$f.log"; }
+    done
     for a in demo moimroom; do argo get application "$a-$ENV_NAME" >/dev/null 2>&1 && show_app "$a"; done
     echo "== Argo CD"; argo logs deploy/argocd-applicationset-controller --tail=10 2>/dev/null || true
   fi
@@ -213,19 +215,25 @@ done
 
 echo "== build (work dir $work)"
 stop_processes
-rm -rf "$work"/*.log "$work"/*.json "$work"/*.stop "$work/gateway-state.json" "$work/repos" "$work/kit"
+rm -rf "$work"/*.log "$work"/*.json "$work"/*.stop "$work/gateway-state.json" "$work/repos" "$work/kit" "$work/github" "$work/runs"
 mkdir -p "$bin" "$work/kit"
 GOBIN="$bin" go install "sigs.k8s.io/kind@$KIND_VERSION"
-go build -o "$bin/gateway$exe" ./cmd/gateway
-go build -o "$bin/probe$exe" "./$here/probe"
+for c in api gateway; do go build -o "$bin/$c$exe" "./cmd/$c"; done
+for c in probe fakegithub driver; do go build -o "$bin/$c$exe" "./$here/$c"; done
 arch=$(docker version -f '{{.Server.Arch}}')
 for c in gitserver proxy; do
   CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o "$work/kit/$c" "./$here/$c"
 done
 cp "$here/kit.Dockerfile" "$work/kit/Dockerfile"
-for p in $GW_PORT $GW_ADMIN_PORT; do
+for p in $GW_PORT $GW_ADMIN_PORT $API_PORT $GITHUB_PORT $STORE_PORT; do
   if busy "$p"; then echo "port $p is in use (see $here/lib.sh)" >&2; exit 1; fi
 done
+[ -f "$MOIMROOM_DIR/platform.yaml" ] || { echo "$MOIMROOM_DIR has no platform.yaml (check out moimroom's main)" >&2; exit 1; }
+if [ -n "$(docker ps -aq --filter "name=^$STORE\$")" ]; then
+  [ -n "$(docker ps -aq --filter "name=^$STORE\$" --filter "label=$LABEL")" ] ||
+    { echo "container $STORE exists but this test did not create it" >&2; exit 1; }
+  docker rm -f -v "$STORE" >/dev/null
+fi
 
 echo "== registry $REGISTRY on 127.0.0.1:$REGISTRY_PORT, images"
 if [ -n "$(docker ps -aq --filter "name=^$REGISTRY\$")" ]; then
@@ -346,9 +354,11 @@ HTTP_PROXY=http://127.0.0.1:$PROXY_PORT GATEWAY_ADMIN_TOKEN=$gw_token \
   GATEWAY_LISTEN=127.0.0.1:$GW_PORT GATEWAY_ADMIN_ADDR=127.0.0.1:$GW_ADMIN_PORT \
   GATEWAY_STATE_FILE=$work/gateway-state.json GATEWAY_APP_DOMAIN=$APP_DOMAIN \
   serve gateway "http://127.0.0.1:$GW_ADMIN_PORT/healthz" "$bin/gateway$exe"
-curl -sSf -o /dev/null -X PUT -H "Authorization: Bearer $gw_token" -H "Content-Type: application/json" \
-  -d '{"backends":{"kind":"http://demo-web.demo.svc.cluster.local:8080"},"writeBackend":"kind"}' \
-  "http://127.0.0.1:$GW_ADMIN_PORT/apps/demo"
+gw_admin() { # method path [json]
+  curl -sSf -o /dev/null -X "$1" -H "Authorization: Bearer $gw_token" -H "Content-Type: application/json" \
+    ${3:+-d "$3"} "http://127.0.0.1:$GW_ADMIN_PORT$2"
+}
+gw_admin PUT /apps/demo '{"backends":{"kind":"http://demo-web.demo.svc.cluster.local:8080"},"writeBackend":"kind"}'
 wait_for 30 "the gateway serves demo" gateway_says "v1 hello"
 echo "Host demo.$APP_DOMAIN answers 'v1 hello'"
 
@@ -442,10 +452,160 @@ wait_for 120 "the volumes of moimroom are deleted" no_volumes moimroom
 ! kubectl -n moimroom get secret s3-credentials >/dev/null 2>&1 || fail "the S3 Secret outlived its namespace"
 echo "Applications gone ${apps_gone}s, namespaces (with the database volume and the S3 Secret) ${ns_gone}s after the commit"
 
+# ---------------------------------------------------------------------------
+# The same through the platform: it reads platform.yaml from "GitHub",
+# builds, commits the gitops file and registers the app at the gateway.
+
+echo "== the platform: store, fake GitHub, API (docker builder, git gitops, Argo CD, template backends)"
+gw_admin DELETE /apps/demo # the platform registers it itself
+store_pw=$(rand 16)
+for i in 1 2 3; do # Docker's port proxy can hit the Windows bind error of serve()
+  docker run -d --name "$STORE" --label "$LABEL=1" -p "127.0.0.1:$STORE_PORT:5432" \
+    -e POSTGRES_USER=platform -e POSTGRES_PASSWORD="$store_pw" -e POSTGRES_DB=platform "$STORE_IMAGE" >/dev/null && break
+  docker rm -f -v "$STORE" >/dev/null 2>&1 || true
+  [ "$i" = 3 ] && exit 1
+  sleep 2
+done
+retry 30 docker exec "$STORE" pg_isready -q -h 127.0.0.1 -U platform
+# Repository owner/name is the checkout $work/github/<owner>/<name>: the fake
+# GitHub API reads it, the docker builder clones it.
+ghroot=$work/github
+demo_repo=$ghroot/e2e/demo
+mkdir -p "$demo_repo"
+g "$demo_repo" init -q -b main
+cp -r "$here/demo/." "$demo_repo/"
+g "$demo_repo" add -A
+g "$demo_repo" commit -q -m "demo v1"
+serve fakegithub "http://127.0.0.1:$GITHUB_PORT/healthz" \
+  "$bin/fakegithub$exe" -listen "127.0.0.1:$GITHUB_PORT" -root "$ghroot" -key "$work/github-app.pem"
+op_token=$(rand 24)
+hook_secret=$(rand 16)
+PLATFORM_DATABASE_URL="postgres://platform:$store_pw@127.0.0.1:$STORE_PORT/platform?sslmode=disable" \
+  PLATFORM_TOKENS="operator:operator:$op_token" \
+  PLATFORM_ENVS_FILE=$root/$here/envs.yaml \
+  PLATFORM_GATEWAY_URL=http://127.0.0.1:$GW_ADMIN_PORT GATEWAY_TOKEN=$gw_token \
+  PLATFORM_ADDR=127.0.0.1:$API_PORT PLATFORM_STATE_DIR=$work/runs \
+  PLATFORM_GITHUB_APP_ID=1 PLATFORM_GITHUB_APP_PRIVATE_KEY_FILE=$work/github-app.pem \
+  PLATFORM_GITHUB_INSTALLATION_ID=1 PLATFORM_GITHUB_ORG=e2e \
+  PLATFORM_GITHUB_API_URL=http://127.0.0.1:$GITHUB_PORT PLATFORM_GITHUB_WEBHOOK_SECRET=$hook_secret \
+  PLATFORM_APP_DOMAIN=$APP_DOMAIN \
+  PLATFORM_DEPLOY_BUILDER=docker PLATFORM_IMAGE_REGISTRY=$reg PLATFORM_DOCKER_CLONE_URL="$ghroot/{repo}" \
+  PLATFORM_GITOPS_MODE=git PLATFORM_GITOPS_URL=http://127.0.0.1:$GIT_PORT/gitops.git \
+  PLATFORM_ARGOCD_KUBECONTEXT=kind-$CLUSTER PLATFORM_ARGOCD_TIMEOUT=100s \
+  PLATFORM_APP_BACKEND_TEMPLATE='http://{app}-{service}.{app}.svc.cluster.local:{port}' \
+  serve api "http://127.0.0.1:$API_PORT/healthz" "$bin/api$exe"
+export E2E_OPERATOR_TOKEN=$op_token E2E_WEBHOOK_SECRET=$hook_secret
+drv() { "$bin/driver$exe" "$1" -api "http://127.0.0.1:$API_PORT" "${@:2}"; }
+# follow id want: watch a deployment until it ends; fails unless it ends as want
+follow() { drv watch -id "$1" -want "$2" | tee "$work/watch-$1.log"; }
+# demo_commit version [healthy]: commit the demo repository; prints the commit
+demo_commit() {
+  local extra=""
+  [ -z "${2:-}" ] || extra=$'\n'"      DEMO_HEALTHY: \"$2\""
+  echo "$1" >"$demo_repo/version.txt"
+  cat >"$demo_repo/platform.yaml" <<EOF
+name: demo
+services:
+  - name: web
+    port: 8080
+    healthCheck: /healthz
+    public: true
+    env:
+      DEMO_MESSAGE: hello$extra
+EOF
+  g "$demo_repo" add -A
+  g "$demo_repo" commit -q -m "demo $1${2:+, healthy $2}"
+  g "$demo_repo" rev-parse HEAD
+}
+gitops_file() { # app: apps/<app>/kind.yaml at the gitops repository's main
+  g "$gitops" fetch -q origin
+  g "$gitops" show "origin/main:apps/$1/$ENV_NAME.yaml"
+}
+
+echo "== register e2e/demo (POST /v1/apps) and follow its first deployment"
+t0=$(date +%s)
+dep=$(drv register -repo e2e/demo -env "$ENV_NAME")
+follow "$dep" healthy
+p_register=$(since "$t0")
+file=$(gitops_file demo)
+for want in "deployment: \"$dep\"" "commit: \"$(g "$demo_repo" rev-parse HEAD)\"" \
+  "image: \"$reg/hopcharlie/apps/demo/web@sha256:" '"DEMO_MESSAGE": "hello"'; do
+  case "$file" in *"$want"*) ;; *) fail "apps/demo/$ENV_NAME.yaml lacks $want; it is:"$'\n'"$file" ;; esac
+done
+wait_for 30 "the gateway serves demo" gateway_says "v1 hello"
+echo "registered to healthy in ${p_register}s; the gitops file names the deployment, the commit and the image by digest; Host demo.$APP_DOMAIN answers 'v1 hello'"
+
+echo "== push a version whose health check fails (webhook): the deployment fails, v1 keeps serving"
+probe_start probe-platform-bad -only "v1 hello"
+sleep 2
+t0=$(date +%s)
+dep=$(drv push -repo e2e/demo -after "$(demo_commit v1 false)")
+follow "$dep" failed
+p_bad=$(since "$t0")
+probe_stop probe-platform-bad
+
+echo "== push twice in a row: the first deployment is superseded, the second becomes healthy"
+probe_start probe-platform-v3 -last "v3 hello"
+sleep 2
+t0=$(date +%s)
+dep_a=$(drv push -repo e2e/demo -after "$(demo_commit v2)")
+dep_b=$(drv push -repo e2e/demo -after "$(demo_commit v3)")
+follow "$dep_a" superseded
+follow "$dep_b" healthy
+p_v3=$(since "$t0")
+wait_for 30 "the gateway serves v3" gateway_says "v3 hello"
+sleep 8 # the old pod's preStop sleep and shutdown
+probe_stop probe-platform-v3
+
+echo "== DELETE /v1/apps/demo"
+t0=$(date +%s)
+drv delete -app demo
+app_gone() { no_apps && no_namespace "$1"; }
+wait_for 90 "demo-$ENV_NAME and namespace demo are deleted" app_gone demo
+p_delete=$(since "$t0")
+! gitops_file demo >/dev/null 2>&1 || fail "apps/demo/$ENV_NAME.yaml is still in the gitops repository"
+echo "Application and namespace gone ${p_delete}s after the DELETE; apps/demo/ is gone from the gitops repository"
+
+echo "== register e2e/moimroom ($MOIMROOM_DIR at HEAD: postgres and s3)"
+moim_repo=$ghroot/e2e/moimroom
+mkdir -p "$moim_repo"
+g "$MOIMROOM_DIR" archive HEAD | tar -x -C "$moim_repo"
+g "$moim_repo" init -q -b main
+g "$moim_repo" add -A
+g "$moim_repo" commit -q -m "moimroom"
+t0=$(date +%s)
+dep=$(drv register -repo e2e/moimroom -env "$ENV_NAME")
+follow "$dep" healthy >"$work/watch-moimroom.out" 2>&1 &
+watcher=$!
+# infra's part again: the S3 keys in the namespace once Argo CD made it (the
+# bucket moimroom-photos is still in MinIO)
+wait_for 300 "namespace moimroom exists" kubectl get namespace moimroom
+kubectl -n moimroom create secret generic s3-credentials --from-literal=accessKey=$s3_user \
+  --from-literal=secretKey="$s3_key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+wait "$watcher" || { cat "$work/watch-moimroom.out"; fail "moimroom's first deployment did not become healthy"; }
+cat "$work/watch-moimroom.out"
+p_moimroom=$(since "$t0")
+moimroom_status() { [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: moimroom.$APP_DOMAIN" "http://127.0.0.1:$GW_PORT$1")" = 200 ]; }
+wait_for 60 "Host moimroom.$APP_DOMAIN /readyz answers 200" moimroom_status /readyz
+spaces=$(curl -s -H "Host: moimroom.$APP_DOMAIN" "http://127.0.0.1:$GW_PORT/api/spaces?limit=50" | grep -o '"id":' | wc -l | tr -d ' ')
+[ "$spaces" -gt 0 ] || fail "moimroom through the gateway lists no spaces"
+t0=$(date +%s)
+drv delete -app moimroom
+wait_for 120 "moimroom-$ENV_NAME and namespace moimroom are deleted" app_gone moimroom
+p_moimroom_delete=$(since "$t0")
+echo "moimroom registered to healthy in ${p_moimroom}s; through the gateway /readyz 200 and $spaces spaces; deleted with its namespace in ${p_moimroom_delete}s"
+
 echo "== results"
-echo "demo v1 healthy     ${v1_healthy}s after the commit"
-echo "failing version     Degraded after ${bad_degraded}s; $(cat "$work/probe-bad.log")"
-echo "demo v2 healthy     ${v2_healthy}s after the commit; $(cat "$work/probe-v2.log")"
-echo "moimroom healthy    ${moimroom_healthy}s after the commit (CNPG and MinIO)"
-echo "deleted             Applications ${apps_gone}s, namespaces ${ns_gone}s"
+echo "by hand (gitops files committed by run.sh):"
+echo "  demo v1 healthy     ${v1_healthy}s after the commit"
+echo "  failing version     Degraded after ${bad_degraded}s; $(cat "$work/probe-bad.log")"
+echo "  demo v2 healthy     ${v2_healthy}s after the commit; $(cat "$work/probe-v2.log")"
+echo "  moimroom healthy    ${moimroom_healthy}s after the commit (CNPG and MinIO)"
+echo "  deleted             Applications ${apps_gone}s, namespaces ${ns_gone}s"
+echo "through the platform:"
+echo "  demo registered     healthy ${p_register}s after POST /v1/apps"
+echo "  failing push        failed ${p_bad}s after the webhook; $(cat "$work/probe-platform-bad.log")"
+echo "  two pushes          first superseded, second healthy ${p_v3}s after the webhooks; $(cat "$work/probe-platform-v3.log")"
+echo "  DELETE              Application and namespace gone in ${p_delete}s"
+echo "  moimroom            healthy ${p_moimroom}s after POST /v1/apps; deleted with its namespace in ${p_moimroom_delete}s"
 echo "== E2E passed"

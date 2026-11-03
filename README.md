@@ -260,7 +260,7 @@ test/e2e/run.sh          # KEEP=1이면 끝난 뒤에도 남기고, test/e2e/dow
 
 ### 배포 E2E
 
-앱 차트 `deploy/charts/hopcharlie-app`과 AppProject, ApplicationSet `deploy/argocd`를 kind의 Argo CD v3.5.3에 올리고, gitops 파일을 커밋해 앱이 뜨고 바뀌고 지워지는지 봅니다. 헬스 체크가 실패하는 버전을 배포해도 게이트웨이 요청이 실패하지 않는지도 봅니다. 자세한 내용은 [test/e2e/deploy/README.md](test/e2e/deploy/README.md)에 있습니다.
+앱 차트 `deploy/charts/hopcharlie-app`과 AppProject, ApplicationSet `deploy/argocd`를 kind의 Argo CD v3.5.3에 올립니다. 먼저 gitops 파일을 손으로 커밋하고, 다음에는 플랫폼 API(가짜 GitHub, docker 빌드, git gitops)로 앱을 등록하고 push webhook을 보내고 지웁니다. 앱이 뜨고, 바뀌고, 지워지는지 봅니다. 헬스 체크가 실패하는 버전을 배포하는 동안 게이트웨이 요청이 하나도 실패하지 않는지도 봅니다. 자세한 내용은 [test/e2e/deploy/README.md](test/e2e/deploy/README.md)에 있습니다.
 
 ```bash
 test/e2e/deploy/run.sh   # KEEP=1이면 끝난 뒤에도 남기고, test/e2e/deploy/down.sh로 지움

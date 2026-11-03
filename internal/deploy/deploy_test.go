@@ -452,9 +452,18 @@ func TestRemoveApp(t *testing.T) {
 	info.WritesHeld = false
 	te.gw.apps["shop"] = info
 
+	te.argo.mu.Lock()
+	refreshes := te.argo.appSetRefreshes
+	te.argo.mu.Unlock()
 	if err := te.ex.RemoveApp(context.Background(), "shop"); err != nil {
 		t.Fatal(err)
 	}
+	// The ApplicationSet reads the removal now, not when its cache expires.
+	te.argo.mu.Lock()
+	if te.argo.appSetRefreshes != refreshes+1 {
+		t.Errorf("ApplicationSet refreshes %d, want %d", te.argo.appSetRefreshes, refreshes+1)
+	}
+	te.argo.mu.Unlock()
 	files, msgs := te.git.snapshot()
 	if len(files) != 0 || msgs[len(msgs)-1] != "delete app shop" {
 		t.Errorf("gitops files %v, commits %q", files, msgs)

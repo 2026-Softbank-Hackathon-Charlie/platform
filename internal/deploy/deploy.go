@@ -468,6 +468,12 @@ func (e *Executor) RemoveApp(ctx context.Context, name string) error {
 	if _, _, err := e.cfg.GitOps.Delete(ctx, AppDir(name), "delete app "+name); err != nil {
 		return fmt.Errorf("%w: remove %s: %w", ErrGitOps, AppDir(name), err)
 	}
+	// The ApplicationSet deletes the Applications once it reads the commit.
+	// Without a refresh its repo server answers from a revision cache, which
+	// leaves the app running for minutes. A refused refresh only costs time.
+	if err := e.cfg.Argo.RefreshApplicationSet(ctx); err != nil && ctx.Err() == nil {
+		e.cfg.Log.Warn("argo cd applicationset refresh after deleting an app", "app", name, "err", err)
+	}
 	if e.cfg.Gateway != nil {
 		err := e.cfg.Gateway.DeleteApp(ctx, name)
 		var ae *gateway.APIError
