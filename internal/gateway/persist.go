@@ -11,13 +11,24 @@ import (
 // persistedState is what survives a restart. A gateway that restarts while
 // writes are held must keep holding: releasing them to the old backend in the
 // middle of a cutover would split writes across two databases.
+//
+// The top-level fields are the default app, in the format gateways wrote
+// before there were other apps, so either version reads the other's file for
+// the default app.
 type persistedState struct {
 	WriteBackend string         `json:"writeBackend"`
 	ReadWeights  map[string]int `json:"readWeights"`
 	WritesHeld   bool           `json:"writesHeld"`
 	HeldSince    *time.Time     `json:"heldSince,omitempty"`
+	// Apps are the apps registered through the admin API, by name.
+	Apps map[string]persistedApp `json:"apps,omitempty"`
+}
 
-	seq uint64 // orders snapshots taken under g.mu; not written
+// persistedApp is one registered app: its backends, which are not in the
+// configuration, and its routing in the same fields as the default app.
+type persistedApp struct {
+	Backends map[string]string `json:"backends"`
+	persistedState
 }
 
 func loadState(path string) (*persistedState, error) {
@@ -32,50 +43,67 @@ func loadState(path string) (*persistedState, error) {
 	return &st, nil
 }
 
-// snapshotLocked copies the routing state. Caller holds g.mu.
-func (g *Gateway) snapshotLocked() persistedState {
-	g.seq++
-	st := persistedState{
-		WriteBackend: g.writeBackend,
-		ReadWeights:  make(map[string]int, len(g.readWeights)),
-		WritesHeld:   g.held,
-		seq:          g.seq,
+// persistLocked copies one app's routing. Caller holds rt.mu.
+func (rt *router) persistLocked() persistedApp {
+	pa := persistedApp{
+		Backends: make(map[string]string, len(rt.backends)),
+		persistedState: persistedState{
+			WriteBackend: rt.writeBackend,
+			ReadWeights:  make(map[string]int, len(rt.readWeights)),
+			WritesHeld:   rt.held,
+		},
 	}
-	for k, v := range g.readWeights {
-		st.ReadWeights[k] = v
+	for _, b := range rt.backends {
+		pa.Backends[b.name] = b.url.String()
 	}
-	if g.held {
-		hs := g.heldSince.UTC()
-		st.HeldSince = &hs
+	for k, v := range rt.readWeights {
+		pa.ReadWeights[k] = v
+	}
+	if rt.held {
+		hs := rt.heldSince.UTC()
+		pa.HeldSince = &hs
+	}
+	return pa
+}
+
+func (rt *router) persist() persistedApp {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.persistLocked()
+}
+
+// snapshot reads every app's routing as it is now.
+func (g *Gateway) snapshot() persistedState {
+	g.appsMu.RLock()
+	defer g.appsMu.RUnlock()
+	st := g.router.persist().persistedState // backends come from the configuration
+	if len(g.apps) > 0 {
+		st.Apps = make(map[string]persistedApp, len(g.apps))
+		for name, rt := range g.apps {
+			st.Apps[name] = rt.persist()
+		}
 	}
 	return st
 }
 
-// save writes a snapshot atomically (temp file + rename). Snapshots are taken
-// under g.mu but written outside it, so the proxy path never waits on disk; a
-// snapshot older than the last one written is skipped.
-func (g *Gateway) save(st persistedState) {
-	if err := g.trySave(st); err != nil {
+// save writes the state of every app after a change. It reads the state when
+// it writes, under saveMu, so a later write never holds older state than an
+// earlier one, and the proxy path never waits on disk.
+func (g *Gateway) save() {
+	if err := g.trySave(); err != nil {
 		// Routing already changed in memory; failing the admin call would
 		// make the engine roll back a cutover over a disk problem.
 		g.log.Error("persist gateway state", "file", g.cfg.StateFile, "err", err)
 	}
 }
 
-func (g *Gateway) trySave(st persistedState) error {
+func (g *Gateway) trySave() error {
 	if g.cfg.StateFile == "" {
 		return nil
 	}
 	g.saveMu.Lock()
 	defer g.saveMu.Unlock()
-	if st.seq <= g.savedSeq {
-		return nil
-	}
-	if err := writeFileAtomic(g.cfg.StateFile, st); err != nil {
-		return err
-	}
-	g.savedSeq = st.seq
-	return nil
+	return writeFileAtomic(g.cfg.StateFile, g.snapshot())
 }
 
 func writeFileAtomic(path string, st persistedState) error {

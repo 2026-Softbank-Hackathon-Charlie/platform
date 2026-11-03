@@ -33,6 +33,8 @@ func main() {
 	backends := flag.String("backends", os.Getenv("GATEWAY_BACKENDS"), "backends as name=url,... e.g. gke=http://shop.gke.ts.net,eks=http://shop.eks.ts.net")
 	initial := flag.String("initial-backend", os.Getenv("GATEWAY_INITIAL_BACKEND"), "write backend when there is no state file (default: first backend)")
 	stateFile := flag.String("state-file", envOr("GATEWAY_STATE_FILE", filepath.Join(".hopcharlie", "gateway-state.json")), "routing and hold state, kept across restarts")
+	appDomain := flag.String("app-domain", os.Getenv("GATEWAY_APP_DOMAIN"), "route Host <app>.<domain> to the app registered as <app> (PUT /apps/<app>), 404 for an unknown <app>; other hosts go to the default app. Empty sends every request to the default app")
+	defaultApp := flag.String("default-app", envOr("GATEWAY_DEFAULT_APP", gateway.DefaultAppName), "name of the app that -backends serve: <name>.<app-domain> and /apps/<name> reach it")
 	drain := flag.Duration("drain-timeout", gateway.DefaultDrainTimeout, "how long a hold waits for in-flight writes")
 	maxHold := flag.Duration("max-hold", gateway.DefaultMaxHold, "a held write that waited this long gets 503 hold_timeout and is not forwarded; the hold itself lasts until release")
 	maxHeld := flag.Int("max-held", gateway.DefaultMaxHeld, "waiting writes beyond this get 503")
@@ -58,6 +60,8 @@ func main() {
 		InitialBackend: *initial,
 		StateFile:      *stateFile,
 		AdminToken:     token,
+		AppDomain:      *appDomain,
+		DefaultApp:     *defaultApp,
 		DrainTimeout:   *drain,
 		MaxHold:        *maxHold,
 		MaxHeld:        *maxHeld,
@@ -93,7 +97,7 @@ func main() {
 		names[i] = b.Name + "=" + b.URL.Redacted()
 	}
 	log.Info("gateway listening", "listen", *listen, "adminAddr", *adminAddr, "auth", token != "",
-		"backends", names, "stateFile", *stateFile)
+		"backends", names, "stateFile", *stateFile, "appDomain", *appDomain, "defaultApp", *defaultApp)
 	<-sig.Done()
 	stop() // a second signal now kills the process
 
