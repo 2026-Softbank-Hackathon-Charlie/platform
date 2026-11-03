@@ -1,0 +1,8 @@
+# PLATFORM_ENVS_FILE for the deploy E2E: one environment, the kind cluster
+# that runs Argo CD and the apps. Its name is the <env> of the gitops files
+# and the gateway backend's name.
+environments:
+  - name: kind
+    provider: onprem
+    displayName: kind (deploy E2E)
+    kubeContext: kind-hop-deploy
