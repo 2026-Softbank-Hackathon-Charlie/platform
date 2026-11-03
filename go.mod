@@ -7,6 +7,8 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.5
 	github.com/aws/aws-sdk-go-v2/config v1.33.13
 	github.com/aws/aws-sdk-go-v2/service/cloudtrail v1.65.8
+	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.91.0
+	github.com/aws/aws-sdk-go-v2/service/codebuild v1.78.8
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.343.0
 	github.com/aws/aws-sdk-go-v2/service/guardduty v1.101.3
 	github.com/aws/aws-sdk-go-v2/service/iam v1.64.6
@@ -26,6 +28,7 @@ require (
 
 require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.25 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.13 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.5 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.8 // indirect

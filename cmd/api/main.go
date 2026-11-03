@@ -21,6 +21,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
@@ -29,6 +30,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
+	"k8s.io/client-go/kubernetes"
 )
 
 func main() {
@@ -204,6 +206,41 @@ func main() {
 	if webhookSecret == "" {
 		log.Warn("PLATFORM_GITHUB_WEBHOOK_SECRET is not set: the GitHub webhook answers 503 and pushes do not deploy")
 	}
+
+	// Deployments of apps registered from GitHub. Without
+	// PLATFORM_DEPLOY_BUILDER there is no deployer and they stay queued.
+	// Deployments are not tied to requests either; on shutdown they stop and
+	// resume after the restart.
+	deployCtx, cancelDeploy := context.WithCancel(ctx)
+	defer cancelDeploy()
+	deployOpts := deploy.EnvOptions{
+		Store:     st,
+		AppDomain: envOr("PLATFORM_APP_DOMAIN", api.DefaultAppDomain),
+		Log:       log,
+		Kube: func(env string) (kubernetes.Interface, error) {
+			c, ok := envSvc.Config(env)
+			if !ok {
+				return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
+			}
+			return envs.NewKubeClient(c, 10*time.Second)
+		},
+	}
+	if gh != nil {
+		deployOpts.GitHub = gh
+	}
+	if gw != nil {
+		deployOpts.Gateway = gw
+	}
+	deployer, err := deploy.FromEnv(ctx, os.Getenv, deployOpts)
+	if err != nil {
+		fatal("deployments", "err", err)
+	}
+	if deployer != nil {
+		if err := deployer.Start(deployCtx); err != nil {
+			fatal("start deployments", "err", err)
+		}
+		deps.Deployer, deps.Remover = deployer, deployer
+	}
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{
@@ -235,6 +272,12 @@ func main() {
 	shCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	_ = srv.Shutdown(shCtx)
 	cancel()
+	if deployer != nil {
+		cancelDeploy() // unfinished deployments resume after the restart
+		waitDeploy, cancelWaitDeploy := context.WithTimeout(ctx, 30*time.Second)
+		_ = deployer.Wait(waitDeploy)
+		cancelWaitDeploy()
+	}
 
 	// Let active migrations finish instead of interrupting a switchover.
 	waitCtx, cancelWait := context.WithTimeout(ctx, *drain)

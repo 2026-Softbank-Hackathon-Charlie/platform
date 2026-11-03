@@ -17,6 +17,7 @@ platform/
 │   ├── runs/          이전 실행 단계 (동기화, 카나리, 전환 승인, 전환, 관찰), 이벤트 저장
 │   ├── envs/          환경 등록, 클러스터 실시간 상태
 │   ├── gateway/       게이트웨이 본체와 관리 API 클라이언트
+│   ├── deploy/        GitHub 앱 배포 실행기 (빌드, gitops 커밋, Argo CD 대기, 게이트웨이 등록)
 │   └── store/         PostgreSQL 저장소
 ├── examples/envs.yaml 로컬 개발용 환경 설정 예시
 └── docs/adr/          설계 결정 기록
@@ -395,3 +396,38 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 - 서버는 App 키로 JWT를 서명해 설치 토큰을 받고, 만료 5분 전까지 같은 토큰을 씁니다.
 - webhook은 bearer 토큰 대신 `X-Hub-Signature-256`을 확인합니다. 서명이 없거나 틀리면 401 `invalid_signature`이고 감사 로그에 `anonymous`로 남습니다. 배포를 만든 push는 `github`으로 남고, payload는 감사 로그에 넣지 않습니다.
 - 같은 `X-GitHub-Delivery`로 다시 온 push는 204로 답하고 배포를 만들지 않습니다.
+
+### 배포 실행기
+
+`PLATFORM_DEPLOY_BUILDER`를 넣으면 서버가 배포 실행기(`internal/deploy`)를 띄웁니다. 비우면 실행기가 없고 배포는 `queued`에 머뭅니다.
+
+- 작업자 `PLATFORM_DEPLOY_WORKERS`개가 큐에서 배포를 하나씩 꺼냅니다. 서버가 시작할 때 끝나지 않은 배포를 오래된 것부터 이어 갑니다. 이미지를 이미 만든 배포는 다시 빌드하지 않습니다.
+- 새 배포를 큐에 넣을 때, 같은 앱의 끝나지 않은 이전 배포 가운데 환경이 모두 새 배포에 들어가는 것을 `superseded`로 끝냅니다. 그 배포의 작업자는 다음 저장에서 멈춥니다. gitops 커밋과 게이트웨이 등록은 앱마다 잠금을 잡고, 배포가 아직 끝나지 않았음을 저장소에 쓴 직후에만 합니다. 그래서 밀려난 배포가 새 배포보다 늦게 커밋하지 않습니다.
+- building: 커밋의 `platform.yaml`을 등록과 같은 규칙(`deploy.CheckSpec`)으로 검사합니다. 틀리면 위치별 오류를 `log` 이벤트로 남기고 `failed`로 끝납니다. 통과했고 앱의 가장 새 배포이면 앱의 spec을 그 커밋의 것으로 바꿉니다. 그다음 서비스마다 `<registry>/hopcharlie/apps/<app>/<service>:<commit>`을 빌드해 push하고, digest(`...@sha256:...`)로 고정합니다.
+- committing: 대상 환경마다 `apps/<app>/<env>.yaml`을 ADR 0011 형식으로 만들어 커밋 하나로 씁니다. 키 순서가 정해져 있고 문자열은 모두 큰따옴표로 감싸므로, 같은 배포를 다시 쓰면 커밋이 생기지 않습니다. 다른 커밋이 먼저 들어가 push가 거부되면 새 head에서 다시 씁니다.
+- syncing: ApplicationSet과 Application `<namespace>-<env>`에 refresh를 요청하고, 모든 환경의 Application이 그 gitops 커밋이나 그 뒤의 커밋을 `Synced`, `Healthy`로 보고할 때까지 기다립니다. multi-source Application은 `status.sync.revisions`에서 gitops 커밋을 찾습니다. Application이 아직 없으면 계속 기다립니다. `Degraded`는 환경 상태 `degraded`, 동기화 실패는 `failed`이고, `PLATFORM_ARGOCD_TIMEOUT` 안에 모두 healthy가 되지 않으면 배포가 `failed`로 끝납니다.
+- 모든 환경이 healthy이고, 공개 서비스가 있고, 게이트웨이(`PLATFORM_GATEWAY_URL`)가 설정돼 있으면 환경마다 공개 서비스 주소를 찾아 게이트웨이에 앱을 등록합니다(`PUT /apps/<app>`). 처음 등록하는 앱은 첫 환경으로 쓰기를 보냅니다. 이미 있는 앱은 이전이 옮긴 쓰기 환경과 읽기 비율을 그대로 둡니다. 이전 중이라 쓰기가 보류돼 있으면 게이트웨이를 바꾸지 않고 배포를 `failed`로 끝냅니다.
+- 백엔드 주소는 `PLATFORM_APP_BACKEND_TEMPLATE`가 있으면 그 틀로 만들고, 없으면 환경 클러스터에서 Service `<app>-<service>`(네임스페이스 `<app>`)의 LoadBalancer 주소를 읽습니다. 게이트웨이의 백엔드 이름은 환경 이름입니다.
+- `DELETE /v1/apps/{name}`은 끝나지 않은 배포를 `superseded`로 끝내고, gitops 저장소에서 `apps/<name>/`을 지우는 커밋을 하고, 게이트웨이에서 앱을 지우고, 앱과 배포 기록을 지웁니다. 게이트웨이가 쓰기를 보류 중이면 409 `cluster_busy`이고 앱은 남습니다. 다시 부르면 처음부터 하되, 이미 지운 것은 건너뜁니다.
+- 빌드 출력은 배포마다 2000줄까지 `log` 이벤트로 남깁니다. 배포 이벤트 스트림(`GET /v1/deployments/{id}/events`)은 저장소를 0.5초마다 읽어 새 이벤트를 보냅니다.
+
+| 변수 | 설명 |
+| --- | --- |
+| `PLATFORM_DEPLOY_BUILDER` | `codebuild` 또는 `docker`. 비우면 실행기가 없고 배포가 `queued`에 머묾. 넣으면 GitHub App 설정이 필요하고, 없으면 서버가 시작하지 않음 |
+| `PLATFORM_IMAGE_REGISTRY` | 실행기를 켜면 필수. 이미지를 push할 레지스트리 (예: `<계정>.dkr.ecr.ap-northeast-2.amazonaws.com`, E2E는 `localhost:5001`) |
+| `PLATFORM_CODEBUILD_PROJECT` | `codebuild`이면 필수. 빌드를 돌릴 CodeBuild 프로젝트. 리전은 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) |
+| `PLATFORM_DOCKER_CLONE_URL` | `docker`일 때 저장소 주소의 틀. `{repo}`와 `{token}`을 바꿈 (기본 `https://x-access-token:{token}@github.com/{repo}.git`). 로컬 경로도 됨 |
+| `PLATFORM_DEPLOY_WORKERS` | 동시에 실행하는 배포 수 (기본 2, 최대 32) |
+| `PLATFORM_GITOPS_MODE` | `github`(기본, GitHub Git Data API) 또는 `git`(git CLI) |
+| `PLATFORM_GITOPS_REPO` | `github` 모드의 gitops 저장소 (기본 `2026-Softbank-Hackathon-Charlie/gitops`). App 설치 토큰으로 쓰고, API 주소는 `PLATFORM_GITHUB_API_URL` |
+| `PLATFORM_GITOPS_BRANCH` | gitops 브랜치 (기본 `main`, 두 모드 모두) |
+| `PLATFORM_GITOPS_URL` | `git` 모드이면 필수. clone하고 push할 주소 (E2E의 로컬 git 서버) |
+| `PLATFORM_ARGOCD_KUBECONTEXT` | Argo CD가 있는 클러스터의 kubeconfig 컨텍스트. 비우면 in-cluster 설정 |
+| `PLATFORM_ARGOCD_NAMESPACE` | Application과 ApplicationSet이 있는 네임스페이스 (기본 `argocd`) |
+| `PLATFORM_ARGOCD_APPSET` | 커밋 뒤 refresh를 요청할 ApplicationSet (기본 `hopcharlie-apps`) |
+| `PLATFORM_ARGOCD_TIMEOUT` | 커밋 뒤 모든 환경이 healthy가 되기를 기다리는 시간 (기본 `10m`) |
+| `PLATFORM_APP_BACKEND_TEMPLATE` | 게이트웨이 백엔드 주소의 틀. `{app}`, `{service}`, `{port}`, `{env}`를 바꿈 (예: `http://{app}-{service}.{app}.svc.cluster.local:{port}`). 비우면 Service의 LoadBalancer 주소를 읽음 |
+
+- CodeBuild 프로젝트는 소스 없이 인라인 buildspec으로 돌고, docker를 쓰므로 privileged 모드가 필요합니다. 프로젝트 역할에는 ECR push와 `hopcharlie/apps/*` 저장소를 만드는 권한이, 플랫폼 역할에는 `codebuild:StartBuild`, `codebuild:BatchGetBuilds`와 빌드 로그 그룹의 `logs:GetLogEvents`가 필요합니다.
+- clone 토큰은 CodeBuild 환경 변수(PLAINTEXT)로 넘깁니다. 한 시간 뒤 만료되는 설치 토큰이지만 빌드 설정 화면에서는 보입니다. buildspec은 토큰을 출력하지 않고, fetch가 끝나면 remote 주소에서 토큰을 지운 뒤에 Dockerfile을 빌드합니다.
+- Argo CD를 읽는 계정에는 `applications.argoproj.io`의 get, patch와 `applicationsets.argoproj.io`의 patch가 필요합니다. ApplicationSet patch가 거부되면 배포 이벤트에 한 번 남기고, ApplicationSet이 스스로 다시 도는 것을 기다립니다.

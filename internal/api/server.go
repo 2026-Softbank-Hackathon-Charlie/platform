@@ -97,6 +97,8 @@ type Deps struct {
 	Agents AgentLog
 	// Deployer runs deployments; nil leaves them queued.
 	Deployer Deployer
+	// Remover removes registered apps (DELETE /v1/apps/{name}); nil answers 503.
+	Remover AppRemover
 	// GitHub reads app repositories; nil answers the endpoints that need it 503 github_not_configured.
 	GitHub GitHub
 }
@@ -175,6 +177,11 @@ func New(cfg Config, d Deps) *Server {
 	// GitHub signs the webhook instead of sending a token; the handler
 	// checks the signature and writes its own audit entries.
 	s.route("POST /v1/webhooks/github", "", s.githubWebhook)
+	s.route("DELETE /v1/apps/{name}", operator, s.deleteApp)
+	s.route("POST /v1/apps/{name}/deployments", operator, s.createDeployment)
+	s.route("GET /v1/apps/{name}/deployments", viewer, s.listDeployments)
+	s.route("GET /v1/deployments/{id}", viewer, s.getDeployment)
+	s.route("GET /v1/deployments/{id}/events", viewer, s.deploymentEvents)
 	return s
 }
 
