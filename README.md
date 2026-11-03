@@ -23,6 +23,8 @@ platform/
 
 CLI는 별도 레포 [cli](https://github.com/2026-Softbank-Hackathon-Charlie/cli)에 있습니다.
 
+이전 전 동등성·레지던시의 독립 코어는 [internal/preflight](internal/preflight/README.md)에 있습니다. **아직 승인·이전 실행 API에는 연결되지 않았으며**, 구현된 검사와 미검증 범위는 해당 문서에 구분합니다.
+
 AWS 관리 호스트, EKS Pod Identity, 상태 버킷(`state/`), ACM·Cloudflare(`dns/`)의 Terraform과 운영 호스트 설정은 [infra/terraform/platform/aws](https://github.com/2026-Softbank-Hackathon-Charlie/infra/tree/main/terraform/platform/aws)에서 관리합니다. 이 레포에는 [애플리케이션 배포 도우미](deploy/aws/README.md)와 로컬 개발 예시만 남습니다. `examples/envs.yaml`, `examples/apps.yaml`을 고쳐도 운영 설정은 바뀌지 않습니다. 운영 설정은 infra의 `terraform/platform/aws/host/envs.yaml`, `host/apps.yaml`을 고칩니다.
 
 ## 이전 한 번의 흐름
