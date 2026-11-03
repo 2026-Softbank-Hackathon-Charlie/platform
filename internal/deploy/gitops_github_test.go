@@ -205,6 +205,18 @@ func TestGitHubGitOps(t *testing.T) {
 		t.Fatalf("second delete: %q %v %v", again, changed, err)
 	}
 
+	// Nothing that is not one instance's directory, such as AppDir of an
+	// empty name, is deleted: the request fails before GitHub sees it.
+	patches := fake.patches
+	for _, dirs := range refusedDeletes {
+		if _, _, err := g.Delete(ctx, dirs, "delete everything"); err == nil {
+			t.Errorf("Delete(%q) succeeded", dirs)
+		}
+	}
+	if got := fake.files(fake.head); fake.head != sha3 || fake.patches != patches || got["apps/cart/gke.yaml"] == "" {
+		t.Fatalf("a refused delete changed the repository: head %s, files %v", short(fake.head), got)
+	}
+
 	bad := *g
 	bad.Token = func(context.Context) (string, error) { return "wrong", nil }
 	if _, _, err := bad.Write(ctx, files, "x"); err == nil || !strings.Contains(err.Error(), "401") {

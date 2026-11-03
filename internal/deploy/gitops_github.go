@@ -76,6 +76,9 @@ func (g *GitHubGitOps) Write(ctx context.Context, files map[string][]byte, messa
 }
 
 func (g *GitHubGitOps) Delete(ctx context.Context, dirs []string, message string) (string, bool, error) {
+	if err := checkDelete(dirs); err != nil {
+		return "", false, err
+	}
 	return g.update(ctx, message, func(h head) []map[string]any {
 		var changes []map[string]any
 		for _, p := range sortedKeys(h.blobs) {

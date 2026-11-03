@@ -134,4 +134,19 @@ func TestGitCLIGitOps(t *testing.T) {
 	if again, changed, err := g.Delete(ctx, []string{"apps/shop", "apps/shop--qa"}, "delete app shop"); err != nil || changed || again != sha5 {
 		t.Fatalf("second delete: %q %v %v", again, changed, err)
 	}
+
+	// Nothing that is not one instance's directory, such as AppDir of an
+	// empty name, is deleted.
+	for _, dirs := range refusedDeletes {
+		if _, _, err := g.Delete(ctx, dirs, "delete everything"); err == nil {
+			t.Errorf("Delete(%q) succeeded", dirs)
+		}
+	}
+	if head := gitCmd(t, "", "--git-dir", bare, "rev-parse", "main"); head != sha5 {
+		t.Fatalf("a refused delete moved main from %s to %s", short(sha5), short(head))
+	}
 }
+
+// refusedDeletes are what GitOps.Delete refuses: no directory, the
+// repository's root and apps/ itself, however they are spelled.
+var refusedDeletes = [][]string{nil, {}, {""}, {"/"}, {"."}, {AppDir("")}, {"apps"}, {"apps/shop", "apps/x/.."}}

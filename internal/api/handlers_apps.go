@@ -30,9 +30,8 @@ import (
 var reservedAppNames = []string{"api", "console", "app"}
 
 // appStatusDeployments is how many newest deployments an instance's
-// per-environment status is read from. An app's deployments into all its
-// instances are read in one list, this many for each instance it may have
-// (appspec.MaxInstances), so a busy instance rarely pushes another's out.
+// per-environment status is read from. Each instance is read on its own, so
+// a busy instance never pushes another's deployments out.
 const appStatusDeployments = 50
 
 // maxWebhookBytes is GitHub's own cap on a webhook payload, so no delivery
@@ -141,7 +140,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	noteAudit(r, "deployment", d.ID)
 	s.enqueue(ctx, d.ID)
 	w.Header().Set("Location", "/v1/apps/"+app.Name)
-	writeJSON(w, http.StatusCreated, apiv1.AppCreated{App: s.appView(app, nil, []store.Deployment{d}), Deployment: deploymentJSON(d)})
+	writeJSON(w, http.StatusCreated, apiv1.AppCreated{App: s.appView(app, nil, map[string][]store.Deployment{app.Name: {d}}), Deployment: deploymentJSON(d)})
 }
 
 // POST /v1/apps/{name}/instances: add a branch of a registered app as its
@@ -178,7 +177,27 @@ func (s *Server) createAppInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The conflicts the store would refuse, checked before the round trips
+	// to GitHub. CreateAppBranch checks them again atomically.
 	ctx := r.Context()
+	branches, err := s.d.Store.ListAppBranches(ctx, app.Name)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	switch {
+	case slices.ContainsFunc(branches, func(b store.AppBranch) bool { return b.Branch == branch }):
+		err = store.ErrBranchExists
+	case slices.ContainsFunc(branches, func(b store.AppBranch) bool { return b.Instance == instance }):
+		err = store.ErrInstanceExists
+	case len(branches) >= appspec.MaxInstances-1:
+		err = store.ErrInstanceLimit
+	}
+	if err != nil {
+		s.instanceConflict(w, r, err, app.Name, branch, instance)
+		return
+	}
+
 	commit, err := s.d.GitHub.ResolveRef(ctx, app.Repo, branch)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -208,12 +227,7 @@ func (s *Server) createAppInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.d.Store.CreateAppBranch(ctx, in, appspec.MaxInstances-1); err != nil {
 		switch {
-		case errors.Is(err, store.ErrBranchExists):
-			s.fail(w, r, http.StatusConflict, "branch_exists", fmt.Sprintf("app %s already deploys branch %s", name, branch))
-		case errors.Is(err, store.ErrInstanceExists):
-			s.fail(w, r, http.StatusConflict, "instance_exists", fmt.Sprintf("the instance name %s of branch %s is already taken by another branch or app", instance, branch))
-		case errors.Is(err, store.ErrInstanceLimit):
-			s.fail(w, r, http.StatusConflict, "instance_limit", fmt.Sprintf("app %s already has %d instances, the default one included; delete one first", name, appspec.MaxInstances))
+		case s.instanceConflict(w, r, err, app.Name, branch, instance):
 		case errors.Is(err, store.ErrNotFound):
 			s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
 		default:
@@ -223,13 +237,44 @@ func (s *Server) createAppInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	d := newDeployment(app, in, branch, commit, apiv1.DeploymentTriggerRegister, actor(r), now)
 	if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
-		s.internal(w, r, err)
+		switch {
+		case errors.Is(err, store.ErrInstanceNotFound):
+			// DELETE of the instance came first.
+			s.fail(w, r, http.StatusNotFound, "instance_not_found", fmt.Sprintf("app %s has no instance %s", name, instance))
+		case errors.Is(err, store.ErrNotFound):
+			// DELETE of the app came first.
+			s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
+		default:
+			// Without its first deployment the branch would only make a
+			// retry fail with branch_exists, so it goes too.
+			if derr := s.d.Store.DeleteAppBranch(ctx, app.Name, branch); derr != nil && !errors.Is(derr, store.ErrNotFound) {
+				s.cfg.Log.Error("delete a branch whose first deployment was not stored", "app", app.Name, "branch", branch, "err", derr)
+			}
+			s.internal(w, r, err)
+		}
 		return
 	}
 	noteAudit(r, "deployment", d.ID)
 	s.enqueue(ctx, d.ID)
 	w.Header().Set("Location", "/v1/apps/"+app.Name)
 	writeJSON(w, http.StatusCreated, apiv1.AppInstanceCreated{Instance: s.appInstance(app, in, []store.Deployment{d}), Deployment: deploymentJSON(d)})
+}
+
+// instanceConflict answers 409 when err is one of the conflicts of adding
+// branch to app, found by createAppInstance's checks or by the store, and
+// reports whether it answered.
+func (s *Server) instanceConflict(w http.ResponseWriter, r *http.Request, err error, app, branch, instance string) bool {
+	switch {
+	case errors.Is(err, store.ErrBranchExists):
+		s.fail(w, r, http.StatusConflict, "branch_exists", fmt.Sprintf("app %s already deploys branch %s", app, branch))
+	case errors.Is(err, store.ErrInstanceExists):
+		s.fail(w, r, http.StatusConflict, "instance_exists", fmt.Sprintf("the instance name %s of branch %s is already taken by another branch or app", instance, branch))
+	case errors.Is(err, store.ErrInstanceLimit):
+		s.fail(w, r, http.StatusConflict, "instance_limit", fmt.Sprintf("app %s already has %d instances, the default one included; delete one first", app, appspec.MaxInstances))
+	default:
+		return false
+	}
+	return true
 }
 
 // targetEnvs checks the environments of a registration and returns them in
@@ -275,7 +320,7 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 		inFile[a.Name] = i
 	}
 	for _, a := range registered {
-		branches, deps, err := s.appRecords(r.Context(), a.Name)
+		branches, deps, err := s.appRecords(r.Context(), a)
 		if err != nil {
 			s.internal(w, r, err)
 			return
@@ -307,7 +352,7 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	branches, deps, err := s.appRecords(r.Context(), name)
+	branches, deps, err := s.appRecords(r.Context(), a)
 	if err != nil {
 		s.internal(w, r, err)
 		return
@@ -316,15 +361,25 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // appRecords reads what a registered app's deploy section shows besides
-// the app: its added branches and its newest deployments into any of its
-// instances, newest first.
-func (s *Server) appRecords(ctx context.Context, name string) ([]store.AppBranch, []store.Deployment, error) {
-	branches, err := s.d.Store.ListAppBranches(ctx, name)
+// the app: its added branches and, by instance, each instance's newest
+// deployments, newest first. That is one read for the branches and one for
+// each instance, appspec.MaxInstances at most.
+func (s *Server) appRecords(ctx context.Context, a store.App) ([]store.AppBranch, map[string][]store.Deployment, error) {
+	branches, err := s.d.Store.ListAppBranches(ctx, a.Name)
 	if err != nil {
 		return nil, nil, err
 	}
-	deps, err := s.d.Store.ListDeployments(ctx, name, appStatusDeployments*appspec.MaxInstances)
-	return branches, deps, err
+	instances := []string{a.Name}
+	for _, b := range branches {
+		instances = append(instances, b.Instance)
+	}
+	deps := map[string][]store.Deployment{}
+	for _, in := range instances {
+		if deps[in], err = s.d.Store.ListInstanceDeployments(ctx, in, appStatusDeployments); err != nil {
+			return nil, nil, err
+		}
+	}
+	return branches, deps, nil
 }
 
 // fileApp returns the app of PLATFORM_APPS_FILE with the name.
@@ -343,7 +398,7 @@ func (s *Server) fileApp(name string) (apiv1.App, bool) {
 // appView is a registered app as the API shows it: the apps file's entry
 // when the file has the name, otherwise the defaults, with deploy set from
 // branches and deps as appDeploy takes them.
-func (s *Server) appView(a store.App, branches []store.AppBranch, deps []store.Deployment) apiv1.App {
+func (s *Server) appView(a store.App, branches []store.AppBranch, deps map[string][]store.Deployment) apiv1.App {
 	deploy := s.appDeploy(a, branches, deps)
 	if out, ok := s.fileApp(a.Name); ok {
 		out.Deploy = &deploy
@@ -364,15 +419,11 @@ func registeredOnly(name string, deploy *apiv1.AppDeploy) apiv1.App {
 }
 
 // appDeploy is a registered app's deploy section. branches are its added
-// branches, by branch name; deps are its newest deployments into any of its
-// instances, newest first. Its branch, autoDeploy, spec, specCommit, url,
+// branches, by branch name; deps are each instance's newest deployments, by
+// instance, newest first. Its branch, autoDeploy, spec, specCommit, url,
 // status and lastDeployment are the default instance's.
-func (s *Server) appDeploy(a store.App, branches []store.AppBranch, deps []store.Deployment) apiv1.AppDeploy {
-	byInstance := map[string][]store.Deployment{}
-	for _, d := range deps {
-		byInstance[d.Instance] = append(byInstance[d.Instance], d)
-	}
-	def := s.appInstance(a, defaultInstance(a), byInstance[a.Name])
+func (s *Server) appDeploy(a store.App, branches []store.AppBranch, deps map[string][]store.Deployment) apiv1.AppDeploy {
+	def := s.appInstance(a, defaultInstance(a), deps[a.Name])
 	out := apiv1.AppDeploy{
 		Repo: a.Repo, Branch: def.Branch, Environments: a.Environments, AutoDeploy: def.AutoDeploy,
 		Spec: def.Spec, SpecCommit: def.SpecCommit, Url: def.Url, CreatedAt: a.CreatedAt, CreatedBy: a.CreatedBy,
@@ -381,7 +432,7 @@ func (s *Server) appDeploy(a store.App, branches []store.AppBranch, deps []store
 	}
 	out.Instances = append(out.Instances, def)
 	for _, b := range branches {
-		out.Instances = append(out.Instances, s.appInstance(a, b, byInstance[b.Instance]))
+		out.Instances = append(out.Instances, s.appInstance(a, b, deps[b.Instance]))
 	}
 	return out
 }
@@ -689,6 +740,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) int {
 	by := "github:" + cmp.Or(push.Sender.Login, push.Pusher.Name, "unknown")
 	out := apiv1.DeploymentList{Deployments: []apiv1.Deployment{}}
 	var ids []string
+	// The delivery is recorded, so a redelivery would deploy nothing: an app
+	// that fails is logged and the others still deploy.
+	var failed error
 	for _, a := range apps {
 		if !strings.EqualFold(a.Repo, push.Repository.FullName) {
 			continue
@@ -697,25 +751,30 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) int {
 		// branch its own instance, each when its autoDeploy is on.
 		in, tracked, err := s.instanceOf(ctx, a, branch)
 		if err != nil {
-			s.internal(w, r, err)
-			return http.StatusInternalServerError
+			s.cfg.Log.Error("webhook: read the branches of an app", "app", a.Name, "delivery", delivery, "err", err)
+			failed = err
+			continue
 		}
 		if !tracked || !in.AutoDeploy {
 			continue
 		}
 		d := newDeployment(a, in, branch, push.After, apiv1.DeploymentTriggerPush, by, now)
 		if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				continue // unregistered or removed meanwhile
+			if !errors.Is(err, store.ErrNotFound) { // not unregistered or removed meanwhile
+				s.cfg.Log.Error("webhook: store a deployment", "app", a.Name, "instance", in.Instance, "delivery", delivery, "err", err)
+				failed = err
 			}
-			s.internal(w, r, err)
-			return http.StatusInternalServerError
+			continue
 		}
 		s.enqueue(ctx, d.ID)
 		out.Deployments = append(out.Deployments, deploymentJSON(d))
 		ids = append(ids, d.ID)
 	}
-	if len(ids) == 0 {
+	switch {
+	case len(ids) == 0 && failed != nil:
+		s.internal(w, r, failed)
+		return http.StatusInternalServerError
+	case len(ids) == 0:
 		w.WriteHeader(http.StatusNoContent)
 		return http.StatusNoContent
 	}

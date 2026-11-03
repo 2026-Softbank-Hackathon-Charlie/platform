@@ -147,10 +147,20 @@ func TestCreateAppInstanceErrors(t *testing.T) {
 		t.Fatalf("failed adds stored %+v", rows)
 	}
 
+	t.Run("GitHub unreachable", func(t *testing.T) {
+		gh.fail(errors.New("connection refused"))
+		defer gh.fail(nil)
+		if code, b := h.do("POST", "/v1/apps/shop/instances", opToken, map[string]any{"branch": "staging"}); code != 502 || errorCode(t, b) != "github_unreachable" {
+			t.Fatalf("%d %s", code, b)
+		}
+	})
+
 	// An added branch is taken, and so is its instance name; the app holds
-	// MaxInstances instances, the default one included.
+	// MaxInstances instances, the default one included. These are checked
+	// before GitHub is asked anything.
 	h.addInstance(map[string]any{"branch": "feature/x"})
 	h.addInstance(map[string]any{"branch": "dev"})
+	gh.fail(errors.New("connection refused"))
 	for _, tc := range []struct {
 		branch, code string
 	}{
@@ -162,6 +172,7 @@ func TestCreateAppInstanceErrors(t *testing.T) {
 			t.Errorf("%s: %d %s, want 409 %s", tc.branch, code, b, tc.code)
 		}
 	}
+	gh.fail(nil)
 	rows, _ := h.store.ListAppBranches(t.Context(), "shop")
 	if len(rows) != 2 || rows[0].Branch != "dev" || rows[1].Branch != "feature/x" {
 		t.Fatalf("stored branches %+v", rows)
@@ -170,13 +181,6 @@ func TestCreateAppInstanceErrors(t *testing.T) {
 		t.Fatalf("%d deployments, want the app's and two instances' first ones", len(deps))
 	}
 
-	t.Run("GitHub unreachable", func(t *testing.T) {
-		gh.fail(errors.New("connection refused"))
-		defer gh.fail(nil)
-		if code, b := h.do("POST", "/v1/apps/shop/instances", opToken, map[string]any{"branch": "staging"}); code != 502 || errorCode(t, b) != "github_unreachable" {
-			t.Fatalf("%d %s", code, b)
-		}
-	})
 	t.Run("GitHub not configured", func(t *testing.T) {
 		h := newHarness(t)
 		if err := h.store.CreateApp(t.Context(), store.App{Name: "shop", Repo: shopRepo, Branch: "main", Environments: []string{"gke"}, Spec: []byte(`{}`), CreatedAt: time.Now().UTC()}); err != nil {

@@ -449,12 +449,17 @@ const (
 	EnvFailed   = "failed"
 )
 
+// removeAppAttempts bounds how often RemoveApp starts over because the
+// app's branches changed while it removed their instances.
+const removeAppAttempts = 3
+
 // RemoveApp unregisters a registered app with all its instances: it
 // supersedes the app's unfinished deployments, commits the removal of
 // apps/<instance>/ of the default instance and of every added branch's
 // instance from the gitops repository in one commit, removes every instance
 // from the traffic gateway and deletes the app, with its branches and
-// deployments, from the store. Each step can be repeated, so a failed
+// deployments, from the store. A branch added or removed meanwhile makes it
+// start over, a few times at most. Each step can be repeated, so a failed
 // removal is retried by calling RemoveApp again. A missing app is
 // store.ErrNotFound; a gateway that holds the writes of one of the instances
 // is ErrWritesHeld, and the app is then kept.
@@ -462,29 +467,54 @@ func (e *Executor) RemoveApp(ctx context.Context, name string) error {
 	if _, err := e.cfg.Store.GetApp(ctx, name); err != nil {
 		return err
 	}
-	branches, err := e.cfg.Store.ListAppBranches(ctx, name)
+	for attempt := 1; ; attempt++ {
+		instances, err := e.instances(ctx, name)
+		if err != nil {
+			return err
+		}
+		list, err := e.cfg.Store.ListDeployments(ctx, name, 0)
+		if err != nil {
+			return fmt.Errorf("list deployments of %s: %w", name, err)
+		}
+		if err := e.supersedeAll(ctx, list, "the app is being deleted"); err != nil {
+			return err
+		}
+		changed := false
+		err = e.removeInstances(ctx, instances, "delete app "+name, func() error {
+			// An instance added meanwhile is not locked or removed yet.
+			now, err := e.instances(ctx, name)
+			if err != nil {
+				return err
+			}
+			if changed = !slices.Equal(now, instances); changed {
+				return nil
+			}
+			return e.cfg.Store.DeleteApp(ctx, name)
+		})
+		switch {
+		case err != nil:
+			return err
+		case !changed:
+			e.cfg.Log.Info("app deleted", "app", name, "instances", instances)
+			return nil
+		case attempt == removeAppAttempts:
+			return fmt.Errorf("the branches of %s kept changing while it was being deleted; delete it again", name)
+		}
+	}
+}
+
+// instances lists an app's instances: the default one, then the added
+// branches' in branch order.
+func (e *Executor) instances(ctx context.Context, app string) ([]string, error) {
+	branches, err := e.cfg.Store.ListAppBranches(ctx, app)
 	if err != nil {
-		return fmt.Errorf("list the branches of %s: %w", name, err)
+		return nil, fmt.Errorf("list the branches of %s: %w", app, err)
 	}
-	list, err := e.cfg.Store.ListDeployments(ctx, name, 0)
-	if err != nil {
-		return fmt.Errorf("list deployments of %s: %w", name, err)
-	}
-	if err := e.supersedeAll(ctx, list, "the app is being deleted"); err != nil {
-		return err
-	}
-	instances := []string{name}
+	out := []string{app}
 	for _, b := range branches {
-		instances = append(instances, b.Instance)
+		out = append(out, b.Instance)
 	}
-	if err := e.removeInstances(ctx, instances, "delete app "+name); err != nil {
-		return err
-	}
-	if err := e.cfg.Store.DeleteApp(ctx, name); err != nil {
-		return err
-	}
-	e.cfg.Log.Info("app deleted", "app", name, "instances", instances)
-	return nil
+	return out, nil
 }
 
 // supersedeAll finishes the unfinished deployments of list as superseded,
@@ -503,12 +533,16 @@ func (e *Executor) supersedeAll(ctx context.Context, list []store.Deployment, ms
 }
 
 // removeInstances commits the removal of the instances' gitops directories
-// in one commit and removes the instances from the traffic gateway. It holds
-// every instance's lock, so a deployment superseded before the call does not
-// commit or register after it. A gateway that holds an instance's writes is
-// ErrWritesHeld.
-func (e *Executor) removeInstances(ctx context.Context, instances []string, message string) error {
-	instances = slices.Sorted(slices.Values(instances)) // one lock order for every caller
+// in one commit, removes the instances from the traffic gateway and then
+// calls forget to delete their records from the store. It holds every
+// instance's lock until forget returns, so no deployment of the instances
+// commits or registers after the removal: one superseded before the call
+// stops at its next write, and one created meanwhile waits for the lock and
+// then finds itself deleted. A gateway that holds an instance's writes is
+// ErrWritesHeld, and forget is not called.
+func (e *Executor) removeInstances(ctx context.Context, instances []string, message string, forget func() error) error {
+	// One lock order for every caller, and each lock once.
+	instances = slices.Compact(slices.Sorted(slices.Values(instances)))
 	dirs := make([]string, len(instances))
 	for i, in := range instances {
 		l := e.lock(in)
@@ -526,21 +560,20 @@ func (e *Executor) removeInstances(ctx context.Context, instances []string, mess
 	if err := e.cfg.Argo.RefreshApplicationSet(ctx); err != nil && ctx.Err() == nil {
 		e.cfg.Log.Warn("argo cd applicationset refresh after a removal", "instances", instances, "err", err)
 	}
-	if e.cfg.Gateway == nil {
-		return nil
-	}
-	for _, in := range instances {
-		err := e.cfg.Gateway.DeleteApp(ctx, in)
-		var ae *gateway.APIError
-		switch {
-		case err == nil, errors.As(err, &ae) && ae.Status == 404:
-		case errors.As(err, &ae) && ae.Status == 409:
-			return fmt.Errorf("%w: %s", ErrWritesHeld, ae.Message)
-		default:
-			return fmt.Errorf("%w: delete app %s: %w", ErrGateway, in, err)
+	if e.cfg.Gateway != nil {
+		for _, in := range instances {
+			err := e.cfg.Gateway.DeleteApp(ctx, in)
+			var ae *gateway.APIError
+			switch {
+			case err == nil, errors.As(err, &ae) && ae.Status == 404:
+			case errors.As(err, &ae) && ae.Status == 409:
+				return fmt.Errorf("%w: %s", ErrWritesHeld, ae.Message)
+			default:
+				return fmt.Errorf("%w: delete app %s: %w", ErrGateway, in, err)
+			}
 		}
 	}
-	return nil
+	return forget()
 }
 
 // AppURL is where an instance with a public service answers through the

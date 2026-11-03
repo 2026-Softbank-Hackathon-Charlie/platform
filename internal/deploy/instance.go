@@ -12,12 +12,13 @@ import (
 // api.AppRemover): it supersedes the instance's unfinished deployments,
 // commits the removal of apps/<instance>/ from the gitops repository,
 // removes the instance from the traffic gateway and deletes the branch, with
-// the instance's deployments, from the store. Each step can be repeated, so a
-// failed removal is retried by calling RemoveInstance again. A missing app is
-// store.ErrNotFound; a branch the app has not added (its own branch
-// included) is store.ErrInstanceNotFound, which matches store.ErrNotFound
-// too. Otherwise the errors are RemoveApp's: ErrWritesHeld, ErrGitOps and
-// ErrGateway, and the branch is then kept.
+// the instance's deployments, from the store, holding the instance's lock
+// throughout. Each step can be repeated, so a failed removal is retried by
+// calling RemoveInstance again. A missing app is store.ErrNotFound; a
+// branch the app has not added (its own branch included) is
+// store.ErrInstanceNotFound, which matches store.ErrNotFound too. Otherwise
+// the errors are RemoveApp's: ErrWritesHeld, ErrGitOps and ErrGateway, and
+// the branch is then kept.
 func (e *Executor) RemoveInstance(ctx context.Context, app, branch string) error {
 	if _, err := e.cfg.Store.GetApp(ctx, app); err != nil {
 		return err
@@ -38,10 +39,10 @@ func (e *Executor) RemoveInstance(ctx context.Context, app, branch string) error
 	if err := e.supersedeAll(ctx, list, "the instance is being deleted"); err != nil {
 		return err
 	}
-	if err := e.removeInstances(ctx, []string{instance}, "delete instance "+instance); err != nil {
-		return err
-	}
-	if err := e.cfg.Store.DeleteAppBranch(ctx, app, branch); err != nil {
+	err = e.removeInstances(ctx, []string{instance}, "delete instance "+instance, func() error {
+		return e.cfg.Store.DeleteAppBranch(ctx, app, branch)
+	})
+	if err != nil {
 		return err
 	}
 	e.cfg.Log.Info("instance deleted", "app", app, "branch", branch, "instance", instance)

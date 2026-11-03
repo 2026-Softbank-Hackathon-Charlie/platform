@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"path"
 	"slices"
+	"strings"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 )
@@ -20,7 +23,9 @@ type GitOps interface {
 	// head.
 	Write(ctx context.Context, files map[string][]byte, message string) (commit string, changed bool, err error)
 	// Delete removes every file under each of dirs in one commit, like
-	// Write.
+	// Write. It refuses no dirs, the repository's root and apps/ itself
+	// (AppDir of an empty name) with an error, as none of them is one
+	// instance's directory.
 	Delete(ctx context.Context, dirs []string, message string) (commit string, changed bool, err error)
 	// Contains reports whether revision includes commit: it is commit or a
 	// descendant of it. An unknown revision does not include it.
@@ -33,6 +38,21 @@ func AppDir(instance string) string { return "apps/" + instance }
 
 // FilePath is the gitops file of an instance in an environment.
 func FilePath(instance, env string) string { return AppDir(instance) + "/" + env + ".yaml" }
+
+// checkDelete is GitOps.Delete's refusal of what is not one instance's
+// directory.
+func checkDelete(dirs []string) error {
+	if len(dirs) == 0 {
+		return errors.New("no directory to delete")
+	}
+	for _, d := range dirs {
+		switch strings.Trim(path.Clean("/"+d), "/") {
+		case "", "apps":
+			return fmt.Errorf("refusing to delete %q from the gitops repository: it is not one instance's directory", d)
+		}
+	}
+	return nil
+}
 
 // Namespace is where an instance runs: the namespace of its gitops files.
 func Namespace(instance string) string { return instance }

@@ -184,6 +184,9 @@ func (f *fakeGitOps) Delete(_ context.Context, dirs []string, message string) (s
 	if f.err != nil {
 		return "", false, f.err
 	}
+	if err := checkDelete(dirs); err != nil {
+		return "", false, err
+	}
 	changed := false
 	for p := range f.files {
 		if underAny(p, dirs) {

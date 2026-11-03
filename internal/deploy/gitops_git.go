@@ -54,6 +54,9 @@ func (g *GitCLIGitOps) Write(ctx context.Context, files map[string][]byte, messa
 }
 
 func (g *GitCLIGitOps) Delete(ctx context.Context, dirs []string, message string) (string, bool, error) {
+	if err := checkDelete(dirs); err != nil {
+		return "", false, err
+	}
 	return g.update(ctx, message, func() ([]string, error) {
 		args := []string{"rm", "-r", "-q", "--ignore-unmatch", "--"}
 		for _, d := range dirs {
