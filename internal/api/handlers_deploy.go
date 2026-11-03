@@ -20,8 +20,9 @@ import (
 // (deploy.Executor.RemoveApp).
 type AppRemover interface {
 	// RemoveApp supersedes the app's unfinished deployments, commits the
-	// removal of apps/<name>/ from the gitops repository, removes the app
-	// from the traffic gateway and deletes it from the store.
+	// removal of apps/<name>/ and of every added branch's apps/<instance>/
+	// from the gitops repository, removes every instance from the traffic
+	// gateway and deletes the app from the store.
 	// store.ErrNotFound when it does not exist, deploy.ErrWritesHeld when the
 	// gateway holds its writes, deploy.ErrGitOps and deploy.ErrGateway when
 	// those could not be reached.
