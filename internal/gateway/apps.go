@@ -1,0 +1,243 @@
+package gateway
+
+import (
+	"fmt"
+	"maps"
+	"net"
+	"net/http"
+	"slices"
+	"strings"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// AppSpec is the body of PUT /apps/{app}.
+type AppSpec struct {
+	// Backends maps each environment to the app's URL there.
+	Backends map[string]string `json:"backends"`
+	// WriteBackend receives every write.
+	WriteBackend string `json:"writeBackend"`
+	// ReadWeights split reads over the backends, summing to 100. Empty sends
+	// every read to WriteBackend.
+	ReadWeights map[string]int `json:"readWeights,omitempty"`
+}
+
+// AppInfo is one app in GET /apps and the answer to PUT /apps/{app}.
+type AppInfo struct {
+	Name string `json:"name"`
+	// Default marks the app that the gateway's configuration (-backends)
+	// serves. It cannot be replaced or deleted through the API.
+	Default bool `json:"default"`
+	// Host reaches the app: <name>.<app domain>. Empty without an app domain.
+	Host         string            `json:"host,omitempty"`
+	Backends     map[string]string `json:"backends"` // URLs without passwords
+	WriteBackend string            `json:"writeBackend"`
+	ReadWeights  map[string]int    `json:"readWeights"`
+	WritesHeld   bool              `json:"writesHeld"`
+}
+
+// AppList is the answer to GET /apps.
+type AppList struct {
+	// Domain is the app domain. Empty means host routing is off and every
+	// request goes to the default app.
+	Domain string `json:"domain"`
+	// Apps lists the default app first, then the registered apps by name.
+	Apps []AppInfo `json:"apps"`
+}
+
+// routerFor picks the app for a request's Host. With an app domain, Host
+// <app>.<domain> (any case, port ignored) goes to that app, and nil means no
+// app has that name: a typo must not reach another app's backends. Any other
+// host, and every host without an app domain, goes to the default app. name
+// is the app name the host asked for.
+func (g *Gateway) routerFor(host string) (rt *router, name string) {
+	if g.cfg.AppDomain == "" {
+		return g.router, ""
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	name, ok := strings.CutSuffix(host, "."+g.cfg.AppDomain)
+	if !ok {
+		return g.router, ""
+	}
+	return g.lookup(name), name
+}
+
+// lookup finds an app by name, the default app included, or nil.
+func (g *Gateway) lookup(name string) *router {
+	if name == g.router.name {
+		return g.router
+	}
+	g.appsMu.RLock()
+	defer g.appsMu.RUnlock()
+	return g.apps[name]
+}
+
+// routers lists the default app and the registered apps.
+func (g *Gateway) routers() []*router {
+	g.appsMu.RLock()
+	defer g.appsMu.RUnlock()
+	return append([]*router{g.router}, slices.Collect(maps.Values(g.apps))...)
+}
+
+// scoped serves one app's copy of the per-app admin API.
+func (g *Gateway) scoped(h func(*router, http.ResponseWriter, *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rt := g.lookup(r.PathValue("app"))
+		if rt == nil {
+			unknownApp(w, r.PathValue("app"))
+			return
+		}
+		h(rt, w, r)
+	}
+}
+
+func unknownApp(w http.ResponseWriter, name string) {
+	writeError(w, http.StatusNotFound, "unknown_app", fmt.Sprintf("no app named %q is registered at this gateway", name))
+}
+
+func (g *Gateway) handleListApps(w http.ResponseWriter, _ *http.Request) {
+	list := AppList{Domain: g.cfg.AppDomain, Apps: []AppInfo{g.router.info()}}
+	g.appsMu.RLock()
+	for _, name := range slices.Sorted(maps.Keys(g.apps)) {
+		list.Apps = append(list.Apps, g.apps[name].info())
+	}
+	g.appsMu.RUnlock()
+	writeJSON(w, http.StatusOK, list)
+}
+
+// handlePutApp registers an app, or replaces a registered app's backends and
+// routing. A replace keeps the app's in-flight writes counted, so a hold
+// right after it still waits for writes sent before it.
+func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("app")
+	if !appName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid_app_name", fmt.Sprintf("app name %q must match %s", name, appName))
+		return
+	}
+	if name == g.router.name {
+		defaultApp(w, name)
+		return
+	}
+	var spec AppSpec
+	if !decodeJSON(w, r, &spec) {
+		return
+	}
+	bcs, err := parseBackendMap(spec.Backends)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_backends", err.Error())
+		return
+	}
+	names := make([]string, len(bcs))
+	for i, bc := range bcs {
+		names[i] = bc.Name
+	}
+	if !slices.Contains(names, spec.WriteBackend) {
+		writeError(w, http.StatusBadRequest, "unknown_backend",
+			fmt.Sprintf("writeBackend %q is not one of the backends (%s)", spec.WriteBackend, strings.Join(names, ", ")))
+		return
+	}
+	weights := spec.ReadWeights
+	if len(weights) == 0 {
+		weights = map[string]int{spec.WriteBackend: 100}
+	}
+	if err := validateWeights(weights, names); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_weights", err.Error())
+		return
+	}
+
+	g.appsMu.Lock()
+	rt, exists := g.apps[name]
+	if !exists {
+		// Cannot fail: the backend names come from a map.
+		rt, _ = g.newRouter(name, bcs, g.log.With("app", name), g.prom.apps.view(prometheus.Labels{"app": name}))
+	}
+	rt.mu.Lock()
+	if rt.held {
+		rt.mu.Unlock()
+		g.appsMu.Unlock()
+		writesHeld(w, name)
+		return
+	}
+	if exists {
+		rt.backends, rt.byName, _ = rt.newBackends(bcs, rt.byName)
+	}
+	rt.writeBackend = spec.WriteBackend
+	rt.readWeights = rt.fullWeightsLocked(weights)
+	rt.mu.Unlock()
+	g.apps[name] = rt
+	g.appsMu.Unlock()
+	g.save()
+
+	info := rt.info()
+	rt.log.Info("admin action", "action", "put_app", "created", !exists, "backends", info.Backends,
+		"writeBackend", info.WriteBackend, "readWeights", info.ReadWeights)
+	status := http.StatusOK
+	if !exists {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, info)
+}
+
+// handleDeleteApp removes a registered app. Its host answers 404 from then on;
+// requests already being proxied finish.
+func (g *Gateway) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("app")
+	if name == g.router.name {
+		defaultApp(w, name)
+		return
+	}
+	g.appsMu.Lock()
+	rt := g.apps[name]
+	if rt == nil {
+		g.appsMu.Unlock()
+		unknownApp(w, name)
+		return
+	}
+	rt.mu.Lock()
+	held := rt.held
+	rt.mu.Unlock()
+	if held {
+		g.appsMu.Unlock()
+		writesHeld(w, name)
+		return
+	}
+	delete(g.apps, name)
+	g.appsMu.Unlock()
+	g.prom.apps.forget(prometheus.Labels{"app": name})
+	g.save()
+	rt.log.Info("admin action", "action", "delete_app")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func defaultApp(w http.ResponseWriter, name string) {
+	writeError(w, http.StatusConflict, "default_app",
+		fmt.Sprintf("%q is the default app, configured by the gateway's -backends; it cannot be replaced or deleted here", name))
+}
+
+func writesHeld(w http.ResponseWriter, name string) {
+	writeError(w, http.StatusConflict, "writes_held",
+		fmt.Sprintf("writes of app %q are held for a migration; release them first", name))
+}
+
+func (rt *router) info() AppInfo {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	info := AppInfo{
+		Name:         rt.name,
+		Default:      rt == rt.g.router,
+		Backends:     make(map[string]string, len(rt.backends)),
+		WriteBackend: rt.writeBackend,
+		ReadWeights:  maps.Clone(rt.readWeights),
+		WritesHeld:   rt.held,
+	}
+	if d := rt.g.cfg.AppDomain; d != "" {
+		info.Host = rt.name + "." + d
+	}
+	for _, b := range rt.backends {
+		info.Backends[b.name] = b.url.Redacted()
+	}
+	return info
+}

@@ -192,6 +192,10 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 | `POST /v1/weights {"readWeights":{...}}` | 읽기 비율만 바꿈 (합 100) |
 | `GET /v1/state?window=10s` | `TrafficState`: 환경별 요청 수, 오류율, p50/p95/p99, 누적 수. 지난 10초와 지금 진행 중인 초를 합쳐 세고, rps는 그 실제 길이로 나눔 |
 | `GET /metrics` | Prometheus 지표 (`charlie_gateway_*`) |
+| `GET /apps` | `{"domain","apps":[...]}`. 기본 앱이 먼저, 등록한 앱은 이름순. 앱마다 `name`, `default`, `host`, `backends`(비밀번호를 가린 주소), `writeBackend`, `readWeights`, `writesHeld` |
+| `PUT /apps/{app} {"backends":{"gke":"http://shop.gke.ts.net"},"writeBackend":"gke","readWeights":{"gke":100}}` | 앱을 등록하면 201, 교체하면 200, 본문은 목록의 앱 하나와 같음. `readWeights`를 빼면 읽기도 전부 `writeBackend`로. 그 앱의 쓰기를 보류하는 동안 409 `writes_held`, 기본 앱 이름이면 409 `default_app` |
+| `DELETE /apps/{app}` | 등록한 앱을 지움(204). 보류하는 동안 409 `writes_held`, 없으면 404 `unknown_app` |
+| `/apps/{app}/healthz`, `/apps/{app}/v1/state`, `/apps/{app}/v1/writes/hold`, `/apps/{app}/v1/writes/release`, `/apps/{app}/v1/route`, `/apps/{app}/v1/weights` | 위의 같은 요청을 그 앱에만. `/apps/{app}/healthz`도 토큰이 필요하고, 없는 앱이면 404 `unknown_app` |
 
 | 변수 (플래그) | 설명 |
 | --- | --- |
@@ -200,6 +204,8 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 | `GATEWAY_LISTEN` (`-listen`), `GATEWAY_ADMIN_ADDR` (`-admin-addr`) | 사용자 요청 주소(기본 `:8000`), 관리 주소(기본 `:9901`) |
 | `GATEWAY_INITIAL_BACKEND` (`-initial-backend`) | 상태 파일이 없을 때 처음 쓸 환경 (기본: 첫 번째) |
 | `GATEWAY_STATE_FILE` (`-state-file`) | 상태 파일 (기본 `.hopcharlie/gateway-state.json`) |
+| `GATEWAY_APP_DOMAIN` (`-app-domain`) | 앱 도메인 (예: `hopcharlie.dev`). 비우면(기본) 호스트와 관계없이 모든 요청이 기본 앱으로 감 |
+| `GATEWAY_DEFAULT_APP` (`-default-app`) | `-backends`가 서빙하는 기본 앱의 이름 (기본 `app`, 그래서 `app.hopcharlie.dev`가 기본 앱) |
 | `-max-hold` | 쓰기 하나가 보류 중에 기다리는 최대 시간 (기본 90s, Cloudflare의 원본 응답 제한 약 100초보다 짧게). 넘긴 쓰기는 보내지 않고 503 `hold_timeout`(`Retry-After: 1`)으로 답하고 `charlie_gateway_hold_expired_total`에 셈. 보류 자체는 release까지 이어짐 |
 | `-drain-timeout` | hold가 처리 중인 쓰기를 기다리는 시간 (기본 30s) |
 | `-max-held` | 대기 쓰기 상한 (기본 2000). 쓰기마다 본문을 64KiB까지 메모리에 두며, 본문을 읽기 전에 자리를 잡음. 넘으면 503 `too_many_held_writes` |
@@ -210,6 +216,16 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 - SIGINT나 SIGTERM을 받으면 대기 중인 쓰기와 그 뒤에 들어온 보류 대상 쓰기에 503 `shutting_down`(`Retry-After: 1`)으로 답하고 환경에는 보내지 않습니다. 사용자 요청 서버가 처리 중인 요청을 끝낸 뒤에 관리 API를 닫습니다.
 - 보류 중이었다면 상태 파일에 보류가 그대로 남고, 다시 시작해도 보류가 이어집니다. 시간이 지나도 저절로 풀리지 않으므로 엔진의 롤백이나 운영자가 release를 불러야 쓰기가 다시 흐릅니다.
 - 설정에서 뺀 환경이 상태 파일에 읽기 비율 0으로 남아 있으면 지우고 시작합니다. 그 환경이 `writeBackend`이거나 읽기 비율이 0보다 크면 시작하지 않습니다.
+
+앱마다 따로 라우팅하기 (ADR 0012):
+
+- `-backends`의 환경이 기본 앱입니다. `/v1/...` 관리 API, `gateway.Client`의 기존 메서드, 기존 지표는 모두 기본 앱만 다룹니다. 플랫폼 API(`internal/runs`)도 기본 앱을 이전합니다.
+- 다른 앱은 `PUT /apps/{app}`으로 등록합니다. 앱마다 환경, 쓰기 환경, 읽기 비율, 쓰기 보류, 통계가 따로 있어서, 한 앱의 hold는 다른 앱의 쓰기를 기다리지도 붙잡지도 않습니다. 이름은 `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`입니다.
+- `-app-domain`을 정하면 `Host`가 `<앱>.<도메인>`인 요청(대소문자와 포트 무시)이 그 앱으로 갑니다. `<기본 앱 이름>.<도메인>`은 기본 앱입니다. 도메인 아래인데 등록하지 않은 이름이면 404 `unknown_app`으로 답하고 어느 환경에도 보내지 않습니다. 오타가 다른 앱의 환경에 닿지 않게 하기 위해서입니다. 도메인 밖의 호스트(IP, 다른 도메인, 도메인 자체)는 기본 앱으로 갑니다.
+- `<관리 주소>/apps/<앱>`을 게이트웨이 주소로 쓰면 엔진의 HTTP 클라이언트가 그 앱에 hold, route, release를 그대로 부릅니다. Go에서는 `client.App("shop")`이 그 주소를 쓰는 `*gateway.Client`를 돌려주고, `client.Apps`, `client.PutApp(ctx, "shop", gateway.AppSpec{...})`, `client.DeleteApp`로 앱을 관리합니다.
+- 상태 파일에는 기본 앱을 예전과 같은 최상위 필드에, 등록한 앱을 `apps`에 환경 주소와 함께 씁니다. 예전 상태 파일은 그대로 읽고, 앱을 등록하지 않으면 파일 내용도 예전과 같습니다. 재시작하면 앱마다 쓰기 환경, 읽기 비율, 보류가 기본 앱과 같은 규칙으로 이어집니다.
+- 등록한 앱의 지표는 `charlie_gateway_app_*`이고 `app` 라벨이 맨 앞에 붙습니다(예: `charlie_gateway_app_requests_total{app="shop",backend="gke",class="read",code="200"}`). 기본 앱의 `charlie_gateway_*`에는 등록한 앱의 요청이 들어가지 않습니다. 앱을 지우면 그 앱의 시계열도 지웁니다.
+- 등록한 앱의 헬스 체크도 `-health-path`를 씁니다.
 
 ## 테스트
 
