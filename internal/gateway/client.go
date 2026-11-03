@@ -14,7 +14,9 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
-// Client talks to the gateway admin API.
+// Client talks to the gateway admin API. Its per-app calls (Health, State,
+// SetReadWeights, Route, HoldWrites, ReleaseWrites) act on the default app;
+// App returns a client whose calls act on another app.
 type Client struct {
 	BaseURL string
 	Token   string
@@ -74,6 +76,35 @@ func (c *Client) HoldWrites(ctx context.Context) error {
 // ReleaseWrites returns once held writes were dispatched to the write backend.
 func (c *Client) ReleaseWrites(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/writes/release", nil, nil)
+}
+
+// App returns a client bound to the app registered as name (the default
+// app's name works too). Its per-app calls act on that app alone; the app's
+// admin base URL is BaseURL + "/apps/" + name. On an unknown app they fail
+// with 404 unknown_app. Apps, PutApp and DeleteApp do not apply to it.
+func (c *Client) App(name string) *Client {
+	app := *c
+	app.BaseURL = strings.TrimRight(c.BaseURL, "/") + "/apps/" + url.PathEscape(name)
+	return &app
+}
+
+// Apps lists the default app and the registered apps.
+func (c *Client) Apps(ctx context.Context) (AppList, error) {
+	var list AppList
+	err := c.do(ctx, http.MethodGet, "/apps", nil, &list)
+	return list, err
+}
+
+// PutApp registers an app, or replaces its backends and routing. It fails
+// with 409 writes_held while the app's writes are held.
+func (c *Client) PutApp(ctx context.Context, name string, spec AppSpec) error {
+	return c.do(ctx, http.MethodPut, "/apps/"+url.PathEscape(name), spec, nil)
+}
+
+// DeleteApp removes a registered app. It fails with 409 writes_held while the
+// app's writes are held.
+func (c *Client) DeleteApp(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/apps/"+url.PathEscape(name), nil, nil)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {

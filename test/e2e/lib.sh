@@ -17,6 +17,7 @@ GW_PORT=18000
 GW_ADMIN_PORT=19901
 SRC_APP_PORT=18101
 DST_APP_PORT=18102
+APP_DOMAIN=e2e.test             # gateway -app-domain; the load goes to 127.0.0.1, outside it
 
 # Absolute path that native Windows programs (go build output, kind, kubectl)
 # also understand: pwd -W exists only in Git Bash / MSYS.

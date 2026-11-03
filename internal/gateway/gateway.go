@@ -15,6 +15,18 @@
 //	POST /v1/writes/release           dispatch held writes to the current write backend
 //	POST /v1/route {"backend":"eks"}  writes and 100% of reads to that backend
 //	POST /v1/weights {"readWeights":{"gke":50,"eks":50}}
+//
+// Each app has its own backends, routing, hold and stats. The backends in
+// Config are the default app, which the /v1 API above acts on. Other apps are
+// registered at run time, and with Config.AppDomain set, Host <app>.<domain>
+// reaches them:
+//
+//	GET    /apps                      AppList
+//	PUT    /apps/{app}                AppSpec; create (201) or replace (200)
+//	DELETE /apps/{app}                204
+//	*      /apps/{app}/healthz, /apps/{app}/v1/...
+//	                                  the API above for that app, so
+//	                                  <admin>/apps/{app} works as a gateway URL
 package gateway
 
 import (
@@ -35,6 +47,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -76,18 +90,21 @@ type holdGen struct {
 	backend    *backend // write backend at release time
 }
 
-// Gateway is the proxy plus its admin API.
-type Gateway struct {
-	cfg      Config
-	log      *slog.Logger
-	backends []*backend
-	byName   map[string]*backend
-	metrics  *metrics
-	admin    http.Handler
+// router is one app: its backends, routing, hold and stats. Apps share
+// nothing else, so holding one app's writes never delays another's.
+type router struct {
+	g       *Gateway
+	name    string
+	log     *slog.Logger
+	metrics *routerMetrics
 
 	inflightReads atomic.Int64
 
-	mu             sync.Mutex
+	mu sync.Mutex
+	// backends and byName are replaced, never changed in place, when a PUT
+	// replaces a registered app. Read them under mu.
+	backends       []*backend
+	byName         map[string]*backend
 	writeBackend   string
 	readWeights    map[string]int // every configured backend, summing to 100
 	held           bool
@@ -97,12 +114,26 @@ type Gateway struct {
 	buffering      int      // held writes still reading their body; count towards MaxHeld
 	inflightWrites int      // includes released writes not yet dispatched
 	writesIdle     chan struct{}
-	shuttingDown   bool
-	shutdown       chan struct{} // closed by BeginShutdown
-	seq            uint64
+}
 
-	saveMu   sync.Mutex
-	savedSeq uint64
+// Gateway is the proxy plus its admin API.
+type Gateway struct {
+	// The embedded router is the default app: the backends in Config, the /v1
+	// admin API, and every request whose Host names no registered app.
+	*router
+
+	cfg      Config
+	log      *slog.Logger
+	prom     *metrics
+	admin    http.Handler
+	shutdown chan struct{} // closed by BeginShutdown
+	stopOnce sync.Once
+
+	// Lock order: saveMu, then appsMu, then a router's mu.
+	appsMu sync.RWMutex
+	apps   map[string]*router // registered through the admin API
+
+	saveMu sync.Mutex
 }
 
 // New builds a gateway and restores routing from the state file, if any. A
@@ -112,21 +143,16 @@ func New(cfg Config) (*Gateway, error) {
 	if len(cfg.Backends) == 0 {
 		return nil, errors.New("no backends configured")
 	}
-	g := &Gateway{cfg: cfg, log: cfg.Log, byName: map[string]*backend{},
-		writesIdle: make(chan struct{}), shutdown: make(chan struct{})}
-	for _, bc := range cfg.Backends {
-		if _, dup := g.byName[bc.Name]; dup {
-			return nil, fmt.Errorf("backend %q listed twice", bc.Name)
-		}
-		b := &backend{name: bc.Name, url: bc.URL}
-		// Unknown until the first check; assume healthy so start-up does not
-		// push every read onto the write backend.
-		b.healthy.Store(true)
-		b.proxy = g.newProxy(b)
-		g.backends = append(g.backends, b)
-		g.byName[b.name] = b
+	if err := cfg.checkApps(); err != nil {
+		return nil, err
 	}
-	g.metrics = newMetrics(g)
+	g := &Gateway{cfg: cfg, log: cfg.Log, shutdown: make(chan struct{}), apps: map[string]*router{}}
+	g.prom = newMetrics(g)
+	def, err := g.newRouter(cfg.DefaultApp, cfg.Backends, g.log, g.prom.def.view(prometheus.Labels{}))
+	if err != nil {
+		return nil, err
+	}
+	g.router = def
 	g.admin = g.adminMux()
 	if err := g.restore(); err != nil {
 		return nil, err
@@ -134,12 +160,49 @@ func New(cfg Config) (*Gateway, error) {
 	return g, nil
 }
 
+func (g *Gateway) newRouter(name string, bcs []BackendConfig, log *slog.Logger, m *routerMetrics) (*router, error) {
+	rt := &router{g: g, name: name, log: log, metrics: m, writesIdle: make(chan struct{})}
+	var err error
+	rt.backends, rt.byName, err = rt.newBackends(bcs, nil)
+	if err != nil {
+		return nil, err
+	}
+	return rt, nil
+}
+
+// newBackends builds the backends for bcs. Those of old whose name and URL
+// did not change are kept, with their stats and health.
+func (rt *router) newBackends(bcs []BackendConfig, old map[string]*backend) ([]*backend, map[string]*backend, error) {
+	list := make([]*backend, 0, len(bcs))
+	byName := make(map[string]*backend, len(bcs))
+	for _, bc := range bcs {
+		if _, dup := byName[bc.Name]; dup {
+			return nil, nil, fmt.Errorf("backend %q listed twice", bc.Name)
+		}
+		b := old[bc.Name]
+		if b == nil || b.url.String() != bc.URL.String() {
+			b = &backend{name: bc.Name, url: bc.URL}
+			// Unknown until the first check; assume healthy so start-up does
+			// not push every read onto the write backend.
+			b.healthy.Store(true)
+			b.proxy = rt.newProxy(b)
+		}
+		list = append(list, b)
+		byName[b.name] = b
+	}
+	return list, byName, nil
+}
+
+// restore restores routing from the state file: the default app from its
+// top-level fields, as older gateways wrote it, and each registered app from
+// "apps". The default app starts on the initial backend without a file.
 func (g *Gateway) restore() error {
+	def := g.router
 	initial := g.cfg.InitialBackend
 	if initial == "" {
-		initial = g.backends[0].name
+		initial = def.backends[0].name
 	}
-	if _, ok := g.byName[initial]; !ok {
+	if _, ok := def.byName[initial]; !ok {
 		return fmt.Errorf("initial backend %q is not configured", initial)
 	}
 	var st *persistedState
@@ -151,52 +214,88 @@ func (g *Gateway) restore() error {
 		}
 	}
 
-	g.mu.Lock()
 	if st == nil {
-		g.writeBackend = initial
-		g.readWeights = g.weightsAllTo(initial)
+		def.mu.Lock()
+		def.writeBackend = initial
+		def.readWeights = def.weightsAllToLocked(initial)
+		def.mu.Unlock()
 	} else {
-		weights, err := g.restoredWeights(st)
-		if err != nil {
-			g.mu.Unlock()
+		if err := def.restore(st); err != nil {
 			return fmt.Errorf("state file %s: %w", g.cfg.StateFile, err)
 		}
-		g.writeBackend = st.WriteBackend
-		g.readWeights = weights
-		if st.WritesHeld {
-			since := time.Now()
-			if st.HeldSince != nil {
-				since = *st.HeldSince
+		for _, name := range slices.Sorted(maps.Keys(st.Apps)) {
+			if err := g.restoreApp(name, st.Apps[name]); err != nil {
+				return fmt.Errorf("state file %s: app %s: %w", g.cfg.StateFile, name, err)
 			}
-			g.startHoldLocked(since)
-			g.log.Warn("resuming write hold from state file; it lasts until release", "heldSince", since.UTC())
 		}
 	}
-	snap := g.snapshotLocked()
-	g.mu.Unlock()
 	// Fail at start, not mid-cutover, when the state file cannot be written.
-	if err := g.trySave(snap); err != nil {
+	if err := g.trySave(); err != nil {
 		return fmt.Errorf("write state file: %w", err)
 	}
 	return nil
 }
 
-// restoredWeights checks the state file against the configured backends. A
-// backend removed from the config is dropped if it got no reads; anything
-// else is refused rather than guessed, since routing differently from what
-// was recorded could split writes mid-migration.
-func (g *Gateway) restoredWeights(st *persistedState) (map[string]int, error) {
-	configured := strings.Join(g.names(), ", ")
-	if _, ok := g.byName[st.WriteBackend]; !ok {
+func (g *Gateway) restoreApp(name string, pa persistedApp) error {
+	if !appName.MatchString(name) {
+		return fmt.Errorf("name must match %s", appName)
+	}
+	if name == g.router.name {
+		return fmt.Errorf("the default app (-default-app) has the same name; rename one of them")
+	}
+	bcs, err := parseBackendMap(pa.Backends)
+	if err != nil {
+		return err
+	}
+	rt, err := g.newRouter(name, bcs, g.log.With("app", name), g.prom.apps.view(prometheus.Labels{"app": name}))
+	if err != nil {
+		return err
+	}
+	if err := rt.restore(&pa.persistedState); err != nil {
+		return err
+	}
+	g.apps[name] = rt
+	return nil
+}
+
+// restore applies one app's recorded routing. A hold recorded there
+// continues until release.
+func (rt *router) restore(st *persistedState) error {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	weights, err := rt.restoredWeightsLocked(st)
+	if err != nil {
+		return err
+	}
+	rt.writeBackend = st.WriteBackend
+	rt.readWeights = weights
+	if st.WritesHeld {
+		since := time.Now()
+		if st.HeldSince != nil {
+			since = *st.HeldSince
+		}
+		rt.startHoldLocked(since)
+		rt.log.Warn("resuming write hold from state file; it lasts until release", "heldSince", since.UTC())
+	}
+	return nil
+}
+
+// restoredWeightsLocked checks the state file against the configured
+// backends. A backend removed from the config is dropped if it got no reads;
+// anything else is refused rather than guessed, since routing differently
+// from what was recorded could split writes mid-migration.
+func (rt *router) restoredWeightsLocked(st *persistedState) (map[string]int, error) {
+	configured := strings.Join(rt.namesLocked(), ", ")
+	if _, ok := rt.byName[st.WriteBackend]; !ok {
 		return nil, fmt.Errorf("write backend %q is not configured (configured: %s); add it back to the backends or fix the state file",
 			st.WriteBackend, configured)
 	}
 	weights := make(map[string]int, len(st.ReadWeights))
 	for _, name := range slices.Sorted(maps.Keys(st.ReadWeights)) {
 		w := st.ReadWeights[name]
-		if _, ok := g.byName[name]; !ok {
+		if _, ok := rt.byName[name]; !ok {
 			if w == 0 {
-				g.log.Warn("dropping unconfigured backend with read weight 0 from state file", "backend", name)
+				rt.log.Warn("dropping unconfigured backend with read weight 0 from state file", "backend", name)
 				continue
 			}
 			return nil, fmt.Errorf("backend %q has read weight %d but is not configured (configured: %s); add it back to the backends or fix the state file",
@@ -204,10 +303,10 @@ func (g *Gateway) restoredWeights(st *persistedState) (map[string]int, error) {
 		}
 		weights[name] = w
 	}
-	if err := g.validateWeights(weights); err != nil {
+	if err := validateWeights(weights, rt.namesLocked()); err != nil {
 		return nil, err
 	}
-	return g.fullWeights(weights), nil
+	return rt.fullWeightsLocked(weights), nil
 }
 
 // Proxy returns the public handler for user traffic.
@@ -222,56 +321,68 @@ func (g *Gateway) Admin() http.Handler { return g.admin }
 // it before shutting the proxy server down: held writes would otherwise keep
 // it waiting.
 func (g *Gateway) BeginShutdown() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if !g.shuttingDown {
-		g.shuttingDown = true
-		close(g.shutdown)
+	g.stopOnce.Do(func() { close(g.shutdown) })
+}
+
+func (g *Gateway) shuttingDown() bool {
+	select {
+	case <-g.shutdown:
+		return true
+	default:
+		return false
 	}
 }
 
 // Close persists the final state. Call it after the servers have stopped; a
 // hold in progress stays recorded as held.
 func (g *Gateway) Close() {
-	g.mu.Lock()
-	snap := g.snapshotLocked()
-	g.mu.Unlock()
-	g.save(snap)
+	g.save()
 }
 
+// serveProxy sends a request to the app its Host names (see routerFor).
 func (g *Gateway) serveProxy(w http.ResponseWriter, r *http.Request) {
+	rt, name := g.routerFor(r.Host)
+	if rt == nil {
+		writeError(w, http.StatusNotFound, "unknown_app",
+			fmt.Sprintf("no app named %q is registered at this gateway (host %s)", name, r.Host))
+		return
+	}
+	rt.serve(w, r)
+}
+
+func (rt *router) serve(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		g.serveRead(w, r)
+		rt.serveRead(w, r)
 	default:
-		g.serveWrite(w, r)
+		rt.serveWrite(w, r)
 	}
 }
 
-func (g *Gateway) serveRead(w http.ResponseWriter, r *http.Request) {
-	g.mu.Lock()
-	b := g.pickReadLocked()
+func (rt *router) serveRead(w http.ResponseWriter, r *http.Request) {
+	rt.mu.Lock()
+	b := rt.pickReadLocked()
 	var alt *backend
 	if retryableRead(r) {
-		alt = g.retryTargetLocked(b)
+		alt = rt.retryTargetLocked(b)
 	}
-	g.mu.Unlock()
-	g.inflightReads.Add(1)
-	defer g.inflightReads.Add(-1)
+	rt.mu.Unlock()
+	rt.inflightReads.Add(1)
+	defer rt.inflightReads.Add(-1)
 	if alt == nil {
-		g.forward(w, r, b, classRead, nil)
+		rt.forward(w, r, b, classRead, nil)
 		return
 	}
 	// A backend answers 5xx or not at all for a few seconds while its
 	// database is demoted or restarts during a cutover. The read is sent once
 	// more to alt, and the client only sees the second answer.
 	rw := &retryWriter{w: w, header: http.Header{}}
-	g.forward(rw, r, b, classRead, rw)
+	rt.forward(rw, r, b, classRead, rw)
 	if !rw.failed || r.Context().Err() != nil {
 		return
 	}
-	g.metrics.readRetries.WithLabelValues(b.name).Inc()
-	g.forward(w, r, alt, classRead, nil)
+	rt.metrics.readRetries.WithLabelValues(b.name).Inc()
+	rt.forward(w, r, alt, classRead, nil)
 }
 
 // retryableRead: a read the gateway may send twice. Only GET and HEAD
@@ -294,24 +405,24 @@ func retryableRead(r *http.Request) bool {
 // backend: both environments hold the same data then, and one of them is
 // being demoted or restarted. At other times a backend with no read weight
 // may not have the data yet, so reads never fall back to it.
-func (g *Gateway) retryTargetLocked(failed *backend) *backend {
+func (rt *router) retryTargetLocked(failed *backend) *backend {
 	var best *backend
-	for _, b := range g.backends {
+	for _, b := range rt.backends {
 		if b == failed || !b.healthy.Load() {
 			continue
 		}
-		if w := g.readWeights[b.name]; w > 0 && (best == nil || w > g.readWeights[best.name]) {
+		if w := rt.readWeights[b.name]; w > 0 && (best == nil || w > rt.readWeights[best.name]) {
 			best = b
 		}
 	}
 	if best != nil {
 		return best
 	}
-	if wb := g.byName[g.writeBackend]; wb != failed && wb.healthy.Load() {
+	if wb := rt.byName[rt.writeBackend]; wb != failed && wb.healthy.Load() {
 		return wb
 	}
-	if g.held {
-		for _, b := range g.backends {
+	if rt.held {
+		for _, b := range rt.backends {
 			if b != failed && b.healthy.Load() {
 				return b
 			}
@@ -395,17 +506,17 @@ func copyHeader(dst, src http.Header) {
 
 // pickReadLocked picks a read backend by weight among healthy backends and
 // falls back to the write backend when none is left.
-func (g *Gateway) pickReadLocked() *backend {
+func (rt *router) pickReadLocked() *backend {
 	total := 0
-	for _, b := range g.backends {
-		if w := g.readWeights[b.name]; w > 0 && b.healthy.Load() {
+	for _, b := range rt.backends {
+		if w := rt.readWeights[b.name]; w > 0 && b.healthy.Load() {
 			total += w
 		}
 	}
 	if total > 0 {
-		n := g.cfg.Rand(total)
-		for _, b := range g.backends {
-			w := g.readWeights[b.name]
+		n := rt.g.cfg.Rand(total)
+		for _, b := range rt.backends {
+			w := rt.readWeights[b.name]
 			if w <= 0 || !b.healthy.Load() {
 				continue
 			}
@@ -415,60 +526,60 @@ func (g *Gateway) pickReadLocked() *backend {
 			n -= w
 		}
 	}
-	return g.byName[g.writeBackend]
+	return rt.byName[rt.writeBackend]
 }
 
 // serveWrite sends a write to the write backend, or parks it while writes are
 // held. Writes never fail over on a bad health check: moving them is a
 // migration decision, not the gateway's.
-func (g *Gateway) serveWrite(w http.ResponseWriter, r *http.Request) {
+func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 	arrived := time.Now()
 	buffered := false
-	g.mu.Lock()
-	for g.held {
-		if g.shuttingDown {
-			g.mu.Unlock()
+	rt.mu.Lock()
+	for rt.held {
+		if rt.g.shuttingDown() {
+			rt.mu.Unlock()
 			retryLater(w, "shutting_down", "the gateway is restarting; retry shortly")
 			return
 		}
 		if !buffered {
-			if g.waitingLocked() >= g.cfg.MaxHeld {
-				g.mu.Unlock()
+			if rt.waitingLocked() >= rt.g.cfg.MaxHeld {
+				rt.mu.Unlock()
 				retryLater(w, "too_many_held_writes", "writes are paused for a migration; retry shortly")
 				return
 			}
 			// Take the slot before reading the body, so MaxHeld bounds the
 			// memory held writes use.
-			g.buffering++
-			g.mu.Unlock()
+			rt.buffering++
+			rt.mu.Unlock()
 			err := bufferBody(r)
-			g.mu.Lock()
-			g.buffering--
+			rt.mu.Lock()
+			rt.buffering--
 			if err != nil {
-				g.mu.Unlock()
-				g.metrics.heldDropped.Inc()
+				rt.mu.Unlock()
+				rt.metrics.heldDropped.Inc()
 				writeError(w, http.StatusBadRequest, "bad_request", "could not read the request body: "+err.Error())
 				return
 			}
 			buffered = true
 			continue // the hold may have ended while the body was read
 		}
-		gen := g.gen
+		gen := rt.gen
 		gen.waiting++
-		g.mu.Unlock()
-		b := g.awaitRelease(w, r, gen, arrived)
+		rt.mu.Unlock()
+		b := rt.awaitRelease(w, r, gen, arrived)
 		if b == nil {
 			return
 		}
-		defer g.writeDone()
-		g.forward(w, r, b, classWrite, nil)
+		defer rt.writeDone()
+		rt.forward(w, r, b, classWrite, nil)
 		return
 	}
-	b := g.byName[g.writeBackend]
-	g.inflightWrites++
-	g.mu.Unlock()
-	defer g.writeDone()
-	g.forward(w, r, b, classWrite, nil)
+	b := rt.byName[rt.writeBackend]
+	rt.inflightWrites++
+	rt.mu.Unlock()
+	defer rt.writeDone()
+	rt.forward(w, r, b, classWrite, nil)
 }
 
 // bufferBody reads a held write's body into memory. Go notices a client
@@ -504,8 +615,8 @@ func retryLater(w http.ResponseWriter, code, msg string) {
 // cannot wait any longer (MaxHold since it arrived, or the gateway is shutting
 // down) is answered with 503, and one whose client left is dropped. Then
 // awaitRelease returns nil.
-func (g *Gateway) awaitRelease(w http.ResponseWriter, r *http.Request, gen *holdGen, arrived time.Time) *backend {
-	timeout := time.NewTimer(max(g.cfg.MaxHold-time.Since(arrived), 0))
+func (rt *router) awaitRelease(w http.ResponseWriter, r *http.Request, gen *holdGen, arrived time.Time) *backend {
+	timeout := time.NewTimer(max(rt.g.cfg.MaxHold-time.Since(arrived), 0))
 	defer timeout.Stop()
 	var gone, expired bool
 	select {
@@ -514,30 +625,30 @@ func (g *Gateway) awaitRelease(w http.ResponseWriter, r *http.Request, gen *hold
 		gone = true
 	case <-timeout.C:
 		expired = true
-	case <-g.shutdown:
+	case <-rt.g.shutdown:
 	}
-	g.mu.Lock()
+	rt.mu.Lock()
 	if gen.released && !gone {
 		// Released, perhaps at the same moment as a timeout or shutdown:
 		// forwarding is safe now, so nobody gets an error.
 		gen.dispatchedOneLocked()
-		g.mu.Unlock()
+		rt.mu.Unlock()
 		return gen.backend
 	}
 	if gen.released {
 		// Release won the race and already counted this write as in flight.
 		gen.dispatchedOneLocked()
-		g.writeDoneLocked()
+		rt.writeDoneLocked()
 	} else {
 		gen.waiting--
 	}
-	g.mu.Unlock()
+	rt.mu.Unlock()
 	switch {
 	case gone:
-		g.metrics.heldDropped.Inc()
+		rt.metrics.heldDropped.Inc()
 	case expired:
-		g.metrics.holdExpired.Inc()
-		retryLater(w, "hold_timeout", fmt.Sprintf("writes are paused for a migration and this one waited %s; retry shortly", g.cfg.MaxHold))
+		rt.metrics.holdExpired.Inc()
+		retryLater(w, "hold_timeout", fmt.Sprintf("writes are paused for a migration and this one waited %s; retry shortly", rt.g.cfg.MaxHold))
 	default:
 		retryLater(w, "shutting_down", "the gateway is restarting; retry shortly")
 	}
@@ -551,59 +662,59 @@ func (gen *holdGen) dispatchedOneLocked() {
 	}
 }
 
-func (g *Gateway) writeDone() {
-	g.mu.Lock()
-	g.writeDoneLocked()
-	g.mu.Unlock()
+func (rt *router) writeDone() {
+	rt.mu.Lock()
+	rt.writeDoneLocked()
+	rt.mu.Unlock()
 }
 
-func (g *Gateway) writeDoneLocked() {
-	g.inflightWrites--
-	if g.inflightWrites == 0 {
-		close(g.writesIdle)
-		g.writesIdle = make(chan struct{})
+func (rt *router) writeDoneLocked() {
+	rt.inflightWrites--
+	if rt.inflightWrites == 0 {
+		close(rt.writesIdle)
+		rt.writesIdle = make(chan struct{})
 	}
 }
 
 // waitingLocked counts writes waiting for release, including those still
 // reading their body.
-func (g *Gateway) waitingLocked() int {
-	if g.gen == nil {
+func (rt *router) waitingLocked() int {
+	if rt.gen == nil {
 		return 0
 	}
-	return g.gen.waiting + g.buffering
+	return rt.gen.waiting + rt.buffering
 }
 
 // startHoldLocked starts a hold period. It lasts until releaseLocked.
-func (g *Gateway) startHoldLocked(since time.Time) {
-	g.holdSeq++
-	gen := &holdGen{id: g.holdSeq, release: make(chan struct{}), dispatched: make(chan struct{})}
-	g.held, g.heldSince, g.gen = true, since, gen
+func (rt *router) startHoldLocked(since time.Time) {
+	rt.holdSeq++
+	gen := &holdGen{id: rt.holdSeq, release: make(chan struct{}), dispatched: make(chan struct{})}
+	rt.held, rt.heldSince, rt.gen = true, since, gen
 }
 
 // releaseLocked ends the hold and hands every waiting write to the current
 // write backend. They count as in flight from here, so a hold that follows
 // right away still waits for them.
-func (g *Gateway) releaseLocked() *holdGen {
-	gen := g.gen
+func (rt *router) releaseLocked() *holdGen {
+	gen := rt.gen
 	gen.released = true
-	gen.backend = g.byName[g.writeBackend]
+	gen.backend = rt.byName[rt.writeBackend]
 	gen.pending = gen.waiting
-	g.inflightWrites += gen.waiting
+	rt.inflightWrites += gen.waiting
 	gen.waiting = 0
 	if gen.pending == 0 {
 		close(gen.dispatched)
 	}
 	close(gen.release)
-	g.held, g.gen = false, nil
+	rt.held, rt.gen = false, nil
 	return gen
 }
 
-func (g *Gateway) waitWritesDrained(ctx context.Context) error {
+func (rt *router) waitWritesDrained(ctx context.Context) error {
 	for {
-		g.mu.Lock()
-		n, idle := g.inflightWrites, g.writesIdle
-		g.mu.Unlock()
+		rt.mu.Lock()
+		n, idle := rt.inflightWrites, rt.writesIdle
+		rt.mu.Unlock()
 		if n == 0 {
 			return nil
 		}
@@ -615,7 +726,8 @@ func (g *Gateway) waitWritesDrained(ctx context.Context) error {
 	}
 }
 
-func (g *Gateway) newProxy(b *backend) *httputil.ReverseProxy {
+func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
+	g := rt.g
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// cloudflared is the only client, so keep its X-Forwarded-For
@@ -644,7 +756,7 @@ func (g *Gateway) newProxy(b *backend) *httputil.ReverseProxy {
 			}
 			switch {
 			case errors.Is(context.Cause(r.Context()), errWriteTimeout):
-				g.log.Warn("write timed out", "backend", b.name, "method", r.Method, "path", r.URL.Path,
+				rt.log.Warn("write timed out", "backend", b.name, "method", r.Method, "path", r.URL.Path,
 					"writeTimeout", g.cfg.WriteTimeout.String())
 				w.Header().Set(headerBackend, b.name)
 				writeError(w, http.StatusGatewayTimeout, "backend_timeout",
@@ -655,7 +767,7 @@ func (g *Gateway) newProxy(b *backend) *httputil.ReverseProxy {
 					sw.code = statusClientClosed
 				}
 			default:
-				g.log.Warn("proxy error", "backend", b.name, "method", r.Method, "path", r.URL.Path, "err", err)
+				rt.log.Warn("proxy error", "backend", b.name, "method", r.Method, "path", r.URL.Path, "err", err)
 				w.Header().Set(headerBackend, b.name)
 				writeError(w, http.StatusBadGateway, "bad_gateway", "backend "+b.name+" did not answer")
 			}
@@ -672,12 +784,12 @@ var errWriteTimeout = errors.New("write timeout")
 // forward proxies r to b. retry is the retryWriter of a first read attempt
 // (nil otherwise): when it discarded the answer, the attempt is counted as
 // retried, not as a failure the client saw.
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b *backend, class string, retry *retryWriter) {
+func (rt *router) forward(w http.ResponseWriter, r *http.Request, b *backend, class string, retry *retryWriter) {
 	if class == classWrite {
 		// A write stays in flight until the backend answers, even when its
 		// client leaves: the backend may still commit it, and hold must wait
 		// for that. The timeout also gives ReverseProxy a context it can end.
-		ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(r.Context()), g.cfg.WriteTimeout, errWriteTimeout)
+		ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(r.Context()), rt.g.cfg.WriteTimeout, errWriteTimeout)
 		defer cancel()
 		r = r.WithContext(context.WithValue(ctx, clientCtxKey{}, r.Context()))
 	}
@@ -689,8 +801,8 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b *backend, cl
 		d := time.Since(start)
 		code := sw.status()
 		b.stats.record(time.Now(), d, code >= 500, retry != nil && retry.failed)
-		g.metrics.requests.WithLabelValues(b.name, class, strconv.Itoa(code)).Inc()
-		g.metrics.duration.WithLabelValues(b.name, class).Observe(d.Seconds())
+		rt.metrics.requests.WithLabelValues(b.name, class, strconv.Itoa(code)).Inc()
+		rt.metrics.duration.WithLabelValues(b.name, class).Observe(d.Seconds())
 	}()
 	b.proxy.ServeHTTP(sw, r)
 }
@@ -727,15 +839,21 @@ func (w *statusWriter) status() int {
 	return w.code
 }
 
-// Run checks backend health every HealthInterval until ctx ends.
+// Run checks backend health every HealthInterval until ctx ends, for every
+// app registered at the time of each round.
 func (g *Gateway) Run(ctx context.Context) {
 	client := &http.Client{Transport: g.cfg.Transport, Timeout: healthTimeout}
 	t := time.NewTicker(g.cfg.HealthInterval)
 	defer t.Stop()
 	for {
 		var wg sync.WaitGroup
-		for _, b := range g.backends {
-			wg.Go(func() { g.checkBackend(ctx, client, b) })
+		for _, rt := range g.routers() {
+			rt.mu.Lock()
+			backends := rt.backends
+			rt.mu.Unlock()
+			for _, b := range backends {
+				wg.Go(func() { rt.checkBackend(ctx, client, b) })
+			}
 		}
 		wg.Wait()
 		select {
@@ -746,8 +864,8 @@ func (g *Gateway) Run(ctx context.Context) {
 	}
 }
 
-func (g *Gateway) checkBackend(ctx context.Context, client *http.Client, b *backend) {
-	err := probe(ctx, client, b.url.JoinPath(g.cfg.HealthPath).String())
+func (rt *router) checkBackend(ctx context.Context, client *http.Client, b *backend) {
+	err := probe(ctx, client, b.url.JoinPath(rt.g.cfg.HealthPath).String())
 	if ctx.Err() != nil {
 		return // shutting down; keep the last real result
 	}
@@ -761,9 +879,9 @@ func (g *Gateway) checkBackend(ctx context.Context, client *http.Client, b *back
 	b.hmu.Unlock()
 	if was := b.healthy.Swap(err == nil); was != (err == nil) {
 		if err != nil {
-			g.log.Warn("backend unhealthy", "backend", b.name, "err", msg)
+			rt.log.Warn("backend unhealthy", "backend", b.name, "err", msg)
 		} else {
-			g.log.Info("backend healthy", "backend", b.name)
+			rt.log.Info("backend healthy", "backend", b.name)
 		}
 	}
 }

@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -24,6 +26,9 @@ const (
 	DefaultWriteTimeout   = 2 * time.Minute
 	DefaultHealthInterval = 2 * time.Second
 	DefaultHealthPath     = "/healthz"
+	// DefaultAppName names the app that Config.Backends serve
+	// (app.hopcharlie.dev).
+	DefaultAppName = "app"
 )
 
 // BackendConfig is one environment the gateway can send traffic to.
@@ -44,6 +49,15 @@ type Config struct {
 	StateFile string
 	// AdminToken guards the admin API. Empty disables auth.
 	AdminToken string
+	// AppDomain turns on host routing: Host <app>.<AppDomain> goes to the app
+	// registered as <app> through the admin API, and is answered 404 when
+	// there is none. Any other host goes to the default app. Empty sends
+	// every request to the default app.
+	AppDomain string
+	// DefaultApp names the app that Backends serve: <DefaultApp>.<AppDomain>
+	// reaches it, and so does /apps/<DefaultApp> on the admin API. Empty
+	// means DefaultAppName.
+	DefaultApp string
 
 	DrainTimeout time.Duration // how long hold waits for in-flight writes
 	// MaxHold is how long one write may wait for release before it gets 503
@@ -65,7 +79,13 @@ type Config struct {
 	Transport http.RoundTripper
 }
 
-var backendName = regexp.MustCompile(`^[a-z0-9-]+$`)
+var (
+	backendName = regexp.MustCompile(`^[a-z0-9-]+$`)
+	// appName is one DNS label, so <app>.<domain> is a valid host name.
+	appName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
+	// domainLabel is one label of AppDomain.
+	domainLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+)
 
 // ParseBackends parses "gke=http://a,eks=http://b".
 func ParseBackends(s string) ([]BackendConfig, error) {
@@ -81,26 +101,67 @@ func ParseBackends(s string) ([]BackendConfig, error) {
 			return nil, fmt.Errorf("backend %q: want name=url", part)
 		}
 		name = strings.TrimSpace(name)
-		if !backendName.MatchString(name) {
-			return nil, fmt.Errorf("backend name %q: must match %s", name, backendName)
-		}
 		if seen[name] {
 			return nil, fmt.Errorf("backend %q listed twice", name)
 		}
-		u, err := url.Parse(strings.TrimSpace(raw))
+		bc, err := parseBackend(name, strings.TrimSpace(raw))
 		if err != nil {
-			return nil, fmt.Errorf("backend %s: %w", name, err)
-		}
-		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return nil, fmt.Errorf("backend %s: url %q must be http(s)://host", name, raw)
+			return nil, err
 		}
 		seen[name] = true
-		out = append(out, BackendConfig{Name: name, URL: u})
+		out = append(out, bc)
 	}
 	if len(out) == 0 {
 		return nil, errors.New("no backends configured")
 	}
 	return out, nil
+}
+
+// parseBackendMap parses a registered app's backends (name to URL), in name
+// order.
+func parseBackendMap(m map[string]string) ([]BackendConfig, error) {
+	if len(m) == 0 {
+		return nil, errors.New("no backends")
+	}
+	out := make([]BackendConfig, 0, len(m))
+	for _, name := range slices.Sorted(maps.Keys(m)) {
+		bc, err := parseBackend(name, m[name])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, bc)
+	}
+	return out, nil
+}
+
+func parseBackend(name, raw string) (BackendConfig, error) {
+	if !backendName.MatchString(name) {
+		return BackendConfig{}, fmt.Errorf("backend name %q: must match %s", name, backendName)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return BackendConfig{}, fmt.Errorf("backend %s: %w", name, err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return BackendConfig{}, fmt.Errorf("backend %s: url %q must be http(s)://host", name, raw)
+	}
+	return BackendConfig{Name: name, URL: u}, nil
+}
+
+// checkApps validates DefaultApp and AppDomain (after setDefaults).
+func (c *Config) checkApps() error {
+	if !appName.MatchString(c.DefaultApp) {
+		return fmt.Errorf("default app name %q: must match %s", c.DefaultApp, appName)
+	}
+	if c.AppDomain == "" {
+		return nil
+	}
+	for _, l := range strings.Split(c.AppDomain, ".") {
+		if !domainLabel.MatchString(l) {
+			return fmt.Errorf("app domain %q: want a host name such as hopcharlie.dev", c.AppDomain)
+		}
+	}
+	return nil
 }
 
 func (c *Config) setDefaults() {
@@ -122,6 +183,11 @@ func (c *Config) setDefaults() {
 	if c.HealthPath == "" {
 		c.HealthPath = DefaultHealthPath
 	}
+	if c.DefaultApp == "" {
+		c.DefaultApp = DefaultAppName
+	}
+	// Host names are case-insensitive, and a trailing dot is the DNS root.
+	c.AppDomain = strings.Trim(strings.ToLower(strings.TrimSpace(c.AppDomain)), ".")
 	if c.Log == nil {
 		c.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}

@@ -24,12 +24,31 @@ func (g *Gateway) adminMux() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, apiv1.Health{Status: "ok"})
 	})
-	mux.Handle("GET /metrics", promhttp.HandlerFor(g.metrics.reg, promhttp.HandlerOpts{}))
-	mux.HandleFunc("GET /v1/state", g.auth(g.handleState))
-	mux.HandleFunc("POST /v1/writes/hold", g.auth(g.handleHold))
-	mux.HandleFunc("POST /v1/writes/release", g.auth(g.handleRelease))
-	mux.HandleFunc("POST /v1/route", g.auth(g.handleRoute))
-	mux.HandleFunc("POST /v1/weights", g.auth(g.handleWeights))
+	mux.Handle("GET /metrics", promhttp.HandlerFor(g.prom.reg, promhttp.HandlerOpts{}))
+	// The default app's API, and the same API for any app under
+	// /apps/{app}, which therefore works as a gateway base URL (engine,
+	// Client.App).
+	perApp := []struct {
+		pattern string
+		h       func(*router, http.ResponseWriter, *http.Request)
+	}{
+		{"GET /v1/state", (*router).handleState},
+		{"POST /v1/writes/hold", (*router).handleHold},
+		{"POST /v1/writes/release", (*router).handleRelease},
+		{"POST /v1/route", (*router).handleRoute},
+		{"POST /v1/weights", (*router).handleWeights},
+	}
+	for _, e := range perApp {
+		method, path, _ := strings.Cut(e.pattern, " ")
+		mux.HandleFunc(e.pattern, g.auth(func(w http.ResponseWriter, r *http.Request) { e.h(g.router, w, r) }))
+		mux.HandleFunc(method+" /apps/{app}"+path, g.auth(g.scoped(e.h)))
+	}
+	mux.HandleFunc("GET /apps/{app}/healthz", g.auth(g.scoped(func(_ *router, w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, apiv1.Health{Status: "ok"})
+	})))
+	mux.HandleFunc("GET /apps", g.auth(g.handleListApps))
+	mux.HandleFunc("PUT /apps/{app}", g.auth(g.handlePutApp))
+	mux.HandleFunc("DELETE /apps/{app}", g.auth(g.handleDeleteApp))
 	return mux
 }
 
@@ -54,132 +73,130 @@ func (g *Gateway) auth(h http.HandlerFunc) http.HandlerFunc {
 // LSN right after. The hold is all or nothing: the engine treats writes as
 // held only after a 200 (and releases nothing otherwise), so a hold that does
 // not drain in time is reverted before answering.
-func (g *Gateway) handleHold(w http.ResponseWriter, r *http.Request) {
+func (rt *router) handleHold(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	g.mu.Lock()
-	changed := !g.held
+	rt.mu.Lock()
+	changed := !rt.held
 	if changed {
-		g.startHoldLocked(start)
+		rt.startHoldLocked(start)
 	}
-	id := g.gen.id
-	inFlight := g.inflightWrites
-	snap := g.snapshotLocked()
-	g.mu.Unlock()
+	id := rt.gen.id
+	inFlight := rt.inflightWrites
+	rt.mu.Unlock()
 	if changed {
-		g.save(snap)
+		rt.g.save()
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), g.cfg.DrainTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), rt.g.cfg.DrainTimeout)
 	defer cancel()
-	drainErr := g.waitWritesDrained(ctx)
+	drainErr := rt.waitWritesDrained(ctx)
 
-	g.mu.Lock()
-	if g.gen == nil || g.gen.id != id {
+	rt.mu.Lock()
+	if rt.gen == nil || rt.gen.id != id {
 		// Released (or released and held again) while draining: this call's
 		// hold is over, so it must not report writes as held.
-		g.mu.Unlock()
-		g.log.Warn("admin action", "action", "hold", "changed", changed, "hold", id, "result", "hold_cancelled",
+		rt.mu.Unlock()
+		rt.log.Warn("admin action", "action", "hold", "changed", changed, "hold", id, "result", "hold_cancelled",
 			"waitedMillis", time.Since(start).Milliseconds())
 		writeError(w, http.StatusConflict, "hold_cancelled", "the hold was released before in-flight writes drained")
 		return
 	}
-	if g.inflightWrites == 0 {
+	if rt.inflightWrites == 0 {
 		// While a hold is on nothing new is forwarded, so this stays true
 		// until release.
-		g.mu.Unlock()
-		g.log.Info("admin action", "action", "hold", "changed", changed, "hold", id, "result", "ok",
+		rt.mu.Unlock()
+		rt.log.Info("admin action", "action", "hold", "changed", changed, "hold", id, "result", "ok",
 			"inFlightAtHold", inFlight, "drainMillis", time.Since(start).Milliseconds())
-		writeJSON(w, http.StatusOK, g.state(defaultWindow))
+		writeJSON(w, http.StatusOK, rt.state(defaultWindow))
 		return
 	}
 	// Drain timeout, or the caller left. Revert. The engine routes only after
 	// a successful hold, so the write backend is still the one the in-flight
 	// writes went to, and the waiting writes can safely follow them.
-	left := g.inflightWrites
-	gen := g.releaseLocked()
+	left := rt.inflightWrites
+	gen := rt.releaseLocked()
 	// Read under the lock: released writes decrement gen.pending as they go.
 	released, backend := gen.pending, gen.backend.name
-	snap = g.snapshotLocked()
-	g.mu.Unlock()
-	g.save(snap)
-	g.log.Warn("admin action", "action", "hold", "changed", changed, "hold", id, "result", "drain_timeout",
+	rt.mu.Unlock()
+	rt.g.save()
+	rt.log.Warn("admin action", "action", "hold", "changed", changed, "hold", id, "result", "drain_timeout",
 		"reverted", true, "err", drainErr, "inFlightAtHold", inFlight, "inFlightLeft", left,
 		"released", released, "backend", backend, "waitedMillis", time.Since(start).Milliseconds())
 	writeError(w, http.StatusGatewayTimeout, "drain_timeout",
 		fmt.Sprintf("%d in-flight writes did not finish within %s; the hold was reverted and writes flow to %s again",
-			left, g.cfg.DrainTimeout, backend))
+			left, rt.g.cfg.DrainTimeout, backend))
 }
 
 // handleRelease is idempotent. Held writes go to the write backend as it is
 // now, so route-then-release sends them to the new backend.
-func (g *Gateway) handleRelease(w http.ResponseWriter, r *http.Request) {
+func (rt *router) handleRelease(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	g.mu.Lock()
-	if !g.held {
-		g.mu.Unlock()
-		g.log.Info("admin action", "action", "release", "changed", false)
-		writeJSON(w, http.StatusOK, g.state(defaultWindow))
+	rt.mu.Lock()
+	if !rt.held {
+		rt.mu.Unlock()
+		rt.log.Info("admin action", "action", "release", "changed", false)
+		writeJSON(w, http.StatusOK, rt.state(defaultWindow))
 		return
 	}
-	heldFor := start.Sub(g.heldSince)
-	gen := g.releaseLocked()
+	heldFor := start.Sub(rt.heldSince)
+	gen := rt.releaseLocked()
 	n := gen.pending
-	snap := g.snapshotLocked()
-	g.mu.Unlock()
-	g.save(snap)
+	rt.mu.Unlock()
+	rt.g.save()
 
 	select {
 	case <-gen.dispatched:
 	case <-r.Context().Done():
 		// The caller left; the writes are dispatched regardless.
 	}
-	g.log.Info("admin action", "action", "release", "changed", true, "backend", gen.backend.name,
+	rt.log.Info("admin action", "action", "release", "changed", true, "backend", gen.backend.name,
 		"released", n, "heldMillis", heldFor.Milliseconds(), "dispatchMillis", time.Since(start).Milliseconds())
-	writeJSON(w, http.StatusOK, g.state(defaultWindow))
+	writeJSON(w, http.StatusOK, rt.state(defaultWindow))
 }
 
-func (g *Gateway) handleRoute(w http.ResponseWriter, r *http.Request) {
+func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
 	var req apiv1.RouteRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if _, ok := g.byName[req.Backend]; !ok {
+	rt.mu.Lock()
+	if _, ok := rt.byName[req.Backend]; !ok {
+		names := rt.namesLocked()
+		rt.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "unknown_backend",
-			fmt.Sprintf("unknown backend %q (configured: %s)", req.Backend, strings.Join(g.names(), ", ")))
+			fmt.Sprintf("unknown backend %q (configured: %s)", req.Backend, strings.Join(names, ", ")))
 		return
 	}
-	g.mu.Lock()
-	prev, held := g.writeBackend, g.held
-	g.writeBackend = req.Backend
-	g.readWeights = g.weightsAllTo(req.Backend)
-	snap := g.snapshotLocked()
-	g.mu.Unlock()
-	g.save(snap)
-	g.log.Info("admin action", "action", "route", "backend", req.Backend, "previous", prev, "writesHeld", held)
-	writeJSON(w, http.StatusOK, g.state(defaultWindow))
+	prev, held := rt.writeBackend, rt.held
+	rt.writeBackend = req.Backend
+	rt.readWeights = rt.weightsAllToLocked(req.Backend)
+	rt.mu.Unlock()
+	rt.g.save()
+	rt.log.Info("admin action", "action", "route", "backend", req.Backend, "previous", prev, "writesHeld", held)
+	writeJSON(w, http.StatusOK, rt.state(defaultWindow))
 }
 
-func (g *Gateway) handleWeights(w http.ResponseWriter, r *http.Request) {
+func (rt *router) handleWeights(w http.ResponseWriter, r *http.Request) {
 	var req apiv1.WeightsRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := g.validateWeights(req.ReadWeights); err != nil {
+	rt.mu.Lock()
+	if err := validateWeights(req.ReadWeights, rt.namesLocked()); err != nil {
+		rt.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "invalid_weights", err.Error())
 		return
 	}
-	g.mu.Lock()
-	prev := g.readWeights
-	g.readWeights = g.fullWeights(req.ReadWeights)
-	next := g.readWeights
-	snap := g.snapshotLocked()
-	g.mu.Unlock()
-	g.save(snap)
-	g.log.Info("admin action", "action", "weights", "readWeights", next, "previous", prev)
-	writeJSON(w, http.StatusOK, g.state(defaultWindow))
+	prev := rt.readWeights
+	rt.readWeights = rt.fullWeightsLocked(req.ReadWeights)
+	next := rt.readWeights
+	rt.mu.Unlock()
+	rt.g.save()
+	rt.log.Info("admin action", "action", "weights", "readWeights", next, "previous", prev)
+	writeJSON(w, http.StatusOK, rt.state(defaultWindow))
 }
 
-func (g *Gateway) handleState(w http.ResponseWriter, r *http.Request) {
+func (rt *router) handleState(w http.ResponseWriter, r *http.Request) {
 	window := defaultWindow
 	if v := r.URL.Query().Get("window"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -190,34 +207,35 @@ func (g *Gateway) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 		window = d
 	}
-	writeJSON(w, http.StatusOK, g.state(window))
+	writeJSON(w, http.StatusOK, rt.state(window))
 }
 
 // state builds the TrafficState with stats over window (whole seconds).
-func (g *Gateway) state(window time.Duration) apiv1.TrafficState {
+func (rt *router) state(window time.Duration) apiv1.TrafficState {
 	now := time.Now()
 	secs := int(window / time.Second)
-	g.mu.Lock()
+	rt.mu.Lock()
+	backends := rt.backends
 	st := apiv1.TrafficState{
-		WriteBackend: g.writeBackend,
-		ReadWeights:  maps.Clone(g.readWeights),
-		WritesHeld:   g.held,
-		HeldWrites:   g.waitingLocked(),
-		MaxHold:      g.cfg.MaxHold.String(),
-		InFlight:     apiv1.InFlight{Writes: g.inflightWrites},
-		Backends:     make([]apiv1.BackendState, 0, len(g.backends)),
-		Stats:        make(map[string]apiv1.BackendStats, len(g.backends)),
-		Totals:       make(map[string]apiv1.BackendTotals, len(g.backends)),
+		WriteBackend: rt.writeBackend,
+		ReadWeights:  maps.Clone(rt.readWeights),
+		WritesHeld:   rt.held,
+		HeldWrites:   rt.waitingLocked(),
+		MaxHold:      rt.g.cfg.MaxHold.String(),
+		InFlight:     apiv1.InFlight{Writes: rt.inflightWrites},
+		Backends:     make([]apiv1.BackendState, 0, len(backends)),
+		Stats:        make(map[string]apiv1.BackendStats, len(backends)),
+		Totals:       make(map[string]apiv1.BackendTotals, len(backends)),
 		UpdatedAt:    now.UTC(),
 	}
-	if g.held {
-		hs := g.heldSince.UTC()
+	if rt.held {
+		hs := rt.heldSince.UTC()
 		st.HeldSince = &hs
 	}
-	g.mu.Unlock()
-	st.InFlight.Reads = int(g.inflightReads.Load())
+	rt.mu.Unlock()
+	st.InFlight.Reads = int(rt.inflightReads.Load())
 
-	for _, b := range g.backends {
+	for _, b := range backends {
 		bs := apiv1.BackendState{Name: b.name, Url: b.url.Redacted(), Healthy: b.healthy.Load()}
 		b.hmu.Lock()
 		if !b.lastCheck.IsZero() {
@@ -236,11 +254,12 @@ func (g *Gateway) state(window time.Duration) apiv1.TrafficState {
 	return st
 }
 
-func (g *Gateway) validateWeights(w map[string]int) error {
+// validateWeights checks read weights against the backend names.
+func validateWeights(w map[string]int, names []string) error {
 	sum := 0
 	for _, name := range slices.Sorted(maps.Keys(w)) {
-		if _, ok := g.byName[name]; !ok {
-			return fmt.Errorf("unknown backend %q (configured: %s)", name, strings.Join(g.names(), ", "))
+		if !slices.Contains(names, name) {
+			return fmt.Errorf("unknown backend %q (configured: %s)", name, strings.Join(names, ", "))
 		}
 		if w[name] < 0 {
 			return fmt.Errorf("weight for %s is negative", name)
@@ -253,23 +272,23 @@ func (g *Gateway) validateWeights(w map[string]int) error {
 	return nil
 }
 
-// fullWeights lists every configured backend so the state and metrics show
-// zeros explicitly.
-func (g *Gateway) fullWeights(w map[string]int) map[string]int {
-	out := make(map[string]int, len(g.backends))
-	for _, b := range g.backends {
+// fullWeightsLocked lists every configured backend so the state and metrics
+// show zeros explicitly.
+func (rt *router) fullWeightsLocked(w map[string]int) map[string]int {
+	out := make(map[string]int, len(rt.backends))
+	for _, b := range rt.backends {
 		out[b.name] = w[b.name]
 	}
 	return out
 }
 
-func (g *Gateway) weightsAllTo(name string) map[string]int {
-	return g.fullWeights(map[string]int{name: 100})
+func (rt *router) weightsAllToLocked(name string) map[string]int {
+	return rt.fullWeightsLocked(map[string]int{name: 100})
 }
 
-func (g *Gateway) names() []string {
-	out := make([]string, len(g.backends))
-	for i, b := range g.backends {
+func (rt *router) namesLocked() []string {
+	out := make([]string, len(rt.backends))
+	for i, b := range rt.backends {
 		out[i] = b.name
 	}
 	return out
