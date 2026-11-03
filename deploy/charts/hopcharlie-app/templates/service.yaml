@@ -1,0 +1,24 @@
+{{- $public := .Values.profile.publicService }}
+{{- range $svc := .Values.values.services }}
+{{- $ctx := dict "root" $ "svc" $svc }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-%s" $.Values.values.app $svc.name }}
+  labels:
+    {{- include "hopcharlie-app.labels" $ctx | nindent 4 }}
+  {{- if and $svc.public $public.annotations }}
+  annotations:
+    {{- toYaml $public.annotations | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ ternary ($public.type | default "ClusterIP") "ClusterIP" ($svc.public | default false) }}
+  selector:
+    {{- include "hopcharlie-app.selectorLabels" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $svc.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

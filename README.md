@@ -244,7 +244,7 @@ PLATFORM_TEST_DATABASE_URL='postgres://charlie:charlie@localhost:55432/charlie?s
 
 ### CI
 
-PR과 main push마다 GitHub Actions(`.github/workflows/ci.yml`)가 vet, gofmt, 생성 코드 확인, `go test -race`(PostgreSQL 포함), 셸 `bash -n`, AWS 접속 없는 Terraform output 호환 테스트를 돌립니다. Terraform fmt와 validate는 infra 레포 CI가 담당합니다.
+PR과 main push마다 GitHub Actions(`.github/workflows/ci.yml`)가 vet, gofmt, 생성 코드 확인, `go test -race`(PostgreSQL 포함, `test/charts`의 helm lint와 helm template 포함), 셸 `bash -n`, AWS 접속 없는 Terraform output 호환 테스트를 돌립니다. Terraform fmt와 validate는 infra 레포 CI가 담당합니다.
 
 - PR 검사는 1분 안에 끝나는 것이 목표입니다. main push만 Go 캐시를 저장하고, PR은 그 캐시로 바뀐 패키지만 다시 컴파일합니다. 테스트도 입력이 바뀐 패키지만 다시 돌립니다(go test 결과 캐시).
 - `go.sum`이 바뀐 PR도 main의 최근 캐시에서 시작하므로, 바뀐 의존성만 새로 컴파일하는 만큼 더 걸립니다. 캐시가 전혀 없을 때(새 레포, 캐시 만료)는 client-go와 AWS SDK를 처음부터 컴파일하느라 약 10분 걸립니다.
@@ -256,6 +256,14 @@ kind 안의 CNPG 클러스터 두 개를 게이트웨이 부하 속에서 플랫
 
 ```bash
 test/e2e/run.sh          # KEEP=1이면 끝난 뒤에도 남기고, test/e2e/down.sh로 지움
+```
+
+### 배포 E2E
+
+앱 차트 `deploy/charts/hopcharlie-app`과 AppProject, ApplicationSet `deploy/argocd`를 kind의 Argo CD v3.5.3에 올리고, gitops 파일을 커밋해 앱이 뜨고 바뀌고 지워지는지 봅니다. 헬스 체크가 실패하는 버전을 배포해도 게이트웨이 요청이 실패하지 않는지도 봅니다. 자세한 내용은 [test/e2e/deploy/README.md](test/e2e/deploy/README.md)에 있습니다.
+
+```bash
+test/e2e/deploy/run.sh   # KEEP=1이면 끝난 뒤에도 남기고, test/e2e/deploy/down.sh로 지움
 ```
 
 ## 알려진 한계

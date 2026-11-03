@@ -1,0 +1,78 @@
+{{- /* The namespace's own limits (profile.quota, limitRange, networkPolicy). */}}
+{{- $p := .Values.profile }}
+{{- if $p.quota.enabled }}
+{{- if not $p.quota.hard }}
+{{- fail "profile.quota.hard is required with profile.quota.enabled" }}
+{{- end }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: hopcharlie-app
+  labels:
+    {{- include "hopcharlie-app.namespaceLabels" . | nindent 4 }}
+spec:
+  hard:
+    {{- toYaml $p.quota.hard | nindent 4 }}
+{{- end }}
+{{- if $p.limitRange.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: hopcharlie-app
+  labels:
+    {{- include "hopcharlie-app.namespaceLabels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      {{- with $p.limitRange.default }}
+      default:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.limitRange.defaultRequest }}
+      defaultRequest:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.limitRange.max }}
+      max:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- $np := $p.networkPolicy }}
+{{- if $np.enabled }}
+---
+# Every pod of the namespace: in from the namespace, the CNPG operator and
+# the gateway; out to the namespace, DNS, TCP 443 and extraEgress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hopcharlie-app
+  labels:
+    {{- include "hopcharlie-app.namespaceLabels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.operatorNamespace | default "cnpg-system" }}
+    {{- with $np.gatewayFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+  egress:
+    - to:
+        - podSelector: {}
+    - ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - ports:
+        - { protocol: TCP, port: 443 }
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,41 @@
+# ADR 0011's example gitops file (moimroom with a database and a bucket)
+# with a production-like profile, guardrails on.
+app: "moimroom"
+env: "eks"
+namespace: "moimroom"
+commit: "0f2fa18d0c2e4a1b9f3e5d7c6b8a9e0f1a2b3c4d"
+deployment: "dep-2"
+values:
+  app: "moimroom"
+  services:
+    - {name: "web", image: "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/hopcharlie/apps/moimroom/web@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", port: 8080, healthCheck: "/healthz", public: true, replicas: 1, env: {"LOG_LEVEL": "info"}}
+  resources:
+    - {name: "db", type: "postgres"}
+    - {name: "photos", type: "s3"}
+profile:
+  publicService:
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+      service.beta.kubernetes.io/aws-load-balancer-type: external
+  imagePullSecrets: [ecr-pull]
+  progressDeadlineSeconds: 300
+  postgres: {storageSize: 2Gi, storageClass: gp3}
+  s3:
+    endpoint: https://s3.ap-northeast-2.amazonaws.com
+    region: ap-northeast-2
+    pathStyle: false
+    bucketPrefix: hopcharlie-eks-
+    credentialsSecret: app-s3
+  quota:
+    enabled: true
+    hard: {requests.cpu: "2", requests.memory: 4Gi, limits.memory: 8Gi, pods: "20", persistentvolumeclaims: "4", requests.storage: 20Gi, services.loadbalancers: "1"}
+  limitRange:
+    enabled: true
+    default: {memory: 256Mi}
+    defaultRequest: {cpu: 50m, memory: 64Mi}
+  networkPolicy:
+    enabled: true
+    gatewayFrom:
+      - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: charlie-platform}}
+      - ipBlock: {cidr: 10.0.0.0/16}

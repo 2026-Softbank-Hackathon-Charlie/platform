@@ -1,0 +1,50 @@
+# The AppProject and ApplicationSet that turn each gitops file
+# apps/<instance>/<env>.yaml into the Argo CD Application <namespace>-<env>:
+# the hopcharlie-app chart rendered with the file as a values file and the
+# environment's profile, in the file's namespace of the environment's cluster.
+# For one deploy per app, the instance and the namespace are the app's name.
+
+# Where Argo CD runs; the AppProject and the ApplicationSet go here.
+argocdNamespace: argocd
+
+# Name of the AppProject and of the ApplicationSet. The platform refreshes
+# the ApplicationSet by this name (PLATFORM_ARGOCD_APPSET).
+name: hopcharlie-apps
+
+# The repository the platform commits apps/<instance>/<env>.yaml to.
+gitops:
+  repoURL: https://github.com/2026-Softbank-Hackathon-Charlie/gitops.git
+  revision: main
+  # Seconds between reads of the repository for new and removed files. The
+  # platform also asks for a refresh after each commit; 0 is Argo CD's
+  # default (3 minutes).
+  requeueAfterSeconds: 30
+
+# Where the hopcharlie-app chart is.
+chart:
+  repoURL: https://github.com/2026-Softbank-Hackathon-Charlie/infra.git
+  revision: main
+  path: helm/charts/hopcharlie-app
+
+# Namespaces no app may use, in every environment's cluster: Kubernetes',
+# Argo CD's, the CNPG operator's and the platform's. Any other namespace is
+# allowed, so a new app needs no change here.
+deniedNamespaces:
+  - argocd
+  - charlie-platform
+  - charlie-system
+  - cnpg-system
+  - default
+  - kube-node-lease
+  - kube-public
+  - kube-system
+  - observability
+
+# Environment name (the <env> of apps/<instance>/<env>.yaml) to its cluster
+# and the hopcharlie-app profile there. Files of an environment that is not
+# listed create no Application.
+#
+#   eks:
+#     cluster: {server: https://kubernetes.default.svc}  # or {name: <Argo CD cluster name>}
+#     profile: {...}                                     # see the chart's values.yaml
+environments: {}
