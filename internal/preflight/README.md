@@ -1,14 +1,26 @@
 # Preflight 코어
 
-**현재 승인·이전·재개·롤백 API에는 연결되지 않은 독립 패키지다. 이 코드만으로 운영 이전이 차단되지는 않는다.**
+**레지던시는 서버에 `PLATFORM_RESIDENCY_POLICY_FILE`이 있을 때 새 run 시작(`plans.Service.Reserve`)을 막는다. 재개는 검사하지 않고 롤백은 면제다. 동등성은 아직 어느 실행 경로에도 연결되지 않았다.**
 
-물리 복제의 레지던시 판정과 동등성 검사의 작은 코어부터 검증한다. 엔진·plans·runs·store에 의존하지 않으며, 새 서비스나 별도 Go 모듈을 만들지 않는다. 설계 근거는 [ADR 0011](../../docs/adr/0011-preflight-core.md)에 있다.
+코어(`preflight`, `residency`, `parity`, `probes`)는 엔진·plans·runs·store에 의존하지 않는다. `inventory`는 원본 DB의 시스템 카탈로그만 읽는 수집기이고, `gate`는 엔진 Plan을 레지던시 요청으로 바꾸는 접착 코드다. 설계 근거는 [ADR 0011](../../docs/adr/0011-preflight-core.md)(코어)과 [ADR 0013](../../docs/adr/0013-residency-start-gate.md)(시작 게이트)에 있다.
+
+## 시작 게이트 흐름
+
+1. 운영자가 `POST /v1/migrations` 또는 롤백을 요청한다.
+2. `Reserve`가 Plan을 다시 해석하고 비밀번호를 확장한다.
+3. 롤백 Plan이면 검사하지 않고 넘어간다(`rollback_exempt`).
+4. `files`가 있으면 원본·대상 버킷을 함께 판정 요청에 넣는다. 정책의 `buckets`에 등록되지 않은 버킷은 `unregistered_bucket`, 원본 버킷 분류가 대상 버킷 국가를 허용하지 않으면 `bucket_country_not_allowed`다. 버킷 위치는 운영자가 선언한 값이고 클라우드에서 조회하지 않는다.
+5. `inventory.Collector`가 확장된 `source.dsn`으로 모든 DB를 순회해 테이블·파티션·구체화 뷰 목록을 만든다. 목록이 불완전하면 거부한다(`inventory_incomplete`, `inventory:<code>`).
+6. 내장 Rego가 catalog와 대조한다.
+7. 거부되면 Plan은 `approved`로 돌아가고 409 `residency_denied`를 반환한다. 사유와 policy digest는 감사 로그에 남는다.
 
 ## 구현 범위
 
 | 부분 | 구현 | 아직 하지 않는 것 |
 |---|---|---|
-| `residency` | 실제 내장 OPA/Rego, catalog/환경 설정 검증, 전체 클러스터 국가 제약 판정, 정책 digest | live inventory 수집, 실행 Plan 해시, 결과 저장/승인/실행 게이트 |
+| `residency` | 실제 내장 OPA/Rego, catalog/환경 설정 검증, 전체 클러스터 국가 제약 판정, 정책 digest | 실행 Plan 해시, 결과 저장, 승인 화면 미리보기 |
+| `inventory` | 실제 PostgreSQL 카탈로그 조회로 모든 DB의 테이블·파티션·구체화 뷰 수집, 접속 불가 DB·대용량 객체·미지원 식별자·timeout은 불완전 | DSN이 그 CNPG 클러스터를 가리키는지의 독립 검증, 이미 존재하는 replica 감지 |
+| `gate` | Plan → 물리 복제 + 버킷 복사 요청 변환, 시작 경로 연결 | 버킷 실제 리전 조회, 경로별 버킷 분류, parity 연결 |
 | `parity` | 원본 요구 + 조직 필수 capability의 합집합, 5종 결과와 필수 검사 fail-closed | 실제 원본 dependency 자동 발견, 운영 API/UI 연결 |
 | `probes.RBAC` | 실제 Kubernetes client로 앱 SA의 허용/금지 SubjectAccessReview | 클라우드 IAM 권한, 리소스 동작 자체의 성공 |
 | `probes.Prometheus` | 실제 HTTP 조회로 앱 job의 모든 반환 타깃 `up==1`, `timestamp(up)` 기반 최근 scrape 확인 | 알림 규칙 발화·Alertmanager 도착 검증 |

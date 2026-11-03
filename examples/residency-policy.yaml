@@ -1,0 +1,28 @@
+# Residency policy (PLATFORM_RESIDENCY_POLICY_FILE). Illustrative only: the
+# environments, tables and classifications below are examples, not a reviewed
+# classification of any real service. Every environment id must exist in
+# PLATFORM_ENVS_FILE, or the server does not start.
+#
+# A migration copies the whole CNPG cluster (every database, schema and table),
+# so the strictest table decides. The server lists the source's tables itself
+# at start time; a table missing here, or listed here but missing there, denies.
+version: 1
+environments:
+  - {id: onprem, country: KR}
+  - {id: eks, country: KR}   # ap-northeast-2 (Seoul)
+  - {id: gke, country: JP}   # asia-northeast1 (Tokyo)
+# Countries "apac" data may go to. Spelled out on purpose: nothing is inferred.
+apacCountries: [KR, JP, SG, AU]
+catalog:
+  - scope: {environment: onprem, namespace: shop, cluster: shop-db}
+    datasets:
+      - {dataset: {database: app, schema: public, table: products}, label: global}
+      - {dataset: {database: app, schema: public, table: page_views}, label: apac}
+      - {dataset: {database: app, schema: public, table: customers}, label: kr-only}
+# Buckets a plan's files may copy between (optional; without an entry a plan
+# with files is denied). environment says where the bucket is stored, as you
+# declare it: nothing is looked up from the cloud. label classifies everything
+# in the bucket and applies when it is the source of a copy.
+buckets:
+  - {bucket: "s3:moimroom-photos-eks", environment: eks, label: apac}
+  - {bucket: "gcs:moimroom-photos-gke", environment: gke, label: apac}

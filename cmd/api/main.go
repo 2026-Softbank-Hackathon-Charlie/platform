@@ -26,6 +26,8 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -153,6 +155,19 @@ func main() {
 	runner := runs.New(runCtx, rcfg)
 	planSvc := plans.New(policy, st)
 	planSvc.SetStateDir(*stateDir)
+
+	// Optional: the residency policy. With it every new run (not a rollback)
+	// starts only if the source's live inventory may be copied to the target.
+	if path := os.Getenv("PLATFORM_RESIDENCY_POLICY_FILE"); path != "" {
+		g, err := residencyGate(ctx, path, envSvc.Names())
+		if err != nil {
+			fatal("PLATFORM_RESIDENCY_POLICY_FILE", "err", err)
+		}
+		planSvc.SetResidencyGate(g)
+		log.Info("residency gate enabled", "policyDigest", g.PolicyDigest())
+	} else {
+		log.Warn("PLATFORM_RESIDENCY_POLICY_FILE is not set: residency gate disabled; migrations start without a data residency check")
+	}
 
 	if n, err := planSvc.RecoverStarting(ctx); err != nil {
 		fatal("recover plans", "err", err)
@@ -289,6 +304,25 @@ func main() {
 		defer cancelFinal()
 		_ = runner.Wait(final)
 	}
+}
+
+// residencyGate loads the reviewed residency policy. Every environment it
+// names must be registered, or a typo would silently deny every migration.
+func residencyGate(ctx context.Context, path string, registered []string) (*gate.Gate, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.New("cannot read the residency policy file")
+	}
+	cfg, err := residency.ParseConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range cfg.EnvironmentIDs() {
+		if !slices.Contains(registered, id) {
+			return nil, errors.New("residency policy names environment " + id + ", which is not in PLATFORM_ENVS_FILE")
+		}
+	}
+	return gate.New(ctx, cfg, nil)
 }
 
 func envOr(k, def string) string {

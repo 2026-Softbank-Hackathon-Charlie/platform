@@ -25,7 +25,7 @@ platform/
 
 CLI는 별도 레포 [cli](https://github.com/2026-Softbank-Hackathon-Charlie/cli)에 있습니다.
 
-이전 전 동등성·레지던시의 독립 코어는 [internal/preflight](internal/preflight/README.md)에 있습니다. **아직 승인·이전 실행 API에는 연결되지 않았으며**, 구현된 검사와 미검증 범위는 해당 문서에 구분합니다.
+이전 전 동등성·레지던시 검사는 [internal/preflight](internal/preflight/README.md)에 있습니다. **레지던시는 `PLATFORM_RESIDENCY_POLICY_FILE`을 설정하면 새 run 시작을 막는 게이트로 동작합니다**([ADR 0013](docs/adr/0013-residency-start-gate.md)). 동등성은 아직 실행 경로에 연결되지 않았습니다. 구현된 검사와 미검증 범위는 해당 문서에 구분합니다.
 
 AWS 관리 호스트, EKS Pod Identity, 상태 버킷(`state/`), ACM·Cloudflare(`dns/`)의 Terraform과 운영 호스트 설정은 [infra/terraform/platform/aws](https://github.com/2026-Softbank-Hackathon-Charlie/infra/tree/main/terraform/platform/aws)에서 관리합니다. 이 레포에는 [애플리케이션 배포 도우미](deploy/aws/README.md)와 로컬 개발 예시만 남습니다. `examples/envs.yaml`, `examples/apps.yaml`을 고쳐도 운영 설정은 바뀌지 않습니다. 운영 설정은 infra의 `terraform/platform/aws/host/envs.yaml`, `host/apps.yaml`을 고칩니다.
 
@@ -146,6 +146,7 @@ go run ./cmd/gateway
 | `RCLONE_CONFIG_<원격>_*` | rclone 원격의 종류와 자격 증명 (예: `RCLONE_CONFIG_GCS_TYPE=google cloud storage`). 등록된 버킷의 원격에 `_TYPE`이 없으면 시작할 때 경고 |
 | `PLATFORM_AWS_REGION` | 보안 뷰가 읽는 AWS 리전 (기본 `ap-northeast-2`) |
 | `PLATFORM_AGENT_IDLE` | 이벤트 없이 이 시간이 지난 `running` 에이전트 세션을 `cancelled`로 닫음 (기본 `30m`) |
+| `PLATFORM_RESIDENCY_POLICY_FILE` | 레지던시 정책 파일 ([예시](examples/residency-policy.yaml), [ADR 0013](docs/adr/0013-residency-start-gate.md)). 설정하면 새 run을 시작하기 전에 원본 전체 테이블 목록을 수집해 검사하고, 위반이면 409 `residency_denied`. `files`는 정책의 `buckets`에 등록된 버킷끼리만, 원본 버킷 분류가 대상 버킷 국가를 허용할 때만 통과. 롤백은 면제. 비우면 검사 없음(시작 시 경고) |
 | `PLATFORM_GITHUB_*`, `PLATFORM_APP_DOMAIN` | 앱을 등록하고 배포하는 GitHub App. [GitHub App 설정](#github-app-설정) 참고 |
 
 ### Plan의 환경 변수 참조

@@ -74,6 +74,30 @@ deny contains {"code": "inventory_catalog_mismatch", "movementId": m.id, "datase
 	not row.dataset in m.inventory.datasets
 }
 
+# Buckets are optional in the configuration. Their location is the declared
+# environment's country; the source bucket's label covers all of its objects.
+buckets := object.get(data.policy, "buckets", [])
+
+bucket_entry(name) := b if {
+	some b in buckets
+	b.bucket == name
+}
+
+deny contains {"code": "unregistered_bucket", "movementId": m.id, "bucket": name} if {
+	some m in input.movements
+	some name in [m.files.source, m.files.target]
+	not bucket_entry(name)
+}
+
+deny contains {"code": "bucket_country_not_allowed", "movementId": m.id, "bucket": m.files.source} if {
+	some m in input.movements
+	src := bucket_entry(m.files.source)
+	dst := bucket_entry(m.files.target)
+	some env in data.policy.environments
+	env.id == dst.environment
+	not country_allowed(src.label, env.country)
+}
+
 deny contains {"code": "country_not_allowed", "movementId": m.id, "dataset": row.dataset} if {
 	some m in input.movements
 	entry := catalog_for(m.source)
