@@ -232,6 +232,8 @@ type harness struct {
 	setup   func(*fakeEngine)      // configures the next new engine
 	newErr  error
 	n       int
+
+	webhookSecret string // Config.GitHubWebhookSecret
 }
 
 type option func(*harness, *runs.Config, *Deps)
@@ -285,7 +287,7 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	tokens.Add("op", apiv1.RoleOperator, opToken)
 	tokens.Add("ai", apiv1.RoleAgent, agentToken)
 	tokens.Add("view", apiv1.RoleViewer, viewerToken)
-	h.srv = httptest.NewServer(New(Config{Tokens: tokens, CORSOrigins: []string{"http://console.test"}}, d))
+	h.srv = httptest.NewServer(New(Config{Tokens: tokens, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret}, d))
 	t.Cleanup(func() {
 		h.srv.Close()
 		cancel()

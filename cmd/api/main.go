@@ -23,6 +23,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
@@ -189,6 +190,20 @@ func main() {
 	agents := agentlog.New(st)
 	deps.Agents = agents
 	go agents.RunSweeper(runCtx, agentIdle, log)
+	// Optional: the GitHub App that apps are registered and deployed from.
+	gh, err := github.FromEnv(os.Getenv)
+	if err != nil {
+		fatal("GitHub App", "err", err)
+	}
+	if gh != nil {
+		deps.GitHub = gh
+	} else {
+		log.Warn("PLATFORM_GITHUB_APP_ID is not set: registering apps from GitHub answers 503 github_not_configured")
+	}
+	webhookSecret := os.Getenv("PLATFORM_GITHUB_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		log.Warn("PLATFORM_GITHUB_WEBHOOK_SECRET is not set: the GitHub webhook answers 503 and pushes do not deploy")
+	}
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{
@@ -196,6 +211,9 @@ func main() {
 			Insecure:    *insecure,
 			CORSOrigins: splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
 			Log:         log,
+
+			GitHubWebhookSecret: webhookSecret,
+			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
 		}, deps),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
