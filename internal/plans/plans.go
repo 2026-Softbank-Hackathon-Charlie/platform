@@ -35,6 +35,7 @@ type Service struct {
 	stateDir string // attachments are written below it before a run (attachments.go)
 
 	residency ResidencyGate // nil: no residency policy (residency.go)
+	capacity  CapacityGate  // nil: no capacity measurement (capacity.go)
 }
 
 // New returns a Service enforcing policy.
@@ -189,6 +190,8 @@ type Reserved struct {
 	RollbackOf string
 	// Residency is what the residency gate decided.
 	Residency ResidencyCheck
+	// Capacity is what the capacity gate measured and decided.
+	Capacity CapacityCheck
 }
 
 // Reserve moves an approved plan to starting and parses it. With a residency
@@ -202,6 +205,7 @@ func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 		return Reserved{}, err
 	}
 	var check ResidencyCheck
+	var capCheck CapacityCheck
 	p, sum, err := s.parse(row.Raw) // re-parse: secrets come from the environment at start time
 	if err == nil {
 		check, err = s.checkResidency(ctx, row.RollbackOf, p)
@@ -209,11 +213,14 @@ func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 	if err == nil {
 		err = s.materialize(ctx, ref, p)
 	}
+	if err == nil { // after materialize: a new target's manifest is a local file now
+		capCheck, err = s.checkCapacity(ctx, row.RollbackOf, p)
+	}
 	if err != nil {
 		s.Release(ctx, ref)
 		return Reserved{}, err
 	}
-	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf, Residency: check}, nil
+	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf, Residency: check, Capacity: capCheck}, nil
 }
 
 // Load re-parses a started plan, for resuming its run.

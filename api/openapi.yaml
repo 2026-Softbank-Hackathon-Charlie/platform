@@ -206,8 +206,12 @@ paths:
         in the message) and the plan stays approved. A plan's `files` copy is
         allowed only between buckets the policy registers, and only when the
         source bucket's classification allows the target bucket's country.
-        Rollback plans (`rollbackOf`) are exempt.
-        Role operator.
+        Rollback plans (`rollbackOf`) are exempt. When the server measures
+        capacity, it reads the source and target for a few seconds first and
+        answers 409 `capacity_insufficient` (measured numbers in the message)
+        if the target accepts too few connections or the replica cannot catch
+        up within `thresholds.catchupTimeout`; values it cannot measure never
+        refuse. Rollback plans are exempt here too. Role operator.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -1266,7 +1270,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, residency_denied"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, residency_denied, capacity_insufficient"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
