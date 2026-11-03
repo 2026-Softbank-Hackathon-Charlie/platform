@@ -294,7 +294,7 @@ func newLoad(gw, hostCode string) *load {
 	return &load{
 		gw:       strings.TrimRight(gw, "/"),
 		hostCode: hostCode,
-		// Held writes wait up to the gateway's max hold (90s).
+		// Held writes wait up to the gateway's max hold (55s by default).
 		hc:        &http.Client{Timeout: 2 * time.Minute, Transport: &http.Transport{MaxIdleConnsPerHost: 64}},
 		byBackend: map[string]int64{},
 	}

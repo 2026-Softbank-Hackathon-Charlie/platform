@@ -18,14 +18,22 @@ import (
 // Defaults for Config fields left zero.
 const (
 	DefaultDrainTimeout = 30 * time.Second
-	// DefaultMaxHold stays under the Cloudflare origin timeout (about 100s):
-	// a held request older than that gets a 524 at the edge anyway.
-	DefaultMaxHold = 90 * time.Second
+	// DefaultMaxHold bounds how long one write waits for release. It stays
+	// under the idle timeout of the proxy in front, so a write that waits too
+	// long gets our 503 hold_timeout with Retry-After, which a client can
+	// retry, instead of the proxy's bare 504 (after which the gateway drops
+	// the write when the connection closes). An AWS ALB's idle timeout is 60s
+	// by default, Cloudflare's origin timeout about 100s. A longer hold needs
+	// both this and the proxy's timeout raised.
+	DefaultMaxHold = 55 * time.Second
 	// DefaultMaxHeld bounds held-write memory: each buffers up to 64 KiB.
 	DefaultMaxHeld        = 2000
 	DefaultWriteTimeout   = 2 * time.Minute
 	DefaultHealthInterval = 2 * time.Second
 	DefaultHealthPath     = "/healthz"
+	// DefaultConnRecycle is how often idle backend connections are closed, so
+	// the next request dials, and resolves the backend's name, again.
+	DefaultConnRecycle = 30 * time.Second
 	// DefaultAppName names the app that Config.Backends serve
 	// (app.hopcharlie.dev).
 	DefaultAppName = "app"
@@ -77,6 +85,18 @@ type Config struct {
 	// Transport reaches the backends. Nil uses a clone of the default
 	// transport with more idle connections per host.
 	Transport http.RoundTripper
+	// HealthTransport sends the health checks. Nil uses a clone of Transport
+	// (when it is an *http.Transport) without keep-alives: every check dials
+	// and resolves the backend's name, so a name that stopped resolving or an
+	// address that moved shows up within one HealthInterval, even while pooled
+	// proxy connections to the old address still work.
+	HealthTransport http.RoundTripper
+	// ConnRecycle is how often idle proxy connections are closed (Go keeps
+	// no DNS cache of its own, but a pooled connection stays on the address it
+	// was dialed to). Connections busy at that moment are closed at a later
+	// round, once idle. They are also closed whenever a backend's health
+	// changes.
+	ConnRecycle time.Duration
 }
 
 var (
@@ -194,11 +214,23 @@ func (c *Config) setDefaults() {
 	if c.Rand == nil {
 		c.Rand = rand.IntN
 	}
+	if c.ConnRecycle <= 0 {
+		c.ConnRecycle = DefaultConnRecycle
+	}
 	if c.Transport == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		// The default of 2 idle connections per host makes a busy gateway
 		// open and close connections constantly.
 		t.MaxIdleConnsPerHost = 256
+		t.IdleConnTimeout = c.ConnRecycle
 		c.Transport = t
+	}
+	if c.HealthTransport == nil {
+		c.HealthTransport = c.Transport
+		if t, ok := c.Transport.(*http.Transport); ok {
+			h := t.Clone()
+			h.DisableKeepAlives = true
+			c.HealthTransport = h
+		}
 	}
 }

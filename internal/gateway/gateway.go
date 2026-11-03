@@ -1,7 +1,9 @@
-// Package gateway is the HopCharlie traffic gateway. It sits outside every
-// cluster (behind Cloudflare Tunnel) and proxies user traffic to one backend
-// environment, and the migration engine drives it during cutover: hold writes,
-// switch backend, release writes.
+// Package gateway is the HopCharlie traffic gateway. It sits in front of every
+// environment, behind one public proxy (the shared ALB of the management
+// cluster; earlier Cloudflare Tunnel), and proxies user traffic to one backend
+// environment. The migration engine drives it during cutover: hold writes,
+// switch backend, release writes. Switching never changes public DNS, so
+// client DNS caches and TTLs play no part in a cutover.
 //
 // Reads (GET, HEAD, OPTIONS) are spread over backends by weight; every other
 // request is a write and goes to the single write backend. Admin API:
@@ -38,6 +40,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -730,10 +733,12 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 	g := rt.g
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			// cloudflared is the only client, so keep its X-Forwarded-For
-			// chain instead of replacing it with cloudflared's own address,
-			// and its X-Forwarded-Proto (https at the edge) instead of the
-			// plain http of the tunnel hop.
+			// The public proxy in front (ALB, or cloudflared) is the only
+			// client, so keep its X-Forwarded-For chain, whose last entry is
+			// the client address it saw, and append its own address after it
+			// (SetXForwarded) instead of replacing the chain. Keep its
+			// X-Forwarded-Proto (https at the edge) too, instead of the plain
+			// http of the hop to us.
 			if xff := pr.In.Header["X-Forwarded-For"]; len(xff) > 0 {
 				pr.Out.Header["X-Forwarded-For"] = xff
 			}
@@ -839,10 +844,23 @@ func (w *statusWriter) status() int {
 	return w.code
 }
 
-// Run checks backend health every HealthInterval until ctx ends, for every
-// app registered at the time of each round.
+// Run checks backend health every HealthInterval, for every app registered at
+// the time of each round, and closes idle proxy connections every
+// ConnRecycle, until ctx ends.
 func (g *Gateway) Run(ctx context.Context) {
-	client := &http.Client{Transport: g.cfg.Transport, Timeout: healthTimeout}
+	go func() {
+		t := time.NewTicker(g.cfg.ConnRecycle)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				g.recycleConns()
+			}
+		}
+	}()
+	client := &http.Client{Transport: g.cfg.HealthTransport, Timeout: healthTimeout}
 	t := time.NewTicker(g.cfg.HealthInterval)
 	defer t.Stop()
 	for {
@@ -870,10 +888,7 @@ func (rt *router) checkBackend(ctx context.Context, client *http.Client, b *back
 		return // shutting down; keep the last real result
 	}
 	now := time.Now()
-	msg := ""
-	if err != nil {
-		msg = err.Error()
-	}
+	msg := probeError(err)
 	b.hmu.Lock()
 	b.lastCheck, b.lastErr = now, msg
 	b.hmu.Unlock()
@@ -883,7 +898,31 @@ func (rt *router) checkBackend(ctx context.Context, client *http.Client, b *back
 		} else {
 			rt.log.Info("backend healthy", "backend", b.name)
 		}
+		// The backend may have moved (it failed) or come back at a new
+		// address: drop pooled connections so requests dial again.
+		rt.g.recycleConns()
 	}
+}
+
+// recycleConns closes idle proxy connections; the next request to a backend
+// dials and resolves its name again.
+func (g *Gateway) recycleConns() {
+	if t, ok := g.cfg.Transport.(interface{ CloseIdleConnections() }); ok {
+		t.CloseIdleConnections()
+	}
+}
+
+// probeError describes a failed health check. A name that does not resolve
+// is called out, since the fix is in DNS, not in the backend.
+func probeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return "dns: " + dns.Error()
+	}
+	return err.Error()
 }
 
 func probe(ctx context.Context, client *http.Client, u string) error {

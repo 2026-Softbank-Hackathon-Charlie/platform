@@ -257,7 +257,7 @@ type load struct {
 func newLoad(gw string) *load {
 	return &load{
 		gw: strings.TrimRight(gw, "/"),
-		// Held writes wait up to the gateway's -max-hold (90s).
+		// Held writes wait up to the gateway's -max-hold (55s by default).
 		hc:        &http.Client{Timeout: 2 * time.Minute, Transport: &http.Transport{MaxIdleConnsPerHost: 64}},
 		nonce:     strconv.FormatInt(time.Now().UnixNano(), 36),
 		byBackend: map[string]int64{},
