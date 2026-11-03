@@ -9,6 +9,7 @@ platform/
 ├── cmd/gateway/       트래픽 게이트웨이: 쓰기 보류, 환경 전환, 읽기 가중치, 요청 통계
 ├── pkg/apiv1/         openapi.yaml에서 생성한 Go 타입 (CLI가 import)
 ├── pkg/client/        Go 클라이언트 (CLI가 import)
+├── pkg/appspec/       앱 저장소의 platform.yaml 해석과 검사 (CLI가 import)
 ├── internal/
 │   ├── api/           HTTP 핸들러, 역할 검사, 감사 로그, SSE
 │   ├── auth/          토큰과 역할
@@ -268,7 +269,7 @@ Plan JSON을 손으로 쓰지 않고 이전을 준비하고, 검증에 쓸 쓰�
 
 | 요청 | 역할 | 설명 |
 | --- | --- | --- |
-| `GET /v1/apps` | viewer | `PLATFORM_APPS_FILE`의 앱과 앱이 있는 환경 |
+| `GET /v1/apps` | viewer | `PLATFORM_APPS_FILE`의 앱과 앱이 있는 환경, 그리고 GitHub에서 등록한 앱 (아래 GitHub 앱 배포) |
 | `POST /v1/plans/draft` | agent | `{"app","source","target"}`로 엔진 Plan 초안을 만듦. 저장하지 않으므로 그대로 또는 고쳐서 `POST /v1/plans`로 제출 |
 | `PUT /v1/plans/{ref}/attachments/{name}` | agent | Plan이 참조하는 파일(대상 CNPG 매니페스트) 업로드. 본문 그대로 1 MiB까지, `pending_approval`일 때만 |
 | `GET /v1/plans/{ref}/attachments/{name}` | viewer | 첨부 내용. Plan 응답의 `attachments`에 이름, 크기, SHA-256이 있음 |
@@ -350,3 +351,23 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 - 이벤트 없이 `PLATFORM_AGENT_IDLE`(기본 30분)이 지난 `running` 세션은 플랫폼이 `cancelled`로 닫고 요약에 `no activity for 30m; closed by the platform`을 남깁니다. 보고 있던 스트림은 마지막 `snapshot`을 보내고 닫힙니다.
 - 쓰기 요청은 모두 감사 로그에 남습니다. 감사 로그에는 세션 id, 이벤트 종류, 도구 이름만 남고 내용은 남기지 않습니다.
 - 테이블은 마이그레이션 `0003_agent_activity.sql`이 만듭니다.
+
+## GitHub 앱 배포
+
+앱 저장소(서비스마다 Dockerfile, 루트에 `platform.yaml`)를 등록하면, 플랫폼이 서비스마다 이미지를 빌드하고 gitops 저장소에 `apps/<app>/<env>.yaml`을 커밋합니다. Argo CD가 Application `<app>-<env>`를 네임스페이스 `<app>`에 배포합니다. 설계와 `platform.yaml` 규칙은 [ADR 0011](docs/adr/0011-github-app-deploy.md)에 있습니다.
+
+| 요청 | 역할 | 설명 |
+| --- | --- | --- |
+| `POST /v1/apps` | operator | `{repo, branch?, environments, autoDeploy?}`. 브랜치 head의 `platform.yaml`을 읽어 앱을 등록하고 첫 배포를 큐에 넣음. 201 + `{app, deployment}`. 잘못된 `platform.yaml`은 422 `invalid_app_spec` (`validation`에 위치별 오류) |
+| `POST /v1/apps/validate` | viewer | `{repo, branch?}` 또는 `{spec}`의 `platform.yaml`을 검사만 함. 항상 200 + `valid` |
+| `GET /v1/apps/{name}` | viewer | 앱 하나. 등록한 앱은 `deploy`에 저장소, spec, 환경별 상태, 마지막 배포 |
+| `DELETE /v1/apps/{name}` | operator | 등록 해제. gitops 파일을 지우면 Argo CD가 워크로드를 지움. 202. 파일에만 있는 앱은 409 |
+| `POST /v1/apps/{name}/deployments` | operator | `{ref?, environments?}`로 지금 배포. 202 + Deployment |
+| `GET /v1/apps/{name}/deployments` | viewer | 최신순, `?limit=` (기본 20) |
+| `GET /v1/deployments/{id}` | viewer | 배포 하나 (상태, 이미지 digest, 환경별 상태) |
+| `GET /v1/deployments/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속) |
+| `GET /v1/github/repos` | viewer | GitHub App 설치가 볼 수 있는 저장소 |
+| `POST /v1/webhooks/github` | 없음 | GitHub App webhook. `X-Hub-Signature-256`으로 확인. 등록한 브랜치의 push만 배포(202), 나머지는 204 |
+
+- 배포 상태는 `queued`, `building`, `committing`, `syncing`을 거쳐 `healthy`, `failed`, `superseded`로 끝납니다. 같은 환경으로 새 배포가 생기면 끝나지 않은 이전 배포는 `superseded`가 됩니다.
+- 테이블은 마이그레이션 `0005_app_deploy.sql`이 만듭니다.

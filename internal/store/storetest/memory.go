@@ -31,8 +31,9 @@ type memory struct {
 	seq     int64
 	auditID int64
 
-	tools memoryPlanTools // written records and plan attachments (memory_written.go)
-	agent agentMemory     // agent sessions and events (memory_agent.go)
+	tools  memoryPlanTools // written records and plan attachments (memory_written.go)
+	agent  agentMemory     // agent sessions and events (memory_agent.go)
+	deploy deployMemory    // apps, deployments, their events and webhook deliveries (memory_deploy.go)
 }
 
 // NewMemory returns an empty in-memory store with the same semantics as the
