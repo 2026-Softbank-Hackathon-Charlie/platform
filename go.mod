@@ -20,6 +20,7 @@ require (
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/open-policy-agent/opa v1.22.0
 	github.com/prometheus/client_golang v1.25.0
+	go.yaml.in/yaml/v3 v3.0.5
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
@@ -101,7 +102,6 @@ require (
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
 	github.com/yashtewari/glob-intersection v0.2.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.60.0 // indirect

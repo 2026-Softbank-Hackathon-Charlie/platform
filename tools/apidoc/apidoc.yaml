@@ -1,0 +1,542 @@
+# Korean text and settings for the Notion "API 명세서" page (go run ./tools/apidoc).
+# Anything api/openapi.yaml has but this file does not is shown in English and
+# listed as missing. Keys follow the contract: operationId, schema name,
+# "Schema.field" (nested: "Schema.parent.child"), parameter name or
+# "name@operationId" when one name means different things.
+
+notionPage: 40a8bee9ada480b49399d443ce528230
+repo: https://github.com/2026-Softbank-Hackathon-Charlie/platform
+server: https://api.3-36-23-54.sslip.io
+
+# Section order and headings of the endpoint details.
+tags:
+- name: system
+  title: 시스템
+- name: plans
+  title: 계획 (plans)
+- name: migrations
+  title: 마이그레이션 (migrations)
+- name: environments
+  title: 환경 (environments)
+- name: traffic
+  title: 트래픽 (traffic)
+- name: audit
+  title: 감사 로그 (audit)
+- name: security
+  title: 보안 (security)
+- name: agent
+  title: 에이전트 활동 (agent)
+
+# Per operationId. summary: one line for the endpoint table. role: who may call it.
+# notes: Notion markdown shown in the endpoint's toggle. Order here is the order on the page.
+operations:
+  getRoot:
+    summary: 서비스 이름과 문서 링크
+    role: 인증 없음
+    notes: 서비스 이름과 계약 문서, 헬스 체크 경로를 돌려준다. 브라우저로 API 호스트에 접속했을 때 응답이 보이게 하는 용도다.
+  getHealth:
+    summary: 헬스 체크
+    role: 인증 없음
+    notes: 서버가 살아 있으면 200을 돌려준다.
+  getOpenAPI:
+    summary: 이 계약 문서(YAML)
+    role: 인증 없음
+    notes: openapi.yaml을 그대로 돌려준다.
+  getMe:
+    summary: 토큰 주인 확인
+    role: 모든 역할
+    notes: 토큰의 이름과 역할을 돌려준다. CLI가 로그인을 확인할 때 쓴다.
+  listApps:
+    summary: 등록된 앱과 실행 환경 목록
+    role: 모든 역할
+    notes: 서버의 PLATFORM_APPS_FILE에 등록된 앱과 각 앱이 실행되는 환경을 설정 순서대로 돌려준다. 파일이 설정되지 않았으면 빈 목록이다.
+  draftPlan:
+    summary: 앱과 경로로 계획 초안 생성
+    role: agent, operator
+    notes: |-
+      앱 하나와 경로(source, target)를 받아 서버 설정으로 엔진 계획을 만든다. 계획 JSON을 손으로 쓰지 않기 위한 API다. 초안은 저장하지 않으므로, 그대로 또는 수정해서 POST /v1/plans로 제출한다.
+
+      - id는 `<app>-<source>-to-<target>`이다. context는 환경 설정에서, cluster와 DB 호스트는 앱 설정에서 가져온다.
+      - DSN은 환경의 passwordEnv를 `${VAR}`로 참조해서 비밀번호를 읽는다.
+      - 두 환경 모두 버킷이 있으면 files를 채운다. 요청에서 files를 false로 주면 뺀다.
+      - 서버에 게이트웨이가 있으면 gateway mode는 http, 없으면 none이다.
+  submitPlan:
+    summary: 엔진 계획 제출 (승인 대기로 저장)
+    role: agent, operator
+    notes: |-
+      엔진 계획을 그대로 제출한다. 서버는 보안 정책(kubeconfig 경로 금지, 게이트웨이와 DB 호스트 허용 목록, 환경 참조)을 적용하고 계획을 pending_approval로 저장한다.
+
+      - DSN은 `postgres://` URL이어야 하고, 허용된 변수 하나를 비밀번호 전체로만 참조할 수 있다. 예: `postgres://app:${SRC_PGPASSWORD}@host:5432/db`
+      - 앱의 passwordEnv는 그 앱의 DB 호스트로 가는 DSN에서만 쓸 수 있다.
+      - gateway.token은 `${GATEWAY_TOKEN}`만 허용한다. 다른 필드에는 `$`를 쓸 수 없다.
+  listPlans:
+    summary: 계획 목록 (최신순)
+    role: 모든 역할
+    notes: 모든 계획을 최신순으로 돌려준다.
+  getPlan:
+    summary: 계획 하나 조회
+    role: 모든 역할
+    notes: 계획 요약을 돌려준다. DSN과 토큰은 서버 밖으로 나가지 않는다.
+  putPlanAttachment:
+    summary: 계획 첨부 파일 업로드
+    role: agent, operator
+    notes: |-
+      계획이 참조하는 파일을 올린다. 예를 들어 target.manifest를 `attachment:<name>`으로 참조하는 대상 CNPG Cluster 매니페스트를 올린다.
+
+      - 계획이 pending_approval일 때만 올릴 수 있다.
+      - 올릴 때마다 계획의 revision이 1 오르므로, 승인자는 고정된 내용을 승인하게 된다.
+      - 같은 이름으로 다시 올리면 교체된다. 본문은 원본 바이트이며 최대 1 MiB다.
+      - 없는 첨부를 참조하는 계획을 승인하면 409가 난다.
+      - name 규칙은 `^[A-Za-z0-9._-]{1,100}$`이고, `.`과 `..`은 쓸 수 없다.
+  getPlanAttachment:
+    summary: 계획 첨부 파일 다운로드
+    role: 모든 역할
+    notes: 올린 내용을 그대로 돌려준다. 그 이름의 첨부가 없으면 404 attachment_not_found다.
+  approvePlan:
+    summary: 계획 승인 (사람의 승인 단계)
+    role: operator
+    notes: |-
+      AI가 만든 계획과 실제 실행 사이에 있는 사람의 승인 단계다. 검토한 계획의 revision을 함께 보낸다.
+
+      - 첨부가 있는 계획을 revision 없이 승인하거나, 검토 후 첨부가 올라와 revision이 바뀌었으면 409 plan_state_conflict다.
+      - 이미 승인된 계획을 다시 승인해도 아무 변화가 없다.
+  rejectPlan:
+    summary: 계획 거절
+    role: operator
+    notes: 승인 대기 중인 계획을 거절한다. 거절된 계획은 시작할 수 없다.
+  startMigration:
+    summary: 승인된 계획 실행 시작 (202)
+    role: operator
+    notes: |-
+      승인된 계획을 시작한다. run이 만들어지는 즉시 202를 돌려주며, 마이그레이션이 끝났다는 뜻이 아니다.
+
+      - run은 데이터를 동기화하고, canary를 주면 읽기 트래픽 일부를 target으로 보낸 뒤, awaiting_switch에서 운영자가 /switch를 부를 때까지 기다린다. autoSwitch가 true면 기다리지 않고 바로 전환한다.
+      - observe를 주면 전환이 성공한 뒤 target을 게이트 기준으로 관찰하고, observe.autoRollback이면 위반 시 스스로 롤백을 시작한다.
+      - 재시도할 때 같은 Idempotency-Key를 보내면 처음 만든 run을 돌려받는다.
+      - verify.writtenRecords가 `stream:<name>`인 계획은 그 스트림에 레코드가 쌓여야 시작된다. 그 전에는 400 invalid_request다.
+      - rollbackOf가 있는 계획으로 시작한 run에는 같은 rollbackOf가 붙는다.
+  listMigrations:
+    summary: run 목록 (최신순)
+    role: 모든 역할
+    notes: 모든 run을 최신순으로 돌려준다.
+  getMigration:
+    summary: run 하나 조회
+    role: 모든 역할
+    notes: run의 현재 상태와 결과, 엔진 상태를 돌려준다.
+  streamMigrationEvents:
+    summary: run 이벤트 스트림 (SSE)
+    role: 모든 역할
+    notes: |-
+      Server-Sent Events로 run의 진행을 보낸다.
+
+      - 첫 메시지는 `snapshot`(data는 Run)이며 SSE id가 없다.
+      - 이후 RunEvent마다 kind를 SSE event 이름으로, seq를 SSE id로 보낸다.
+      - run이 끝나면 마지막 snapshot을 보내고 스트림을 닫는다. run이 활성 상태인 동안(awaiting_switch 포함)은 `: keep-alive` 주석으로 연결을 유지한다.
+      - `Last-Event-ID` 헤더나 `?after=`로 다시 연결하면 놓친 이벤트를 재생한다. 이벤트는 저장되므로 유실되지 않는다.
+      - 브라우저의 EventSource는 Authorization 헤더를 넣을 수 없으므로 fetch 기반 SSE 클라이언트를 쓴다.
+  switchMigration:
+    summary: 전환(cutover) 승인
+    role: operator
+    notes: awaiting_switch인 run의 전환을 승인한다. 엔진은 쓰기를 붙잡고(hold), target을 승격하고, 트래픽을 옮긴다. 다른 상태의 run이면 409다.
+  abortMigration:
+    summary: 실행 중단
+    role: operator
+    notes: |-
+      실행 중인 마이그레이션을 멈춘다. 결과는 엔진이 어느 경계를 지났는지에 따라 정해진다.
+
+      - 쓰기를 붙잡기 전: 아무것도 바뀌지 않고 aborted로 끝난다.
+      - target 승격을 요청하기 전: source로 롤백하고 rolled_back으로 끝난다.
+      - 그 이후: halted로 멈추고 운영자의 판단을 기다린다.
+
+      응답은 중단 요청을 받았다는 뜻이므로, 최종 상태는 run을 계속 조회해서 확인한다.
+  resumeMigration:
+    summary: 중단된 run 이어서 실행
+    role: operator
+    notes: interrupted(서버 재시작), failed, aborted 상태의 run을 이어서 실행한다. 이미 성공한 단계는 건너뛴다. 시작할 때와 마찬가지로 계획의 written-records 스트림에 레코드가 있어야 한다.
+  rollbackMigration:
+    summary: 성공한 run 원클릭 롤백 (202)
+    role: operator
+    notes: |-
+      succeeded인 run을 왔던 방향의 반대로 다시 이전한다.
+
+      - 서버가 run 계획의 역방향 계획을 만든다. source와 target, 파일 버킷, 게이트웨이 백엔드를 서로 바꾸고, 예전 source가 레플리카로 남아 있으므로 target manifest는 넣지 않는다.
+      - 역방향 계획은 id `<plan id>-rollback`과 rollbackOf를 붙여 호출자가 승인한 상태로 저장되고, 바로 시작된다. 새 run에도 rollbackOf가 붙는다.
+      - run 하나는 한 번만 롤백된다. 이전 롤백 시작이 실패했으면(예: cluster_busy) 새 계획을 만들지 않고 그 계획을 다시 시작한다. 그 계획이 이미 시작됐으면 409 run_state_conflict가 해당 run을 알려 준다.
+      - 요청 본문의 autoSwitch 기본값은 true다.
+  getMatrix:
+    summary: 환경 쌍별 최근 결과 매트릭스
+    role: 모든 역할
+    notes: source와 target 환경 쌍마다 가장 최근에 끝난 run을 돌려준다.
+  appendWrittenRecords:
+    summary: 성공한 쓰기 기록 추가 (유실 검증용)
+    role: agent, operator
+    notes: |-
+      부하 생성기(k6)가 성공을 확인한 쓰기를 기록한다.
+
+      - 계획의 verify.writtenRecords가 `stream:<name>`이면, 서버는 verify 단계 직전에 스트림의 모든 레코드를 파일로 쓰고 엔진은 각 레코드가 target DB에 있는지 확인한다.
+      - 테이블 이름은 소문자로 저장한다(따옴표 없는 PostgreSQL 식별자). table이나 pk에 제어 문자가 있으면 거부한다.
+      - 한 번에 1개에서 5000개까지 보낼 수 있다.
+  getWrittenRecordStats:
+    summary: 기록 스트림의 레코드 수
+    role: 모든 역할
+    notes: 스트림에 쌓인 레코드 수를 돌려준다. 아무도 쓰지 않은 스트림은 count가 0이다.
+  listEnvironments:
+    summary: 환경 목록과 실시간 클러스터 상태
+    role: 모든 역할
+    notes: 등록된 환경을 설정 순서대로, 실시간 클러스터 상태와 함께 돌려준다.
+  getEnvironment:
+    summary: 환경 하나 조회
+    role: 모든 역할
+    notes: 환경 하나와 그 클러스터 상태를 돌려준다.
+  getTraffic:
+    summary: 게이트웨이 상태와 요청 통계
+    role: 모든 역할
+    notes: 트래픽 게이트웨이의 현재 상태와 요청 통계를 돌려준다. 게이트웨이가 설정되지 않았으면 503 gateway_not_configured, 응답하지 않으면 502 gateway_unreachable이다. TrafficState, RouteRequest, WeightsRequest는 게이트웨이 자체 관리 API에서도 같은 타입으로 쓴다.
+  listAudit:
+    summary: 감사 로그 (최신순)
+    role: 모든 역할
+    notes: 상태를 바꾸는 모든 요청과 거부된 모든 요청을 최신순으로 돌려준다. 응답의 nextBefore를 다음 요청의 before로 넘겨서 페이지를 넘긴다.
+  getSecurity:
+    summary: 전 환경 보안과 거버넌스 상태
+    role: 모든 역할
+    notes: |-
+      모든 환경의 보안과 거버넌스 상태를 한 번에 돌려준다. Kubernetes 클러스터, AWS 계정(IAM, EC2, CloudTrail, GuardDuty, Security Hub, S3), 플랫폼의 감사 로그와 설정을 읽어 SecurityFinding으로 정규화한다.
+
+      - 모든 finding은 실제로 읽은 결과다. 읽지 못한 소스는 sources에 상태와 메시지로만 나오고 finding을 만들지 않는다.
+      - 결과는 60초 동안 캐시한다. refresh=true면 다시 수집하지만 10초에 한 번까지만 수집하고, 그 안의 refresh는 최신 결과를 받는다.
+      - 필터는 findings와 sources의 개수, summary에 모두 적용된다.
+      - 오류 코드: invalid_request(400), security_not_configured(503).
+  createAgentSession:
+    summary: 에이전트 작업 세션 시작
+    role: agent, operator
+    notes: AI 에이전트의 작업 하나(마이그레이션 계획, 샌드박스 리허설, 진단)에 대한 활동 기록을 시작한다. 세션은 running으로 시작하고 actor는 토큰 이름이다.
+  listAgentSessions:
+    summary: 에이전트 세션 목록 (최신순)
+    role: 모든 역할
+    notes: 세션을 최신순으로 돌려준다. planRef나 runId로 거를 수 있다.
+  getAgentSession:
+    summary: 에이전트 세션 하나와 합계
+    role: 모든 역할
+    notes: 세션과 이벤트 합계(이벤트 수, 도구 호출 수, 토큰 수, 소요 시간)를 돌려준다.
+  appendAgentEvent:
+    summary: 에이전트 이벤트 기록
+    role: 세션 actor, operator
+    notes: |-
+      도구 호출, 도구 결과, 메시지, 차단된 동작, 결정, 오류 중 하나를 기록한다.
+
+      - 세션의 actor나 operator만 추가할 수 있다. 세션 하나에 이벤트는 최대 5000개다.
+      - input과 output은 각각 64 KiB 이하의 임의 JSON 값이다.
+      - 자격 증명은 `"[redacted]"`로 저장한다. 대상은 자격 증명처럼 보이는 키(password, passwd, pwd, pass, secret, token, authorization, cookie, api key, private key, credential, access key) 아래의 문자열 값, name이나 key가 그런 이름인 객체의 value, 문자열 안의 `NAME=value`와 `NAME: value` 할당, URL 비밀번호, bearer 토큰, AWS 액세스 키 ID, PEM 개인 키다. 숫자와 불리언은 그대로 두므로 토큰 수는 남는다.
+      - 저장하는 모든 문자열에서 NUL 문자를 지우고 잘못된 UTF-8은 치환한다.
+      - 오류 코드: agent_session_not_found(404), agent_session_finished(409), session_full(409), too_large(413).
+  streamAgentEvents:
+    summary: 에이전트 이벤트 스트림 (SSE 또는 JSON)
+    role: 모든 역할
+    notes: |-
+      run 이벤트 스트림과 같은 규약의 Server-Sent Events다.
+
+      - 첫 메시지는 `snapshot`(data는 AgentSession)이며 SSE id가 없다.
+      - 이후 AgentEvent마다 type을 SSE event 이름으로, seq를 SSE id로 보낸다.
+      - 세션이 끝나면 마지막 snapshot을 보내고 닫는다. 실행 중에는 `: keep-alive` 주석으로 연결을 유지한다.
+      - `Last-Event-ID`나 `?after=`로 다시 연결하면 놓친 이벤트를 재생한다.
+      - `format=json`이면 스트림 대신 저장된 이벤트 한 페이지를 AgentEventList로 돌려준다. after 이후 최대 limit개를 주고, 더 남아 있으면 nextAfter를 채운다.
+  finishAgentSession:
+    summary: 에이전트 세션 종료
+    role: 세션 actor, operator
+    notes: '실행 중인 세션을 끝낸다. 세션의 actor나 operator만 끝낼 수 있다. PLATFORM_AGENT_IDLE(기본 30분) 동안 이벤트가 없는 세션은 플랫폼이 cancelled로 끝내고 summary에 "no activity for 30m; closed by the platform"을 남긴다. 오류 코드: agent_session_not_found(404), agent_session_finished(409).'
+
+# Parameter descriptions.
+params:
+  ref: '계획 ref (예: pln_3f9c1a0b2d4e)'
+  runId: run id
+  name@getEnvironment: '환경 이름 (예: gke)'
+  Idempotency-Key: 재시도 시 같은 값을 보내면 처음 run을 돌려준다
+  Last-Event-ID: 마지막으로 받은 이벤트의 seq. 그 뒤부터 재생한다
+  after: seq가 이 값보다 큰 이벤트부터 재생한다. Last-Event-ID와 같다
+  window: 통계 구간, 1s에서 5m 사이
+  limit@listAudit: 돌려받을 항목 수
+  before: id가 이 값보다 작은 항목만 (페이지 넘김)
+  environment: '이 환경만 (예: gke, aws-account, platform). 모르는 이름이면 400'
+  severity: 최소 심각도. high면 critical과 high를 돌려준다
+  refresh: true면 캐시를 무시하고 다시 수집한다 (10초에 한 번까지)
+  planRef: 이 계획의 세션만
+  runId@listAgentSessions: 이 run의 세션만
+  limit@listAgentSessions: 돌려받을 세션 수
+  id: '에이전트 세션 id (예: ags_3f9c1a0b2d4e)'
+  format: sse면 스트림, json이면 이벤트 목록 한 페이지
+  limit@streamAgentEvents: format=json일 때 돌려받을 최대 이벤트 수
+  stream: 스트림 이름, `^[a-z0-9][a-z0-9-]{0,62}$`. 계획에서는 verify.writtenRecords에 `stream:<name>`으로 참조한다
+  name@putPlanAttachment: 첨부 이름, `^[A-Za-z0-9._-]{1,100}$` (`.`과 `..` 제외)
+  name@getPlanAttachment: 첨부 이름
+
+# Schema toggles under the 스키마 section, in this order. Enum-only schemas are listed in 열거형 instead.
+schemaGroups:
+- title: 공통
+  schemas:
+  - Error
+  - ErrorBody
+  - Health
+  - Principal
+  - ServiceInfo
+- title: 계획
+  schemas:
+  - EnginePlan
+  - EnginePlanEndpoint
+  - PlanRecord
+  - PlanSummary
+  - PlanEndpoint
+  - PlanList
+  - ReviewRequest
+  - PlanAttachment
+  - PlanDraftRequest
+  - AppList
+  - App
+  - AppDatabase
+  - AppEnvironment
+- title: 마이그레이션 실행
+  schemas:
+  - StartMigrationRequest
+  - CanaryOptions
+  - ObserveOptions
+  - GateThresholds
+  - StartMigrationResponse
+  - AbortRequest
+  - RollbackRequest
+  - Run
+  - RunResult
+  - CanaryResult
+  - CanaryStep
+  - ObserveResult
+  - ObserveStep
+  - GateResult
+  - EngineState
+  - StepRecord
+  - RunList
+  - RunEvent
+  - Matrix
+  - MatrixRoute
+  - WrittenRecord
+  - WrittenRecordsRequest
+  - WrittenRecordsAccepted
+  - WrittenRecordStats
+- title: 환경과 트래픽
+  schemas:
+  - Environment
+  - EnvironmentStatus
+  - NodeSummary
+  - DatabaseCluster
+  - EnvironmentList
+  - TrafficState
+  - InFlight
+  - BackendState
+  - BackendStats
+  - BackendTotals
+  - RouteRequest
+  - WeightsRequest
+- title: 감사 로그와 보안
+  schemas:
+  - AuditEntry
+  - AuditList
+  - SecurityReport
+  - SecuritySummary
+  - SeverityCounts
+  - SecuritySource
+  - SecurityFinding
+- title: 에이전트 활동
+  schemas:
+  - CreateAgentSessionRequest
+  - AgentSession
+  - AgentSessionTotals
+  - AgentSessionList
+  - AgentEventRequest
+  - AgentEvent
+  - AgentEventList
+  - TokenUsage
+  - FinishAgentSessionRequest
+
+# One paragraph above a schema's field table.
+schemas:
+  Error: '모든 오류 응답의 본문이다. `{"error": {"code": "...", "message": "..."}}`'
+  EnginePlan: migration-engine의 계획(migration-engine/pkg/plan)이다. `${VAR}` 참조는 서버에서 펼친다. 정의되지 않은 필드는 거부한다.
+  PlanEndpoint: 계획 엔드포인트에서 비밀이 아닌 값만 보여 주는 형태다.
+  PlanRecord: 서버에 저장된 계획이다. 계획 원문(DSN, 토큰)은 돌려주지 않고 summary만 돌려준다.
+  CanaryOptions: 전환 전에 읽기 요청(GET, HEAD, OPTIONS) 중 weights 비율만큼 target으로 보내고, 쓰기는 계속 source로 보낸다. step마다 게이트가 그 step 동안의 target 요청을 검사한다. 게이트가 실패하면 읽기를 모두 source로 되돌리고 run은 rolled_back으로 끝난다. gateway mode http가 필요하다.
+  ObserveOptions: 전환이 성공한 뒤 run이 끝나기 전에 게이트웨이에서 target을 계속 관찰한다. step마다 그 step 동안 target으로 간 요청에 게이트를 평가한다. 요청이 gate.minRequests보다 적거나 게이트웨이 데이터가 없는 step은 inconclusive로 기록만 하고 위반으로 보지 않는다. 롤백은 전체를 다시 이전하는 작업이므로 측정된 위반에서만 시작하기 때문이다. 첫 위반 step에서 관찰을 끝낸다. 데이터는 이미 옮겨졌으므로 run은 succeeded로 끝나고, 위반 내용은 observe와 statusReason에 남는다. autoRollback이면 서버가 actor slo-guard로 이 run의 롤백을 시작하고, 아니면 운영자가 판단한다. gateway mode http가 필요하다.
+  RunResult: 콘솔이 보여 주는 숫자다. 값이 없으면 아직 측정하지 않은 것이다.
+  EngineState: 엔진이 저장하는 run 상태(migration-engine/pkg/engine.State)다.
+  RunEvent: run 이벤트 스트림의 이벤트다. kind별 data는 아래 'SSE 이벤트' 절에 정리했다.
+  EnvironmentStatus: 클러스터에서 실시간으로 읽고 몇 초 동안 캐시한다. 읽지 못한 값은 채우지 않는다.
+  DatabaseCluster: CloudNativePG Cluster 하나다.
+  BackendTotals: 게이트웨이 시작 이후 클라이언트가 이 백엔드에서 받은 응답이다. 이 백엔드에서 실패한(5xx 또는 무응답) 읽기를 게이트웨이가 다른 백엔드로 한 번 더 보냈다면 requests와 errors가 아니라 retried에 세고, 재시도는 응답한 백엔드 쪽에 센다. 구간 통계(BackendStats)는 재시도된 응답까지 모두 세므로 canary 게이트는 실패하는 백엔드를 그대로 본다.
+  RouteRequest: 게이트웨이 관리 API에서 쓰기 백엔드를 바꾸는 요청이다.
+  WeightsRequest: 게이트웨이 관리 API에서 읽기 비율을 바꾸는 요청이다.
+  SecurityFinding: 공급자별 보안, 거버넌스 신호 하나를 공통 형식으로 정규화한 것이다.
+  WrittenRecord: 부하 생성기가 성공을 확인한 쓰기 하나다(엔진의 written-records 형식).
+  App: PLATFORM_APPS_FILE에 등록된 애플리케이션이다.
+
+# Field descriptions in the schema tables.
+fields:
+  EnginePlan.id: 계획 id
+  EnginePlan.files: rclone으로 옮길 오브젝트 스토리지
+  EnginePlan.files.source: 서버에 등록된 버킷과 정확히 같아야 한다 (앱 버킷 또는 PLATFORM_PLAN_BUCKETS)
+  EnginePlan.files.target: 등록된 버킷이어야 하고 source와 달라야 한다
+  EnginePlan.files.flags: rclone 플래그. 허용된 플래그만 통과한다
+  EnginePlan.files.rclone: '"rclone"이거나 생략한다. remote 자격 증명은 서버 환경 변수(`RCLONE_CONFIG_<REMOTE>_*`)에서 가져온다'
+  EnginePlan.gateway.mode: http면 게이트웨이 관리 API로 트래픽을 옮기고, none이면 건너뛴다 (리허설, 수동)
+  EnginePlan.gateway.url: 게이트웨이 관리 API 주소
+  EnginePlan.gateway.token: '`${GATEWAY_TOKEN}`만 허용한다'
+  EnginePlan.gateway.sourceBackend: 기본값은 source.env
+  EnginePlan.gateway.targetBackend: 기본값은 target.env
+  EnginePlan.verify.schemas: 비교할 스키마, 기본값 ["public"]
+  EnginePlan.verify.tables: 비교할 테이블 필터, `schema.table` 또는 `table`
+  EnginePlan.verify.fenceGate: 쓰기를 붙잡은 상태에서 target 승격 전에 테이블별 개수와 해시를 비교한다. 불일치면 자동 롤백한다. 기본값 true
+  EnginePlan.verify.writtenRecords: '`stream:<name>`이면 해당 스트림의 쓰기가 모두 target에 있는지 확인한다'
+  EnginePlan.thresholds.maxLagBytes: 허용하는 복제 지연, 기본값 16 MiB
+  EnginePlan.thresholds.catchupTimeout: 복제 지연을 따라잡는 제한 시간, 기본값 10m
+  EnginePlan.thresholds.switchoverTimeout: switchover 제한 시간, 기본값 2m
+  EnginePlan.thresholds.maxDowntime: 허용하는 최대 쓰기 중단 시간, 기본값 3m
+  EnginePlanEndpoint.env: 환경 이름
+  EnginePlanEndpoint.kubeconfig: 서버 정책상 kubeconfig 경로는 쓸 수 없다
+  EnginePlanEndpoint.context: kube context
+  EnginePlanEndpoint.cluster: CNPG Cluster 이름
+  EnginePlanEndpoint.dsn: '`postgres://` DSN. 비밀번호는 허용된 `${VAR}` 하나로만 참조한다'
+  EnginePlanEndpoint.manifest: 'target에만 쓴다. 예: `attachment:target.yaml`'
+  PlanEndpoint.dbHost: DSN이 접속하는 host:port (자격 증명 제외). 승인자가 DB 비밀번호가 어디로 가는지 볼 수 있게 보여 준다
+  PlanSummary.files: 오브젝트 스토리지도 옮기는 계획인지
+  PlanRecord.revision: 제출 시 1이고 첨부를 올릴 때마다 1 오른다. 검토한 revision으로 승인한다
+  PlanRecord.rollbackOf: 이 계획이 되돌리는 run
+  PlanRecord.reviewedBy: 승인 또는 거절한 사람
+  PlanRecord.runId: 이 계획으로 시작한 run
+  PlanRecord.attachments: 이 계획에 올린 파일
+  ReviewRequest.revision: 승인에만 쓴다. 승인자가 검토한 revision이며, 첨부가 있는 계획이면 필수다
+  StartMigrationRequest.autoSwitch: 데이터가 동기화되면 /switch를 기다리지 않고 바로 전환한다
+  StartMigrationResponse.links.self: run 경로
+  StartMigrationResponse.links.events: 이벤트 스트림 경로
+  ObserveOptions.duration: 전체 관찰 시간, 10s에서 30m 사이
+  ObserveOptions.stepDuration: 게이트 평가 한 번이 다루는 구간
+  ObserveOptions.autoRollback: 위반 시 서버가 롤백을 바로 시작한다
+  ObserveResult.passed: 'true: 전체 기간을 관찰했고 위반이 없으며 판정 가능한 step이 하나 이상 있었다. false: 위반한 step이 있다. 없음: 관찰 중이거나, 일찍 끝났거나, 판정 가능한 측정이 없었다'
+  ObserveResult.violation: 위반한 게이트의 사유
+  ObserveResult.stoppedReason: 기간을 다 채우기 전에 관찰이 끝난 이유
+  ObserveResult.rollbackRunId: 자동 롤백 run (그 run의 rollbackOf가 이 run이다)
+  ObserveResult.rollbackError: 자동 롤백을 시작하지 못한 이유
+  CanaryOptions.weights: step별로 target에 보낼 읽기 비율(%)
+  GateThresholds.maxErrorRate: 요청 대비 5xx와 프록시 오류의 비율
+  GateThresholds.minRequests: 요청이 이보다 적으면 canary 게이트는 실패한다 (observe에서는 inconclusive)
+  AbortRequest.reason: 중단 사유
+  RollbackRequest.reason: 롤백 사유
+  RollbackRequest.autoSwitch: 데이터가 동기화되면 바로 전환한다. false면 awaiting_switch에서 /switch를 기다린다
+  Run.statusReason: run이 그렇게 끝난 이유
+  Run.rollbackOf: 이 run이 되돌리는 run
+  Run.switchApprovedBy: 전환을 승인한 사람
+  RunResult.downtimeMillis: 게이트웨이에서 쓰기를 붙잡은 시간
+  RunResult.durationMillis: 시작부터 끝까지 걸린 시간
+  RunResult.requests: run 동안 게이트웨이가 처리한 요청 수
+  RunResult.failedRequests: run 동안의 5xx와 프록시 오류 수
+  RunResult.missingRows: target에 없는 source 행 수
+  RunResult.missingWrites: k6가 확인한 쓰기 중 target에 없는 수
+  RunResult.missingFiles: target에 없는 객체 수
+  RunResult.verified: verify 보고서에 문제가 없다
+  CanaryStep.weight: 이 step의 target 읽기 비율(%)
+  EngineState.steps: '단계 이름이 키다: precheck, prepare, presync, delta, fence, switchover, cutover, verify, finalize'
+  EngineState.writesHeld: 게이트웨이가 쓰기를 붙잡고 있다
+  EngineState.fenceLsn: 쓰기를 붙잡은 시점의 LSN
+  EngineState.sourceDemoted: source가 강등됐다
+  EngineState.promoteRequested: 이 시점 이후로는 자동으로 롤백하지 않는다
+  EngineState.trafficOnTarget: 트래픽이 target으로 옮겨졌다
+  StepRecord.evidence: 단계가 남긴 근거 데이터
+  RunEvent.kind: 이벤트 종류. SSE event 이름으로도 쓴다
+  RunEvent.data: kind별 데이터
+  Environment.gatewayBackend: 이 환경을 서비스하는 게이트웨이 백엔드
+  Environment.live: 게이트웨이가 지금 쓰기를 이 환경으로 보낸다
+  EnvironmentStatus.reachable: API 서버가 /version에 응답했다
+  EnvironmentStatus.error: '상태가 불완전한 이유. reachable이 true여도 채워질 수 있고(예: RBAC로 nodes 조회 금지), 그 부분은 빠진다'
+  EnvironmentStatus.databases: CNPG 클러스터. 없거나 CNPG가 설치되지 않았으면 빈 배열, 읽지 못했으면 생략한다
+  NodeSummary.architectures: 노드 CPU 아키텍처 목록
+  DatabaseCluster.replica: spec.replica.enabled이거나, topology가 다른 클러스터를 primary로 지정한다
+  TrafficState.writeBackend: 읽기가 아닌 모든 요청이 가는 백엔드
+  TrafficState.readWeights: 백엔드별 읽기 비율, 합계는 100
+  TrafficState.writesHeld: 쓰기를 붙잡고 있는지
+  TrafficState.heldWrites: 지금 대기 중인 쓰기 요청 수
+  TrafficState.maxHold: 이보다 오래 붙잡힌 쓰기는 503 hold_timeout을 받고 전달되지 않는다. hold 자체는 해제할 때까지 유지된다
+  TrafficState.stats: 백엔드별 이동 구간 통계
+  TrafficState.totals: 게이트웨이 시작 이후 백엔드별 누적값
+  BackendTotals.errors: 클라이언트에 도달한 500 이상 응답
+  BackendTotals.retried: 다른 백엔드로 한 번 더 보낸 실패한 읽기
+  RouteRequest.backend: 쓰기를 보낼 백엔드
+  WeightsRequest.readWeights: 백엔드별 읽기 비율
+  Matrix.environments: 환경 이름 목록
+  MatrixRoute.runId: 이 쌍에서 끝난 run이 없으면 없다
+  AuditEntry.action: 메서드와 경로 템플릿
+  AuditEntry.target: 실제 요청 경로
+  AuditEntry.status: 응답의 HTTP 상태
+  AuditList.nextBefore: 다음 페이지를 볼 때 before로 넘긴다
+  SecurityFinding.id: 수집할 때마다 같은 값이다. environment, source, check, resource와 공급자의 finding id(GuardDuty finding id, Security Hub finding ARN) 또는 규칙의 프로토콜, 포트, CIDR로 만든 해시다
+  SecurityFinding.environment: 환경 이름, 또는 aws-account, platform
+  SecurityFinding.source: kubernetes, aws-iam, aws-ec2, aws-cloudtrail, aws-guardduty, aws-securityhub, aws-s3, platform-audit, platform-config
+  SecurityFinding.check: finding을 만든 규칙
+  SecurityFinding.resource: 'finding의 대상. 예: shop/Deployment/web/app/app 또는 ARN'
+  SecurityFinding.observedAt: 소스가 보고한 시각, 또는 읽은 시각
+  SecuritySource.message: 상태가 ok가 아닌 이유, 또는 읽은 내용
+  SecuritySource.findings: 이 응답에 포함된 이 소스의 finding 수
+  SecuritySummary.byEnvironment: 환경별 개수. 소스가 있는 환경은 finding이 없어도 나온다
+  SecurityReport.generatedAt: 소스를 읽은 시각
+  SecurityReport.findings: 심각한 것부터 정렬한다
+  AgentSessionTotals.durationMillis: 이벤트 durationMillis의 합. 실제 경과 시간은 endedAt - createdAt이다
+  AgentSession.actor: 세션을 시작한 토큰 이름
+  AgentSession.summary: 종료할 때 남긴 요약
+  AgentEventRequest.tool: tool_call, tool_result, blocked일 때 도구 이름
+  AgentEventRequest.input: 임의 JSON 값, 64 KiB 이하
+  AgentEventRequest.output: 임의 JSON 값, 64 KiB 이하
+  AgentEvent.input: 임의 JSON 값. 자격 증명처럼 보이는 값은 "[redacted]"
+  AgentEvent.output: 임의 JSON 값. 자격 증명처럼 보이는 값은 "[redacted]"
+  AgentEventList.nextAfter: 이 페이지 뒤에 이벤트가 더 있으면 채운다. after로 넘기면 이어서 읽는다
+  WrittenRecord.table: '`schema.table` 또는 `table`'
+  WrittenRecord.pk: 기본 키를 텍스트로 쓴다. 복합 키는 `(a,b)`
+  WrittenRecord.at: 쓰기가 성공한 시각. 기본값은 서버가 받은 시각
+  WrittenRecordsAccepted.accepted: 저장한 레코드 수
+  WrittenRecordStats.latestAt: 가장 최근 레코드의 시각. 스트림이 비어 있으면 없다
+  PlanAttachment.size: 바이트 수
+  PlanAttachment.sha256: 내용의 SHA-256 (hex)
+  App.environments: 앱이 실행되는 환경, PLATFORM_ENVS_FILE 순서
+  AppDatabase.schemas: 검증에서 비교할 스키마. 비어 있으면 엔진 기본값(public)
+  AppEnvironment.dbHost: 클러스터 -rw 서비스의 host:port
+  AppEnvironment.bucket: 앱 파일이 있는 rclone remote와 버킷
+  PlanDraftRequest.files: false면 두 환경에 버킷이 있어도 오브젝트 스토리지를 뺀다
+  PlanDraftRequest.writtenRecordsStream: verify.writtenRecords를 `stream:<name>`으로 채운다
+  Principal.name: 토큰 이름
+
+# Meaning of enum values, used by {{enum:Name:...}} in template.md.
+enums:
+  Role:
+    viewer: 모든 것을 읽는다
+    agent: 읽기와 계획 제출 (AI 플래너)
+    operator: 승인, 시작, 전환, 중단을 포함한 모든 작업
+  PlanStatus:
+    pending_approval: 사람의 승인을 기다린다
+    approved: 승인됨. 시작할 수 있다
+    rejected: 거절됨. 시작할 수 없다
+    starting: run을 만드는 중이다. 실패하면 approved로 돌아간다
+    started: run이 만들어졌다 (runId가 채워진다)
+  RunStatus:
+    running: 단계를 실행 중이다
+    awaiting_switch: 데이터가 동기화됐고 운영자의 /switch를 기다린다
+    succeeded: 트래픽과 데이터가 target에 있고 검증을 통과했다
+    rolled_back: source가 다시 트래픽을 받는다. 잃은 데이터는 없다
+    halted: target 승격을 요청한 뒤 실패했다. 운영자가 판단한다
+    failed: 되돌릴 수 없는 단계 전에 실패했다. resume 가능
+    aborted: 되돌릴 수 없는 단계 전에 운영자가 멈췄다. resume 가능
+    interrupted: run이 활성 상태일 때 서버가 재시작됐다. resume 가능
+  RunPhase:
+    sync: precheck, prepare, presync, delta
+    canary: 읽기 트래픽 일부를 target으로 보낸다
+    awaiting_switch: /switch를 기다린다
+    cutover: fence, switchover, cutover (여기서 쓰기를 붙잡는다)
+    verify: verify, finalize
+    observe: 선택. 전환 성공 후 target 트래픽을 게이트로 관찰한다
+    done: run이 끝났다
+  SecuritySourceStatus:
+    ok: 전부 읽었다
+    unavailable: '소스가 응답하지 않았다 (예: 클러스터에 접근 불가)'
+    not_configured: 이 서버에 해당 소스의 자격 증명이나 설정이 없다. message에 빠진 항목이 나온다
+    error: '자격 증명을 가져오지 못했거나(예: 인스턴스 메타데이터 시간 초과), 일부 또는 전체 읽기가 실패했다(예: 권한 거부). 실패 전에 읽은 finding은 유지한다'
