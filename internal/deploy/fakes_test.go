@@ -178,7 +178,7 @@ func (f *fakeGitOps) Write(_ context.Context, files map[string][]byte, message s
 	return sha, true, nil
 }
 
-func (f *fakeGitOps) Delete(_ context.Context, dir, message string) (string, bool, error) {
+func (f *fakeGitOps) Delete(_ context.Context, dirs []string, message string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -186,7 +186,7 @@ func (f *fakeGitOps) Delete(_ context.Context, dir, message string) (string, boo
 	}
 	changed := false
 	for p := range f.files {
-		if strings.HasPrefix(p, dir+"/") {
+		if underAny(p, dirs) {
 			delete(f.files, p)
 			changed = true
 		}
@@ -381,7 +381,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	te.argo = newFakeArgo(te.git)
 	te.cfg = Config{
 		Store: te.store, GitHub: te.github, Builder: te.builder, GitOps: te.git, Argo: te.argo,
-		Gateway: te.gw, Backends: TemplateBackends{Template: "http://{app}-{service}.{app}.{env}.test:{port}"},
+		Gateway: te.gw, Backends: TemplateBackends{Template: "http://{app}-{service}.{instance}.{env}.test:{port}"},
 		AppDomain: "hopcharlie.test", Workers: 2,
 		SyncTimeout: 3 * time.Second, PollInterval: 5 * time.Millisecond, RefreshInterval: 20 * time.Millisecond,
 	}
@@ -433,12 +433,36 @@ func (te *testEnv) register(name string, envs ...string) {
 	}
 }
 
-// deployment stores a queued deployment of commit to envs.
+// addBranch adds branch to app as an instance (ADR 0015) and returns the
+// instance name.
+func (te *testEnv) addBranch(app, branch string) string {
+	te.t.Helper()
+	instance, err := appspec.InstanceName(app, branch)
+	if err != nil {
+		te.t.Fatal(err)
+	}
+	err = te.store.CreateAppBranch(context.Background(), store.AppBranch{
+		App: app, Branch: branch, Instance: instance, AutoDeploy: true, Spec: []byte(`{}`), CreatedBy: "op", CreatedAt: time.Now().UTC(),
+	}, appspec.MaxInstances-1)
+	if err != nil {
+		te.t.Fatal(err)
+	}
+	return instance
+}
+
+// deployment stores a queued deployment of commit to envs of the app's
+// default instance.
 func (te *testEnv) deployment(app, commit string, envs ...string) store.Deployment {
+	te.t.Helper()
+	return te.deploymentTo(app, "main", app, commit, envs...)
+}
+
+// deploymentTo stores a queued deployment of commit to envs of an instance.
+func (te *testEnv) deploymentTo(app, branch, instance, commit string, envs ...string) store.Deployment {
 	te.t.Helper()
 	te.n++
 	d := store.Deployment{
-		ID: fmt.Sprintf("dep_%012d", te.n), App: app, Branch: "main", Instance: app, Ref: "main", Commit: commit, Trigger: "manual", TriggeredBy: "op",
+		ID: fmt.Sprintf("dep_%012d", te.n), App: app, Branch: branch, Instance: instance, Ref: branch, Commit: commit, Trigger: "manual", TriggeredBy: "op",
 		Status: store.DeployQueued, Images: []store.DeploymentImage{},
 		CreatedAt: time.Date(2026, 11, 3, 0, 0, te.n, 0, time.UTC),
 	}

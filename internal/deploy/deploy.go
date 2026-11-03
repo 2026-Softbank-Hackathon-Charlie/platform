@@ -3,18 +3,26 @@
 //
 //	queued      stored by the API, waiting for a worker
 //	building    platform.yaml is read and checked at the commit, then one image per service is built and pushed (Builder)
-//	committing  apps/<app>/<env>.yaml of every target environment is written to the gitops repository in one commit (GitOps)
+//	committing  apps/<instance>/<env>.yaml of every target environment is written to the gitops repository in one commit (GitOps)
 //	syncing     Argo CD applies the commit; the executor waits until every environment is Synced and Healthy (Argo)
 //
 // and ends healthy, failed or superseded. Once every environment is healthy,
-// an app with a public service is registered with the traffic gateway.
+// an instance with a public service is registered with the traffic gateway.
+//
+// A deployment goes to one instance of its app (ADR 0015): the default
+// instance, named after the app, or the instance of a branch added to it,
+// named <app>--<slug>. The instance name is the gitops directory, the
+// namespace, the Argo CD Applications <instance>-<env> and the gateway app;
+// the app name stays the chart's app and the image repository. Instances are
+// independent: a deployment supersedes only older deployments of its own
+// instance.
 //
 // Everything is recorded in the store: the deployment through
 // UpdateDeployment, every step as a DeploymentEvent. UpdateDeployment refuses
 // to change a finished deployment, so the worker of a superseded deployment
 // stops at its next write. Every side effect outside the store (a gitops
-// commit, a gateway change) runs under the app's lock right after such a
-// write, so a superseded worker never writes after the deployment that
+// commit, a gateway change) runs under the instance's lock right after such
+// a write, so a superseded worker never writes after the deployment that
 // superseded it.
 package deploy
 
@@ -89,7 +97,8 @@ type Config struct {
 	Gateway Gateway
 	// Backends resolves the gateway backend URLs. Required with Gateway.
 	Backends Backends
-	// AppDomain names the app URL https://<app>.<AppDomain> in the events.
+	// AppDomain names the instance URL https://<instance>.<AppDomain> in
+	// the events.
 	AppDomain string
 	// Workers is how many deployments run at once (default 2).
 	Workers int
@@ -116,7 +125,7 @@ type Executor struct {
 	queue   []string
 	queued  map[string]bool
 	running map[string]context.CancelFunc
-	locks   map[string]*sync.Mutex // one per app: serializes the side effects of its deployments
+	locks   map[string]*sync.Mutex // one per instance: serializes the side effects of its deployments
 	signal  chan struct{}
 	started bool
 	wg      sync.WaitGroup
@@ -197,8 +206,9 @@ func (e *Executor) Start(ctx context.Context) error {
 	return nil
 }
 
-// Enqueue takes a stored deployment: it supersedes the app's older
-// unfinished deployments that it covers and queues it. It returns at once.
+// Enqueue takes a stored deployment: it supersedes the older unfinished
+// deployments of its instance that it covers and queues it. It returns at
+// once.
 func (e *Executor) Enqueue(ctx context.Context, deploymentID string) error {
 	return e.take(ctx, deploymentID)
 }
@@ -237,12 +247,13 @@ func (e *Executor) take(ctx context.Context, id string) error {
 	return nil
 }
 
-// supersede finishes, as superseded, every unfinished deployment of d's app
-// that was created before d and whose environments d all deploys to.
+// supersede finishes, as superseded, every unfinished deployment of d's
+// instance that was created before d and whose environments d all deploys
+// to. The deployments of the app's other instances go on.
 func (e *Executor) supersede(ctx context.Context, d store.Deployment) error {
-	list, err := e.cfg.Store.ListDeployments(ctx, d.App, 0)
+	list, err := e.cfg.Store.ListInstanceDeployments(ctx, d.Instance, 0)
 	if err != nil {
-		return fmt.Errorf("list deployments of %s: %w", d.App, err)
+		return fmt.Errorf("list deployments of %s: %w", d.Instance, err)
 	}
 	for _, o := range list {
 		if o.ID == d.ID || store.DeploymentFinished(o.Status) || !createdBefore(o, d) || !covers(d, o) {
@@ -336,14 +347,14 @@ func (e *Executor) next(ctx context.Context) (string, context.Context, bool) {
 	}
 }
 
-// lock returns the app's lock.
-func (e *Executor) lock(app string) *sync.Mutex {
+// lock returns the instance's lock.
+func (e *Executor) lock(instance string) *sync.Mutex {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	l, ok := e.locks[app]
+	l, ok := e.locks[instance]
 	if !ok {
 		l = &sync.Mutex{}
-		e.locks[app] = l
+		e.locks[instance] = l
 	}
 	return l
 }
@@ -438,67 +449,108 @@ const (
 	EnvFailed   = "failed"
 )
 
-// RemoveApp unregisters a registered app: it supersedes the app's unfinished
-// deployments, commits the removal of apps/<app>/ from the gitops
-// repository, removes the app from the traffic gateway and deletes it from
-// the store. Each step can be repeated, so a failed removal is retried by
-// calling RemoveApp again. A missing app is store.ErrNotFound; a gateway that
-// holds the app's writes is ErrWritesHeld, and the app is then kept.
+// RemoveApp unregisters a registered app with all its instances: it
+// supersedes the app's unfinished deployments, commits the removal of
+// apps/<instance>/ of the default instance and of every added branch's
+// instance from the gitops repository in one commit, removes every instance
+// from the traffic gateway and deletes the app, with its branches and
+// deployments, from the store. Each step can be repeated, so a failed
+// removal is retried by calling RemoveApp again. A missing app is
+// store.ErrNotFound; a gateway that holds the writes of one of the instances
+// is ErrWritesHeld, and the app is then kept.
 func (e *Executor) RemoveApp(ctx context.Context, name string) error {
 	if _, err := e.cfg.Store.GetApp(ctx, name); err != nil {
 		return err
+	}
+	branches, err := e.cfg.Store.ListAppBranches(ctx, name)
+	if err != nil {
+		return fmt.Errorf("list the branches of %s: %w", name, err)
 	}
 	list, err := e.cfg.Store.ListDeployments(ctx, name, 0)
 	if err != nil {
 		return fmt.Errorf("list deployments of %s: %w", name, err)
 	}
+	if err := e.supersedeAll(ctx, list, "the app is being deleted"); err != nil {
+		return err
+	}
+	instances := []string{name}
+	for _, b := range branches {
+		instances = append(instances, b.Instance)
+	}
+	if err := e.removeInstances(ctx, instances, "delete app "+name); err != nil {
+		return err
+	}
+	if err := e.cfg.Store.DeleteApp(ctx, name); err != nil {
+		return err
+	}
+	e.cfg.Log.Info("app deleted", "app", name, "instances", instances)
+	return nil
+}
+
+// supersedeAll finishes the unfinished deployments of list as superseded,
+// with msg, and stops their workers.
+func (e *Executor) supersedeAll(ctx context.Context, list []store.Deployment, msg string) error {
 	for _, d := range list {
 		if store.DeploymentFinished(d.Status) {
 			continue
 		}
-		if err := e.finish(ctx, &d, store.DeploySuperseded, "", "the app is being deleted"); err != nil && !errors.Is(err, errStopped) {
+		if err := e.finish(ctx, &d, store.DeploySuperseded, "", msg); err != nil && !errors.Is(err, errStopped) {
 			return err
 		}
 		e.stop(d.ID)
 	}
+	return nil
+}
 
-	l := e.lock(name)
-	l.Lock()
-	defer l.Unlock()
-	if _, _, err := e.cfg.GitOps.Delete(ctx, AppDir(name), "delete app "+name); err != nil {
-		return fmt.Errorf("%w: remove %s: %w", ErrGitOps, AppDir(name), err)
+// removeInstances commits the removal of the instances' gitops directories
+// in one commit and removes the instances from the traffic gateway. It holds
+// every instance's lock, so a deployment superseded before the call does not
+// commit or register after it. A gateway that holds an instance's writes is
+// ErrWritesHeld.
+func (e *Executor) removeInstances(ctx context.Context, instances []string, message string) error {
+	instances = slices.Sorted(slices.Values(instances)) // one lock order for every caller
+	dirs := make([]string, len(instances))
+	for i, in := range instances {
+		l := e.lock(in)
+		l.Lock()
+		defer l.Unlock()
+		dirs[i] = AppDir(in)
+	}
+	if _, _, err := e.cfg.GitOps.Delete(ctx, dirs, message); err != nil {
+		return fmt.Errorf("%w: remove %s: %w", ErrGitOps, strings.Join(dirs, ", "), err)
 	}
 	// The ApplicationSet deletes the Applications once it reads the commit.
 	// Without a refresh its repo server answers from a revision cache, which
-	// leaves the app running for minutes. A refused refresh only costs time.
+	// leaves the instances running for minutes. A refused refresh only costs
+	// time.
 	if err := e.cfg.Argo.RefreshApplicationSet(ctx); err != nil && ctx.Err() == nil {
-		e.cfg.Log.Warn("argo cd applicationset refresh after deleting an app", "app", name, "err", err)
+		e.cfg.Log.Warn("argo cd applicationset refresh after a removal", "instances", instances, "err", err)
 	}
-	if e.cfg.Gateway != nil {
-		err := e.cfg.Gateway.DeleteApp(ctx, name)
+	if e.cfg.Gateway == nil {
+		return nil
+	}
+	for _, in := range instances {
+		err := e.cfg.Gateway.DeleteApp(ctx, in)
 		var ae *gateway.APIError
 		switch {
 		case err == nil, errors.As(err, &ae) && ae.Status == 404:
 		case errors.As(err, &ae) && ae.Status == 409:
 			return fmt.Errorf("%w: %s", ErrWritesHeld, ae.Message)
 		default:
-			return fmt.Errorf("%w: delete app %s: %w", ErrGateway, name, err)
+			return fmt.Errorf("%w: delete app %s: %w", ErrGateway, in, err)
 		}
 	}
-	if err := e.cfg.Store.DeleteApp(ctx, name); err != nil {
-		return err
-	}
-	e.cfg.Log.Info("app deleted", "app", name)
 	return nil
 }
 
-// AppURL is where an app with a public service answers through the gateway,
-// or "" without an app domain.
-func AppURL(domain, app string) string {
+// AppURL is where an instance with a public service answers through the
+// gateway, or "" without an app domain. The default instance is named after
+// the app.
+func AppURL(domain, instance string) string {
 	if domain == "" {
 		return ""
 	}
-	return "https://" + app + "." + domain
+	return "https://" + instance + "." + domain
 }
 
 // publicService returns the spec's public service.

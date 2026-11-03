@@ -229,7 +229,7 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 앱마다 따로 라우팅하기 (ADR 0012):
 
 - `-backends`의 환경이 기본 앱입니다. `/v1/...` 관리 API, `gateway.Client`의 기존 메서드, 기존 지표는 모두 기본 앱만 다룹니다. 플랫폼 API(`internal/runs`)도 기본 앱을 이전합니다.
-- 다른 앱은 `PUT /apps/{app}`으로 등록합니다. 앱마다 환경, 쓰기 환경, 읽기 비율, 쓰기 보류, 통계가 따로 있어서, 한 앱의 hold는 다른 앱의 쓰기를 기다리지도 붙잡지도 않습니다. 이름은 `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`입니다.
+- 다른 앱은 `PUT /apps/{app}`으로 등록합니다. 앱마다 환경, 쓰기 환경, 읽기 비율, 쓰기 보류, 통계가 따로 있어서, 한 앱의 hold는 다른 앱의 쓰기를 기다리지도 붙잡지도 않습니다. 이름은 DNS 레이블 하나(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`, 63자까지)입니다. 플랫폼은 브랜치 인스턴스(`moimroom--dev`)도 이 이름으로 등록합니다.
 - `-app-domain`을 정하면 `Host`가 `<앱>.<도메인>`인 요청(대소문자와 포트 무시)이 그 앱으로 갑니다. `<기본 앱 이름>.<도메인>`은 기본 앱입니다. 도메인 아래인데 등록하지 않은 이름이면 404 `unknown_app`으로 답하고 어느 환경에도 보내지 않습니다. 오타가 다른 앱의 환경에 닿지 않게 하기 위해서입니다. 도메인 밖의 호스트(IP, 다른 도메인, 도메인 자체)는 기본 앱으로 갑니다.
 - `<관리 주소>/apps/<앱>`을 게이트웨이 주소로 쓰면 엔진의 HTTP 클라이언트가 그 앱에 hold, route, release를 그대로 부릅니다. Go에서는 `client.App("shop")`이 그 주소를 쓰는 `*gateway.Client`를 돌려주고, `client.Apps`, `client.PutApp(ctx, "shop", gateway.AppSpec{...})`, `client.DeleteApp`로 앱을 관리합니다.
 - 상태 파일에는 기본 앱을 예전과 같은 최상위 필드에, 등록한 앱을 `apps`에 환경 주소와 함께 씁니다. 예전 상태 파일은 그대로 읽고, 앱을 등록하지 않으면 파일 내용도 예전과 같습니다. 재시작하면 앱마다 쓰기 환경, 읽기 비율, 보류가 기본 앱과 같은 규칙으로 이어집니다.
@@ -428,13 +428,15 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 `PLATFORM_DEPLOY_BUILDER`를 넣으면 서버가 배포 실행기(`internal/deploy`)를 띄웁니다. 비우면 실행기가 없고 배포는 `queued`에 머뭅니다.
 
 - 작업자 `PLATFORM_DEPLOY_WORKERS`개가 큐에서 배포를 하나씩 꺼냅니다. 서버가 시작할 때 끝나지 않은 배포를 오래된 것부터 이어 갑니다. 이미지를 이미 만든 배포는 다시 빌드하지 않습니다.
-- 새 배포를 큐에 넣을 때, 같은 앱의 끝나지 않은 이전 배포 가운데 환경이 모두 새 배포에 들어가는 것을 `superseded`로 끝냅니다. 그 배포의 작업자는 다음 저장에서 멈춥니다. gitops 커밋과 게이트웨이 등록은 앱마다 잠금을 잡고, 배포가 아직 끝나지 않았음을 저장소에 쓴 직후에만 합니다. 그래서 밀려난 배포가 새 배포보다 늦게 커밋하지 않습니다.
-- building: 커밋의 `platform.yaml`을 등록과 같은 규칙(`deploy.CheckSpec`)으로 검사합니다. 틀리면 위치별 오류를 `log` 이벤트로 남기고 `failed`로 끝납니다. 통과했고 앱의 가장 새 배포이면 앱의 spec을 그 커밋의 것으로 바꿉니다. 그다음 서비스마다 `<registry>/hopcharlie/apps/<app>/<service>:<commit>`을 빌드해 push하고, digest(`...@sha256:...`)로 고정합니다.
-- committing: 대상 환경마다 `apps/<app>/<env>.yaml`을 ADR 0011 형식으로 만들어 커밋 하나로 씁니다. 키 순서가 정해져 있고 문자열은 모두 큰따옴표로 감싸므로, 같은 배포를 다시 쓰면 커밋이 생기지 않습니다. 다른 커밋이 먼저 들어가 push가 거부되면 새 head에서 다시 씁니다.
+- 배포는 앱의 인스턴스 하나로 갑니다(ADR 0015). 기본 인스턴스의 이름은 앱 이름이고, 추가한 브랜치의 인스턴스는 `<app>--<slug>`입니다. 인스턴스 이름이 gitops 경로, 네임스페이스, Application, 게이트웨이 앱 이름, 주소가 되고, 앱 이름은 차트의 `app`과 이미지 저장소에 그대로 씁니다.
+- 새 배포를 큐에 넣을 때, 같은 인스턴스의 끝나지 않은 이전 배포 가운데 환경이 모두 새 배포에 들어가는 것을 `superseded`로 끝냅니다. 다른 인스턴스의 배포는 건드리지 않으므로, `dev`에 push 해도 `main`의 배포가 밀려나지 않습니다. 그 배포의 작업자는 다음 저장에서 멈춥니다. gitops 커밋과 게이트웨이 등록은 인스턴스마다 잠금을 잡고, 배포가 아직 끝나지 않았음을 저장소에 쓴 직후에만 합니다. 그래서 밀려난 배포가 새 배포보다 늦게 커밋하지 않습니다.
+- building: 커밋의 `platform.yaml`을 등록과 같은 규칙(`deploy.CheckSpec`)으로 검사합니다. 틀리면 위치별 오류를 `log` 이벤트로 남기고 `failed`로 끝납니다. 통과했고 인스턴스의 가장 새 배포이면 그 인스턴스의 spec을 그 커밋의 것으로 바꿉니다. 기본 인스턴스는 앱의 spec을, 추가한 브랜치는 그 브랜치의 spec을 바꿉니다. 그 브랜치가 이미 지워졌으면 배포가 `failed`로 끝납니다. 그다음 서비스마다 `<registry>/hopcharlie/apps/<app>/<service>:<commit>`을 빌드해 push하고, digest(`...@sha256:...`)로 고정합니다. 이미지 저장소는 인스턴스가 함께 씁니다.
+- committing: 대상 환경마다 `apps/<instance>/<env>.yaml`을 ADR 0011 형식으로 만들어 커밋 하나로 씁니다. `namespace`는 인스턴스 이름이고, `app`과 `values.app`은 앱 이름입니다. 키 순서가 정해져 있고 문자열은 모두 큰따옴표로 감싸므로, 같은 배포를 다시 쓰면 커밋이 생기지 않습니다. 다른 커밋이 먼저 들어가 push가 거부되면 새 head에서 다시 씁니다. 여러 인스턴스가 한꺼번에 커밋해도 이렇게 다시 씁니다.
 - syncing: ApplicationSet과 Application `<namespace>-<env>`에 refresh를 요청하고, 모든 환경의 Application이 그 gitops 커밋이나 그 뒤의 커밋을 `Synced`, `Healthy`로 보고할 때까지 기다립니다. multi-source Application은 `status.sync.revisions`에서 gitops 커밋을 찾습니다. Application이 아직 없으면 계속 기다립니다. `Degraded`는 환경 상태 `degraded`, 동기화 실패는 `failed`이고, `PLATFORM_ARGOCD_TIMEOUT` 안에 모두 healthy가 되지 않으면 배포가 `failed`로 끝납니다.
-- 모든 환경이 healthy이고, 공개 서비스가 있고, 게이트웨이(`PLATFORM_GATEWAY_URL`)가 설정돼 있으면 환경마다 공개 서비스 주소를 찾아 게이트웨이에 앱을 등록합니다(`PUT /apps/<app>`). 처음 등록하는 앱은 첫 환경으로 쓰기를 보냅니다. 이미 있는 앱은 이전이 옮긴 쓰기 환경과 읽기 비율을 그대로 둡니다. 이전 중이라 쓰기가 보류돼 있으면 게이트웨이를 바꾸지 않고 배포를 `failed`로 끝냅니다.
-- 백엔드 주소는 `PLATFORM_APP_BACKEND_TEMPLATE`가 있으면 그 틀로 만들고, 없으면 환경 클러스터에서 Service `<app>-<service>`(네임스페이스 `<app>`)의 LoadBalancer 주소를 읽습니다. 게이트웨이의 백엔드 이름은 환경 이름입니다.
-- `DELETE /v1/apps/{name}`은 끝나지 않은 배포를 `superseded`로 끝내고, gitops 저장소에서 `apps/<name>/`을 지우는 커밋을 하고, 게이트웨이에서 앱을 지우고, 앱과 배포 기록을 지웁니다. 게이트웨이가 쓰기를 보류 중이면 409 `cluster_busy`이고 앱은 남습니다. 다시 부르면 처음부터 하되, 이미 지운 것은 건너뜁니다.
+- 모든 환경이 healthy이고, 공개 서비스가 있고, 게이트웨이(`PLATFORM_GATEWAY_URL`)가 설정돼 있으면 환경마다 공개 서비스 주소를 찾아 게이트웨이에 인스턴스를 등록합니다(`PUT /apps/<instance>`). 처음 등록하는 앱은 첫 환경으로 쓰기를 보냅니다. 이미 있는 앱은 이전이 옮긴 쓰기 환경과 읽기 비율을 그대로 둡니다. 이전 중이라 쓰기가 보류돼 있으면 게이트웨이를 바꾸지 않고 배포를 `failed`로 끝냅니다.
+- 백엔드 주소는 `PLATFORM_APP_BACKEND_TEMPLATE`가 있으면 그 틀로 만들고, 없으면 환경 클러스터에서 Service `<app>-<service>`(네임스페이스 `<instance>`)의 LoadBalancer 주소를 읽습니다. 게이트웨이의 백엔드 이름은 환경 이름입니다.
+- `DELETE /v1/apps/{name}`은 앱의 끝나지 않은 배포를 모두 `superseded`로 끝내고, gitops 저장소에서 기본 인스턴스와 추가한 브랜치 인스턴스의 `apps/<instance>/`를 커밋 하나로 지우고, 게이트웨이에서 인스턴스를 모두 지우고, 앱과 브랜치와 배포 기록을 지웁니다. 게이트웨이가 한 인스턴스라도 쓰기를 보류 중이면 409 `cluster_busy`이고 앱은 남습니다. 다시 부르면 처음부터 하되, 이미 지운 것은 건너뜁니다.
+- `DELETE /v1/apps/{name}/instances/{instance}`는 그 인스턴스의 끝나지 않은 배포만 `superseded`로 끝내고, `apps/<instance>/`를 지우는 커밋을 하고, 게이트웨이에서 그 인스턴스를 지운 뒤, 브랜치와 그 배포 기록을 지웁니다. 오류와 다시 부르기는 앱 삭제와 같습니다.
 - 빌드 출력은 배포마다 2000줄까지 `log` 이벤트로 남깁니다. 배포 이벤트 스트림(`GET /v1/deployments/{id}/events`)은 저장소를 0.5초마다 읽어 새 이벤트를 보냅니다.
 
 | 변수 | 설명 |
@@ -452,7 +454,7 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 | `PLATFORM_ARGOCD_NAMESPACE` | Application과 ApplicationSet이 있는 네임스페이스 (기본 `argocd`) |
 | `PLATFORM_ARGOCD_APPSET` | 커밋 뒤 refresh를 요청할 ApplicationSet (기본 `hopcharlie-apps`) |
 | `PLATFORM_ARGOCD_TIMEOUT` | 커밋 뒤 모든 환경이 healthy가 되기를 기다리는 시간 (기본 `10m`) |
-| `PLATFORM_APP_BACKEND_TEMPLATE` | 게이트웨이 백엔드 주소의 틀. `{app}`, `{service}`, `{port}`, `{env}`를 바꿈 (예: `http://{app}-{service}.{app}.svc.cluster.local:{port}`). 비우면 Service의 LoadBalancer 주소를 읽음 |
+| `PLATFORM_APP_BACKEND_TEMPLATE` | 게이트웨이 백엔드 주소의 틀. `{app}`, `{instance}`, `{service}`, `{port}`, `{env}`를 바꿈 (예: `http://{app}-{service}.{instance}.svc.cluster.local:{port}`). `{instance}`는 네임스페이스이고 기본 인스턴스에서는 앱 이름과 같음. 비우면 Service의 LoadBalancer 주소를 읽음 |
 
 - CodeBuild 프로젝트는 소스 없이 인라인 buildspec으로 돌고, docker를 쓰므로 privileged 모드가 필요합니다. 프로젝트 역할에는 ECR push와 `hopcharlie/apps/*` 저장소를 만드는 권한이, 플랫폼 역할에는 `codebuild:StartBuild`, `codebuild:BatchGetBuilds`와 빌드 로그 그룹의 `logs:GetLogEvents`가 필요합니다.
 - clone 토큰은 CodeBuild 환경 변수(PLAINTEXT)로 넘깁니다. 한 시간 뒤 만료되는 설치 토큰이지만 빌드 설정 화면에서는 보입니다. buildspec은 토큰을 출력하지 않고, fetch가 끝나면 remote 주소에서 토큰을 지운 뒤에 Dockerfile을 빌드합니다.

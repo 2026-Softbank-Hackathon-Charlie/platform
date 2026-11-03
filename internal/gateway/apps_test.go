@@ -291,8 +291,21 @@ func TestAppAdmin(t *testing.T) {
 	}
 
 	spec, _ := appBackends(t, "shop", "gke", "eks")
-	for _, name := range []string{"Shop", "-shop", "shop-", "sh_op", "s.p", strings.Repeat("a", 33)} {
+	for _, name := range []string{"Shop", "-shop", "shop-", "sh_op", "s.p", strings.Repeat("a", 64)} {
 		wantAPIError(t, c.PutApp(ctx, name, spec), http.StatusBadRequest, "invalid_app_name")
+	}
+	// A name is one DNS label of up to 63 characters, so the platform's
+	// branch instances such as moimroom--dev are names too (ADR 0015).
+	for _, name := range []string{"moimroom--dev", strings.Repeat("a", 63)} {
+		if err := c.PutApp(ctx, name, spec); err != nil {
+			t.Fatalf("put %s: %v", name, err)
+		}
+		if r := tg.hostDo(ctx, http.MethodGet, name+"."+testDomain, "/items", ""); r.status != http.StatusOK {
+			t.Fatalf("%s.%s: %+v", name, testDomain, r)
+		}
+		if err := c.DeleteApp(ctx, name); err != nil {
+			t.Fatalf("delete %s: %v", name, err)
+		}
 	}
 	wantAPIError(t, c.PutApp(ctx, DefaultAppName, spec), http.StatusConflict, "default_app")
 	wantAPIError(t, c.DeleteApp(ctx, DefaultAppName), http.StatusConflict, "default_app")
