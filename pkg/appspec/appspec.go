@@ -220,7 +220,7 @@ func Check(data []byte) (*Spec, []FieldError) {
 }
 
 var (
-	appName  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
+	appName  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`)
 	partName = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$`)
 	envKey   = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 )
@@ -228,7 +228,9 @@ var (
 // Validate returns every rule s breaks, in field order; nil when it is
 // valid. An empty path or dockerfile and replicas 0 count as their defaults.
 //
-//   - name matches ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$.
+//   - name matches ^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$ (3 to 32 characters)
+//     and has no "--", which separates the app from the branch in instance
+//     names (InstanceName).
 //   - 1 to MaxServices services and at most one resource per type. Service
 //     names, and resource names, match ^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$
 //     (so <app>-<name> and its suffixes fit a 63-character Kubernetes name)
@@ -247,7 +249,9 @@ func (s Spec) Validate() []FieldError {
 	case s.Name == "":
 		add("name", "is required")
 	case !appName.MatchString(s.Name):
-		add("name", "must be 1 to 32 lowercase letters, digits and hyphens, starting and ending with a letter or digit")
+		add("name", "must be 3 to 32 lowercase letters, digits and hyphens, starting and ending with a letter or digit")
+	case strings.Contains(s.Name, "--"):
+		add("name", "must not contain --, which separates the app from the branch in instance names")
 	}
 
 	switch {

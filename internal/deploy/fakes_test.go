@@ -438,7 +438,7 @@ func (te *testEnv) deployment(app, commit string, envs ...string) store.Deployme
 	te.t.Helper()
 	te.n++
 	d := store.Deployment{
-		ID: fmt.Sprintf("dep_%012d", te.n), App: app, Ref: "main", Commit: commit, Trigger: "manual", TriggeredBy: "op",
+		ID: fmt.Sprintf("dep_%012d", te.n), App: app, Branch: "main", Instance: app, Ref: "main", Commit: commit, Trigger: "manual", TriggeredBy: "op",
 		Status: store.DeployQueued, Images: []store.DeploymentImage{},
 		CreatedAt: time.Date(2026, 11, 3, 0, 0, te.n, 0, time.UTC),
 	}

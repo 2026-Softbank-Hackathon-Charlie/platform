@@ -19,6 +19,23 @@ const (
 	DeploySuperseded = "superseded"
 )
 
+// Errors of the branch instances (ADR 0015). Each wraps ErrConflict or
+// ErrNotFound, so errors.Is matches both the specific and the general one.
+var (
+	// ErrBranchExists means the branch is the app's own branch or one already
+	// added to the app.
+	ErrBranchExists = fmt.Errorf("%w: branch exists", ErrConflict)
+	// ErrInstanceExists means the instance name is taken by another added
+	// branch or by an app's name.
+	ErrInstanceExists = fmt.Errorf("%w: instance exists", ErrConflict)
+	// ErrInstanceLimit means the app already has as many added branches as
+	// allowed.
+	ErrInstanceLimit = fmt.Errorf("%w: instance limit reached", ErrConflict)
+	// ErrInstanceNotFound means the app exists but the branch and instance
+	// are not one of its instances.
+	ErrInstanceNotFound = fmt.Errorf("%w: instance", ErrNotFound)
+)
+
 // finishedDeployment lists the final statuses, for queries.
 var finishedDeployment = []string{DeployHealthy, DeployFailed, DeploySuperseded}
 
@@ -44,6 +61,25 @@ type App struct {
 	CreatedAt  time.Time
 }
 
+// AppBranch is a branch an operator added to an app (POST
+// /v1/apps/{name}/instances, ADR 0015), deployed as its own instance. The
+// app's own branch is App.Branch, the default instance named after the app;
+// it is never an AppBranch.
+type AppBranch struct {
+	App    string
+	Branch string
+	// Instance is appspec.InstanceName(App, Branch). It is unique across
+	// every app's branches and is never an app's name.
+	Instance   string
+	AutoDeploy bool
+	// Spec is the appspec.Spec JSON of the newest platform.yaml on the
+	// branch that passed the check, read at SpecCommit.
+	Spec       []byte
+	SpecCommit string
+	CreatedBy  string
+	CreatedAt  time.Time
+}
+
 // DeploymentImage is a service's built image, pinned by digest. The JSON
 // matches apiv1.DeploymentImage.
 type DeploymentImage struct {
@@ -62,11 +98,16 @@ type DeploymentEnvironment struct {
 	Message      string `json:"message,omitempty"`
 }
 
-// Deployment is one deployment of an app's commit to some of its environments.
+// Deployment is one deployment of an app's commit into one of its instances,
+// in some of its environments.
 type Deployment struct {
-	ID          string
-	App         string
-	Ref         string // as asked: a branch or a commit sha
+	ID  string
+	App string
+	// Branch and Instance name the instance it deploys: the app's Branch and
+	// Name for the default instance, or an AppBranch's Branch and Instance.
+	Branch      string
+	Instance    string
+	Ref         string // as asked: a branch, tag or commit sha
 	Commit      string // the full sha Ref resolved to
 	Trigger     string // apiv1.DeploymentTrigger
 	TriggeredBy string
@@ -113,10 +154,24 @@ func (a App) Clean() (App, error) {
 	return a, nil
 }
 
+// Clean returns a copy of b with every string passed through CleanText and
+// Spec through CleanJSON. Stores apply it on every write.
+func (b AppBranch) Clean() (AppBranch, error) {
+	for _, f := range []*string{&b.App, &b.Branch, &b.Instance, &b.SpecCommit, &b.CreatedBy} {
+		*f = CleanText(*f)
+	}
+	spec, err := CleanJSON(b.Spec)
+	if err != nil {
+		return AppBranch{}, fmt.Errorf("app branch spec: %w", err)
+	}
+	b.Spec = spec
+	return b, nil
+}
+
 // Clean returns a copy of d with every string passed through CleanText.
 // Stores apply it on every write; the slices of the copy are its own.
 func (d Deployment) Clean() Deployment {
-	for _, f := range []*string{&d.ID, &d.App, &d.Ref, &d.Commit, &d.Trigger, &d.TriggeredBy, &d.Status, &d.Error, &d.BuildID} {
+	for _, f := range []*string{&d.ID, &d.App, &d.Branch, &d.Instance, &d.Ref, &d.Commit, &d.Trigger, &d.TriggeredBy, &d.Status, &d.Error, &d.BuildID} {
 		*f = CleanText(*f)
 	}
 	images := make([]DeploymentImage, len(d.Images))
@@ -143,10 +198,10 @@ func (e DeploymentEvent) Clean() DeploymentEvent {
 	return e
 }
 
-// DeployStore persists the apps registered from GitHub, their deployments
-// and the deployments' events, and the GitHub webhook deliveries already
-// handled. It is part of Store. Every string is stored as Clean leaves it,
-// and a lookup by a key that is not clean finds nothing.
+// DeployStore persists the apps registered from GitHub, the branches added to
+// them, their deployments and the deployments' events, and the GitHub webhook
+// deliveries already handled. It is part of Store. Every string is stored as
+// Clean leaves it, and a lookup by a key that is not clean finds nothing.
 type DeployStore interface {
 	// CreateApp inserts an app. ErrConflict if the name exists.
 	CreateApp(ctx context.Context, a App) error
@@ -155,22 +210,49 @@ type DeployStore interface {
 	// ListApps returns every app, by name.
 	ListApps(ctx context.Context) ([]App, error)
 	// UpdateApp replaces Branch, Environments, AutoDeploy, Spec and
-	// SpecCommit of the app named a.Name. ErrNotFound if it does not exist.
+	// SpecCommit of the app named a.Name. ErrNotFound if it does not exist;
+	// ErrBranchExists when a.Branch is one of the app's added branches.
 	UpdateApp(ctx context.Context, a App) error
-	// DeleteApp removes an app together with its deployments and their
-	// events. ErrNotFound if it does not exist.
+	// DeleteApp removes an app together with its added branches, its
+	// deployments and their events. ErrNotFound if it does not exist.
 	DeleteApp(ctx context.Context, name string) error
 
-	// CreateDeployment inserts a deployment of an existing app. ErrNotFound
-	// when the app does not exist; ErrConflict if the id exists. A
-	// concurrent DeleteApp either sees the deployment and removes it or
-	// makes the create fail.
+	// CreateAppBranch adds a branch to an existing app that has fewer than
+	// maxBranches added branches. ErrNotFound when the app does not exist;
+	// ErrBranchExists when b.Branch is the app's own branch or the app
+	// already has it; ErrInstanceExists when b.Instance is taken by any
+	// app's branch or is an app's name; ErrInstanceLimit when the app has
+	// maxBranches added branches. Creates for one app are serialized, so
+	// concurrent ones never pass the limit. A concurrent DeleteApp either
+	// sees the branch and removes it or makes the create fail.
+	CreateAppBranch(ctx context.Context, b AppBranch, maxBranches int) error
+	// ListAppBranches returns an app's added branches, by branch name. It is
+	// empty when the app has none or does not exist.
+	ListAppBranches(ctx context.Context, app string) ([]AppBranch, error)
+	// UpdateAppBranch replaces AutoDeploy, Spec and SpecCommit of the branch
+	// b.Branch of app b.App. ErrNotFound if the app has no such branch.
+	UpdateAppBranch(ctx context.Context, b AppBranch) error
+	// DeleteAppBranch removes a branch of an app together with the
+	// deployments of its instance and their events, in one transaction.
+	// ErrNotFound if the app has no such branch.
+	DeleteAppBranch(ctx context.Context, app, branch string) error
+
+	// CreateDeployment inserts a deployment into an instance of an existing
+	// app. ErrNotFound when the app does not exist; ErrInstanceNotFound when
+	// d.Branch and d.Instance are neither the app's Branch and Name nor the
+	// Branch and Instance of one of its AppBranches; ErrConflict if the id
+	// exists. A concurrent DeleteApp, or DeleteAppBranch of the deployment's
+	// branch, either sees the deployment and removes it or makes the create
+	// fail.
 	CreateDeployment(ctx context.Context, d Deployment) error
 	// GetDeployment returns ErrNotFound when the id does not exist.
 	GetDeployment(ctx context.Context, id string) (Deployment, error)
 	// ListDeployments returns an app's deployments, newest CreatedAt first
 	// (then id descending), at most limit (<= 0 means no limit).
 	ListDeployments(ctx context.Context, app string, limit int) ([]Deployment, error)
+	// ListInstanceDeployments returns the deployments into one instance, in
+	// ListDeployments' order, at most limit (<= 0 means no limit).
+	ListInstanceDeployments(ctx context.Context, instance string, limit int) ([]Deployment, error)
 	// UpdateDeployment replaces Status, Images, Environments, Error, BuildID,
 	// StartedAt and FinishedAt of a deployment that is not finished, in one
 	// conditional write, and returns the stored deployment. ErrNotFound when

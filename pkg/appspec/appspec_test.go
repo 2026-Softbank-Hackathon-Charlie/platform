@@ -150,13 +150,17 @@ func TestValidate(t *testing.T) {
 	}{
 		{"valid", func(*Spec) {}, nil},
 		{"name missing", func(s *Spec) { s.Name = "" }, []string{"name: is required"}},
-		{"name uppercase", func(s *Spec) { s.Name = "Shop" }, []string{"name: must be 1 to 32"}},
+		{"name uppercase", func(s *Spec) { s.Name = "Shop" }, []string{"name: must be 3 to 32"}},
 		{"name leading hyphen", func(s *Spec) { s.Name = "-shop" }, []string{"name: must be"}},
 		{"name trailing hyphen", func(s *Spec) { s.Name = "shop-" }, []string{"name: must be"}},
 		{"name underscore", func(s *Spec) { s.Name = "my_shop" }, []string{"name: must be"}},
 		{"name 32 characters", func(s *Spec) { s.Name = strings.Repeat("a", 32) }, nil},
 		{"name 33 characters", func(s *Spec) { s.Name = strings.Repeat("a", 33) }, []string{"name: must be"}},
-		{"name one character", func(s *Spec) { s.Name = "a" }, nil},
+		{"name one character", func(s *Spec) { s.Name = "a" }, []string{"name: must be 3 to 32"}},
+		{"name two characters", func(s *Spec) { s.Name = "ab" }, []string{"name: must be 3 to 32"}},
+		{"name three characters", func(s *Spec) { s.Name = "abc" }, nil},
+		{"name with --", func(s *Spec) { s.Name = "a--b" }, []string{"name: must not contain --"}},
+		{"name with a single hyphen", func(s *Spec) { s.Name = "a-b" }, nil},
 		{"name starts with a digit", func(s *Spec) { s.Name = "1shop" }, nil},
 		{"no services", func(s *Spec) { s.Services = nil; s.Resources = nil }, []string{"services: needs at least one service"}},
 		{"five services", func(s *Spec) { s.Services = services(5) }, nil},
@@ -253,7 +257,7 @@ func TestCheck(t *testing.T) {
 		t.Fatalf("Check(valid) = %v, %v", s, errs)
 	}
 
-	s, errs = Check([]byte("name: x\nservices:\n  - name: web\n"))
+	s, errs = Check([]byte("name: shop\nservices:\n  - name: web\n"))
 	if s == nil || s.Services[0].Replicas != 1 {
 		t.Fatalf("Check(invalid) spec = %v, want the decoded spec with defaults", s)
 	}

@@ -49,6 +49,24 @@ func (c *Client) DeleteApp(ctx context.Context, name string) error {
 	return nil
 }
 
+// CreateAppInstance deploys another branch of a registered app as its own
+// instance and queues the instance's first deployment. An invalid
+// platform.yaml on the branch is an *AppSpecError.
+func (c *Client) CreateAppInstance(ctx context.Context, app string, req apiv1.AppInstanceCreateRequest) (*apiv1.AppInstanceCreated, error) {
+	return call[apiv1.AppInstanceCreated](ctx, c, request{method: http.MethodPost, path: "/v1/apps/%s/instances", params: []string{app}, body: req})
+}
+
+// DeleteAppInstance removes an added instance of an app; Argo CD then
+// removes its workloads. The default instance goes only with the app.
+func (c *Client) DeleteAppInstance(ctx context.Context, app, instance string) error {
+	resp, err := c.send(ctx, request{method: http.MethodDelete, path: "/v1/apps/%s/instances/%s", params: []string{app, instance}})
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // ValidateAppSpec checks a platform.yaml, from a repository branch or given
 // as content, without registering anything. The result says whether it is
 // valid; an invalid file is not an error.
@@ -57,18 +75,28 @@ func (c *Client) ValidateAppSpec(ctx context.Context, req apiv1.AppSpecValidateR
 }
 
 // CreateDeployment deploys a registered app now. An empty request deploys the
-// app's branch to all its environments. An invalid platform.yaml at the ref
-// is an *AppSpecError.
+// app's branch into its default instance, to all its environments. An
+// invalid platform.yaml at the ref is an *AppSpecError.
 func (c *Client) CreateDeployment(ctx context.Context, app string, req apiv1.DeploymentCreateRequest) (*apiv1.Deployment, error) {
 	return call[apiv1.Deployment](ctx, c, request{method: http.MethodPost, path: "/v1/apps/%s/deployments", params: []string{app}, body: req})
 }
 
-// ListDeployments returns an app's deployments, newest first. limit <= 0
-// uses the server's default.
+// ListDeployments returns an app's deployments to all its instances, newest
+// first. limit <= 0 uses the server's default.
 func (c *Client) ListDeployments(ctx context.Context, app string, limit int) (*apiv1.DeploymentList, error) {
+	return c.ListBranchDeployments(ctx, app, "", limit)
+}
+
+// ListBranchDeployments returns the deployments of an app's branch's
+// instance, newest first; branch "" means every instance, as
+// ListDeployments. limit <= 0 uses the server's default.
+func (c *Client) ListBranchDeployments(ctx context.Context, app, branch string, limit int) (*apiv1.DeploymentList, error) {
 	q := url.Values{}
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
+	}
+	if branch != "" {
+		q.Set("branch", branch)
 	}
 	return call[apiv1.DeploymentList](ctx, c, request{method: http.MethodGet, path: "/v1/apps/%s/deployments", params: []string{app}, query: q})
 }

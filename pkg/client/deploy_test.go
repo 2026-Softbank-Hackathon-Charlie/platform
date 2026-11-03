@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	deploymentJSON = `{"id":"dep_1","app":"moimroom","ref":"main","commit":"9fceb02d0ae598e95dc970b74767f19372d61af8","trigger":"manual","triggeredBy":"op","status":"queued","images":[],"environments":[{"env":"eks","status":"pending"}],"createdAt":"2026-11-03T09:00:00Z"}`
-	appJSON        = `{"name":"moimroom","namespace":"moimroom","database":{"name":"app","user":"app","schemas":[]},"environments":[],"deploy":{"repo":"o/moimroom","branch":"main","environments":["eks"],"autoDeploy":true,"spec":{"name":"moimroom","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":8080,"public":true,"replicas":1}]},"specCommit":"9fceb02d","url":"https://moimroom.hopcharlie.dev","createdAt":"2026-11-03T09:00:00Z","createdBy":"op","status":[{"env":"eks","status":"pending"}]}}`
+	deploymentJSON = `{"id":"dep_1","app":"moimroom","branch":"main","instance":"moimroom","ref":"main","commit":"9fceb02d0ae598e95dc970b74767f19372d61af8","trigger":"manual","triggeredBy":"op","status":"queued","images":[],"environments":[{"env":"eks","status":"pending"}],"createdAt":"2026-11-03T09:00:00Z"}`
+	appJSON        = `{"name":"moimroom","namespace":"moimroom","database":{"name":"app","user":"app","schemas":[]},"environments":[],"deploy":{"repo":"o/moimroom","branch":"main","environments":["eks"],"autoDeploy":true,"spec":{"name":"moimroom","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":8080,"public":true,"replicas":1}]},"specCommit":"9fceb02d","url":"https://moimroom.hopcharlie.dev","createdAt":"2026-11-03T09:00:00Z","createdBy":"op","status":[{"env":"eks","status":"pending"}],"instances":[{"name":"moimroom","branch":"main","default":true,"autoDeploy":true,"spec":{"name":"moimroom","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":8080,"public":true,"replicas":1}]},"specCommit":"9fceb02d","url":"https://moimroom.hopcharlie.dev","createdAt":"2026-11-03T09:00:00Z","createdBy":"op","status":[{"env":"eks","status":"pending"}]}]}}`
+	instanceJSON   = `{"name":"moimroom--feature-x","branch":"feature/x","default":false,"autoDeploy":false,"spec":{"name":"moimroom","services":[]},"specCommit":"9fceb02d","createdAt":"2026-11-03T09:00:00Z","createdBy":"op","status":[{"env":"eks","status":"pending"}]}`
 	validationJSON = `{"valid":false,"spec":{"name":"moimroom","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":0,"public":false,"replicas":1}]},"commit":"9fceb02d","errors":[{"path":"services[0].port","message":"is required"}]}`
 )
 
@@ -48,9 +49,26 @@ func TestDeployOperations(t *testing.T) {
 			want: "web dep_1"},
 		{name: "GetApp escapes", call: func(c *Client) (any, error) { return c.GetApp(ctx, "moim/room") },
 			method: "GET", path: "/v1/apps/moim%2Froom", resp: appJSON,
-			got: func(v any) string { return *v.(*apiv1.App).Deploy.Url }, want: "https://moimroom.hopcharlie.dev"},
+			got: func(v any) string {
+				d := v.(*apiv1.App).Deploy
+				return *d.Url + " " + d.Instances[0].Name
+			},
+			want: "https://moimroom.hopcharlie.dev moimroom"},
 		{name: "DeleteApp", call: func(c *Client) (any, error) { return nil, c.DeleteApp(ctx, "moimroom") },
 			method: "DELETE", path: "/v1/apps/moimroom", status: 202,
+			got: func(any) string { return "" }, want: ""},
+		{name: "CreateAppInstance", call: func(c *Client) (any, error) {
+			return c.CreateAppInstance(ctx, "moimroom", apiv1.AppInstanceCreateRequest{Branch: "feature/x", AutoDeploy: ptr(false)})
+		},
+			method: "POST", path: "/v1/apps/moimroom/instances", body: `{"branch":"feature/x","autoDeploy":false}`, status: 201,
+			resp: `{"instance":` + instanceJSON + `,"deployment":` + deploymentJSON + `}`,
+			got: func(v any) string {
+				r := v.(*apiv1.AppInstanceCreated)
+				return r.Instance.Name + " " + r.Instance.Branch + " " + r.Deployment.Id
+			},
+			want: "moimroom--feature-x feature/x dep_1"},
+		{name: "DeleteAppInstance escapes", call: func(c *Client) (any, error) { return nil, c.DeleteAppInstance(ctx, "moimroom", "moimroom--dev/x") },
+			method: "DELETE", path: "/v1/apps/moimroom/instances/moimroom--dev%2Fx", status: 202,
 			got: func(any) string { return "" }, want: ""},
 		{name: "ValidateAppSpec repo", call: func(c *Client) (any, error) {
 			return c.ValidateAppSpec(ctx, apiv1.AppSpecValidateRequest{Repo: ptr("o/moimroom"), Branch: ptr("dev")})
@@ -80,6 +98,12 @@ func TestDeployOperations(t *testing.T) {
 			method: "GET", path: "/v1/apps/moimroom/deployments", query: "limit=5", resp: `{"deployments":[` + deploymentJSON + `]}`,
 			got: func(v any) string { return v.(*apiv1.DeploymentList).Deployments[0].Commit }, want: "9fceb02d0ae598e95dc970b74767f19372d61af8"},
 		{name: "ListDeployments server default", call: func(c *Client) (any, error) { return c.ListDeployments(ctx, "moimroom", 0) },
+			method: "GET", path: "/v1/apps/moimroom/deployments", resp: `{"deployments":[]}`,
+			got: func(v any) string { return fmt.Sprint(len(v.(*apiv1.DeploymentList).Deployments)) }, want: "0"},
+		{name: "ListBranchDeployments", call: func(c *Client) (any, error) { return c.ListBranchDeployments(ctx, "moimroom", "feature/x", 5) },
+			method: "GET", path: "/v1/apps/moimroom/deployments", query: "branch=feature%2Fx&limit=5", resp: `{"deployments":[` + deploymentJSON + `]}`,
+			got: func(v any) string { return v.(*apiv1.DeploymentList).Deployments[0].Instance }, want: "moimroom"},
+		{name: "ListBranchDeployments every branch", call: func(c *Client) (any, error) { return c.ListBranchDeployments(ctx, "moimroom", "", 0) },
 			method: "GET", path: "/v1/apps/moimroom/deployments", resp: `{"deployments":[]}`,
 			got: func(v any) string { return fmt.Sprint(len(v.(*apiv1.DeploymentList).Deployments)) }, want: "0"},
 		{name: "GetDeployment", call: func(c *Client) (any, error) { return c.GetDeployment(ctx, "dep_1") },
@@ -130,6 +154,10 @@ func TestAppSpecError(t *testing.T) {
 		},
 		"CreateDeployment": func(c *Client) error {
 			_, err := c.CreateDeployment(ctx, "moimroom", apiv1.DeploymentCreateRequest{})
+			return err
+		},
+		"CreateAppInstance": func(c *Client) error {
+			_, err := c.CreateAppInstance(ctx, "moimroom", apiv1.AppInstanceCreateRequest{Branch: "dev"})
 			return err
 		},
 	} {

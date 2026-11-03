@@ -380,21 +380,25 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 
 앱 저장소(서비스마다 Dockerfile, 루트에 `platform.yaml`)를 등록하면, 플랫폼이 서비스마다 이미지를 빌드하고 gitops 저장소에 `apps/<app>/<env>.yaml`을 커밋합니다. Argo CD가 Application `<app>-<env>`를 네임스페이스 `<app>`에 배포합니다. 설계와 `platform.yaml` 규칙은 [ADR 0011](docs/adr/0011-github-app-deploy.md)에 있습니다.
 
+앱은 등록한 브랜치를 기본 인스턴스(이름은 앱 이름)로 띄우고, 운영자가 더한 브랜치를 인스턴스 `<app>--<slug>`로 따로 띄웁니다. 인스턴스 이름이 네임스페이스, gitops 경로 `apps/<instance>/`, Application `<instance>-<env>`, 주소 `https://<instance>.<도메인>`이 됩니다. 앱 하나에 인스턴스는 기본 인스턴스를 포함해 3개까지입니다. 그래서 앱 이름은 `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`에 맞고 `--`를 포함하지 않습니다. 설계는 [ADR 0015](docs/adr/0015-branch-instances.md)에 있습니다.
+
 | 요청 | 역할 | 설명 |
 | --- | --- | --- |
 | `POST /v1/apps` | operator | `{repo, branch?, environments, autoDeploy?}`. 브랜치 head의 `platform.yaml`을 읽어 앱을 등록하고 첫 배포를 큐에 넣음. 201 + `{app, deployment}`. 잘못된 `platform.yaml`은 422 `invalid_app_spec` (`validation`에 위치별 오류) |
 | `POST /v1/apps/validate` | viewer | `{repo, branch?}` 또는 `{spec}`의 `platform.yaml`을 검사만 함. 항상 200 + `valid` |
 | `GET /v1/apps/{name}` | viewer | 앱 하나. 등록한 앱은 `deploy`에 저장소, spec, 환경별 상태, 마지막 배포 |
-| `DELETE /v1/apps/{name}` | operator | 등록 해제. gitops 파일을 지우면 Argo CD가 워크로드를 지움. 202. 파일에만 있는 앱은 409 |
-| `POST /v1/apps/{name}/deployments` | operator | `{ref?, environments?}`로 지금 배포. 202 + Deployment |
-| `GET /v1/apps/{name}/deployments` | viewer | 최신순, `?limit=` (기본 20) |
+| `DELETE /v1/apps/{name}` | operator | 등록 해제. 추가한 인스턴스도 함께 지움. gitops 파일을 지우면 Argo CD가 워크로드를 지움. 202. 파일에만 있는 앱은 409 |
+| `POST /v1/apps/{name}/instances` | operator | `{branch, autoDeploy?}`. 브랜치를 인스턴스 `<app>--<slug>`로 더함. 브랜치 head의 `platform.yaml`을 등록과 같은 규칙으로 검사하고 첫 배포를 큐에 넣음. 201 + `{instance, deployment}`. 이미 있는 브랜치는 409 `branch_exists`, 인스턴스 이름이 겹치면 409 `instance_exists`, 3개를 넘으면 409 `instance_limit` |
+| `DELETE /v1/apps/{name}/instances/{instance}` | operator | 추가한 인스턴스를 지움. gitops 파일, 게이트웨이 등록, 브랜치와 배포 기록을 지움. 202. 기본 인스턴스는 409 `default_instance` |
+| `POST /v1/apps/{name}/deployments` | operator | `{branch?, ref?, environments?}`로 지금 배포. `branch`가 인스턴스를 고름(기본은 앱의 브랜치). 202 + Deployment |
+| `GET /v1/apps/{name}/deployments` | viewer | 최신순, `?limit=` (기본 20), `?branch=`로 그 브랜치의 배포만 |
 | `GET /v1/deployments/{id}` | viewer | 배포 하나 (상태, 이미지 digest, 환경별 상태) |
 | `GET /v1/deployments/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속) |
 | `GET /v1/github/repos` | viewer | GitHub App 설치가 볼 수 있는 저장소 |
 | `POST /v1/webhooks/github` | 없음 | GitHub App webhook. `X-Hub-Signature-256`으로 확인. 등록한 브랜치의 push만 배포(202), 나머지는 204 |
 
 - 배포 상태는 `queued`, `building`, `committing`, `syncing`을 거쳐 `healthy`, `failed`, `superseded`로 끝납니다. 같은 환경으로 새 배포가 생기면 끝나지 않은 이전 배포는 `superseded`가 됩니다.
-- 테이블은 마이그레이션 `0005_app_deploy.sql`이 만듭니다.
+- 테이블은 마이그레이션 `0005_app_deploy.sql`과 `0006_app_branches.sql`이 만듭니다.
 
 ### GitHub App 설정
 
