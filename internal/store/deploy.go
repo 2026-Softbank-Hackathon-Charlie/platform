@@ -19,6 +19,23 @@ const (
 	DeploySuperseded = "superseded"
 )
 
+// Errors of the branch instances (ADR 0015). Each wraps ErrConflict or
+// ErrNotFound, so errors.Is matches both the specific and the general one.
+var (
+	// ErrBranchExists means the branch is the app's own branch or one already
+	// added to the app.
+	ErrBranchExists = fmt.Errorf("%w: branch exists", ErrConflict)
+	// ErrInstanceExists means the instance name is taken by another added
+	// branch or by an app's name.
+	ErrInstanceExists = fmt.Errorf("%w: instance exists", ErrConflict)
+	// ErrInstanceLimit means the app already has as many added branches as
+	// allowed.
+	ErrInstanceLimit = fmt.Errorf("%w: instance limit reached", ErrConflict)
+	// ErrInstanceNotFound means the app exists but the branch and instance
+	// are not one of its instances.
+	ErrInstanceNotFound = fmt.Errorf("%w: instance", ErrNotFound)
+)
+
 // finishedDeployment lists the final statuses, for queries.
 var finishedDeployment = []string{DeployHealthy, DeployFailed, DeploySuperseded}
 
@@ -193,18 +210,22 @@ type DeployStore interface {
 	// ListApps returns every app, by name.
 	ListApps(ctx context.Context) ([]App, error)
 	// UpdateApp replaces Branch, Environments, AutoDeploy, Spec and
-	// SpecCommit of the app named a.Name. ErrNotFound if it does not exist.
+	// SpecCommit of the app named a.Name. ErrNotFound if it does not exist;
+	// ErrBranchExists when a.Branch is one of the app's added branches.
 	UpdateApp(ctx context.Context, a App) error
 	// DeleteApp removes an app together with its added branches, its
 	// deployments and their events. ErrNotFound if it does not exist.
 	DeleteApp(ctx context.Context, name string) error
 
-	// CreateAppBranch adds a branch to an existing app. ErrNotFound when the
-	// app does not exist; ErrConflict when b.Branch is the app's own branch,
-	// the app already has the branch, or b.Instance is taken by any app's
-	// branch or is an app's name. A concurrent DeleteApp either sees the
-	// branch and removes it or makes the create fail.
-	CreateAppBranch(ctx context.Context, b AppBranch) error
+	// CreateAppBranch adds a branch to an existing app that has fewer than
+	// maxBranches added branches. ErrNotFound when the app does not exist;
+	// ErrBranchExists when b.Branch is the app's own branch or the app
+	// already has it; ErrInstanceExists when b.Instance is taken by any
+	// app's branch or is an app's name; ErrInstanceLimit when the app has
+	// maxBranches added branches. Creates for one app are serialized, so
+	// concurrent ones never pass the limit. A concurrent DeleteApp either
+	// sees the branch and removes it or makes the create fail.
+	CreateAppBranch(ctx context.Context, b AppBranch, maxBranches int) error
 	// ListAppBranches returns an app's added branches, by branch name. It is
 	// empty when the app has none or does not exist.
 	ListAppBranches(ctx context.Context, app string) ([]AppBranch, error)
@@ -217,17 +238,21 @@ type DeployStore interface {
 	DeleteAppBranch(ctx context.Context, app, branch string) error
 
 	// CreateDeployment inserts a deployment into an instance of an existing
-	// app. ErrNotFound when the app does not exist, or when d.Branch and
-	// d.Instance are neither the app's Branch and Name nor the Branch and
-	// Instance of one of its AppBranches; ErrConflict if the id exists. A
-	// concurrent DeleteApp, or DeleteAppBranch of the deployment's branch,
-	// either sees the deployment and removes it or makes the create fail.
+	// app. ErrNotFound when the app does not exist; ErrInstanceNotFound when
+	// d.Branch and d.Instance are neither the app's Branch and Name nor the
+	// Branch and Instance of one of its AppBranches; ErrConflict if the id
+	// exists. A concurrent DeleteApp, or DeleteAppBranch of the deployment's
+	// branch, either sees the deployment and removes it or makes the create
+	// fail.
 	CreateDeployment(ctx context.Context, d Deployment) error
 	// GetDeployment returns ErrNotFound when the id does not exist.
 	GetDeployment(ctx context.Context, id string) (Deployment, error)
 	// ListDeployments returns an app's deployments, newest CreatedAt first
 	// (then id descending), at most limit (<= 0 means no limit).
 	ListDeployments(ctx context.Context, app string, limit int) ([]Deployment, error)
+	// ListInstanceDeployments returns the deployments into one instance, in
+	// ListDeployments' order, at most limit (<= 0 means no limit).
+	ListInstanceDeployments(ctx context.Context, instance string, limit int) ([]Deployment, error)
 	// UpdateDeployment replaces Status, Images, Environments, Error, BuildID,
 	// StartedAt and FinishedAt of a deployment that is not finished, in one
 	// conditional write, and returns the stored deployment. ErrNotFound when

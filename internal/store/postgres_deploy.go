@@ -60,6 +60,9 @@ func (s *Postgres) ListApps(ctx context.Context) ([]App, error) {
 	return collect(rows, scanApp)
 }
 
+// UpdateApp locks the app row (FOR UPDATE) before it checks the added
+// branches, so a CreateAppBranch, which takes the same lock, cannot add the
+// new branch in between.
 func (s *Postgres) UpdateApp(ctx context.Context, a App) error {
 	if !Clean(a.Name) {
 		return fmt.Errorf("%w: app %q", ErrNotFound, a.Name)
@@ -68,15 +71,29 @@ func (s *Postgres) UpdateApp(ctx context.Context, a App) error {
 	if err != nil {
 		return err
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE apps SET branch = $2, environments = $3, auto_deploy = $4, spec = $5, spec_commit = $6
-		WHERE name = $1`, a.Name, a.Branch, a.Environments, a.AutoDeploy, a.Spec, a.SpecCommit)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	var added bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM app_branches WHERE app = $1 AND branch = $2)
+		FROM apps WHERE name = $1 FOR UPDATE`, a.Name, a.Branch).Scan(&added)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: app %s", ErrNotFound, a.Name)
 	}
-	return nil
+	if err != nil {
+		return err
+	}
+	if added {
+		return fmt.Errorf("%w: %s is an added branch of app %s", ErrBranchExists, a.Branch, a.Name)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE apps SET branch = $2, environments = $3, auto_deploy = $4, spec = $5, spec_commit = $6
+		WHERE name = $1`, a.Name, a.Branch, a.Environments, a.AutoDeploy, a.Spec, a.SpecCommit); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // DeleteApp deletes the app row first. Its lock waits for a CreateDeployment
@@ -137,10 +154,15 @@ func scanAppBranch(row pgx.Row) (AppBranch, error) {
 	return b, nil
 }
 
-// CreateAppBranch holds the app row (FOR SHARE) while it checks and inserts,
-// so a DeleteApp waits for it and then removes the new branch too, and the
-// app's branch cannot change in between.
-func (s *Postgres) CreateAppBranch(ctx context.Context, b AppBranch) error {
+// CreateAppBranch locks the app row (FOR UPDATE) while it checks and
+// inserts. Creates for one app therefore run one at a time and count each
+// other's branches; an UpdateApp cannot change the app's branch in between;
+// and a DeleteApp waits for it and then removes the new branch too. Another
+// app's create can take the same instance name at the same moment: the
+// unique index makes the later insert fail, and that is ErrInstanceExists.
+// The locks go app, then branch, then deployments, then events, as in
+// CreateDeployment, DeleteAppBranch and DeleteApp.
+func (s *Postgres) CreateAppBranch(ctx context.Context, b AppBranch, maxBranches int) error {
 	if !Clean(b.App) {
 		return fmt.Errorf("%w: app %q", ErrNotFound, b.App)
 	}
@@ -155,7 +177,7 @@ func (s *Postgres) CreateAppBranch(ctx context.Context, b AppBranch) error {
 	defer tx.Rollback(ctx) // no-op after Commit
 
 	var appBranch string
-	err = tx.QueryRow(ctx, `SELECT branch FROM apps WHERE name = $1 FOR SHARE`, b.App).Scan(&appBranch)
+	err = tx.QueryRow(ctx, `SELECT branch FROM apps WHERE name = $1 FOR UPDATE`, b.App).Scan(&appBranch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: app %s", ErrNotFound, b.App)
 	}
@@ -163,19 +185,31 @@ func (s *Postgres) CreateAppBranch(ctx context.Context, b AppBranch) error {
 		return err
 	}
 	if b.Branch == appBranch {
-		return fmt.Errorf("%w: %s is the branch of app %s", ErrConflict, b.Branch, b.App)
+		return fmt.Errorf("%w: %s is the branch of app %s", ErrBranchExists, b.Branch, b.App)
 	}
-	var taken bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM apps WHERE name = $1)`, b.Instance).Scan(&taken); err != nil {
+	var added, taken bool
+	var count int
+	err = tx.QueryRow(ctx, `SELECT
+			EXISTS (SELECT 1 FROM app_branches WHERE app = $1 AND branch = $2),
+			EXISTS (SELECT 1 FROM apps WHERE name = $3) OR EXISTS (SELECT 1 FROM app_branches WHERE instance = $3),
+			(SELECT count(*) FROM app_branches WHERE app = $1)`,
+		b.App, b.Branch, b.Instance).Scan(&added, &taken, &count)
+	switch {
+	case err != nil:
 		return err
-	}
-	if taken {
-		return fmt.Errorf("%w: instance name %s is an app's name", ErrConflict, b.Instance)
+	case added:
+		return fmt.Errorf("%w: app %s has branch %s", ErrBranchExists, b.App, b.Branch)
+	case taken:
+		return fmt.Errorf("%w: instance name %s is taken", ErrInstanceExists, b.Instance)
+	case count >= maxBranches:
+		return fmt.Errorf("%w: app %s has %d added branches", ErrInstanceLimit, b.App, count)
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO app_branches (`+appBranchColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		b.App, b.Branch, b.Instance, b.AutoDeploy, b.Spec, b.SpecCommit, b.CreatedBy, b.CreatedAt)
 	if isUniqueViolation(err) {
-		return fmt.Errorf("%w: app %s has branch %s, or instance %s exists", ErrConflict, b.App, b.Branch, b.Instance)
+		// The app row lock rules out the same branch, so another app took
+		// the instance name meanwhile.
+		return fmt.Errorf("%w: instance name %s is taken", ErrInstanceExists, b.Instance)
 	}
 	if err != nil {
 		return err
@@ -287,8 +321,11 @@ func deploymentJSON(d Deployment) (images, envs []byte, err error) {
 // deployment of an added branch also holds the branch row (FOR SHARE), so a
 // DeleteAppBranch waits for it the same way.
 func (s *Postgres) CreateDeployment(ctx context.Context, d Deployment) error {
-	if !Clean(d.App) || !Clean(d.Branch) || !Clean(d.Instance) {
-		return fmt.Errorf("%w: app %q instance %q", ErrNotFound, d.App, d.Instance)
+	if !Clean(d.App) {
+		return fmt.Errorf("%w: app %q", ErrNotFound, d.App)
+	}
+	if !Clean(d.Branch) || !Clean(d.Instance) {
+		return fmt.Errorf("%w: branch %q instance %q", ErrInstanceNotFound, d.Branch, d.Instance)
 	}
 	d = d.Clean()
 	images, envs, err := deploymentJSON(d)
@@ -314,7 +351,7 @@ func (s *Postgres) CreateDeployment(ctx context.Context, d Deployment) error {
 		err = tx.QueryRow(ctx, `SELECT 1 FROM app_branches WHERE app = $1 AND branch = $2 AND instance = $3 FOR SHARE`,
 			d.App, d.Branch, d.Instance).Scan(&one)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("%w: app %s has no instance %s of branch %s", ErrNotFound, d.App, d.Instance, d.Branch)
+			return fmt.Errorf("%w: app %s has no instance %s of branch %s", ErrInstanceNotFound, d.App, d.Instance, d.Branch)
 		}
 		if err != nil {
 			return err
@@ -354,6 +391,22 @@ func (s *Postgres) ListDeployments(ctx context.Context, app string, limit int) (
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+deploymentColumns+` FROM deployments
 		WHERE app = $1 ORDER BY created_at DESC, id COLLATE "C" DESC LIMIT $2`, app, lim)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, scanDeployment)
+}
+
+func (s *Postgres) ListInstanceDeployments(ctx context.Context, instance string, limit int) ([]Deployment, error) {
+	if !Clean(instance) {
+		return []Deployment{}, nil
+	}
+	var lim *int // LIMIT NULL means no limit
+	if limit > 0 {
+		lim = &limit
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+deploymentColumns+` FROM deployments
+		WHERE instance = $1 ORDER BY created_at DESC, id COLLATE "C" DESC LIMIT $2`, instance, lim)
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -131,6 +132,24 @@ func TestCreateDeployment(t *testing.T) {
 	}
 }
 
+// instanceGone is a store whose CreateDeployment finds no instance, as when
+// the app's branch changes between the request's check and the create.
+type instanceGone struct{ store.Store }
+
+func (instanceGone) CreateDeployment(context.Context, store.Deployment) error {
+	return fmt.Errorf("%w: the branch moved", store.ErrInstanceNotFound)
+}
+
+func TestCreateDeploymentInstanceGone(t *testing.T) {
+	h := newHarness(t, withApps(""), withGitHub(shopGitHub(), nil), func(_ *harness, _ *runs.Config, d *Deps) { d.Store = instanceGone{d.Store} })
+	if err := h.store.CreateApp(t.Context(), store.App{Name: "shop", Repo: shopRepo, Branch: "main", Environments: []string{"gke"}, Spec: []byte(`{}`), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := h.do("POST", "/v1/apps/shop/deployments", opToken, nil); code != 400 || errorCode(t, b) != "invalid_request" {
+		t.Fatalf("%d %s, want 400 invalid_request", code, b)
+	}
+}
+
 func TestCreateDeploymentWithoutGitHub(t *testing.T) {
 	h := newHarness(t, withApps(""))
 	if err := h.store.CreateApp(t.Context(), store.App{Name: "shop", Repo: shopRepo, Branch: "main", Environments: []string{"gke"}, Spec: []byte(`{}`), CreatedAt: time.Now().UTC()}); err != nil {
@@ -166,6 +185,52 @@ func TestListAndGetDeployments(t *testing.T) {
 	}
 	if code, b = h.do("GET", "/v1/deployments/"+first.Id, viewerToken, nil); code != 200 || decode[apiv1.Deployment](t, b).Trigger != apiv1.DeploymentTriggerRegister {
 		t.Fatalf("get: %d %s", code, b)
+	}
+
+	// An added branch, stored directly, with two deployments newer than the
+	// default instance's: ?branch= lists one instance, the limit counting its
+	// deployments alone.
+	ctx := t.Context()
+	dev := store.AppBranch{App: "shop", Branch: "dev", Instance: "shop--dev", AutoDeploy: true, Spec: []byte(`{}`), CreatedAt: time.Now().UTC()}
+	if err := h.store.CreateAppBranch(ctx, dev, 2); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"dep_dev1", "dep_dev2"} {
+		d := store.Deployment{ID: id, App: "shop", Branch: "dev", Instance: "shop--dev", Ref: "dev", Commit: headSHA, Trigger: "manual", TriggeredBy: "op",
+			Status: store.DeployQueued, CreatedAt: time.Now().UTC().Add(time.Duration(i+1) * time.Hour)}
+		if err := h.store.CreateDeployment(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(path string) []string {
+		t.Helper()
+		code, b := h.do("GET", path, viewerToken, nil)
+		if code != 200 {
+			t.Fatalf("%s: %d %s", path, code, b)
+		}
+		out := []string{}
+		for _, d := range decode[apiv1.DeploymentList](t, b).Deployments {
+			out = append(out, d.Id)
+		}
+		return out
+	}
+	for _, c := range []struct {
+		path string
+		want []string
+	}{
+		{"/v1/apps/shop/deployments", []string{"dep_dev2", "dep_dev1", second.Id, first.Id}},
+		{"/v1/apps/shop/deployments?branch=main", []string{second.Id, first.Id}},
+		{"/v1/apps/shop/deployments?branch=main&limit=1", []string{second.Id}},
+		{"/v1/apps/shop/deployments?branch=dev", []string{"dep_dev2", "dep_dev1"}},
+		{"/v1/apps/shop/deployments?branch=dev&limit=1", []string{"dep_dev2"}},
+		{"/v1/apps/moimroom/deployments?branch=main", []string{}},
+	} {
+		if got := ids(c.path); !slices.Equal(got, c.want) {
+			t.Errorf("%s lists %v, want %v", c.path, got, c.want)
+		}
+	}
+	if code, b = h.do("GET", "/v1/apps/shop/deployments?branch=nope", viewerToken, nil); code != 400 || errorCode(t, b) != "invalid_request" {
+		t.Fatalf("unknown branch: %d %s", code, b)
 	}
 	if code, b = h.do("GET", "/v1/deployments/dep_nope", viewerToken, nil); code != 404 || errorCode(t, b) != "deployment_not_found" {
 		t.Fatalf("get unknown: %d %s", code, b)

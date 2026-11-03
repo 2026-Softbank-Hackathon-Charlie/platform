@@ -2273,7 +2273,7 @@ type StreamAgentEventsParamsFormat string
 type ListDeploymentsParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 
-	// Branch Only the deployments of this branch's instance.
+	// Branch Only the deployments of this branch's instance. It must be a branch the app deploys.
 	Branch *string `form:"branch,omitempty" json:"branch,omitempty"`
 }
 

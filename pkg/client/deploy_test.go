@@ -20,7 +20,7 @@ import (
 
 const (
 	deploymentJSON = `{"id":"dep_1","app":"moimroom","branch":"main","instance":"moimroom","ref":"main","commit":"9fceb02d0ae598e95dc970b74767f19372d61af8","trigger":"manual","triggeredBy":"op","status":"queued","images":[],"environments":[{"env":"eks","status":"pending"}],"createdAt":"2026-11-03T09:00:00Z"}`
-	appJSON        = `{"name":"moimroom","namespace":"moimroom","database":{"name":"app","user":"app","schemas":[]},"environments":[],"deploy":{"repo":"o/moimroom","branch":"main","environments":["eks"],"autoDeploy":true,"spec":{"name":"moimroom","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":8080,"public":true,"replicas":1}]},"specCommit":"9fceb02d","url":"https://moimroom.hopcharlie.dev","createdAt":"2026-11-03T09:00:00Z","createdBy":"op","status":[{"env":"eks","status":"pending"}]}}`
+	appJSON        = `{"name":"moimroom","namespace":"moimroom","database":{"name":"app","user":"app","schemas":[]},"environments":[],"deploy":{"repo":"o/moimroom","branch":"main","environments":["eks"],"autoDeploy":true,"spec":{"name":"moimroom","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":8080,"public":true,"replicas":1}]},"specCommit":"9fceb02d","url":"https://moimroom.hopcharlie.dev","createdAt":"2026-11-03T09:00:00Z","createdBy":"op","status":[{"env":"eks","status":"pending"}],"instances":[{"name":"moimroom","branch":"main","default":true,"autoDeploy":true,"spec":{"name":"moimroom","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":8080,"public":true,"replicas":1}]},"specCommit":"9fceb02d","url":"https://moimroom.hopcharlie.dev","createdAt":"2026-11-03T09:00:00Z","createdBy":"op","status":[{"env":"eks","status":"pending"}]}]}}`
 	instanceJSON   = `{"name":"moimroom--feature-x","branch":"feature/x","default":false,"autoDeploy":false,"spec":{"name":"moimroom","services":[]},"specCommit":"9fceb02d","createdAt":"2026-11-03T09:00:00Z","createdBy":"op","status":[{"env":"eks","status":"pending"}]}`
 	validationJSON = `{"valid":false,"spec":{"name":"moimroom","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":0,"public":false,"replicas":1}]},"commit":"9fceb02d","errors":[{"path":"services[0].port","message":"is required"}]}`
 )
@@ -49,7 +49,11 @@ func TestDeployOperations(t *testing.T) {
 			want: "web dep_1"},
 		{name: "GetApp escapes", call: func(c *Client) (any, error) { return c.GetApp(ctx, "moim/room") },
 			method: "GET", path: "/v1/apps/moim%2Froom", resp: appJSON,
-			got: func(v any) string { return *v.(*apiv1.App).Deploy.Url }, want: "https://moimroom.hopcharlie.dev"},
+			got: func(v any) string {
+				d := v.(*apiv1.App).Deploy
+				return *d.Url + " " + d.Instances[0].Name
+			},
+			want: "https://moimroom.hopcharlie.dev moimroom"},
 		{name: "DeleteApp", call: func(c *Client) (any, error) { return nil, c.DeleteApp(ctx, "moimroom") },
 			method: "DELETE", path: "/v1/apps/moimroom", status: 202,
 			got: func(any) string { return "" }, want: ""},

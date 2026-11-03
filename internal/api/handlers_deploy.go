@@ -141,11 +141,14 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 	to.Environments = targets
 	d := newDeployment(to, ref, commit, apiv1.DeploymentTriggerManual, actor(r), storeTime())
 	if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		switch {
+		case errors.Is(err, store.ErrInstanceNotFound): // the app's branch changed meanwhile
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("branch %s is not deployed by app %s", d.Branch, name))
+		case errors.Is(err, store.ErrNotFound):
 			s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
-			return
+		default:
+			s.internal(w, r, err)
 		}
-		s.internal(w, r, err)
 		return
 	}
 	noteAudit(r, "deploymentId", d.ID)
@@ -171,7 +174,8 @@ func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	out := apiv1.DeploymentList{Deployments: []apiv1.Deployment{}}
-	if _, err := s.d.Store.GetApp(r.Context(), name); err != nil {
+	app, err := s.d.Store.GetApp(r.Context(), name)
+	if err != nil {
 		switch {
 		case !errors.Is(err, store.ErrNotFound):
 			s.internal(w, r, err)
@@ -182,7 +186,21 @@ func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	list, err := s.d.Store.ListDeployments(r.Context(), name, limit)
+	var list []store.Deployment
+	if branch := r.URL.Query().Get("branch"); branch == "" {
+		list, err = s.d.Store.ListDeployments(r.Context(), name, limit)
+	} else {
+		instance, ok, ierr := s.instanceOf(r.Context(), app, branch)
+		switch {
+		case ierr != nil:
+			s.internal(w, r, ierr)
+			return
+		case !ok:
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("branch %q is not deployed by app %s", branch, name))
+			return
+		}
+		list, err = s.d.Store.ListInstanceDeployments(r.Context(), instance, limit)
+	}
 	if err != nil {
 		s.internal(w, r, err)
 		return
@@ -191,6 +209,25 @@ func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request) {
 		out.Deployments = append(out.Deployments, deploymentJSON(d))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// instanceOf returns the name of the instance that deploys branch of app,
+// and false when the app does not deploy the branch. The app's own branch is
+// the default instance, named after the app.
+func (s *Server) instanceOf(ctx context.Context, app store.App, branch string) (string, bool, error) {
+	if branch == app.Branch {
+		return app.Name, true, nil
+	}
+	branches, err := s.d.Store.ListAppBranches(ctx, app.Name)
+	if err != nil {
+		return "", false, err
+	}
+	for _, b := range branches {
+		if b.Branch == branch {
+			return b.Instance, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // GET /v1/deployments/{id}

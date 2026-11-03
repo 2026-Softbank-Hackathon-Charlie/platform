@@ -1091,7 +1091,7 @@ paths:
         "201":
           description: Added; the instance's first deployment is queued.
           headers:
-            Location: { schema: { type: string }, description: "/v1/apps/{name}/instances/{instance}" }
+            Location: { schema: { type: string }, description: "/v1/apps/{name}, which lists the instance in deploy.instances" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AppInstanceCreated" }
@@ -1180,7 +1180,7 @@ paths:
     get:
       tags: [deployments]
       operationId: listDeployments
-      description: "The app's deployments to all its instances, newest first; with `branch`, only that branch's. Empty for an app that is only in PLATFORM_APPS_FILE. Error codes: app_not_found (404)."
+      description: "The app's deployments to all its instances, newest first; with `branch`, only that branch's, `limit` counting those alone. Empty for an app that is only in PLATFORM_APPS_FILE. Error codes: invalid_request (400: a limit out of range, or a `branch` the app does not deploy), app_not_found (404)."
       parameters:
         - name: limit
           in: query
@@ -1189,7 +1189,7 @@ paths:
         - name: branch
           in: query
           required: false
-          description: Only the deployments of this branch's instance.
+          description: Only the deployments of this branch's instance. It must be a branch the app deploys.
           schema: { type: string }
       responses:
         "200":
@@ -2554,7 +2554,7 @@ components:
         branch:
           type: string
           minLength: 1
-          maxLength: 255
+          maxLength: 200
           example: dev
           description: A branch of the app's repository; not the app's own branch.
         autoDeploy: { type: boolean, default: true, description: deploy every push to branch }
@@ -2801,6 +2801,7 @@ components:
       properties:
         branch:
           type: string
+          minLength: 1
           example: dev
           description: "A branch the app deploys: its own branch or one added with POST /v1/apps/{name}/instances. It picks the instance; defaults to the app's branch."
         ref: { type: string, example: main, description: "a branch, tag or commit sha of the app's repository to deploy into that instance; defaults to branch" }

@@ -70,16 +70,27 @@ func TestInstanceName(t *testing.T) {
 		t.Errorf("shortened name %q has %d characters, want %d", got, len(got), MaxInstanceName)
 	}
 
-	// Branches with the same slug get the same name.
+	// Branches with the same slug get the same name unless it is shortened:
+	// the hash is of the branch as given.
 	a, _ := InstanceName("moimroom", "feature/x")
 	b, _ := InstanceName("moimroom", "Feature-X")
 	if a != b || a != "moimroom--feature-x" {
 		t.Errorf("feature/x and Feature-X name %q and %q, want both moimroom--feature-x", a, b)
 	}
+	a, _ = InstanceName(app32, long)
+	b, _ = InstanceName(app32, strings.ToUpper(long))
+	if a == b || a[:len(a)-instanceHash] != b[:len(b)-instanceHash] {
+		t.Errorf("%q and %q name %q and %q, want the same prefix and different hashes", long, strings.ToUpper(long), a, b)
+	}
 
 	for _, branch := range []string{"///", "", "한글"} {
 		if got, err := InstanceName("moimroom", branch); err == nil {
 			t.Errorf("InstanceName(moimroom, %q) = %q, want an error", branch, got)
+		}
+	}
+	for _, app := range []string{"", "ab", "a--b", "Shop", "-shop", strings.Repeat("a", 33), "shop/x"} {
+		if got, err := InstanceName(app, "dev"); err == nil {
+			t.Errorf("InstanceName(%q, dev) = %q, want an error for the app name", app, got)
 		}
 	}
 }

@@ -99,6 +99,9 @@ func (m *memory) UpdateApp(_ context.Context, a store.App) error {
 	if !ok {
 		return fmt.Errorf("%w: app %s", store.ErrNotFound, a.Name)
 	}
+	if _, ok := m.deploy.branches[a.Name][a.Branch]; ok {
+		return fmt.Errorf("%w: %s is an added branch of app %s", store.ErrBranchExists, a.Branch, a.Name)
+	}
 	cur.Branch, cur.Environments, cur.AutoDeploy = a.Branch, append([]string{}, a.Environments...), a.AutoDeploy
 	cur.Spec, cur.SpecCommit = bytes.Clone(a.Spec), a.SpecCommit
 	m.deploy.apps[a.Name] = cur
@@ -130,7 +133,7 @@ func (m *memory) deleteDeployments(gone func(store.Deployment) bool) {
 	m.deploy.events = slices.DeleteFunc(m.deploy.events, func(e store.DeploymentEvent) bool { return ids[e.DeploymentID] })
 }
 
-func (m *memory) CreateAppBranch(_ context.Context, b store.AppBranch) error {
+func (m *memory) CreateAppBranch(_ context.Context, b store.AppBranch, maxBranches int) error {
 	if !store.Clean(b.App) {
 		return fmt.Errorf("%w: app %q", store.ErrNotFound, b.App)
 	}
@@ -144,24 +147,23 @@ func (m *memory) CreateAppBranch(_ context.Context, b store.AppBranch) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.deploy.apps[b.App]
-	switch {
-	case !ok:
+	if !ok {
 		return fmt.Errorf("%w: app %s", store.ErrNotFound, b.App)
-	case b.Branch == a.Branch:
-		return fmt.Errorf("%w: %s is the branch of app %s", store.ErrConflict, b.Branch, b.App)
 	}
-	if _, ok := m.deploy.apps[b.Instance]; ok {
-		return fmt.Errorf("%w: instance name %s is an app's name", store.ErrConflict, b.Instance)
+	if _, added := m.deploy.branches[b.App][b.Branch]; added || b.Branch == a.Branch {
+		return fmt.Errorf("%w: app %s has branch %s", store.ErrBranchExists, b.App, b.Branch)
 	}
-	if _, ok := m.deploy.branches[b.App][b.Branch]; ok {
-		return fmt.Errorf("%w: app %s has branch %s", store.ErrConflict, b.App, b.Branch)
-	}
+	_, taken := m.deploy.apps[b.Instance]
 	for _, branches := range m.deploy.branches {
 		for _, other := range branches {
-			if other.Instance == b.Instance {
-				return fmt.Errorf("%w: instance %s exists", store.ErrConflict, b.Instance)
-			}
+			taken = taken || other.Instance == b.Instance
 		}
+	}
+	if taken {
+		return fmt.Errorf("%w: instance name %s is taken", store.ErrInstanceExists, b.Instance)
+	}
+	if n := len(m.deploy.branches[b.App]); n >= maxBranches {
+		return fmt.Errorf("%w: app %s has %d added branches", store.ErrInstanceLimit, b.App, n)
 	}
 	if m.deploy.branches == nil {
 		m.deploy.branches = map[string]map[string]store.AppBranch{}
@@ -226,7 +228,7 @@ func (m *memory) CreateDeployment(_ context.Context, d store.Deployment) error {
 	}
 	if d.Branch != a.Branch || d.Instance != a.Name {
 		if b, ok := m.deploy.branches[d.App][d.Branch]; !ok || b.Instance != d.Instance {
-			return fmt.Errorf("%w: app %s has no instance %s of branch %s", store.ErrNotFound, d.App, d.Instance, d.Branch)
+			return fmt.Errorf("%w: app %s has no instance %s of branch %s", store.ErrInstanceNotFound, d.App, d.Instance, d.Branch)
 		}
 	}
 	d = d.Clean()
@@ -254,6 +256,18 @@ func (m *memory) GetDeployment(_ context.Context, id string) (store.Deployment, 
 
 func (m *memory) ListDeployments(_ context.Context, app string, limit int) ([]store.Deployment, error) {
 	out := m.listDeployments(func(d store.Deployment) bool { return d.App == app })
+	// Same order as Postgres: created_at DESC, id DESC.
+	slices.SortFunc(out, func(a, b store.Deployment) int {
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), cmp.Compare(b.ID, a.ID))
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *memory) ListInstanceDeployments(_ context.Context, instance string, limit int) ([]store.Deployment, error) {
+	out := m.listDeployments(func(d store.Deployment) bool { return d.Instance == instance })
 	// Same order as Postgres: created_at DESC, id DESC.
 	slices.SortFunc(out, func(a, b store.Deployment) int {
 		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), cmp.Compare(b.ID, a.ID))
