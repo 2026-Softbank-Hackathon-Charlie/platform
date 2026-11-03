@@ -386,7 +386,7 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 | --- | --- | --- |
 | `POST /v1/apps` | operator | `{repo, branch?, environments, autoDeploy?}`. 브랜치 head의 `platform.yaml`을 읽어 앱을 등록하고 첫 배포를 큐에 넣음. 201 + `{app, deployment}`. 잘못된 `platform.yaml`은 422 `invalid_app_spec` (`validation`에 위치별 오류) |
 | `POST /v1/apps/validate` | viewer | `{repo, branch?}` 또는 `{spec}`의 `platform.yaml`을 검사만 함. 항상 200 + `valid` |
-| `GET /v1/apps/{name}` | viewer | 앱 하나. 등록한 앱은 `deploy`에 저장소, spec, 환경별 상태, 마지막 배포 |
+| `GET /v1/apps/{name}` | viewer | 앱 하나. 등록한 앱은 `deploy`에 저장소, spec, 환경별 상태, 마지막 배포, 인스턴스 목록(`instances`, 기본 인스턴스가 맨 앞). `deploy`의 상태와 마지막 배포는 기본 인스턴스의 것 |
 | `DELETE /v1/apps/{name}` | operator | 등록 해제. 추가한 인스턴스도 함께 지움. gitops 파일을 지우면 Argo CD가 워크로드를 지움. 202. 파일에만 있는 앱은 409 |
 | `POST /v1/apps/{name}/instances` | operator | `{branch, autoDeploy?}`. 브랜치를 인스턴스 `<app>--<slug>`로 더함. 브랜치 head의 `platform.yaml`을 등록과 같은 규칙으로 검사하고 첫 배포를 큐에 넣음. 201 + `{instance, deployment}`. 이미 있는 브랜치는 409 `branch_exists`, 인스턴스 이름이 겹치면 409 `instance_exists`, 3개를 넘으면 409 `instance_limit` |
 | `DELETE /v1/apps/{name}/instances/{instance}` | operator | 추가한 인스턴스를 지움. gitops 파일, 게이트웨이 등록, 브랜치와 배포 기록을 지움. 202. 기본 인스턴스는 409 `default_instance` |
@@ -395,7 +395,7 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 | `GET /v1/deployments/{id}` | viewer | 배포 하나 (상태, 이미지 digest, 환경별 상태) |
 | `GET /v1/deployments/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속) |
 | `GET /v1/github/repos` | viewer | GitHub App 설치가 볼 수 있는 저장소 |
-| `POST /v1/webhooks/github` | 없음 | GitHub App webhook. `X-Hub-Signature-256`으로 확인. 등록한 브랜치의 push만 배포(202), 나머지는 204 |
+| `POST /v1/webhooks/github` | 없음 | GitHub App webhook. `X-Hub-Signature-256`으로 확인. 앱의 브랜치나 추가한 브랜치 가운데 `autoDeploy`가 켜진 브랜치의 push만 그 인스턴스에 배포(202), 나머지는 204 |
 
 - 배포 상태는 `queued`, `building`, `committing`, `syncing`을 거쳐 `healthy`, `failed`, `superseded`로 끝납니다. 같은 환경으로 새 배포가 생기면 끝나지 않은 이전 배포는 `superseded`가 됩니다.
 - 테이블은 마이그레이션 `0005_app_deploy.sql`과 `0006_app_branches.sql`이 만듭니다.

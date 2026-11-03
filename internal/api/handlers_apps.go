@@ -29,8 +29,10 @@ import (
 // registered app may take them.
 var reservedAppNames = []string{"api", "console", "app"}
 
-// appStatusDeployments is how many of an app's newest deployments its
-// per-environment status is read from.
+// appStatusDeployments is how many newest deployments an instance's
+// per-environment status is read from. An app's deployments into all its
+// instances are read in one list, this many for each instance it may have
+// (appspec.MaxInstances), so a busy instance rarely pushes another's out.
 const appStatusDeployments = 50
 
 // maxWebhookBytes is GitHub's own cap on a webhook payload, so no delivery
@@ -131,7 +133,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	d := newDeployment(app, branch, commit, apiv1.DeploymentTriggerRegister, actor(r), now)
+	d := newDeployment(app, defaultInstance(app), branch, commit, apiv1.DeploymentTriggerRegister, actor(r), now)
 	if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
 		s.internal(w, r, err)
 		return
@@ -139,7 +141,95 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	noteAudit(r, "deployment", d.ID)
 	s.enqueue(ctx, d.ID)
 	w.Header().Set("Location", "/v1/apps/"+app.Name)
-	writeJSON(w, http.StatusCreated, apiv1.AppCreated{App: s.appView(app, []store.Deployment{d}), Deployment: deploymentJSON(d)})
+	writeJSON(w, http.StatusCreated, apiv1.AppCreated{App: s.appView(app, nil, []store.Deployment{d}), Deployment: deploymentJSON(d)})
+}
+
+// POST /v1/apps/{name}/instances: add a branch of a registered app as its
+// own instance and queue the instance's first deployment (ADR 0015).
+func (s *Server) createAppInstance(w http.ResponseWriter, r *http.Request) {
+	var req apiv1.AppInstanceCreateRequest
+	if !s.decode(w, r, &req, true) {
+		return
+	}
+	name, branch := r.PathValue("name"), req.Branch
+	autoDeploy := req.AutoDeploy == nil || *req.AutoDeploy
+	noteAudit(r, "app", name)
+	noteAudit(r, "branch", branch)
+	app, ok := s.registeredApp(w, r, name)
+	if !ok {
+		return
+	}
+	if !validBranch(branch) {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "branch must be a git branch name of letters, digits and . _ / -")
+		return
+	}
+	if branch == app.Branch {
+		s.fail(w, r, http.StatusConflict, "branch_exists", fmt.Sprintf("branch %s is app %s's own branch, deployed as its default instance", branch, name))
+		return
+	}
+	instance, err := appspec.InstanceName(app.Name, branch)
+	if err != nil {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	noteAudit(r, "instance", instance)
+	if s.d.GitHub == nil {
+		s.githubNotConfigured(w, r)
+		return
+	}
+
+	ctx := r.Context()
+	commit, err := s.d.GitHub.ResolveRef(ctx, app.Repo, branch)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		s.appSpecInvalid(w, r, refNotFound(app.Repo, branch))
+		return
+	case err != nil:
+		s.githubUnreachable(w, r, err)
+		return
+	}
+	noteAudit(r, "commit", commit)
+	spec := s.appSpecAt(ctx, w, r, app, commit)
+	if spec == nil {
+		return
+	}
+	specJSON, err := json.Marshal(spec)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+
+	// Added means deployed: finish even if the caller goes away.
+	ctx = context.WithoutCancel(ctx)
+	now := storeTime()
+	in := store.AppBranch{
+		App: app.Name, Branch: branch, Instance: instance, AutoDeploy: autoDeploy,
+		Spec: specJSON, SpecCommit: commit, CreatedBy: actor(r), CreatedAt: now,
+	}
+	if err := s.d.Store.CreateAppBranch(ctx, in, appspec.MaxInstances-1); err != nil {
+		switch {
+		case errors.Is(err, store.ErrBranchExists):
+			s.fail(w, r, http.StatusConflict, "branch_exists", fmt.Sprintf("app %s already deploys branch %s", name, branch))
+		case errors.Is(err, store.ErrInstanceExists):
+			s.fail(w, r, http.StatusConflict, "instance_exists", fmt.Sprintf("the instance name %s of branch %s is already taken by another branch or app", instance, branch))
+		case errors.Is(err, store.ErrInstanceLimit):
+			s.fail(w, r, http.StatusConflict, "instance_limit", fmt.Sprintf("app %s already has %d instances, the default one included; delete one first", name, appspec.MaxInstances))
+		case errors.Is(err, store.ErrNotFound):
+			s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
+		default:
+			s.internal(w, r, err)
+		}
+		return
+	}
+	d := newDeployment(app, in, branch, commit, apiv1.DeploymentTriggerRegister, actor(r), now)
+	if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	noteAudit(r, "deployment", d.ID)
+	s.enqueue(ctx, d.ID)
+	w.Header().Set("Location", "/v1/apps/"+app.Name)
+	writeJSON(w, http.StatusCreated, apiv1.AppInstanceCreated{Instance: s.appInstance(app, in, []store.Deployment{d}), Deployment: deploymentJSON(d)})
 }
 
 // targetEnvs checks the environments of a registration and returns them in
@@ -185,12 +275,12 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 		inFile[a.Name] = i
 	}
 	for _, a := range registered {
-		deps, err := s.d.Store.ListDeployments(r.Context(), a.Name, appStatusDeployments)
+		branches, deps, err := s.appRecords(r.Context(), a.Name)
 		if err != nil {
 			s.internal(w, r, err)
 			return
 		}
-		deploy := s.appDeploy(a, deps)
+		deploy := s.appDeploy(a, branches, deps)
 		if i, ok := inFile[a.Name]; ok {
 			list[i].Deploy = &deploy
 			continue
@@ -217,12 +307,24 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	deps, err := s.d.Store.ListDeployments(r.Context(), name, appStatusDeployments)
+	branches, deps, err := s.appRecords(r.Context(), name)
 	if err != nil {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.appView(a, deps))
+	writeJSON(w, http.StatusOK, s.appView(a, branches, deps))
+}
+
+// appRecords reads what a registered app's deploy section shows besides
+// the app: its added branches and its newest deployments into any of its
+// instances, newest first.
+func (s *Server) appRecords(ctx context.Context, name string) ([]store.AppBranch, []store.Deployment, error) {
+	branches, err := s.d.Store.ListAppBranches(ctx, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	deps, err := s.d.Store.ListDeployments(ctx, name, appStatusDeployments*appspec.MaxInstances)
+	return branches, deps, err
 }
 
 // fileApp returns the app of PLATFORM_APPS_FILE with the name.
@@ -239,10 +341,10 @@ func (s *Server) fileApp(name string) (apiv1.App, bool) {
 }
 
 // appView is a registered app as the API shows it: the apps file's entry
-// when the file has the name, otherwise the defaults, with deploy set.
-// deps are its newest deployments, newest first.
-func (s *Server) appView(a store.App, deps []store.Deployment) apiv1.App {
-	deploy := s.appDeploy(a, deps)
+// when the file has the name, otherwise the defaults, with deploy set from
+// branches and deps as appDeploy takes them.
+func (s *Server) appView(a store.App, branches []store.AppBranch, deps []store.Deployment) apiv1.App {
+	deploy := s.appDeploy(a, branches, deps)
 	if out, ok := s.fileApp(a.Name); ok {
 		out.Deploy = &deploy
 		return out
@@ -261,25 +363,57 @@ func registeredOnly(name string, deploy *apiv1.AppDeploy) apiv1.App {
 	}
 }
 
-// appDeploy is a registered app's deploy section. deps are its newest
-// deployments, newest first; each environment shows the newest one that
-// reached it. instances holds the default instance only, built from the
-// same fields.
-func (s *Server) appDeploy(a store.App, deps []store.Deployment) apiv1.AppDeploy {
+// appDeploy is a registered app's deploy section. branches are its added
+// branches, by branch name; deps are its newest deployments into any of its
+// instances, newest first. Its branch, autoDeploy, spec, specCommit, url,
+// status and lastDeployment are the default instance's.
+func (s *Server) appDeploy(a store.App, branches []store.AppBranch, deps []store.Deployment) apiv1.AppDeploy {
+	byInstance := map[string][]store.Deployment{}
+	for _, d := range deps {
+		byInstance[d.Instance] = append(byInstance[d.Instance], d)
+	}
+	def := s.appInstance(a, defaultInstance(a), byInstance[a.Name])
+	out := apiv1.AppDeploy{
+		Repo: a.Repo, Branch: def.Branch, Environments: a.Environments, AutoDeploy: def.AutoDeploy,
+		Spec: def.Spec, SpecCommit: def.SpecCommit, Url: def.Url, CreatedAt: a.CreatedAt, CreatedBy: a.CreatedBy,
+		LastDeployment: def.LastDeployment, Status: def.Status,
+		Instances: make([]apiv1.AppInstance, 0, 1+len(branches)),
+	}
+	out.Instances = append(out.Instances, def)
+	for _, b := range branches {
+		out.Instances = append(out.Instances, s.appInstance(a, b, byInstance[b.Instance]))
+	}
+	return out
+}
+
+// defaultInstance is the app's own branch as an AppBranch: the default
+// instance, named after the app. It is never stored as an AppBranch.
+func defaultInstance(a store.App) store.AppBranch {
+	return store.AppBranch{
+		App: a.Name, Branch: a.Branch, Instance: a.Name, AutoDeploy: a.AutoDeploy,
+		Spec: a.Spec, SpecCommit: a.SpecCommit, CreatedBy: a.CreatedBy, CreatedAt: a.CreatedAt,
+	}
+}
+
+// appInstance is one instance of a registered app: the default one
+// (defaultInstance) or an added branch. deps are the instance's newest
+// deployments, newest first; each environment of the app shows the newest
+// one that reached it.
+func (s *Server) appInstance(a store.App, in store.AppBranch, deps []store.Deployment) apiv1.AppInstance {
 	var spec apiv1.AppSpec
-	if err := json.Unmarshal(a.Spec, &spec); err != nil {
-		s.cfg.Log.Error("stored app spec does not decode", "app", a.Name, "err", err)
+	if err := json.Unmarshal(in.Spec, &spec); err != nil {
+		s.cfg.Log.Error("stored app spec does not decode", "app", a.Name, "instance", in.Instance, "err", err)
 	}
 	if spec.Services == nil {
 		spec.Services = []apiv1.AppSpecService{}
 	}
-	out := apiv1.AppDeploy{
-		Repo: a.Repo, Branch: a.Branch, Environments: a.Environments, AutoDeploy: a.AutoDeploy,
-		Spec: spec, SpecCommit: a.SpecCommit, CreatedAt: a.CreatedAt, CreatedBy: a.CreatedBy,
+	out := apiv1.AppInstance{
+		Name: in.Instance, Branch: in.Branch, Default: in.Instance == a.Name, AutoDeploy: in.AutoDeploy,
+		Spec: spec, SpecCommit: in.SpecCommit, CreatedAt: in.CreatedAt, CreatedBy: in.CreatedBy,
 		Status: make([]apiv1.AppEnvironmentStatus, 0, len(a.Environments)),
 	}
 	if slices.ContainsFunc(spec.Services, func(sv apiv1.AppSpecService) bool { return sv.Public }) {
-		u := "https://" + a.Name + "." + s.cfg.AppDomain
+		u := deploy.AppURL(s.cfg.AppDomain, in.Instance)
 		out.Url = &u
 	}
 	if len(deps) > 0 {
@@ -308,11 +442,6 @@ func (s *Server) appDeploy(a store.App, deps []store.Deployment) apiv1.AppDeploy
 		}
 		out.Status = append(out.Status, st)
 	}
-	out.Instances = []apiv1.AppInstance{{
-		Name: a.Name, Branch: out.Branch, Default: true, AutoDeploy: out.AutoDeploy,
-		Spec: out.Spec, SpecCommit: out.SpecCommit, Url: out.Url, CreatedAt: out.CreatedAt, CreatedBy: out.CreatedBy,
-		LastDeployment: out.LastDeployment, Status: out.Status,
-	}}
 	return out
 }
 
@@ -395,6 +524,26 @@ func validation(spec *appspec.Spec, errs []appspec.FieldError, commit *string) a
 func refNotFound(repo, branch string) apiv1.AppSpecValidation {
 	msg := fmt.Sprintf("repository %s has no branch %s, or the GitHub App installation cannot see the repository", repo, branch)
 	return validation(nil, []appspec.FieldError{{Message: msg}}, nil)
+}
+
+// appSpecAt checks platform.yaml of app's repository at commit as
+// registration does, and that its name is still the app's. It answers 502
+// or 422 itself and returns nil then.
+func (s *Server) appSpecAt(ctx context.Context, w http.ResponseWriter, r *http.Request, app store.App, commit string) *appspec.Spec {
+	v, spec, err := deploy.CheckSpec(ctx, s.d.GitHub, app.Repo, commit)
+	if err != nil {
+		s.githubUnreachable(w, r, err)
+		return nil
+	}
+	if v.Valid && spec.Name != app.Name {
+		v.Valid = false
+		v.Errors = append(v.Errors, apiv1.AppSpecFieldError{Path: "name", Message: fmt.Sprintf("is %q, but the app is registered as %q; register the new name as a new app", spec.Name, app.Name)})
+	}
+	if !v.Valid {
+		s.appSpecInvalid(w, r, v)
+		return nil
+	}
+	return spec
 }
 
 // appSpecInvalid answers 422 invalid_app_spec with the check's result.
@@ -541,13 +690,23 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) int {
 	out := apiv1.DeploymentList{Deployments: []apiv1.Deployment{}}
 	var ids []string
 	for _, a := range apps {
-		if !a.AutoDeploy || a.Branch != branch || !strings.EqualFold(a.Repo, push.Repository.FullName) {
+		if !strings.EqualFold(a.Repo, push.Repository.FullName) {
 			continue
 		}
-		d := newDeployment(a, branch, push.After, apiv1.DeploymentTriggerPush, by, now)
+		// The app's own branch deploys the default instance and an added
+		// branch its own instance, each when its autoDeploy is on.
+		in, tracked, err := s.instanceOf(ctx, a, branch)
+		if err != nil {
+			s.internal(w, r, err)
+			return http.StatusInternalServerError
+		}
+		if !tracked || !in.AutoDeploy {
+			continue
+		}
+		d := newDeployment(a, in, branch, push.After, apiv1.DeploymentTriggerPush, by, now)
 		if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				continue // unregistered meanwhile
+				continue // unregistered or removed meanwhile
 			}
 			s.internal(w, r, err)
 			return http.StatusInternalServerError
@@ -590,15 +749,15 @@ func storeTime() time.Time { return time.Now().UTC().Truncate(time.Microsecond) 
 // newDeploymentID is "dep_" and 12 hex digits.
 func newDeploymentID() string { return "dep_" + randomHex(6) }
 
-// newDeployment is a queued deployment of commit into a's default instance,
-// to all of a's environments.
-func newDeployment(a store.App, ref, commit string, trigger apiv1.DeploymentTrigger, by string, now time.Time) store.Deployment {
+// newDeployment is a queued deployment of commit into the instance in of a
+// (defaultInstance or an added branch), to all of a's environments.
+func newDeployment(a store.App, in store.AppBranch, ref, commit string, trigger apiv1.DeploymentTrigger, by string, now time.Time) store.Deployment {
 	envs := make([]store.DeploymentEnvironment, len(a.Environments))
 	for i, e := range a.Environments {
 		envs[i] = store.DeploymentEnvironment{Env: e, Status: string(apiv1.DeploymentEnvironmentStatusPending)}
 	}
 	return store.Deployment{
-		ID: newDeploymentID(), App: a.Name, Branch: a.Branch, Instance: a.Name, Ref: ref, Commit: commit, Trigger: string(trigger), TriggeredBy: by,
+		ID: newDeploymentID(), App: a.Name, Branch: in.Branch, Instance: in.Instance, Ref: ref, Commit: commit, Trigger: string(trigger), TriggeredBy: by,
 		Status: store.DeployQueued, Images: []store.DeploymentImage{}, Environments: envs, CreatedAt: now,
 	}
 }
