@@ -1,7 +1,8 @@
 // Command gateway is the HopCharlie traffic gateway.
 //
-// It sits outside every cluster (behind Cloudflare Tunnel) and proxies user
-// traffic to the backend environments. The migration engine drives it
+// It sits in front of every environment, behind one public proxy (the shared
+// ALB of the management cluster), and proxies user traffic to the backend
+// environments. The migration engine drives it
 // through the admin API during cutover (pkg/gateway in migration-engine):
 //
 //	GET  /healthz                     200 once the config is loaded
@@ -41,6 +42,7 @@ func main() {
 	writeTimeout := flag.Duration("write-timeout", gateway.DefaultWriteTimeout, "how long a forwarded write may take; writes are not cancelled when their client leaves")
 	healthInterval := flag.Duration("health-interval", gateway.DefaultHealthInterval, "backend health check interval")
 	healthPath := flag.String("health-path", gateway.DefaultHealthPath, "backend health check path")
+	connRecycle := flag.Duration("conn-recycle", gateway.DefaultConnRecycle, "how often idle backend connections are closed, so the next request resolves the backend's name again")
 	insecure := flag.Bool("insecure-no-auth", false, "run the admin API without GATEWAY_ADMIN_TOKEN (local development only)")
 	flag.Parse()
 
@@ -68,6 +70,7 @@ func main() {
 		WriteTimeout:   *writeTimeout,
 		HealthInterval: *healthInterval,
 		HealthPath:     *healthPath,
+		ConnRecycle:    *connRecycle,
 		Log:            log,
 	})
 	if err != nil {
