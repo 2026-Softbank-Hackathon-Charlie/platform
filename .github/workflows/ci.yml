@@ -9,16 +9,14 @@ on:
   pull_request:
   push:
     branches: [main]
-  # publish-image.yml runs the same checks on the commit it publishes.
-  workflow_call:
 
 permissions:
   contents: read
 
-# github.workflow is the caller's name when publish-image.yml calls this, so
-# a publish run and a push run on main do not cancel each other.
+# On main, a newer push cancels the older run, and publish-image.yml runs only
+# after a run that finished successfully: only the latest commit is published.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -136,5 +134,5 @@ jobs:
           done
       - name: Terraform handoff compatibility (fake tools, no AWS)
         run: bash test/tf-handoff.sh
-      - name: Infra PR helper tests
+      - name: Infra pin helper tests
         run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'

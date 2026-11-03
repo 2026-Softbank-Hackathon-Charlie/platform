@@ -1,9 +1,11 @@
 name: Publish platform image
 
-# Builds the platform image (API and gateway) of a main commit once the full
-# ci workflow passes on that commit, pushes it to ECR as :<7-char sha>, and
-# opens an infra PR that pins the digest (infra ADR 0024). It never deploys:
-# the PR is reviewed and merged by hand, then the platform is upgraded.
+# After every successful ci run on a push to main, builds that commit's
+# platform image (API and gateway), pushes it to ECR as :<7-char sha>, and
+# pins it in infra main with one direct commit (infra ADR 0024). Argo CD
+# deploys infra main from there. A newer push cancels the older ci run and
+# this workflow's older run, so only the latest commit is pinned. Running it
+# by hand publishes main again, if ci passed on it.
 #
 # Settings > Secrets and variables > Actions:
 #   variable AWS_DEPLOY_ROLE_ARN      infra output image_publish_role_arns.platform
@@ -11,30 +13,34 @@ name: Publish platform image
 #   variable AWS_REGION               optional, ap-northeast-2
 #   secret   MODULE_READ_TOKEN        the one ci already uses (migration-engine)
 #   secret   INFRA_PR_TOKEN           fine-grained token: infra only, Contents
-#                                     and Pull requests read and write
+#                                     read and write
 
 on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
   group: platform-image-publish
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  ci:
-    if: github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/ci.yml
-    secrets: inherit
-
   publish:
-    needs: ci
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
+      # The commit ci checked; github.sha of a workflow_run is main's latest.
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
       AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
       ECR_PLATFORM_REPOSITORY: ${{ vars.ECR_PLATFORM_REPOSITORY }}
@@ -61,11 +67,21 @@ jobs:
           [[ "$AWS_DEPLOY_ROLE_ARN" =~ ^arn:aws:iam::${account}:role/[A-Za-z0-9+=,.@_/-]+$ ]] || fail "AWS_DEPLOY_ROLE_ARN must be a role in the ECR account"
           { echo "account=$account"; echo "registry=${ECR_PLATFORM_REPOSITORY%%/*}"; } >> "$GITHUB_OUTPUT"
 
+      # A run started by hand has no ci run of its own; require main's.
+      - name: ci passed on this commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusion="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SOURCE_SHA" --event push --limit 1 --json conclusion --jq '.[0].conclusion // empty')"
+          [ "$conclusion" = success ] || { echo "::error::ci has not passed on $SOURCE_SHA (${conclusion:-no run})"; exit 1; }
+
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
 
-      - name: Infra PR helper tests
+      - name: Infra pin helper tests
         run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
 
       # migration-engine is a private module (see ci.yml).
@@ -80,7 +96,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ env.SOURCE_SHA }}
           restore-keys: |
             go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-race-${{ runner.os }}-
@@ -120,16 +136,16 @@ jobs:
         run: |
           set -euo pipefail
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-          tag="${GITHUB_SHA:0:7}"
+          tag="${SOURCE_SHA:0:7}"
           docker buildx build --platform linux/amd64 --provenance=false --sbom=false --push \
             --metadata-file "$RUNNER_TEMP/image.json" -t "$ECR_PLATFORM_REPOSITORY:$tag" deploy/docker
           digest="$(jq -r '."containerimage.digest" // empty' "$RUNNER_TEMP/image.json")"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::docker did not report the pushed digest"; exit 1; }
           echo "image=$ECR_PLATFORM_REPOSITORY:$tag@$digest" >> "$GITHUB_OUTPUT"
 
-      - name: Open the infra PR
+      - name: Pin the image in infra main
         env:
           GH_TOKEN: ${{ secrets.INFRA_PR_TOKEN }}
           INFRA_REPOSITORY: 2026-Softbank-Hackathon-Charlie/infra
           IMAGE: ${{ steps.image.outputs.image }}
-        run: python3 .github/scripts/open-infra-pr.py
+        run: python3 .github/scripts/pin-infra-image.py
