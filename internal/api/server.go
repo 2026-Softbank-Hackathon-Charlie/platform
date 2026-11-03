@@ -165,6 +165,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("POST /v1/migrations/{runId}/rollback", operator, s.rollbackMigration)
 	s.route("GET /{$}", "", s.root)
 	s.route("GET /v1/security", viewer, s.security)
+	s.route("GET /v1/security/ocsf", viewer, s.securityOCSF)
 	s.route("POST /v1/agent/sessions", agent, s.createAgentSession)
 	s.route("GET /v1/agent/sessions", viewer, s.listAgentSessions)
 	s.route("GET /v1/agent/sessions/{id}", viewer, s.getAgentSession)

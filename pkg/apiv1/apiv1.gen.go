@@ -1855,6 +1855,23 @@ type SecurityFinding struct {
 	Title  string `json:"title"`
 }
 
+// SecurityOCSFExport defines model for SecurityOCSFExport.
+type SecurityOCSFExport struct {
+	// Findings OCSF Detection Finding (2004) and Compliance Finding (2003) events,
+	// as the OCSF schema defines them (snake_case keys, `time` in epoch
+	// milliseconds). Their shape is the OCSF standard's, not this API's,
+	// so it is not repeated here.
+	Findings []map[string]interface{} `json:"findings"`
+
+	// GeneratedAt when the sources were read (as `SecurityReport.generatedAt`)
+	GeneratedAt time.Time `json:"generatedAt"`
+
+	// OcsfVersion OCSF version the events follow
+	//
+	// Example: 1.9.0
+	OcsfVersion string `json:"ocsfVersion"`
+}
+
 // SecurityProvider defines model for SecurityProvider.
 type SecurityProvider string
 
@@ -2157,6 +2174,13 @@ type GetSecurityParams struct {
 	// Severity Minimum severity; `high` returns critical and high findings.
 	Severity *SecuritySeverity `form:"severity,omitempty" json:"severity,omitempty"`
 	Refresh  *bool             `form:"refresh,omitempty" json:"refresh,omitempty"`
+}
+
+// GetSecurityOCSFParams defines parameters for GetSecurityOCSF.
+type GetSecurityOCSFParams struct {
+	Environment *string           `form:"environment,omitempty" json:"environment,omitempty"`
+	Severity    *SecuritySeverity `form:"severity,omitempty" json:"severity,omitempty"`
+	Refresh     *bool             `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 
 // GetTrafficParams defines parameters for GetTraffic.

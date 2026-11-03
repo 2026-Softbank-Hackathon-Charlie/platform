@@ -340,6 +340,15 @@ CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks -
 - Kubernetes는 `GET /v1/envs`와 같은 kubeconfig와 컨텍스트를 씁니다. 서버 계정에 모든 네임스페이스의 pods, services, networkpolicies 목록과 clusterrolebindings 목록 권한이 필요합니다.
 - 실제 계정 점검을 다시 해 보려면 `PLATFORM_TEST_AWS_LIVE=1 AWS_PROFILE=hopcharlie go test -run TestAWSLive -v ./internal/security`를 실행합니다.
 
+### `GET /v1/security/ocsf` (viewer)
+
+같은 탐지 결과를 업계 공통 형식인 [OCSF](https://schema.ocsf.io) 1.9.0 이벤트로 돌려줍니다. 수집, 캐시, 필터(`environment`, `severity`, `refresh`)는 `/v1/security`와 같고, 새로 읽는 것은 없습니다.
+
+- 위협 탐지(`threat`, 예: GuardDuty)는 **Detection Finding**(class 2004), 나머지 설정 점검은 **Compliance Finding**(class 2003)입니다. Compliance Finding의 `compliance.status_id`는 Fail(3)이고, info 심각도는 Warning(2)입니다.
+- 심각도는 info→1, low→2, medium→3, high→4, critical→5(`severity_id`)입니다. `finding_info.uid`는 `SecurityFinding.id`, `finding_info.analytic.name`은 검사 이름, `data_sources`는 소스, `cloud.provider`는 AWS, GCP 같은 공급자입니다. 모든 이벤트에 `metadata.version: 1.9.0`과 `cloud` 프로필을 적습니다.
+- 테스트는 OCSF 공식 클래스 스키마(`internal/security/testdata/ocsf-1.9.0`, schema.ocsf.io에서 받은 원본)로 모든 종류의 이벤트를 검증합니다. 스키마에 없는 필드는 쓰지 않습니다.
+- Security Lake 같은 특정 저장소에는 보내지 않습니다. OCSF를 읽는 도구(SIEM 등)가 이 JSON을 가져가면 됩니다.
+
 ### 에이전트 활동 기록 `/v1/agent/sessions`
 
 AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을 만들고, 도구 호출과 결과를 이벤트로 남깁니다. 콘솔과 CLI는 SSE로 실시간으로 봅니다.
