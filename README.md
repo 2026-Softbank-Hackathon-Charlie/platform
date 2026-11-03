@@ -285,7 +285,7 @@ Plan JSON을 손으로 쓰지 않고 이전을 준비하고, 검증에 쓸 쓰�
 | 요청 | 역할 | 설명 |
 | --- | --- | --- |
 | `GET /v1/apps` | viewer | `PLATFORM_APPS_FILE`의 앱과 앱이 있는 환경, 그리고 GitHub에서 등록한 앱 (아래 GitHub 앱 배포) |
-| `POST /v1/plans/draft` | agent | `{"app","source","target"}`로 엔진 Plan 초안을 만듦. 저장하지 않으므로 그대로 또는 고쳐서 `POST /v1/plans`로 제출 |
+| `POST /v1/plans/draft` | agent | `{"app","source","target"}`로 엔진 Plan 초안을 만듦. 저장하지 않으므로 그대로 또는 고쳐서 `POST /v1/plans`로 제출. `"sourceStats": true`를 더하면 원본 DB를 약 5초 측정해 `{"plan", "sourceStats"}`로 응답(세션 수, `max_connections`, `max_worker_processes`, 크기, WAL 속도. 숫자만, 측정 못 하면 `sourceStatsReason: not_measured`, ADR 0017) |
 | `PUT /v1/plans/{ref}/attachments/{name}` | agent | Plan이 참조하는 파일(대상 CNPG 매니페스트) 업로드. 본문 그대로 1 MiB까지, `pending_approval`일 때만 |
 | `GET /v1/plans/{ref}/attachments/{name}` | viewer | 첨부 내용. Plan 응답의 `attachments`에 이름, 크기, SHA-256이 있음 |
 | `POST /v1/written-records/{stream}` | agent | 부하 생성기가 성공 응답을 받은 쓰기 `{"table","pk","at"}`. 한 번에 1개에서 5000개. `table`은 소문자로 저장하고(따옴표 없는 PostgreSQL 식별자), `table`과 `pk`에 제어 문자(NUL 포함)가 있으면 400 |

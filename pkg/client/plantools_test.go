@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -54,6 +55,16 @@ func TestPlanToolsOperations(t *testing.T) {
 			body: `{"app":"moimroom","files":false,"source":"gke","target":"eks","writtenRecordsStream":"moimroom-demo"}`,
 			resp: `{"id":"moimroom-gke-to-eks","source":{"env":"gke","namespace":"moimroom","cluster":"c","dsn":"d"},"target":{"env":"eks","namespace":"moimroom","cluster":"c","dsn":"d"}}`,
 			got:  func(v any) string { return v.(*apiv1.EnginePlan).Id }, want: "moimroom-gke-to-eks"},
+		{name: "DraftPlanWithSourceStats", call: func(c *Client) (any, error) {
+			return c.DraftPlanWithSourceStats(ctx, apiv1.PlanDraftRequest{App: "moimroom", Source: "gke", Target: "eks"})
+		},
+			method: "POST", path: "/v1/plans/draft", contentType: "application/json",
+			body: `{"app":"moimroom","source":"gke","sourceStats":true,"target":"eks"}`,
+			resp: `{"plan":{"id":"moimroom-gke-to-eks","source":{"env":"gke","namespace":"moimroom","cluster":"c","dsn":"d"},"target":{"env":"eks","namespace":"moimroom","cluster":"c","dsn":"d"}},"sourceStats":{"sessions":80,"maxConnections":200,"maxWorkerProcesses":8,"windowSeconds":5,"measuredAt":"2026-11-03T12:00:00Z"}}`,
+			got: func(v any) string {
+				r := v.(*apiv1.PlanDraftResult)
+				return fmt.Sprintf("%s %d", r.Plan.Id, r.SourceStats.MaxWorkerProcesses)
+			}, want: "moimroom-gke-to-eks 8"},
 		{name: "RollbackMigration", call: func(c *Client) (any, error) {
 			reason, auto := "demo", false
 			return c.RollbackMigration(ctx, "run 1", apiv1.RollbackRequest{Reason: &reason, AutoSwitch: &auto})

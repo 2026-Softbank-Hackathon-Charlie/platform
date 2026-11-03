@@ -11,6 +11,7 @@ package capacity
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -27,8 +28,12 @@ const (
 // Check IDs.
 const (
 	CheckConnections = "connections"
-	CheckCatchup     = "catchup"
-	CheckInitialCopy = "initial_copy"
+	// CheckStandbySettings: the target starts as a hot standby of the source,
+	// and PostgreSQL refuses to start one whose max_connections or
+	// max_worker_processes is below the primary's.
+	CheckStandbySettings = "standby_settings"
+	CheckCatchup         = "catchup"
+	CheckInitialCopy     = "initial_copy"
 )
 
 // ConnectionHeadroom is how many more connections than the source has now the
@@ -41,10 +46,16 @@ type Measurements struct {
 	WALBytesPerSecond    *float64 `json:"walBytesPerSecond,omitempty"`
 	SourceSessions       *int     `json:"sourceSessions,omitempty"`
 	SourceMaxConnections *int     `json:"sourceMaxConnections,omitempty"`
-	TargetMaxConnections *int     `json:"targetMaxConnections,omitempty"`
+	// SourceMaxWorkerProcesses matters because a hot standby needs at least
+	// the primary's value to start.
+	SourceMaxWorkerProcesses *int `json:"sourceMaxWorkerProcesses,omitempty"`
+	TargetMaxConnections     *int `json:"targetMaxConnections,omitempty"`
 	// TargetMaxConnectionsFrom is "target" (read from the running target) or
 	// "manifest" (the target does not exist yet).
 	TargetMaxConnectionsFrom string `json:"targetMaxConnectionsFrom,omitempty"`
+	TargetMaxWorkerProcesses *int   `json:"targetMaxWorkerProcesses,omitempty"`
+	// TargetMaxWorkerProcessesFrom is "target" or "manifest", as above.
+	TargetMaxWorkerProcessesFrom string `json:"targetMaxWorkerProcessesFrom,omitempty"`
 	// LagBefore and LagAfter are the replica's lag in bytes at the start and
 	// end of the window, measured as the engine does. Nil without a replica.
 	LagBefore *int64        `json:"lagBefore,omitempty"`
@@ -86,7 +97,7 @@ func (r Report) Failed() []Check {
 
 // Evaluate judges measurements against the plan's thresholds.
 func Evaluate(m Measurements, t Thresholds) Report {
-	r := Report{Allowed: true, Measurements: m, Checks: []Check{connections(m), catchup(m, t), initialCopy(m)}}
+	r := Report{Allowed: true, Measurements: m, Checks: []Check{connections(m), standbySettings(m), catchup(m, t), initialCopy(m)}}
 	for _, c := range r.Checks {
 		if c.Status == Fail {
 			r.Allowed = false
@@ -114,6 +125,42 @@ func connections(m Measurements) Check {
 		return c
 	}
 	c.Status, c.Code, c.Message = Pass, "ok", detail
+	return c
+}
+
+// standbySettings fails when a measured target setting is below the source's.
+// A setting that is unknown on either side is skipped; when none can be
+// compared the check is unknown.
+func standbySettings(m Measurements) Check {
+	c := Check{ID: CheckStandbySettings, Status: Unknown}
+	type setting struct {
+		name      string
+		src, dst  *int
+		dstSource string
+	}
+	var compared, short []string
+	for _, s := range []setting{
+		{"max_connections", m.SourceMaxConnections, m.TargetMaxConnections, m.TargetMaxConnectionsFrom},
+		{"max_worker_processes", m.SourceMaxWorkerProcesses, m.TargetMaxWorkerProcesses, m.TargetMaxWorkerProcessesFrom},
+	} {
+		if s.src == nil || s.dst == nil {
+			continue
+		}
+		d := fmt.Sprintf("%s %d (from %s), source %d", s.name, *s.dst, s.dstSource, *s.src)
+		compared = append(compared, d)
+		if *s.dst < *s.src {
+			short = append(short, d)
+		}
+	}
+	switch {
+	case len(short) > 0:
+		c.Status, c.Code = Fail, "target_below_source"
+		c.Message = "a hot standby needs at least the source's value: " + strings.Join(short, "; ")
+	case len(compared) == 0:
+		c.Code, c.Message = "not_measured", "source or target max_connections and max_worker_processes are unknown"
+	default:
+		c.Status, c.Code, c.Message = Pass, "ok", strings.Join(compared, "; ")
+	}
 	return c
 }
 

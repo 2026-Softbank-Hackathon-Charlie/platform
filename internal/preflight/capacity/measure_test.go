@@ -67,6 +67,9 @@ func TestMeasureLiveSource(t *testing.T) {
 		if m.SourceSessions == nil || *m.SourceSessions < 1 || m.SourceMaxConnections == nil || *m.SourceMaxConnections <= 0 {
 			t.Fatalf("sessions %v max %v", m.SourceSessions, m.SourceMaxConnections)
 		}
+		if m.SourceMaxWorkerProcesses == nil || *m.SourceMaxWorkerProcesses <= 0 {
+			t.Fatalf("max_worker_processes %v", m.SourceMaxWorkerProcesses)
+		}
 		if m.TargetMaxConnections == nil || *m.TargetMaxConnections != 250 || m.TargetMaxConnectionsFrom != "manifest" {
 			t.Fatalf("target max %v from %q", m.TargetMaxConnections, m.TargetMaxConnectionsFrom)
 		}
@@ -105,5 +108,17 @@ func TestMeasureUnreachableSourceMeasuresNothing(t *testing.T) {
 	}
 	if r := Evaluate(m, defaults); !r.Allowed {
 		t.Fatalf("an unreachable source must not block: %+v", r)
+	}
+}
+
+func TestMeasureSourceLive(t *testing.T) {
+	base := testDatabaseURL(t)
+	st, ok := Prober{Window: time.Second}.MeasureSource(context.Background(), base)
+	if !ok || st.MaxConnections <= 0 || st.MaxWorkerProcesses <= 0 || st.Sessions < 0 ||
+		st.Bytes == nil || *st.Bytes <= 0 || st.WALBytesPerSecond == nil || st.Window < time.Second || st.MeasuredAt.IsZero() {
+		t.Fatalf("stats %+v ok %v", st, ok)
+	}
+	if _, ok := (Prober{Window: time.Second}).MeasureSource(context.Background(), unreachable); ok {
+		t.Fatal("measured an unreachable source")
 	}
 }

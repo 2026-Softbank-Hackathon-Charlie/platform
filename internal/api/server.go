@@ -92,6 +92,9 @@ type Deps struct {
 	EnvNotFound error
 	// Apps drafts plans from PLATFORM_APPS_FILE; nil when the file is not set.
 	Apps *apps.Catalog
+	// SourceStats measures a draft's source database for POST /v1/plans/draft
+	// with sourceStats (capacity.Prober); nil answers not_measured.
+	SourceStats SourceMeasurer
 	// Security builds the security and governance view; nil turns /v1/security off.
 	Security SecurityReporter
 	// Agents is the AI agent's activity log; nil turns /v1/agent off.
@@ -103,6 +106,13 @@ type Deps struct {
 	Remover AppRemover
 	// GitHub reads app repositories; nil answers the endpoints that need it 503 github_not_configured.
 	GitHub GitHub
+}
+
+// SourceMeasurer reads a source database's numbers (capacity.Prober). ok is
+// false when it could not; the reason is not returned, so nothing about the
+// DSN reaches the response.
+type SourceMeasurer interface {
+	MeasureSource(ctx context.Context, dsn string) (stats capacity.SourceStats, ok bool)
 }
 
 // Server is the HTTP handler.
