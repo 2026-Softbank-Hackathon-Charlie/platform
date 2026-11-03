@@ -72,6 +72,15 @@ func prepare(ctx context.Context, cfg Config, source string) (*Evaluator, error)
 	return &Evaluator{query: &q, digest: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
+// PolicyDigest identifies the embedded policy and its normalized configuration.
+// It is empty for a nil or zero evaluator.
+func (e *Evaluator) PolicyDigest() string {
+	if e == nil {
+		return ""
+	}
+	return e.digest
+}
+
 func (e *Evaluator) Evaluate(ctx context.Context, request preflight.Request) (preflight.ResidencyVerdict, error) {
 	v := preflight.ResidencyVerdict{Reasons: []preflight.Reason{}}
 	deny := func(code string, err error) (preflight.ResidencyVerdict, error) {
@@ -116,6 +125,9 @@ func validRequest(r preflight.Request) bool {
 			return false
 		}
 		ids[m.ID] = true
+		if f := m.Files; f != nil && (!ValidBucket(f.Source) || !ValidBucket(f.Target) || f.Source == f.Target) {
+			return false
+		}
 		datasets := map[preflight.Dataset]bool{}
 		for _, d := range m.Inventory.Datasets {
 			if !validDataset(d) || datasets[d] {
@@ -152,11 +164,15 @@ func decodeDecision(rs rego.ResultSet) (bool, []preflight.Reason, error) {
 		}
 		switch r.Code {
 		case "unknown_source", "unknown_destination", "unclassified_cluster":
-			if r.Dataset != nil {
+			if r.Dataset != nil || r.Bucket != "" {
 				return false, nil, ErrEvaluation
 			}
 		case "unclassified_dataset", "inventory_catalog_mismatch", "country_not_allowed":
-			if r.Dataset == nil || !validDataset(*r.Dataset) {
+			if r.Dataset == nil || !validDataset(*r.Dataset) || r.Bucket != "" {
+				return false, nil, ErrEvaluation
+			}
+		case "unregistered_bucket", "bucket_country_not_allowed":
+			if r.Dataset != nil || !ValidBucket(r.Bucket) {
 				return false, nil, ErrEvaluation
 			}
 		default:
@@ -171,7 +187,7 @@ func decodeDecision(rs rego.ResultSet) (bool, []preflight.Reason, error) {
 		if b.Dataset != nil {
 			bd = *b.Dataset
 		}
-		return cmp.Or(cmp.Compare(a.MovementID, b.MovementID), cmp.Compare(a.Code, b.Code), compareDataset(ad, bd))
+		return cmp.Or(cmp.Compare(a.MovementID, b.MovementID), cmp.Compare(a.Code, b.Code), compareDataset(ad, bd), cmp.Compare(a.Bucket, b.Bucket))
 	})
 	return *d.Allowed, d.Reasons, nil
 }

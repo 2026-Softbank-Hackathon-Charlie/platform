@@ -372,8 +372,27 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_plan", err.Error())
 	case errors.Is(err, plans.ErrWrongStatus):
 		s.fail(w, r, http.StatusConflict, "plan_state_conflict", err.Error())
+	case errors.Is(err, plans.ErrResidencyDenied):
+		// The verdict holds fixed codes and validated identifiers only.
+		var denied *plans.ResidencyDenied
+		if errors.As(err, &denied) {
+			noteAudit(r, "residencyDigest", denied.Verdict.PolicyDigest)
+			noteAudit(r, "residencyReasons", plans.ReasonTexts(denied.Verdict.Reasons))
+		}
+		s.fail(w, r, http.StatusConflict, "residency_denied", err.Error())
 	default:
 		s.internal(w, r, err)
+	}
+}
+
+// noteResidency records what the residency gate decided for a started plan.
+func noteResidency(r *http.Request, c plans.ResidencyCheck) {
+	if c.Outcome == "" {
+		return
+	}
+	noteAudit(r, "residency", c.Outcome)
+	if c.PolicyDigest != "" {
+		noteAudit(r, "residencyDigest", c.PolicyDigest)
 	}
 }
 

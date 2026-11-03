@@ -1,5 +1,18 @@
 package preflight
 
+import "regexp"
+
+// Deliberately restrict v1 to simple PostgreSQL identifiers. Quoted names
+// containing spaces, dots or control characters need an explicit extension.
+var datasetID = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$-]{0,62}$`)
+
+// ValidDataset reports whether every part of d is a supported identifier. The
+// collector and the policy use the same rule, so a relation the policy cannot
+// name makes an inventory incomplete instead of being silently dropped.
+func ValidDataset(d Dataset) bool {
+	return datasetID.MatchString(d.Database) && datasetID.MatchString(d.Schema) && datasetID.MatchString(d.Table)
+}
+
 // ClusterScope identifies the whole PostgreSQL instance, not a single database.
 // Cluster is a CNPG resource name; Environment identifies the Kubernetes cluster.
 type ClusterScope struct {
@@ -38,6 +51,17 @@ type Movement struct {
 	Source      ClusterScope `json:"source"`
 	Destination string       `json:"destination"`
 	Inventory   Inventory    `json:"inventory"`
+	// Files is the object copy that runs with the database, if any. Both
+	// buckets must be registered in the policy, which says where each one is
+	// and how the source's contents are classified (as one unit).
+	Files *BucketCopy `json:"files,omitempty"`
+}
+
+// BucketCopy copies every object of Source to Target. Buckets are written as
+// the plan writes them ("remote:bucket[/path]") and matched exactly.
+type BucketCopy struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
 }
 
 // Request must be constructed server-side from resolved, trusted resources.
@@ -54,6 +78,7 @@ type Reason struct {
 	Code       string   `json:"code"`
 	MovementID string   `json:"movementId,omitempty"`
 	Dataset    *Dataset `json:"dataset,omitempty"`
+	Bucket     string   `json:"bucket,omitempty"`
 }
 
 // ResidencyVerdict applies only to residency under the given policy snapshot.

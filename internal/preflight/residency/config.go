@@ -24,6 +24,19 @@ type Config struct {
 	Environments  []Environment    `json:"environments"`
 	APACCountries []string         `json:"apacCountries"`
 	Catalog       []ClusterCatalog `json:"catalog"`
+	// Buckets plans may copy files between. Optional: without an entry, a plan
+	// that copies files is denied.
+	Buckets []Bucket `json:"buckets,omitempty"`
+}
+
+// Bucket is a registered object bucket. Environment is where the bucket is
+// stored (its country is that environment's), as the operator declares it:
+// the location is not looked up from the cloud. Label classifies the whole
+// bucket's contents, which apply when it is the source of a copy.
+type Bucket struct {
+	Bucket      string `json:"bucket"`
+	Environment string `json:"environment"`
+	Label       string `json:"label"`
 }
 
 type Environment struct {
@@ -54,10 +67,27 @@ func ParseConfig(raw []byte) (Config, error) {
 
 var (
 	resourceID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	// Deliberately restrict v1 to simple PostgreSQL identifiers. Quoted names
-	// containing spaces, dots or control characters need an explicit extension.
-	datasetID = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$-]{0,62}$`)
+	// bucketID is "remote:bucket[/path]", the form plans accept for files.
+	bucketID = regexp.MustCompile(`^[A-Za-z0-9_-]+:[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*$`)
 )
+
+// ValidBucket reports whether s is a bucket the policy can name.
+func ValidBucket(s string) bool { return len(s) <= 512 && bucketID.MatchString(s) }
+
+func validLabel(s string) bool { return s == "kr-only" || s == "apac" || s == "global" }
+
+// ValidResourceID reports whether s is an identifier the policy accepts for
+// environments, namespaces, clusters and movements.
+func ValidResourceID(s string) bool { return resourceID.MatchString(s) }
+
+// EnvironmentIDs returns the environments the configuration registers.
+func (c Config) EnvironmentIDs() []string {
+	out := make([]string, 0, len(c.Environments))
+	for _, e := range c.Environments {
+		out = append(out, e.ID)
+	}
+	return out
+}
 
 // ISO 3166-1 alpha-2 country/territory codes. Unknown/user-assigned codes and
 // macroregions are rejected, never interpreted as global. Changes are reviewed
@@ -72,9 +102,7 @@ func validScope(s preflight.ClusterScope) bool {
 	return resourceID.MatchString(s.Environment) && resourceID.MatchString(s.Namespace) && resourceID.MatchString(s.Cluster)
 }
 
-func validDataset(d preflight.Dataset) bool {
-	return datasetID.MatchString(d.Database) && datasetID.MatchString(d.Schema) && datasetID.MatchString(d.Table)
-}
+func validDataset(d preflight.Dataset) bool { return preflight.ValidDataset(d) }
 
 func compareScope(a, b preflight.ClusterScope) int {
 	return cmp.Or(cmp.Compare(a.Environment, b.Environment), cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Cluster, b.Cluster))
@@ -125,15 +153,22 @@ func (c Config) normalized() (Config, error) {
 				return bad(fmt.Sprintf("catalog[%d].datasets[%d]: invalid or duplicate identifier", i, j))
 			}
 			seenDatasets[row.Dataset] = true
-			switch row.Label {
-			case "kr-only", "apac", "global":
-			default:
+			if !validLabel(row.Label) {
 				return bad(fmt.Sprintf("catalog[%d].datasets[%d]: unsupported label", i, j))
 			}
 		}
 		slices.SortFunc(copyEntry.Datasets, func(a, b ClassifiedDataset) int { return compareDataset(a.Dataset, b.Dataset) })
 		out.Catalog = append(out.Catalog, copyEntry)
 	}
+	seenBuckets := map[string]bool{}
+	for i, b := range c.Buckets {
+		if !ValidBucket(b.Bucket) || seenBuckets[b.Bucket] || !envs[b.Environment] || !validLabel(b.Label) {
+			return bad(fmt.Sprintf("buckets[%d]: invalid, duplicate or unregistered environment, or unsupported label", i))
+		}
+		seenBuckets[b.Bucket] = true
+		out.Buckets = append(out.Buckets, b)
+	}
+	slices.SortFunc(out.Buckets, func(a, b Bucket) int { return cmp.Compare(a.Bucket, b.Bucket) })
 	slices.SortFunc(out.Environments, func(a, b Environment) int { return cmp.Compare(a.ID, b.ID) })
 	slices.Sort(out.APACCountries)
 	slices.SortFunc(out.Catalog, func(a, b ClusterCatalog) int { return compareScope(a.Scope, b.Scope) })
