@@ -151,6 +151,7 @@ type Store interface {
 	// Close releases connections.
 	Close()
 
-	PlanTools  // written-records streams and plan attachments (written.go)
-	AgentStore // agent sessions and events (agent.go)
+	PlanTools   // written-records streams and plan attachments (written.go)
+	AgentStore  // agent sessions and events (agent.go)
+	DeployStore // apps from GitHub, deployments and their events, webhook deliveries (deploy.go)
 }

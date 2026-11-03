@@ -36,6 +36,15 @@ type Traffic interface {
 	State(ctx context.Context, window time.Duration) (apiv1.TrafficState, error)
 }
 
+// Deployer runs deployments of apps registered from GitHub: it builds the
+// images, commits apps/<app>/<env>.yaml to the gitops repository and follows
+// Argo CD, recording progress in the store. Enqueue hands it a stored
+// deployment in status queued and returns once the deployer has taken it,
+// not when the deployment finishes.
+type Deployer interface {
+	Enqueue(ctx context.Context, deploymentID string) error
+}
+
 // Config configures the API.
 type Config struct {
 	// Tokens authenticates callers. When Insecure is set and Tokens is empty,
@@ -51,7 +60,7 @@ type Config struct {
 type Deps struct {
 	Plans *plans.Service
 	Runs  *runs.Runner
-	Store store.Store // audit log and idempotency keys
+	Store store.Store // audit log, idempotency keys, apps from GitHub and their deployments
 	Envs  Envs
 	// Traffic is nil when no gateway is configured.
 	Traffic Traffic
@@ -63,6 +72,8 @@ type Deps struct {
 	Security SecurityReporter
 	// Agents is the AI agent's activity log; nil turns /v1/agent off.
 	Agents AgentLog
+	// Deployer runs deployments; nil leaves them queued.
+	Deployer Deployer
 }
 
 // Server is the HTTP handler.
@@ -224,7 +235,7 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request) bool {
 	h.Add("Vary", "Origin")
 	h.Set("Access-Control-Expose-Headers", "Location, X-Request-Id")
 	if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, Last-Event-ID, X-Request-Id")
 		h.Set("Access-Control-Max-Age", "600")
 		w.WriteHeader(http.StatusNoContent)

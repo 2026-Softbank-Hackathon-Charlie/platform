@@ -47,6 +47,12 @@ func decodeError(resp *http.Response) error {
 	var body apiv1.Error
 	if json.Unmarshal(b, &body) == nil && body.Error.Code != "" {
 		e.Code, e.Message = body.Error.Code, body.Error.Message
+		if e.Code == "invalid_app_spec" {
+			var inv apiv1.AppSpecInvalid
+			if json.Unmarshal(b, &inv) == nil {
+				return &AppSpecError{APIError: e, Validation: inv.Validation}
+			}
+		}
 		return e
 	}
 	// Not an Error body: keep a one-line excerpt so proxy pages and crashes
