@@ -15,26 +15,29 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 )
 
-// Backends finds where an app's public service answers in an environment,
-// for the traffic gateway.
+// Backends finds where the public service of an app's instance answers in an
+// environment, for the traffic gateway. The instance is the namespace; the
+// Service is named after the app (ServiceName).
 type Backends interface {
-	URL(ctx context.Context, app, env string, svc appspec.Service) (string, error)
+	URL(ctx context.Context, app, instance, env string, svc appspec.Service) (string, error)
 }
 
-// TemplateBackends builds the URL from a template with {app}, {service},
-// {port} and {env}, e.g. http://{app}-{service}.{app}.svc:{port} when the
-// gateway runs in the same cluster as the app.
+// TemplateBackends builds the URL from a template with {app}, {instance},
+// {service}, {port} and {env}, e.g.
+// http://{app}-{service}.{instance}.svc:{port} when the gateway runs in the
+// same cluster as the app. {instance} is the app name for the default
+// instance.
 type TemplateBackends struct {
 	Template string
 }
 
-func (t TemplateBackends) URL(_ context.Context, app, env string, svc appspec.Service) (string, error) {
-	return strings.NewReplacer("{app}", app, "{service}", svc.Name, "{port}", strconv.Itoa(svc.Port), "{env}", env).Replace(t.Template), nil
+func (t TemplateBackends) URL(_ context.Context, app, instance, env string, svc appspec.Service) (string, error) {
+	return strings.NewReplacer("{app}", app, "{instance}", instance, "{service}", svc.Name, "{port}", strconv.Itoa(svc.Port), "{env}", env).Replace(t.Template), nil
 }
 
-// ServiceBackends reads the Service <app>-<service> in namespace <app> of the
-// environment's cluster and uses its load balancer's hostname or IP, with the
-// Service port that targets the service's port.
+// ServiceBackends reads the Service <app>-<service> in namespace <instance>
+// of the environment's cluster and uses its load balancer's hostname or IP,
+// with the Service port that targets the service's port.
 type ServiceBackends struct {
 	// Kube returns the client of an environment's cluster.
 	Kube func(env string) (kubernetes.Interface, error)
@@ -43,15 +46,15 @@ type ServiceBackends struct {
 	clients map[string]kubernetes.Interface
 }
 
-func (s *ServiceBackends) URL(ctx context.Context, app, env string, svc appspec.Service) (string, error) {
+func (s *ServiceBackends) URL(ctx context.Context, app, instance, env string, svc appspec.Service) (string, error) {
 	kube, err := s.client(env)
 	if err != nil {
 		return "", err
 	}
-	name := ServiceName(app, svc.Name)
-	got, err := kube.CoreV1().Services(app).Get(ctx, name, metav1.GetOptions{})
+	ns, name := Namespace(instance), ServiceName(app, svc.Name)
+	got, err := kube.CoreV1().Services(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return "", fmt.Errorf("read Service %s/%s: %w", app, name, err)
+		return "", fmt.Errorf("read Service %s/%s: %w", ns, name, err)
 	}
 	var host string
 	for _, in := range got.Status.LoadBalancer.Ingress {
@@ -63,10 +66,10 @@ func (s *ServiceBackends) URL(ctx context.Context, app, env string, svc appspec.
 		}
 	}
 	if host == "" {
-		return "", fmt.Errorf("Service %s/%s has no load balancer address yet", app, name)
+		return "", fmt.Errorf("Service %s/%s has no load balancer address yet", ns, name)
 	}
 	if len(got.Spec.Ports) == 0 {
-		return "", fmt.Errorf("Service %s/%s has no ports", app, name)
+		return "", fmt.Errorf("Service %s/%s has no ports", ns, name)
 	}
 	port := got.Spec.Ports[0].Port
 	for _, p := range got.Spec.Ports {

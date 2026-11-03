@@ -101,8 +101,10 @@ type Config struct {
 
 var (
 	backendName = regexp.MustCompile(`^[a-z0-9-]+$`)
-	// appName is one DNS label, so <app>.<domain> is a valid host name.
-	appName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
+	// appName is one DNS label, so <app>.<domain> is a valid host name. It
+	// is up to 63 characters, for the platform's branch instances
+	// <app>--<branch> (ADR 0015).
+	appName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	// domainLabel is one label of AppDomain.
 	domainLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 )

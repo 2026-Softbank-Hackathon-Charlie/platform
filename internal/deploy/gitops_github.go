@@ -75,17 +75,29 @@ func (g *GitHubGitOps) Write(ctx context.Context, files map[string][]byte, messa
 	})
 }
 
-func (g *GitHubGitOps) Delete(ctx context.Context, dir, message string) (string, bool, error) {
-	prefix := strings.TrimSuffix(dir, "/") + "/"
+func (g *GitHubGitOps) Delete(ctx context.Context, dirs []string, message string) (string, bool, error) {
+	if err := checkDelete(dirs); err != nil {
+		return "", false, err
+	}
 	return g.update(ctx, message, func(h head) []map[string]any {
 		var changes []map[string]any
 		for _, p := range sortedKeys(h.blobs) {
-			if strings.HasPrefix(p, prefix) {
+			if underAny(p, dirs) {
 				changes = append(changes, map[string]any{"path": p, "mode": "100644", "type": "blob", "sha": nil})
 			}
 		}
 		return changes
 	})
+}
+
+// underAny reports whether path is under one of dirs.
+func underAny(path string, dirs []string) bool {
+	for _, d := range dirs {
+		if strings.HasPrefix(path, strings.TrimSuffix(d, "/")+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // update builds a commit on the head from the tree changes diff returns and

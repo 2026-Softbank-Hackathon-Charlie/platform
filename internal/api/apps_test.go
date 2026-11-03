@@ -510,10 +510,10 @@ func pushPayload(repo, ref, after string, deleted bool) string {
 // webhookHarness registers shop (main, autoDeploy), shop-docs from the same
 // repository and branch, shop-manual (autoDeploy off), shop-release (another
 // branch), manual (the only app of its repository, autoDeploy off) and other.
-func webhookHarness(t *testing.T) (*harness, *fakeDeployer) {
+func webhookHarness(t *testing.T, opts ...option) (*harness, *fakeDeployer) {
 	t.Helper()
 	dep := &fakeDeployer{}
-	h := newHarness(t, withGitHub(nil, dep))
+	h := newHarness(t, append([]option{withGitHub(nil, dep)}, opts...)...)
 	for _, a := range []store.App{
 		{Name: "shop", Repo: "Acme/Shop", Branch: "main", AutoDeploy: true, Environments: []string{"gke", "eks"}},
 		{Name: "shop-docs", Repo: shopRepo, Branch: "main", AutoDeploy: true, Environments: []string{"onprem"}},

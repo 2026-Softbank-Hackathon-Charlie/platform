@@ -3,8 +3,12 @@
 //
 //	driver register -repo e2e/demo -branch main -env kind      register; prints the first deployment's id
 //	driver push -repo e2e/demo -branch main -after <sha>       a signed push webhook; prints the deployment's id
+//	                [-instance demo]                           and fails unless it deploys that instance
 //	driver watch -id <deployment> -want healthy                follow the event stream until it ends
 //	driver delete -app demo                                    unregister
+//	driver add-instance -app moimroom -branch dev              add a branch instance; prints the first deployment's id and the instance
+//	driver delete-instance -app moimroom -instance moimroom--dev
+//	driver last -app moimroom -branch main                     prints the id and status of the branch's newest deployment
 //
 // The operator token is E2E_OPERATOR_TOKEN, the webhook secret
 // E2E_WEBHOOK_SECRET. watch prints every phase with the seconds since it
@@ -28,7 +32,7 @@ import (
 func main() {
 	log.SetFlags(0)
 	if len(os.Args) < 2 {
-		log.Fatal("usage: driver register|push|watch|delete [flags]")
+		log.Fatal("usage: driver register|push|watch|delete|add-instance|delete-instance|last [flags]")
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 	api := fs.String("api", "http://127.0.0.1:18380", "platform API")
@@ -39,6 +43,7 @@ func main() {
 	id := fs.String("id", "", "deployment id")
 	want := fs.String("want", "healthy", "the final status watch expects")
 	app := fs.String("app", "", "app name")
+	instance := fs.String("instance", "", "instance name")
 	timeout := fs.Duration("timeout", 10*time.Minute, "give up after this long")
 	_ = fs.Parse(os.Args[2:])
 
@@ -66,6 +71,9 @@ func main() {
 		}
 		if len(list.Deployments) != 1 {
 			log.Fatalf("push queued %d deployments, want 1", len(list.Deployments))
+		}
+		if d := list.Deployments[0]; *instance != "" && d.Instance != *instance {
+			log.Fatalf("push queued deployment %s of instance %s, want %s", d.Id, d.Instance, *instance)
 		}
 		fmt.Println(list.Deployments[0].Id)
 	case "watch":
@@ -99,6 +107,26 @@ func main() {
 		if err := c.DeleteApp(ctx, *app); err != nil {
 			log.Fatal("delete: ", err)
 		}
+	case "add-instance":
+		auto := true
+		created, err := c.CreateAppInstance(ctx, *app, apiv1.AppInstanceCreateRequest{Branch: *branch, AutoDeploy: &auto})
+		if err != nil {
+			log.Fatal("add instance: ", err)
+		}
+		fmt.Println(created.Deployment.Id, created.Instance.Name)
+	case "delete-instance":
+		if err := c.DeleteAppInstance(ctx, *app, *instance); err != nil {
+			log.Fatal("delete instance: ", err)
+		}
+	case "last":
+		list, err := c.ListBranchDeployments(ctx, *app, *branch, 1)
+		if err != nil {
+			log.Fatal("list deployments: ", err)
+		}
+		if len(list.Deployments) == 0 {
+			log.Fatalf("%s has no deployment of branch %s", *app, *branch)
+		}
+		fmt.Println(list.Deployments[0].Id, list.Deployments[0].Status)
 	default:
 		log.Fatalf("unknown command %q", os.Args[1])
 	}

@@ -41,21 +41,25 @@ func (j *job) deploy(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read app %s: %w", j.d.App, err)
 	}
-	spec, err := j.spec(ctx, app)
+	branch, err := j.addedBranch(ctx, app)
+	if err != nil {
+		return err
+	}
+	spec, err := j.spec(ctx, app, branch)
 	if err != nil {
 		return err
 	}
 	if err := j.build(ctx, app, spec); err != nil {
 		return err
 	}
-	if err := j.phase(ctx, store.DeployCommitting, "writing "+AppDir(app.Name)+" for "+envNames(j.d.Environments)); err != nil {
+	if err := j.phase(ctx, store.DeployCommitting, "writing "+AppDir(j.d.Instance)+" for "+envNames(j.d.Environments)); err != nil {
 		return err
 	}
 	commit, err := j.commit(ctx, app, spec)
 	if err != nil {
 		return err
 	}
-	if err := j.sync(ctx, app, commit); err != nil {
+	if err := j.sync(ctx, commit); err != nil {
 		return err
 	}
 	if err := j.register(ctx, app, spec); err != nil {
@@ -63,11 +67,34 @@ func (j *job) deploy(ctx context.Context) error {
 	}
 	done := "every environment is synced and healthy"
 	if _, ok := publicService(spec); ok {
-		if u := AppURL(j.e.cfg.AppDomain, app.Name); u != "" {
+		if u := AppURL(j.e.cfg.AppDomain, j.d.Instance); u != "" {
 			done += "; " + u
 		}
 	}
 	return j.e.finish(ctx, &j.d, store.DeployHealthy, "", done)
+}
+
+// addedBranch returns the added branch whose instance the deployment goes
+// to, or nil for the app's default instance (the instance named after the
+// app). A branch the app no longer has fails the deployment.
+func (j *job) addedBranch(ctx context.Context, app store.App) (*store.AppBranch, error) {
+	if j.d.Instance == app.Name {
+		return nil, nil
+	}
+	list, err := j.e.cfg.Store.ListAppBranches(ctx, app.Name)
+	if err != nil {
+		return nil, fmt.Errorf("read the branches of %s: %w", app.Name, err)
+	}
+	for _, b := range list {
+		if b.Branch == j.d.Branch && b.Instance == j.d.Instance {
+			return &b, nil
+		}
+	}
+	return nil, branchGone(app.Name, j.d.Branch)
+}
+
+func branchGone(app, branch string) error {
+	return fmt.Errorf("branch %s is no longer deployed by app %s", branch, app)
 }
 
 // phase moves the deployment to status and records a phase event.
@@ -110,10 +137,10 @@ func (j *job) note(ctx context.Context, msg string) {
 	j.e.event(ctx, store.DeploymentEvent{DeploymentID: j.d.ID, Type: EventLog, Phase: j.d.Status, Message: msg})
 }
 
-// locked runs f under the app's lock, right after a write that proves the
-// deployment is still unfinished.
-func (j *job) locked(ctx context.Context, app string, f func() error) error {
-	l := j.e.lock(app)
+// locked runs f under the instance's lock, right after a write that proves
+// the deployment is still unfinished.
+func (j *job) locked(ctx context.Context, f func() error) error {
+	l := j.e.lock(j.d.Instance)
 	l.Lock()
 	defer l.Unlock()
 	if err := j.save(ctx); err != nil {
@@ -125,8 +152,8 @@ func (j *job) locked(ctx context.Context, app string, f func() error) error {
 // --- building ---
 
 // spec reads and checks platform.yaml at the deployment's commit and makes it
-// the app's spec when this is the app's newest deployment.
-func (j *job) spec(ctx context.Context, app store.App) (appspec.Spec, error) {
+// the instance's spec when this is the instance's newest deployment.
+func (j *job) spec(ctx context.Context, app store.App, branch *store.AppBranch) (appspec.Spec, error) {
 	v, spec, err := CheckSpec(ctx, j.e.cfg.GitHub, app.Repo, j.d.Commit)
 	if err != nil {
 		return appspec.Spec{}, fmt.Errorf("read platform.yaml at %s: %w", short(j.d.Commit), err)
@@ -142,27 +169,48 @@ func (j *job) spec(ctx context.Context, app store.App) (appspec.Spec, error) {
 	if spec.Name != app.Name {
 		return appspec.Spec{}, fmt.Errorf("platform.yaml at %s names the app %q, but it is registered as %q", short(j.d.Commit), spec.Name, app.Name)
 	}
-	j.updateSpec(ctx, app, *spec)
+	if err := j.updateSpec(ctx, app, branch, *spec); err != nil {
+		return appspec.Spec{}, err
+	}
 	return *spec, nil
 }
 
-// updateSpec stores spec as the app's spec when the commit differs from the
-// stored one and no newer deployment of the app exists. A failure is only
-// logged: the deployment does not depend on it.
-func (j *job) updateSpec(ctx context.Context, app store.App, spec appspec.Spec) {
-	if app.SpecCommit == j.d.Commit {
-		return
+// updateSpec stores spec as the spec of the deployment's instance, the app's
+// for the default instance (branch nil) and the added branch's otherwise,
+// when the commit differs from the stored one and no newer deployment of the
+// instance exists. A failure to store it is only logged, as the deployment
+// does not depend on it; an added branch that is gone fails the deployment.
+func (j *job) updateSpec(ctx context.Context, app store.App, branch *store.AppBranch, spec appspec.Spec) error {
+	stored := app.SpecCommit
+	if branch != nil {
+		stored = branch.SpecCommit
 	}
-	latest, err := j.e.cfg.Store.ListDeployments(ctx, app.Name, 1)
+	if stored == j.d.Commit {
+		return nil
+	}
+	latest, err := j.e.cfg.Store.ListInstanceDeployments(ctx, j.d.Instance, 1)
 	if err != nil || len(latest) == 0 || latest[0].ID != j.d.ID {
-		return
+		return nil
 	}
-	app.Spec, app.SpecCommit = specJSON(spec), j.d.Commit
-	if err := j.e.cfg.Store.UpdateApp(ctx, app); err != nil {
-		j.e.cfg.Log.Warn("store app spec", "app", app.Name, "err", err)
-		return
+	whose := "the app's"
+	if branch == nil {
+		app.Spec, app.SpecCommit = specJSON(spec), j.d.Commit
+		err = j.e.cfg.Store.UpdateApp(ctx, app)
+	} else {
+		b := *branch
+		b.Spec, b.SpecCommit = specJSON(spec), j.d.Commit
+		err = j.e.cfg.Store.UpdateAppBranch(ctx, b)
+		if errors.Is(err, store.ErrNotFound) {
+			return branchGone(app.Name, b.Branch)
+		}
+		whose = "branch " + b.Branch + "'s"
 	}
-	j.note(ctx, "platform.yaml at "+short(j.d.Commit)+" is now the app's spec")
+	if err != nil {
+		j.e.cfg.Log.Warn("store the spec", "app", app.Name, "instance", j.d.Instance, "err", err)
+		return nil
+	}
+	j.note(ctx, "platform.yaml at "+short(j.d.Commit)+" is now "+whose+" spec")
+	return nil
 }
 
 // build builds the images unless an earlier attempt of this deployment did.
@@ -249,16 +297,16 @@ func (j *job) commit(ctx context.Context, app store.App, spec appspec.Spec) (str
 	images := imagesFor(j.d.Images, spec)
 	files := map[string][]byte{}
 	for _, env := range j.d.Environments {
-		b, err := Render(File{App: app.Name, Env: env.Env, Commit: j.d.Commit, Deployment: j.d.ID, Spec: spec, Images: images})
+		b, err := Render(File{App: app.Name, Instance: j.d.Instance, Env: env.Env, Commit: j.d.Commit, Deployment: j.d.ID, Spec: spec, Images: images})
 		if err != nil {
 			return "", err
 		}
-		files[FilePath(app.Name, env.Env)] = b
+		files[FilePath(j.d.Instance, env.Env)] = b
 	}
-	msg := fmt.Sprintf("deploy %s %s to %s (%s)", app.Name, short(j.d.Commit), envNames(j.d.Environments), j.d.ID)
+	msg := fmt.Sprintf("deploy %s %s to %s (%s)", j.d.Instance, short(j.d.Commit), envNames(j.d.Environments), j.d.ID)
 	var sha string
 	var changed bool
-	err := j.locked(ctx, app.Name, func() error {
+	err := j.locked(ctx, func() error {
 		var err error
 		sha, changed, err = j.e.cfg.GitOps.Write(ctx, files, msg)
 		return err
@@ -284,7 +332,7 @@ type envState struct {
 	status, sync, health, message string
 }
 
-func (j *job) sync(ctx context.Context, app store.App, commit string) error {
+func (j *job) sync(ctx context.Context, commit string) error {
 	for i := range j.d.Environments {
 		e := &j.d.Environments[i]
 		e.Status, e.SyncStatus, e.HealthStatus = EnvSyncing, "", ""
@@ -299,7 +347,7 @@ func (j *job) sync(ctx context.Context, app store.App, commit string) error {
 	if err := argo.RefreshApplicationSet(ctx); err != nil && ctx.Err() == nil {
 		j.note(ctx, "could not ask the Argo CD ApplicationSet to refresh, so a new Application appears on its next run: "+err.Error())
 	}
-	ns := Namespace(app.Name)
+	ns := Namespace(j.d.Instance)
 	refreshed := map[string]time.Time{}
 	refresh := func(env string) {
 		name := ApplicationName(ns, env)
@@ -498,18 +546,19 @@ func (j *job) includes(ctx context.Context, rev, commit string) bool {
 
 // --- the gateway ---
 
-// register points the gateway at the app's public service in every
-// environment of the deployment, keeping the gateway's other environments,
-// write backend and read weights as they are.
+// register points the gateway app named after the instance at the public
+// service in every environment of the deployment, keeping the gateway's
+// other environments, write backend and read weights as they are.
 func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) error {
 	svc, ok := publicService(spec)
 	if !ok || j.e.cfg.Gateway == nil {
 		return nil
 	}
+	instance := j.d.Instance
 	urls := map[string]string{}
 	for i := range j.d.Environments {
 		e := &j.d.Environments[i]
-		u, err := j.backendURL(ctx, app.Name, e.Env, svc)
+		u, err := j.backendURL(ctx, app.Name, instance, e.Env, svc)
 		if err != nil {
 			return err
 		}
@@ -517,14 +566,14 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) er
 	}
 	var routed gateway.AppSpec
 	var unchanged bool
-	err := j.locked(ctx, app.Name, func() error {
+	err := j.locked(ctx, func() error {
 		list, err := j.e.cfg.Gateway.Apps(ctx)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrGateway, err)
 		}
 		var cur *gateway.AppInfo
 		for i := range list.Apps {
-			if list.Apps[i].Name == app.Name && !list.Apps[i].Default {
+			if list.Apps[i].Name == instance && !list.Apps[i].Default {
 				cur = &list.Apps[i]
 			}
 		}
@@ -536,7 +585,7 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) er
 			unchanged = true
 			return nil
 		}
-		err = j.e.cfg.Gateway.PutApp(ctx, app.Name, routed)
+		err = j.e.cfg.Gateway.PutApp(ctx, instance, routed)
 		var ae *gateway.APIError
 		if errors.As(err, &ae) && ae.Status == 409 {
 			return ErrWritesHeld
@@ -550,12 +599,12 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) er
 	case errors.Is(err, errStopped):
 		return err
 	case errors.Is(err, ErrWritesHeld):
-		return fmt.Errorf("the traffic gateway holds %s's writes (a migration is switching it), so its backends were not changed; deploy again once the migration is done", app.Name)
+		return fmt.Errorf("the traffic gateway holds %s's writes (a migration is switching it), so its backends were not changed; deploy again once the migration is done", instance)
 	case err != nil:
 		return fmt.Errorf("register with the traffic gateway: %w", err)
 	}
-	where := app.Name
-	if u := AppURL(j.e.cfg.AppDomain, app.Name); u != "" {
+	where := instance
+	if u := AppURL(j.e.cfg.AppDomain, instance); u != "" {
 		where = u
 	}
 	if unchanged {
@@ -568,15 +617,15 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) er
 
 // backendURL resolves an environment's URL, retrying until the sync
 // deadline: a load balancer can still be getting its address.
-func (j *job) backendURL(ctx context.Context, app, env string, svc appspec.Service) (string, error) {
+func (j *job) backendURL(ctx context.Context, app, instance, env string, svc appspec.Service) (string, error) {
 	deadline := j.e.now().Add(j.e.cfg.SyncTimeout)
 	for {
-		u, err := j.e.cfg.Backends.URL(ctx, app, env, svc)
+		u, err := j.e.cfg.Backends.URL(ctx, app, instance, env, svc)
 		if err == nil {
 			return u, nil
 		}
 		if !j.e.now().Before(deadline) {
-			return "", fmt.Errorf("find the address of %s in %s: %w", ServiceName(app, svc.Name), env, err)
+			return "", fmt.Errorf("find the address of %s/%s in %s: %w", Namespace(instance), ServiceName(app, svc.Name), env, err)
 		}
 		select {
 		case <-ctx.Done():

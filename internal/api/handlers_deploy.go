@@ -20,8 +20,9 @@ import (
 // (deploy.Executor.RemoveApp).
 type AppRemover interface {
 	// RemoveApp supersedes the app's unfinished deployments, commits the
-	// removal of apps/<name>/ from the gitops repository, removes the app
-	// from the traffic gateway and deletes it from the store.
+	// removal of apps/<name>/ and of every added branch's apps/<instance>/
+	// from the gitops repository, removes every instance from the traffic
+	// gateway and deletes the app from the store.
 	// store.ErrNotFound when it does not exist, deploy.ErrWritesHeld when the
 	// gateway holds its writes, deploy.ErrGitOps and deploy.ErrGateway when
 	// those could not be reached.
@@ -79,10 +80,20 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if req.Branch != nil && *req.Branch != app.Branch {
-		s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("app %s does not deploy branch %q (it deploys %s)", name, *req.Branch, app.Branch))
+	branch := app.Branch
+	if req.Branch != nil {
+		branch = *req.Branch
+	}
+	in, ok, err := s.instanceOf(r.Context(), app, branch)
+	switch {
+	case err != nil:
+		s.internal(w, r, err)
+		return
+	case !ok:
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("app %s does not deploy branch %q; add it with POST /v1/apps/%s/instances", name, branch, name))
 		return
 	}
+	noteAudit(r, "instance", in.Instance)
 	targets := app.Environments
 	if req.Environments != nil {
 		asked := *req.Environments
@@ -103,10 +114,10 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 		// In the app's order, whatever order they were asked in.
 		targets = slices.DeleteFunc(slices.Clone(app.Environments), func(e string) bool { return !slices.Contains(asked, e) })
 	}
-	ref := app.Branch
+	ref := branch
 	if req.Ref != nil {
 		if *req.Ref == "" {
-			s.fail(w, r, http.StatusBadRequest, "invalid_request", "ref must not be empty; leave it out to deploy the app's branch")
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", "ref must not be empty; leave it out to deploy the head of the branch")
 			return
 		}
 		ref = *req.Ref
@@ -130,26 +141,16 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteAudit(r, "commit", commit)
-	v, spec, err := deploy.CheckSpec(ctx, s.d.GitHub, app.Repo, commit)
-	if err != nil {
-		s.githubUnreachable(w, r, err)
-		return
-	}
-	if v.Valid && spec.Name != app.Name {
-		v.Valid = false
-		v.Errors = append(v.Errors, apiv1.AppSpecFieldError{Path: "name", Message: fmt.Sprintf("is %q, but the app is registered as %q; register the new name as a new app", spec.Name, app.Name)})
-	}
-	if !v.Valid {
-		s.appSpecInvalid(w, r, v)
+	if s.appSpecAt(ctx, w, r, app, commit) == nil {
 		return
 	}
 
 	to := app
 	to.Environments = targets
-	d := newDeployment(to, ref, commit, apiv1.DeploymentTriggerManual, actor(r), storeTime())
+	d := newDeployment(to, in, ref, commit, apiv1.DeploymentTriggerManual, actor(r), storeTime())
 	if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
 		switch {
-		case errors.Is(err, store.ErrInstanceNotFound): // the app's branch changed meanwhile
+		case errors.Is(err, store.ErrInstanceNotFound): // the app's branch changed or the instance was removed meanwhile
 			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("branch %s is not deployed by app %s", d.Branch, name))
 		case errors.Is(err, store.ErrNotFound):
 			s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
@@ -197,7 +198,7 @@ func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request) {
 	if branch := r.URL.Query().Get("branch"); branch == "" {
 		list, err = s.d.Store.ListDeployments(r.Context(), name, limit)
 	} else {
-		instance, ok, ierr := s.instanceOf(r.Context(), app, branch)
+		in, ok, ierr := s.instanceOf(r.Context(), app, branch)
 		switch {
 		case ierr != nil:
 			s.internal(w, r, ierr)
@@ -206,7 +207,7 @@ func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("branch %q is not deployed by app %s", branch, name))
 			return
 		}
-		list, err = s.d.Store.ListInstanceDeployments(r.Context(), instance, limit)
+		list, err = s.d.Store.ListInstanceDeployments(r.Context(), in.Instance, limit)
 	}
 	if err != nil {
 		s.internal(w, r, err)
@@ -218,23 +219,23 @@ func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// instanceOf returns the name of the instance that deploys branch of app,
-// and false when the app does not deploy the branch. The app's own branch is
-// the default instance, named after the app.
-func (s *Server) instanceOf(ctx context.Context, app store.App, branch string) (string, bool, error) {
+// instanceOf returns the instance that deploys branch of app, and false
+// when the app does not deploy the branch. The app's own branch is the
+// default instance (defaultInstance), named after the app.
+func (s *Server) instanceOf(ctx context.Context, app store.App, branch string) (store.AppBranch, bool, error) {
 	if branch == app.Branch {
-		return app.Name, true, nil
+		return defaultInstance(app), true, nil
 	}
 	branches, err := s.d.Store.ListAppBranches(ctx, app.Name)
 	if err != nil {
-		return "", false, err
+		return store.AppBranch{}, false, err
 	}
 	for _, b := range branches {
 		if b.Branch == branch {
-			return b.Instance, true, nil
+			return b, true, nil
 		}
 	}
-	return "", false, nil
+	return store.AppBranch{}, false, nil
 }
 
 // GET /v1/deployments/{id}
@@ -279,6 +280,53 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, deploy.ErrGateway):
 		s.cfg.Log.Warn("gateway", "err", err)
 		s.fail(w, r, http.StatusBadGateway, "gateway_unreachable", "could not remove the app from the traffic gateway; its gitops files are already removed, so try again")
+	default:
+		s.internal(w, r, err)
+	}
+}
+
+// DELETE /v1/apps/{name}/instances/{instance}
+func (s *Server) deleteAppInstance(w http.ResponseWriter, r *http.Request) {
+	name, instance := r.PathValue("name"), r.PathValue("instance")
+	noteAudit(r, "app", name)
+	noteAudit(r, "instance", instance)
+	app, ok := s.registeredApp(w, r, name)
+	if !ok {
+		return
+	}
+	if instance == app.Name {
+		s.fail(w, r, http.StatusConflict, "default_instance", fmt.Sprintf("%s is app %s's default instance; it is removed only with the app (DELETE /v1/apps/%s)", instance, name, name))
+		return
+	}
+	branches, err := s.d.Store.ListAppBranches(r.Context(), name)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	i := slices.IndexFunc(branches, func(b store.AppBranch) bool { return b.Instance == instance })
+	if i < 0 {
+		s.fail(w, r, http.StatusNotFound, "instance_not_found", fmt.Sprintf("app %s has no instance %s", name, instance))
+		return
+	}
+	branch := branches[i].Branch
+	noteAudit(r, "branch", branch)
+	if s.d.Remover == nil {
+		s.fail(w, r, http.StatusServiceUnavailable, "github_not_configured", "this server has no deployer (PLATFORM_DEPLOY_BUILDER), so it cannot remove the instance's files from the gitops repository")
+		return
+	}
+	err = s.d.Remover.RemoveInstance(context.WithoutCancel(r.Context()), app.Name, branch)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusAccepted)
+	case errors.Is(err, store.ErrNotFound):
+		s.fail(w, r, http.StatusNotFound, "instance_not_found", fmt.Sprintf("app %s has no instance %s", name, instance))
+	case errors.Is(err, deploy.ErrWritesHeld):
+		s.fail(w, r, http.StatusConflict, "cluster_busy", "the traffic gateway holds the instance's writes (a migration is switching it); delete the instance once the migration is done")
+	case errors.Is(err, deploy.ErrGitOps):
+		s.githubUnreachable(w, r, err)
+	case errors.Is(err, deploy.ErrGateway):
+		s.cfg.Log.Warn("gateway", "err", err)
+		s.fail(w, r, http.StatusBadGateway, "gateway_unreachable", "could not remove the instance from the traffic gateway; its gitops files are already removed, so try again")
 	default:
 		s.internal(w, r, err)
 	}

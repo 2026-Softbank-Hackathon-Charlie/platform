@@ -106,18 +106,47 @@ func TestGitCLIGitOps(t *testing.T) {
 		t.Fatalf("after retry: %q", got)
 	}
 
-	// Delete removes the app's directory only, once.
-	sha5, changed, err := g.Delete(ctx, "apps/shop", "delete app shop")
+	// Delete removes the directories it is given in one commit, once, and
+	// nothing next to them: apps/shop is not apps/shop--dev.
+	instances := map[string][]byte{"apps/shop--dev/gke.yaml": []byte("d\n"), "apps/shop--qa/gke.yaml": []byte("q\n")}
+	written, _, err := g.Write(ctx, instances, "deploy shop--dev and shop--qa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha5, changed, err := g.Delete(ctx, []string{"apps/shop", "apps/shop--qa"}, "delete app shop")
 	if err != nil || !changed {
 		t.Fatalf("delete: %v %v", changed, err)
 	}
-	if _, ok := show(sha5, "apps/shop/gke.yaml"); ok {
-		t.Fatal("apps/shop/gke.yaml is still there")
+	for _, p := range []string{"apps/shop/gke.yaml", "apps/shop--qa/gke.yaml"} {
+		if _, ok := show(sha5, p); ok {
+			t.Fatal(p + " is still there")
+		}
 	}
 	if _, ok := show(sha5, "apps/cart/gke.yaml"); !ok {
 		t.Fatal("delete removed another app")
 	}
-	if again, changed, err := g.Delete(ctx, "apps/shop", "delete app shop"); err != nil || changed || again != sha5 {
+	if _, ok := show(sha5, "apps/shop--dev/gke.yaml"); !ok {
+		t.Fatal("deleting apps/shop removed apps/shop--dev")
+	}
+	if parent := gitCmd(t, "", "--git-dir", bare, "rev-parse", sha5+"^"); parent != written {
+		t.Fatalf("the delete is not one commit on %s: its parent is %s", short(written), short(parent))
+	}
+	if again, changed, err := g.Delete(ctx, []string{"apps/shop", "apps/shop--qa"}, "delete app shop"); err != nil || changed || again != sha5 {
 		t.Fatalf("second delete: %q %v %v", again, changed, err)
 	}
+
+	// Nothing that is not one instance's directory, such as AppDir of an
+	// empty name, is deleted.
+	for _, dirs := range refusedDeletes {
+		if _, _, err := g.Delete(ctx, dirs, "delete everything"); err == nil {
+			t.Errorf("Delete(%q) succeeded", dirs)
+		}
+	}
+	if head := gitCmd(t, "", "--git-dir", bare, "rev-parse", "main"); head != sha5 {
+		t.Fatalf("a refused delete moved main from %s to %s", short(sha5), short(head))
+	}
 }
+
+// refusedDeletes are what GitOps.Delete refuses: no directory, the
+// repository's root and apps/ itself, however they are spelled.
+var refusedDeletes = [][]string{nil, {}, {""}, {"/"}, {"."}, {AppDir("")}, {"apps"}, {"apps/shop", "apps/x/.."}}

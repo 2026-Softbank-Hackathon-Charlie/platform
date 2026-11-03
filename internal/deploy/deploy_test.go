@@ -356,7 +356,7 @@ func TestDeployRecommitIsANoop(t *testing.T) {
 	spec, _ := appspec.Check([]byte(shopSpec))
 	images := imagesFor(got.Images, *spec)
 	files, _ := te.git.snapshot()
-	again, err := Render(File{App: "shop", Env: "gke", Commit: got.Commit, Deployment: got.ID, Spec: *spec, Images: images})
+	again, err := Render(File{App: "shop", Instance: "shop", Env: "gke", Commit: got.Commit, Deployment: got.ID, Spec: *spec, Images: images})
 	if err != nil || string(again) != string(files["apps/shop/gke.yaml"]) {
 		t.Fatalf("render differs (%v):\n%s\nvs\n%s", err, again, files["apps/shop/gke.yaml"])
 	}

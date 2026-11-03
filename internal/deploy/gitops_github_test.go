@@ -187,15 +187,34 @@ func TestGitHubGitOps(t *testing.T) {
 		}
 	}
 
-	sha3, changed, err := g.Delete(ctx, "apps/shop", "delete app shop")
+	// Delete removes every directory it is given in one commit, and nothing
+	// next to them: apps/shop is not apps/shop--dev.
+	instances := map[string][]byte{"apps/shop--dev/gke.yaml": []byte("d\n"), "apps/shop--qa/gke.yaml": []byte("q\n")}
+	if _, _, err := g.Write(ctx, instances, "deploy shop--dev and shop--qa"); err != nil {
+		t.Fatal(err)
+	}
+	sha3, changed, err := g.Delete(ctx, []string{"apps/shop", "apps/shop--qa"}, "delete app shop")
 	if err != nil || !changed {
 		t.Fatalf("delete: %v %v", changed, err)
 	}
-	if got := fake.files(sha3); got["apps/shop/gke.yaml"] != "" || got["apps/shop/eks.yaml"] != "" || got["apps/cart/gke.yaml"] == "" {
+	if got := fake.files(sha3); got["apps/shop/gke.yaml"] != "" || got["apps/shop/eks.yaml"] != "" || got["apps/shop--qa/gke.yaml"] != "" ||
+		got["apps/cart/gke.yaml"] == "" || got["apps/shop--dev/gke.yaml"] == "" {
 		t.Fatalf("files after delete %v", got)
 	}
-	if again, changed, err := g.Delete(ctx, "apps/shop", "again"); err != nil || changed || again != sha3 {
+	if again, changed, err := g.Delete(ctx, []string{"apps/shop", "apps/shop--qa"}, "again"); err != nil || changed || again != sha3 {
 		t.Fatalf("second delete: %q %v %v", again, changed, err)
+	}
+
+	// Nothing that is not one instance's directory, such as AppDir of an
+	// empty name, is deleted: the request fails before GitHub sees it.
+	patches := fake.patches
+	for _, dirs := range refusedDeletes {
+		if _, _, err := g.Delete(ctx, dirs, "delete everything"); err == nil {
+			t.Errorf("Delete(%q) succeeded", dirs)
+		}
+	}
+	if got := fake.files(fake.head); fake.head != sha3 || fake.patches != patches || got["apps/cart/gke.yaml"] == "" {
+		t.Fatalf("a refused delete changed the repository: head %s, files %v", short(fake.head), got)
 	}
 
 	bad := *g
