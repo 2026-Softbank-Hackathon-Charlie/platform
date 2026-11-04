@@ -1437,10 +1437,16 @@ type DeviceLogin struct {
 
 	// ReviewedBy The administrator who approved or denied it, once reviewed.
 	ReviewedBy *string           `json:"reviewedBy,omitempty"`
+	Role       *Role             `json:"role,omitempty"`
 	Status     DeviceLoginStatus `json:"status"`
 
 	// UserCode Example: BCDF-GHJK
 	UserCode string `json:"userCode"`
+}
+
+// DeviceLoginApproveRequest defines model for DeviceLoginApproveRequest.
+type DeviceLoginApproveRequest struct {
+	Role Role `json:"role"`
 }
 
 // DeviceLoginStart defines model for DeviceLoginStart.
@@ -2532,6 +2538,9 @@ type StartDeviceLoginJSONRequestBody = DeviceLoginStartRequest
 
 // PollDeviceLoginJSONRequestBody defines body for PollDeviceLogin for application/json ContentType.
 type PollDeviceLoginJSONRequestBody = DeviceTokenRequest
+
+// ApproveDeviceLoginJSONRequestBody defines body for ApproveDeviceLogin for application/json ContentType.
+type ApproveDeviceLoginJSONRequestBody = DeviceLoginApproveRequest
 
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest

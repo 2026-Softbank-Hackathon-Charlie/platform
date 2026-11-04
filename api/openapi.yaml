@@ -26,7 +26,9 @@ info:
       an administrator logged in to the console enters the code it shows,
       and the CLI exchanges the approved login for a token
       (`POST /v1/auth/device/token`). It carries the approver's name and
-      role, 30 days.
+      the role the approver picked when approving (operator, agent or
+      viewer), 30 days. Only a console session may approve, so a CLI token
+      can never mint another token.
     - A static token from `PLATFORM_TOKENS` for programs that cannot log
       in (the AI planner, the load generator, E2E tests). It never expires.
 
@@ -182,8 +184,8 @@ paths:
       operationId: pollDeviceLogin
       security: []
       description: |
-        Exchanges an approved device login for a CLI token with the name
-        and role of the administrator who approved it, valid for 30 days or
+        Exchanges an approved device login for a CLI token with the name of
+        the administrator who approved it and the role they picked, valid for 30 days or
         until POST /v1/auth/logout. One device login gives one token: the
         first successful answer ends it.
 
@@ -217,8 +219,9 @@ paths:
       operationId: getDeviceLogin
       description: |
         A device login that has not expired, so the console can show which
-        client asks before the administrator approves. Needs operator.
-        Error codes: device_login_not_found (404: unknown or expired).
+        client asks before the administrator approves. Needs operator and
+        a console session. Error codes: console_session_required (403),
+        device_login_not_found (404: unknown or expired).
       responses:
         "200":
           description: The device login.
@@ -238,15 +241,28 @@ paths:
       operationId: approveDeviceLogin
       description: |
         Approves a pending device login. The CLI's next poll gets a token
-        with the caller's name and role. Needs operator.
-        Error codes: device_login_not_found (404: unknown or expired),
-        device_login_state_conflict (409: already approved or denied).
+        with the caller's name and the `role` picked here; give a bot only
+        what it needs (viewer to read, agent to also submit plans, operator
+        to deploy and approve). Approving also gives the CLI 10 more minutes
+        from now to exchange it, so `expiresAt` may move later.
+        Needs operator and a console session (a password login): CLI tokens
+        and static tokens get 403 console_session_required.
+        Error codes: invalid_request (400: no or unknown role),
+        console_session_required (403), device_login_not_found (404: unknown
+        or expired), device_login_state_conflict (409: already approved or
+        denied).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceLoginApproveRequest" }
       responses:
         "200":
           description: The device login, now approved.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DeviceLogin" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -261,8 +277,9 @@ paths:
       operationId: denyDeviceLogin
       description: |
         Denies a pending device login. The CLI's next poll gets
-        access_denied. Needs operator.
-        Error codes: device_login_not_found (404: unknown or expired),
+        access_denied. Needs operator and a console session.
+        Error codes: console_session_required (403),
+        device_login_not_found (404: unknown or expired),
         device_login_state_conflict (409: already approved or denied).
       responses:
         "200":
@@ -1619,7 +1636,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: "forbidden: the token's role may not do this"
+      description: "forbidden: the token's role may not do this; console_session_required: only a console session may do this"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1759,6 +1776,13 @@ components:
         createdAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time }
         reviewedBy: { type: string, description: "The administrator who approved or denied it, once reviewed." }
+        role: { $ref: "#/components/schemas/Role", description: "The role the CLI token gets, once approved." }
+
+    DeviceLoginApproveRequest:
+      type: object
+      required: [role]
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
 
     # ---------- plans ----------
 
