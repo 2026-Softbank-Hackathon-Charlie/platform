@@ -32,6 +32,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
@@ -241,6 +242,19 @@ func main() {
 		log.Info("PLATFORM_CAPACITY_GATE is not on: migrations start without a capacity check")
 	default:
 		fatal("PLATFORM_CAPACITY_GATE must be on or off", "value", v)
+	}
+
+	// On unless turned off: refuse a run whose source and target clearly run
+	// different PostgreSQL major versions, which physical replication cannot
+	// cross. An unknown version never blocks.
+	switch v := os.Getenv("PLATFORM_VERSION_GATE"); v {
+	case "", "on":
+		planSvc.SetVersionGate(pgversion.Checker{})
+		log.Info("PostgreSQL major version gate enabled")
+	case "off":
+		log.Info("PLATFORM_VERSION_GATE is off: migrations start without a PostgreSQL major version check")
+	default:
+		fatal("PLATFORM_VERSION_GATE must be on or off", "value", v)
 	}
 
 	if n, err := planSvc.RecoverStarting(ctx); err != nil {

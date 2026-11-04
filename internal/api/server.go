@@ -489,6 +489,13 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 			noteAudit(r, "capacity", capacityNote(&short.Report))
 		}
 		s.fail(w, r, http.StatusConflict, "capacity_insufficient", err.Error())
+	case errors.Is(err, plans.ErrVersionMismatch):
+		// The result holds versions and an image name only.
+		var mm *plans.VersionMismatch
+		if errors.As(err, &mm) {
+			noteAudit(r, "pgVersion", mm.Result)
+		}
+		s.fail(w, r, http.StatusConflict, "version_mismatch", err.Error())
 	default:
 		s.internal(w, r, err)
 	}
@@ -501,6 +508,17 @@ func noteCapacity(r *http.Request, c plans.CapacityCheck) {
 		noteAudit(r, "capacity", capacityNote(c.Report))
 	case c.Outcome != "":
 		noteAudit(r, "capacity", map[string]any{"outcome": c.Outcome})
+	}
+}
+
+// noteVersion records what the PostgreSQL major version gate decided for a
+// started plan.
+func noteVersion(r *http.Request, c plans.VersionCheck) {
+	switch {
+	case c.Result != nil:
+		noteAudit(r, "pgVersion", *c.Result)
+	case c.Outcome != "":
+		noteAudit(r, "pgVersion", map[string]any{"status": c.Outcome})
 	}
 }
 

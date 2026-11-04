@@ -426,7 +426,13 @@ paths:
         in the message) and the plan stays approved. A plan's `files` copy is
         allowed only between buckets the policy registers, and only when the
         source bucket's classification allows the target bucket's country.
-        Rollback plans (`rollbackOf`) are exempt. When the server measures
+        Rollback plans (`rollbackOf`) are exempt. Unless the server turns the
+        check off, the source's and the target's PostgreSQL major versions are
+        compared (the target's from its database, or else from the manifest's
+        `spec.imageCatalogRef.major` or `spec.imageName` tag); different majors
+        are 409 `version_mismatch` (versions in the message), since physical
+        replication cannot cross them, and a version that cannot be read does
+        not block. When the server measures
         capacity, it reads the source and target for a few seconds first and
         answers 409 `capacity_insufficient` (measured numbers in the message)
         if the target accepts too few connections (fewer than the source's
@@ -1788,7 +1794,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
