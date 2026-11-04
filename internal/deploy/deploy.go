@@ -8,7 +8,10 @@
 //
 // and ends healthy, failed or superseded. Once every environment is healthy,
 // an instance with a public service is registered with the traffic gateway,
-// as soon as that service answers at its backend address in every one.
+// as soon as that service answers at its backend address in the
+// environments the gateway sends requests to. An environment already in the
+// gateway at the same address is not probed; any other one that has not
+// answered by then is left out of the gateway, with a message.
 //
 // Before committing, the executor seals what the instance gets for each
 // environment's cluster (ADR 0016, ADR 0019): the key of the instance's
@@ -122,10 +125,12 @@ type Config struct {
 	AppDomain string
 	// Workers is how many deployments run at once (default 2).
 	Workers int
-	// SyncTimeout bounds the wait for Argo CD, from the commit until every
-	// environment is healthy (default 10m).
+	// SyncTimeout bounds the wait from the commit until every environment
+	// is healthy and the public service answers at its backend addresses
+	// (default 10m).
 	SyncTimeout time.Duration
-	// PollInterval is how often Argo CD is read (default 5s).
+	// PollInterval is how often Argo CD is read and a backend that did not
+	// answer is probed again (default 5s).
 	PollInterval time.Duration
 	// RefreshInterval is how often a refresh is requested again for an
 	// Application that has not seen the commit yet (default 30s).

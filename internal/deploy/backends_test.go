@@ -10,12 +10,16 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 )
@@ -255,8 +259,13 @@ func TestProbeBackend(t *testing.T) {
 	}
 	addr := closed.Addr().String()
 	closed.Close()
-	if err := ProbeBackend(context.Background(), "http://"+addr, ""); err == nil || err.Error() == "" || strings.Contains(err.Error(), addr) {
+	err = ProbeBackend(context.Background(), "http://"+addr, "")
+	if err == nil || err.Error() == "" || strings.Contains(err.Error(), addr) {
 		t.Errorf("an address nothing listens on: %v, want a reason without the address", err)
+	}
+	// Windows says it in its own words (WSAECONNREFUSED).
+	if runtime.GOOS != "windows" && (err == nil || err.Error() != "connection refused") {
+		t.Errorf("an address nothing listens on: %v, want connection refused", err)
 	}
 
 	// Cancelled: no answer, even where a TCP connection would do.
@@ -292,7 +301,7 @@ func TestProbeReason(t *testing.T) {
 
 func TestDeployLeavesOutABackendWithoutTraffic(t *testing.T) {
 	te := newTestEnv(t)
-	te.cfg.SyncTimeout = 150 * time.Millisecond
+	te.cfg.SyncTimeout = time.Minute // not waited for: gke, which gets the requests, answers at once
 	var eksUp atomic.Bool
 	te.probe.answer = func(_ context.Context, u string, _ int) error {
 		if strings.Contains(u, ".eks.") && !eksUp.Load() {
@@ -305,19 +314,23 @@ func TestDeployLeavesOutABackendWithoutTraffic(t *testing.T) {
 
 	// eks never answers: gke is routed, eks is left out, and the deployment
 	// is healthy.
+	start := time.Now()
 	d := te.deployment("shop", sha("c1"), "gke", "eks")
 	te.enqueue(d.ID)
 	got := te.wait(d.ID)
 	if got.Status != store.DeployHealthy {
 		t.Fatalf("deployment %s %q\n%s", got.Status, got.Error, te.dump(d.ID))
 	}
-	if app, ok := te.gw.app("shop"); !ok || app.WriteBackend != "gke" || len(app.Backends) != 1 || app.Backends["gke"] == "" {
-		t.Errorf("gateway app %+v", app)
+	if took := time.Since(start); took > 20*time.Second {
+		t.Errorf("took %s: waited for eks, which gets no requests, until the deadline", took)
+	}
+	if app, ok := te.gw.app("shop"); !ok || app.WriteBackend != "gke" || len(app.Backends) != 1 || app.Backends["gke"] == "" || len(te.gw.puts) != 1 {
+		t.Errorf("gateway app %+v after %d puts", app, len(te.gw.puts))
 	}
 	for _, e := range got.Environments {
 		switch {
 		case e.Env == "gke" && (e.Status != EnvHealthy || e.URL == ""),
-			e.Env == "eks" && (e.Status != EnvHealthy || e.URL != "" || !strings.Contains(e.Message, "did not answer at http://shop-web.shop.eks.test:8080/healthz") || !strings.Contains(e.Message, "was not pointed at it")):
+			e.Env == "eks" && (e.Status != EnvHealthy || e.URL != "" || !strings.Contains(e.Message, "had not answered at http://shop-web.shop.eks.test:8080/healthz (connection refused)") || !strings.Contains(e.Message, "was not pointed at it")):
 			t.Errorf("environment %+v", e)
 		}
 	}
@@ -385,7 +398,7 @@ func TestWaitForBackendsStopsAtTheDeadline(t *testing.T) {
 	urls := map[string]string{"gke": "http://shop-web.shop.gke.test:8080"}
 	wait := func(ctx context.Context, deadline time.Time) (map[string]string, error) {
 		j := &job{e: ex, d: d, syncDeadline: deadline}
-		return j.waitForBackends(ctx, []string{"gke"}, urls, svc)
+		return j.waitForBackends(ctx, []string{"gke"}, []string{"gke"}, urls, svc)
 	}
 
 	// Syncing used up the deadline: probed once all the same.
@@ -408,5 +421,117 @@ func TestWaitForBackendsStopsAtTheDeadline(t *testing.T) {
 	start = time.Now()
 	if _, err := wait(ctx, start.Add(time.Hour)); !errors.Is(err, context.Canceled) || time.Since(start) > 5*time.Second {
 		t.Errorf("err %v after %s, want context.Canceled at once", err, time.Since(start))
+	}
+}
+
+func TestDeployFailsWhenAReadBackendDoesNotAnswer(t *testing.T) {
+	te := newTestEnv(t)
+	te.cfg.SyncTimeout = 150 * time.Millisecond
+	te.probe.answer = func(_ context.Context, u string, _ int) error {
+		if strings.Contains(u, ".eks.") {
+			return errors.New("connection refused")
+		}
+		return nil
+	}
+	te.register("shop", "gke", "eks")
+	// A migration sends half the reads to eks, whose Service has moved.
+	before := gateway.AppInfo{Name: "shop", Backends: map[string]string{"gke": "http://shop-web.shop.gke.test:8080", "eks": "http://old-eks"}, WriteBackend: "gke", ReadWeights: map[string]int{"gke": 50, "eks": 50}}
+	te.gw.apps["shop"] = before
+	te.start()
+	d := te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(d.ID)
+	got := te.wait(d.ID)
+	if got.Status != store.DeployFailed || !strings.Contains(got.Error, "in eks (connection refused), so the traffic gateway was not changed") {
+		t.Fatalf("deployment %s %q", got.Status, got.Error)
+	}
+	if calls := te.probe.called(); len(calls) < 1 || slices.ContainsFunc(calls, func(c probeCall) bool { return strings.Contains(c.url, ".gke.") }) {
+		t.Errorf("probes %+v, want eks only (gke is routed at the same URL)", calls)
+	}
+	if app, _ := te.gw.app("shop"); len(te.gw.puts) != 0 || app.Backends["eks"] != "http://old-eks" {
+		t.Errorf("gateway app %+v after %d puts", app, len(te.gw.puts))
+	}
+}
+
+func TestDeployKeepsTheOldRouteOfABackendWithoutTraffic(t *testing.T) {
+	te := newTestEnv(t)
+	te.probe.answer = func(_ context.Context, u string, _ int) error {
+		if strings.Contains(u, ".eks.") {
+			return errors.New("connection refused")
+		}
+		return nil
+	}
+	te.register("shop", "gke", "eks")
+	te.gw.apps["shop"] = gateway.AppInfo{Name: "shop", Backends: map[string]string{"gke": "http://shop-web.shop.gke.test:8080", "eks": "http://old-eks"}, WriteBackend: "gke"}
+	te.start()
+	d := te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(d.ID)
+	if got := te.wait(d.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("deployment %s %q", got.Status, got.Error)
+	}
+	if app, _ := te.gw.app("shop"); app.Backends["eks"] != "http://old-eks" || app.WriteBackend != "gke" {
+		t.Errorf("gateway app %+v, want eks's old route kept", app)
+	}
+}
+
+func TestDeployProbesTheEnvironmentsAtOnce(t *testing.T) {
+	te := newTestEnv(t)
+	var arrived sync.WaitGroup
+	arrived.Add(2)
+	both := make(chan struct{})
+	go func() { arrived.Wait(); close(both) }()
+	te.probe.answer = func(_ context.Context, _ string, n int) error {
+		if n > 2 {
+			return nil
+		}
+		arrived.Done()
+		select {
+		case <-both:
+			return nil
+		case <-time.After(2 * time.Second):
+			return errors.New("probed one at a time")
+		}
+	}
+	te.register("shop", "gke", "eks")
+	te.start()
+	d := te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(d.ID)
+	if got := te.wait(d.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("deployment %s %q", got.Status, got.Error)
+	}
+	if n := countEvents(te.events(d.ID), EventLog, "waiting for the"); n != 0 || len(te.probe.called()) != 2 {
+		t.Errorf("%d waiting lines, %d probes, want both probed at once:\n%s", n, len(te.probe.called()), te.dump(d.ID))
+	}
+}
+
+func TestDeployWritesHeldFailsBeforeProbing(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke")
+	te.gw.apps["shop"] = gateway.AppInfo{Name: "shop", Backends: map[string]string{"gke": "http://old"}, WriteBackend: "gke", WritesHeld: true}
+	te.start()
+	d := te.deployment("shop", sha("c1"), "gke")
+	te.enqueue(d.ID)
+	if got := te.wait(d.ID); got.Status != store.DeployFailed || !strings.Contains(got.Error, "holds shop's writes") {
+		t.Fatalf("deployment %s %q", got.Status, got.Error)
+	}
+	if n := len(te.probe.called()); n != 0 {
+		t.Errorf("probes %d, want none while writes are held", n)
+	}
+}
+
+func TestReceivers(t *testing.T) {
+	for _, tc := range []struct {
+		spec gateway.AppSpec
+		want []string
+	}{
+		{gateway.AppSpec{WriteBackend: "gke"}, []string{"gke"}},
+		{gateway.AppSpec{WriteBackend: "gke", ReadWeights: map[string]int{"gke": 100, "eks": 0}}, []string{"gke"}},
+		{gateway.AppSpec{WriteBackend: "gke", ReadWeights: map[string]int{"gke": 0, "eks": 100}}, []string{"eks", "gke"}},
+		{gateway.AppSpec{WriteBackend: "gke", ReadWeights: map[string]int{"eks": 30, "onprem": 70}}, []string{"eks", "gke", "onprem"}},
+	} {
+		got := receivers(tc.spec)
+		slices.Sort(got)
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("receivers(%+v) = %v, want %v", tc.spec, got, tc.want)
+		}
 	}
 }

@@ -588,10 +588,10 @@ func (j *job) includes(ctx context.Context, rev, commit string) bool {
 // service in the environments of the deployment, keeping the gateway's
 // other environments, write backend and read weights as they are. A backend
 // is added or changed only once the service answers there; one the gateway
-// already has is not probed again. An environment that never answers is
-// left out (a route it had stays) and returned, unless it is one the gateway
-// sends requests to: then the deployment fails and the gateway is not
-// changed.
+// already has is not probed again. If an environment the gateway sends
+// requests to does not answer in time, the deployment fails and the gateway
+// is not changed. Any other environment that has not answered by then is
+// left out (a route it had stays) and returned.
 func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([]string, error) {
 	svc, ok := publicService(spec)
 	if !ok || j.e.cfg.Gateway == nil {
@@ -610,17 +610,20 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([
 	if err != nil {
 		return nil, fmt.Errorf("register with the traffic gateway: %w", err)
 	}
+	if cur != nil && cur.WritesHeld {
+		return nil, writesHeld(instance)
+	}
+	traffic := receivers(gatewaySpec(cur, app.Environments, urls))
 	var probe []string
 	for _, e := range j.d.Environments {
 		if cur == nil || cur.Backends[e.Env] != urls[e.Env] {
 			probe = append(probe, e.Env)
 		}
 	}
-	silent, err := j.waitForBackends(ctx, probe, urls, svc)
+	silent, err := j.waitForBackends(ctx, probe, traffic, urls, svc)
 	if err != nil {
 		return nil, err
 	}
-	traffic := receivers(gatewaySpec(cur, app.Environments, urls))
 	var dead, left []string
 	var changed []string
 	for i := range j.d.Environments {
@@ -630,6 +633,7 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([
 			e.URL = urls[e.Env]
 			continue
 		}
+		e.URL = ""
 		where := fmt.Sprintf("at %s in %s (%s)", urls[e.Env]+svc.HealthCheck, e.Env, reason)
 		if contains(traffic, e.Env) {
 			dead = append(dead, where)
@@ -637,7 +641,7 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([
 			e.Message = fmt.Sprintf("the public service %s did not answer at %s within %s of the commit: %s", svc.Name, urls[e.Env]+svc.HealthCheck, j.e.cfg.SyncTimeout, reason)
 		} else {
 			left = append(left, e.Env)
-			e.Message = fmt.Sprintf("the public service %s did not answer at %s within %s of the commit (%s), so the traffic gateway was not pointed at it", svc.Name, urls[e.Env]+svc.HealthCheck, j.e.cfg.SyncTimeout, reason)
+			e.Message = fmt.Sprintf("the public service %s had not answered at %s (%s) when the environments that get requests had, so the traffic gateway was not pointed at it; the next deployment probes it again", svc.Name, urls[e.Env]+svc.HealthCheck, reason)
 		}
 		changed = append(changed, e.Env)
 	}
@@ -669,6 +673,12 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([
 		if len(routed.Backends) == 0 {
 			return fmt.Errorf("no environment of %s answered", instance)
 		}
+		// A migration may have moved requests while the backends were probed.
+		for _, env := range receivers(routed) {
+			if _, ok := silent[env]; ok {
+				return fmt.Errorf("it now sends requests to %s, where the public service did not answer, so it was not changed", env)
+			}
+		}
 		if cur != nil && maps.Equal(cur.Backends, routed.Backends) && cur.WriteBackend == routed.WriteBackend && sameWeights(cur.ReadWeights, routed.ReadWeights) {
 			unchanged = true
 			return nil
@@ -687,7 +697,7 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([
 	case errors.Is(err, errStopped):
 		return nil, err
 	case errors.Is(err, ErrWritesHeld):
-		return nil, fmt.Errorf("the traffic gateway holds %s's writes (a migration is switching it), so its backends were not changed; deploy again once the migration is done", instance)
+		return nil, writesHeld(instance)
 	case err != nil:
 		return nil, fmt.Errorf("register with the traffic gateway: %w", err)
 	}
@@ -704,6 +714,10 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([
 		j.note(ctx, "left out of the traffic gateway, as the public service did not answer there: "+strings.Join(left, ", "))
 	}
 	return left, nil
+}
+
+func writesHeld(instance string) error {
+	return fmt.Errorf("the traffic gateway holds %s's writes (a migration is switching it), so its backends were not changed; deploy again once the migration is done", instance)
 }
 
 // gatewayApp returns the gateway's app named after the instance, or nil
@@ -756,17 +770,21 @@ func (j *job) backendURL(ctx context.Context, app, instance, env string, svc app
 
 // waitForBackends probes the public service at the backend URLs of envs,
 // all at once, every PollInterval until each answers or the sync deadline
-// set at the commit passes (each is probed at least once, and the last
-// round can end up to one probe after the deadline). Argo CD reports a
-// LoadBalancer Service healthy once it has an address, but AWS can take
-// minutes more to provision the load balancer behind it, and the gateway
-// answers 502 until it does. It returns why each environment that never
-// answered did not. A reason is logged the first time an environment gives
-// it, and a line once an environment answers after waiting.
-func (j *job) waitForBackends(ctx context.Context, envs []string, urls map[string]string, svc appspec.Service) (map[string]string, error) {
+// set at the commit passes. Argo CD reports a LoadBalancer Service healthy
+// once it has an address, but AWS can take minutes more to provision the
+// load balancer behind it, and the gateway answers 502 until it does. The
+// environments of need (those that get requests) are waited for until the
+// deadline; once none of them is left, the others get two more
+// PollIntervals at most. Each is probed at least once, and the last round
+// can end up to one probe after the deadline. It returns why each
+// environment that had not answered did not. A reason is logged the first
+// time an environment gives it, and a line once an environment answers
+// after waiting.
+func (j *job) waitForBackends(ctx context.Context, envs, need []string, urls map[string]string, svc appspec.Service) (map[string]string, error) {
 	start := j.e.now()
+	stop := j.syncDeadline
 	last := map[string]string{}
-	seen := map[string]bool{} // env + "\x00" + reason
+	seen := map[[2]string]bool{} // env, reason
 	for len(envs) > 0 {
 		errs := make([]error, len(envs))
 		var wg sync.WaitGroup
@@ -778,6 +796,7 @@ func (j *job) waitForBackends(ctx context.Context, envs []string, urls map[strin
 			return nil, ctx.Err()
 		}
 		var waiting []string
+		needed := false
 		for i, env := range envs {
 			target := urls[env] + svc.HealthCheck
 			if errs[i] == nil {
@@ -789,14 +808,18 @@ func (j *job) waitForBackends(ctx context.Context, envs []string, urls map[strin
 			}
 			reason := errs[i].Error()
 			last[env] = reason
-			if !seen[env+"\x00"+reason] {
-				seen[env+"\x00"+reason] = true
+			if !seen[[2]string{env, reason}] {
+				seen[[2]string{env, reason}] = true
 				j.note(ctx, "waiting for the "+env+" backend "+target+" to answer: "+reason)
 			}
 			waiting = append(waiting, env)
+			needed = needed || contains(need, env)
 		}
 		envs = waiting
-		left := j.syncDeadline.Sub(j.e.now())
+		if grace := j.e.now().Add(2 * j.e.cfg.PollInterval); !needed && grace.Before(stop) {
+			stop = grace
+		}
+		left := stop.Sub(j.e.now())
 		if len(envs) == 0 || left <= 0 {
 			break
 		}

@@ -886,7 +886,8 @@ type AppEnvironmentStatus struct {
 	// syncing: apps/<instance>/<env>.yaml is committed and Argo CD is applying it.
 	// healthy: Argo CD reports Synced and Healthy for the commit.
 	// degraded: synced, but Argo CD reports the Application <instance>-<env> Degraded.
-	// failed: the sync failed, or the environment did not become healthy in time.
+	// failed: the sync failed, or the environment did not become healthy in time, or (Synced and Healthy)
+	//   the public service did not answer there in time though the traffic gateway sends it requests.
 	Status DeploymentEnvironmentStatus `json:"status"`
 
 	// SyncStatus Argo CD sync status: Synced, OutOfSync or Unknown
@@ -1439,7 +1440,8 @@ type DeploymentEnvironment struct {
 	// syncing: apps/<instance>/<env>.yaml is committed and Argo CD is applying it.
 	// healthy: Argo CD reports Synced and Healthy for the commit.
 	// degraded: synced, but Argo CD reports the Application <instance>-<env> Degraded.
-	// failed: the sync failed, or the environment did not become healthy in time.
+	// failed: the sync failed, or the environment did not become healthy in time, or (Synced and Healthy)
+	//   the public service did not answer there in time though the traffic gateway sends it requests.
 	Status DeploymentEnvironmentStatus `json:"status"`
 
 	// SyncStatus Argo CD sync status of the Application <instance>-<env>
@@ -1455,7 +1457,9 @@ type DeploymentEnvironment struct {
 // syncing: apps/<instance>/<env>.yaml is committed and Argo CD is applying it.
 // healthy: Argo CD reports Synced and Healthy for the commit.
 // degraded: synced, but Argo CD reports the Application <instance>-<env> Degraded.
-// failed: the sync failed, or the environment did not become healthy in time.
+// failed: the sync failed, or the environment did not become healthy in time, or (Synced and Healthy)
+//
+//	the public service did not answer there in time though the traffic gateway sends it requests.
 type DeploymentEnvironmentStatus string
 
 // DeploymentEvent One step of a deployment.

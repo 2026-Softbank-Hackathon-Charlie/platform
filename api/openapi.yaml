@@ -3242,7 +3242,8 @@ components:
         syncing: apps/<instance>/<env>.yaml is committed and Argo CD is applying it.
         healthy: Argo CD reports Synced and Healthy for the commit.
         degraded: synced, but Argo CD reports the Application <instance>-<env> Degraded.
-        failed: the sync failed, or the environment did not become healthy in time.
+        failed: the sync failed, or the environment did not become healthy in time, or (Synced and Healthy)
+          the public service did not answer there in time though the traffic gateway sends it requests.
       enum: [pending, syncing, healthy, degraded, failed]
 
     Deployment:
