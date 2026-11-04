@@ -26,7 +26,7 @@ test/e2e/deploy/down.sh                 # 남긴 것을 지운다
 | 게이트웨이 | `18300`, 관리 `19903` | `-app-domain e2e.test`. `Host: <instance>.e2e.test`를 인스턴스의 Service로 보냄 |
 | 플랫폼 저장소 컨테이너 `hop-deploy-store` | `55852` | 플랫폼 DB |
 | `fakegithub` | `18392` | 플랫폼의 GitHub App 클라이언트가 부르는 API(설치 토큰, ref, 파일, 저장소 목록)를 `.hopcharlie/e2e-deploy/github/<owner>/<name>`의 git 체크아웃으로 답함 |
-| 플랫폼 API | `18380` | `-tags minio`로 빌드. `PLATFORM_DEPLOY_BUILDER=docker`, `PLATFORM_GITOPS_MODE=git`, `PLATFORM_ARGOCD_KUBECONTEXT=kind-hop-deploy`, `PLATFORM_APP_BACKEND_TEMPLATE=http://{app}-{service}.{instance}.svc.cluster.local:{port}`, `PLATFORM_SECRETS_KEY`. clone은 `PLATFORM_DOCKER_CLONE_URL`로 같은 체크아웃에서. `envs.yaml`의 환경 `kind`에 컨트롤러 인증서와 `minio` 드라이버(접두사 `e2e-`, MinIO root 키)가 있고, 드라이버는 `HTTP_PROXY`로 프록시를 거쳐 MinIO를 클러스터 안 이름으로 부름 |
+| 플랫폼 API | `18380` | `-tags minio`로 빌드. `PLATFORM_DEPLOY_BUILDER=docker`, `PLATFORM_GITOPS_MODE=git`, `PLATFORM_ARGOCD_KUBECONTEXT=kind-hop-deploy`, `PLATFORM_APP_BACKEND_TEMPLATE=http://{app}-{service}.{instance}.svc.cluster.local:{port}`, `PLATFORM_SECRETS_KEY`. clone은 `PLATFORM_DOCKER_CLONE_URL`로 같은 체크아웃에서. `envs.yaml`의 환경 `kind`에 컨트롤러 인증서와 `minio` 드라이버(접두사 `e2e-`, MinIO root 키)가 있고, 드라이버는 `HTTP_PROXY`로 프록시를 거쳐 MinIO를 클러스터 안 이름으로 부름. 게이트웨이에 등록하기 전에 공개 서비스의 `healthCheck`를 부르는 것도 같은 프록시를 거쳐 게이트웨이와 같은 주소로 감 |
 | `probe`, `driver` | 호스트 | `probe`는 게이트웨이로 50ms마다 요청하고 실패 수와 받은 버전을 센다. `driver`는 `pkg/client`로 앱을 등록하고, 서명한 push webhook을 보내고, 배포 SSE를 따라가고, 인스턴스를 더하고 지우고, 앱을 지운다 |
 
 테스트 앱 `demo/`는 그 자체로 앱 저장소다(`platform.yaml`, `Dockerfile`, Go 모듈 하나). `/`는 `version.txt`와 `DEMO_MESSAGE`를 답한다. `/healthz`는 200을 답하고, `DEMO_HEALTHY=false`이면 500을 답한다.

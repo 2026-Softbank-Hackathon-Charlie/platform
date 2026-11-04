@@ -346,6 +346,35 @@ func (f *fakeGateway) app(name string) (gateway.AppInfo, bool) {
 	return a, ok
 }
 
+// --- backend probe ---
+
+type probeCall struct{ url, healthCheck string }
+
+// fakeProbe answers at once unless answer says otherwise.
+type fakeProbe struct {
+	mu    sync.Mutex
+	calls []probeCall
+	// answer, when set, decides the n-th call (from 1), to backend URL u.
+	answer func(ctx context.Context, u string, n int) error
+}
+
+func (f *fakeProbe) probe(ctx context.Context, u, healthCheck string) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, probeCall{u, healthCheck})
+	n, answer := len(f.calls), f.answer
+	f.mu.Unlock()
+	if answer == nil {
+		return nil
+	}
+	return answer(ctx, u, n)
+}
+
+func (f *fakeProbe) called() []probeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
+}
+
 // --- harness ---
 
 const shopSpec = `name: shop
@@ -373,6 +402,7 @@ type testEnv struct {
 	git     *fakeGitOps
 	argo    *fakeArgo
 	gw      *fakeGateway
+	probe   *fakeProbe
 	cfg     Config
 	ex      *Executor
 	n       int
@@ -380,11 +410,11 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	te := &testEnv{t: t, store: storetest.NewMemory(), github: newFakeGitHub(), builder: newFakeBuilder(), git: newFakeGitOps(), gw: newFakeGateway()}
+	te := &testEnv{t: t, store: storetest.NewMemory(), github: newFakeGitHub(), builder: newFakeBuilder(), git: newFakeGitOps(), gw: newFakeGateway(), probe: &fakeProbe{}}
 	te.argo = newFakeArgo(te.git)
 	te.cfg = Config{
 		Store: te.store, GitHub: te.github, Builder: te.builder, GitOps: te.git, Argo: te.argo,
-		Gateway: te.gw, Backends: TemplateBackends{Template: "http://{app}-{service}.{instance}.{env}.test:{port}"},
+		Gateway: te.gw, Backends: TemplateBackends{Template: "http://{app}-{service}.{instance}.{env}.test:{port}"}, Probe: te.probe.probe,
 		AppDomain: "hopcharlie.test", Workers: 2,
 		SyncTimeout: 3 * time.Second, PollInterval: 5 * time.Millisecond, RefreshInterval: 20 * time.Millisecond,
 	}
