@@ -17,9 +17,11 @@ import (
 
 // Lifetimes and limits of administrator login (ADR 0018).
 const (
-	consoleSessionTTL      = 12 * time.Hour
-	cliTokenTTL            = 30 * 24 * time.Hour
-	deviceLoginTTL         = 10 * time.Minute
+	consoleSessionTTL = 12 * time.Hour
+	cliTokenTTL       = 30 * 24 * time.Hour
+	deviceLoginTTL    = 10 * time.Minute
+	// After an approval the CLI has at least this long to exchange it.
+	approvalExchangeWindow = 10 * time.Minute
 	devicePollInterval     = 5 // seconds between polls of POST /v1/auth/device/token
 	maxPendingDeviceLogins = 50
 	deviceLoginRetryAfter  = 60 // seconds, once maxPendingDeviceLogins are pending
@@ -161,7 +163,8 @@ func (s *Server) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 
 // POST /v1/auth/device/token. The route takes no token, so the exchange
 // that hands out a CLI token is audited here, as the administrator who
-// approved it. Polls that get no token are not audited.
+// approved it with the role they picked. Polls that get no token are not
+// audited.
 func (s *Server) pollDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	var req apiv1.DeviceTokenRequest
 	if !s.decode(w, r, &req, true) {
@@ -200,6 +203,9 @@ func (s *Server) pollDeviceLogin(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/auth/device/{userCode}
 func (s *Server) getDeviceLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.consoleSession(w, r) {
+		return
+	}
 	code, ok := s.userCode(w, r)
 	if !ok {
 		return
@@ -215,26 +221,61 @@ func (s *Server) getDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// POST /v1/auth/device/{userCode}/approve
+// POST /v1/auth/device/{userCode}/approve. The CLI token gets the caller's
+// name and the role in the body, which the approver picks for what the
+// client needs. Approving gives the CLI at least approvalExchangeWindow from
+// now to exchange it, so one that polls late (a bot re-running its login in
+// a new run) still gets the token.
 func (s *Server) approveDeviceLogin(w http.ResponseWriter, r *http.Request) {
-	s.reviewDeviceLogin(w, r, store.DeviceLoginApproved)
+	if !s.consoleSession(w, r) {
+		return
+	}
+	var req apiv1.DeviceLoginApproveRequest
+	if !s.decode(w, r, &req, true) {
+		return
+	}
+	if !req.Role.Valid() {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "role must be viewer, agent or operator")
+		return
+	}
+	noteAudit(r, "tokenRole", req.Role)
+	now := s.now()
+	s.reviewDeviceLogin(w, r, store.DeviceLoginReview{Status: store.DeviceLoginApproved, TokenRole: string(req.Role),
+		At: now, KeepUntil: now.Add(approvalExchangeWindow)})
 }
 
 // POST /v1/auth/device/{userCode}/deny
 func (s *Server) denyDeviceLogin(w http.ResponseWriter, r *http.Request) {
-	s.reviewDeviceLogin(w, r, store.DeviceLoginDenied)
+	if !s.consoleSession(w, r) {
+		return
+	}
+	s.reviewDeviceLogin(w, r, store.DeviceLoginReview{Status: store.DeviceLoginDenied, At: s.now()})
 }
 
-// reviewDeviceLogin approves or denies a pending device login as the caller;
-// the CLI token of an approved one gets the caller's name and role.
-func (s *Server) reviewDeviceLogin(w http.ResponseWriter, r *http.Request, status string) {
+// consoleSession answers 403 console_session_required unless the caller
+// logged in to the console with a password. Static tokens and CLI tokens
+// may not review device logins, whatever their role: a bot holding an
+// operator CLI token could otherwise approve its own next login and keep
+// minting fresh tokens, and approval is meant for a person.
+func (s *Server) consoleSession(w http.ResponseWriter, r *http.Request) bool {
+	if p, _ := auth.FromContext(r.Context()); p.Kind != auth.KindConsole {
+		s.fail(w, r, http.StatusForbidden, "console_session_required",
+			"only a console session (an administrator's password login) may review device logins")
+		return false
+	}
+	return true
+}
+
+// reviewDeviceLogin applies rev to a pending device login as the caller.
+func (s *Server) reviewDeviceLogin(w http.ResponseWriter, r *http.Request, rev store.DeviceLoginReview) {
 	code, ok := s.userCode(w, r)
 	if !ok {
 		return
 	}
 	noteAudit(r, "userCode", auth.FormatUserCode(code))
 	p, _ := auth.FromContext(r.Context())
-	d, err := s.d.Store.ReviewDeviceLogin(r.Context(), code, status, p.Name, string(p.Role), s.now())
+	rev.By = p.Name
+	d, err := s.d.Store.ReviewDeviceLogin(r.Context(), code, rev)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		s.deviceLoginNotFound(w, r)
@@ -273,6 +314,10 @@ func deviceLoginJSON(d store.DeviceLogin) apiv1.DeviceLogin {
 	}
 	if d.ReviewedBy != "" {
 		out.ReviewedBy = &d.ReviewedBy
+	}
+	if d.TokenRole != "" {
+		role := apiv1.Role(d.TokenRole)
+		out.Role = &role
 	}
 	return out
 }

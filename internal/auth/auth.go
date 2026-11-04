@@ -22,7 +22,20 @@ import (
 type Principal struct {
 	Name string
 	Role apiv1.Role
+	// Kind is how the caller authenticated: KindToken, KindConsole or
+	// KindCLI. Empty for a principal that is not a caller (e.g. an audit
+	// entry's actor written by a handler).
+	Kind string
+	// Client is what the CLI said it is when it logged in; set for KindCLI.
+	Client string
 }
+
+// Principal kinds.
+const (
+	KindToken   = "token"   // a static token from PLATFORM_TOKENS
+	KindConsole = "console" // a console session: an administrator's password login
+	KindCLI     = "cli"     // a CLI token from a device login an administrator approved
+)
 
 var rank = map[apiv1.Role]int{apiv1.RoleViewer: 1, apiv1.RoleAgent: 2, apiv1.RoleOperator: 3}
 

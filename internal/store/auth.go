@@ -46,11 +46,25 @@ type DeviceLogin struct {
 	Status         string
 	CreatedAt      time.Time
 	ExpiresAt      time.Time
-	// The review: who approved or denied it, with which role (the CLI token
-	// gets it), and when. Empty and nil until reviewed.
-	ReviewedBy   string
-	ReviewedRole string
-	ReviewedAt   *time.Time
+	// The review: who approved or denied it, and when. Empty and nil until
+	// reviewed.
+	ReviewedBy string
+	ReviewedAt *time.Time
+	// TokenRole is the role the approver picked for the CLI token (apiv1.Role);
+	// empty unless approved.
+	TokenRole string
+}
+
+// DeviceLoginReview is an administrator's decision on a pending device login.
+type DeviceLoginReview struct {
+	Status    string // DeviceLoginApproved or DeviceLoginDenied
+	By        string // the reviewer, as in the audit log
+	TokenRole string // the CLI token's role when approved; empty when denied
+	At        time.Time
+	// KeepUntil moves ExpiresAt to it when it is later, so a CLI that polls
+	// a little late can still exchange an approval. The zero time keeps
+	// ExpiresAt.
+	KeepUntil time.Time
 }
 
 // Clean returns s with every string passed through CleanText. Stores apply
@@ -65,7 +79,7 @@ func (s Session) Clean() Session {
 // Clean returns d with every string passed through CleanText. Stores apply
 // it on every write.
 func (d DeviceLogin) Clean() DeviceLogin {
-	for _, f := range []*string{&d.UserCode, &d.Client, &d.Status, &d.ReviewedBy, &d.ReviewedRole} {
+	for _, f := range []*string{&d.UserCode, &d.Client, &d.Status, &d.ReviewedBy, &d.TokenRole} {
 		*f = CleanText(*f)
 	}
 	return d
@@ -96,18 +110,19 @@ type AuthStore interface {
 	// GetDeviceLogin returns the device login with userCode whose ExpiresAt
 	// is after now. ErrNotFound when there is none.
 	GetDeviceLogin(ctx context.Context, userCode string, now time.Time) (DeviceLogin, error)
-	// ReviewDeviceLogin sets a pending device login whose ExpiresAt is after
-	// at to status (approved or denied), with by, role and at as its review,
-	// in one conditional write, and returns it. ErrNotFound when there is
-	// none; ErrConflict (wrapped, with the current status) when it is not
-	// pending.
-	ReviewDeviceLogin(ctx context.Context, userCode, status, by, role string, at time.Time) (DeviceLogin, error)
+	// ReviewDeviceLogin applies r to the pending device login with userCode
+	// whose ExpiresAt is after r.At, in one conditional write: it sets
+	// Status, ReviewedBy, ReviewedAt and TokenRole, and moves ExpiresAt to
+	// r.KeepUntil if that is later. It returns the updated device login.
+	// ErrNotFound when there is none; ErrConflict (wrapped, with the current
+	// status) when it is not pending.
+	ReviewDeviceLogin(ctx context.Context, userCode string, r DeviceLoginReview) (DeviceLogin, error)
 	// ExchangeDeviceLogin settles the device login with deviceCodeHash whose
 	// ExpiresAt is after now and returns it as it was:
 	//   - pending: it stays as it is.
 	//   - denied: it is removed.
 	//   - approved: it is removed, and in the same transaction s is inserted
-	//     with Name and Role from the review (ReviewedBy, ReviewedRole) and
+	//     with Name from the review (ReviewedBy), Role from TokenRole and
 	//     Client from the device login; the stored session is returned too.
 	// ErrNotFound when there is none (unknown, expired or already settled);
 	// ErrConflict, with nothing changed, if s.TokenHash exists. Of concurrent

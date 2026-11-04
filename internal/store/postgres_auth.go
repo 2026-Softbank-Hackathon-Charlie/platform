@@ -58,12 +58,12 @@ func (s *Postgres) DeleteSession(ctx context.Context, tokenHash []byte) error {
 }
 
 const deviceLoginColumns = `device_code_hash, user_code, client, status, created_at, expires_at,
-	reviewed_by, reviewed_role, reviewed_at`
+	reviewed_by, reviewed_at, token_role`
 
 func scanDeviceLogin(row pgx.Row) (DeviceLogin, error) {
 	var d DeviceLogin
 	err := row.Scan(&d.DeviceCodeHash, &d.UserCode, &d.Client, &d.Status, &d.CreatedAt, &d.ExpiresAt,
-		&d.ReviewedBy, &d.ReviewedRole, &d.ReviewedAt)
+		&d.ReviewedBy, &d.ReviewedAt, &d.TokenRole)
 	if err != nil {
 		return DeviceLogin{}, err
 	}
@@ -98,7 +98,7 @@ func (s *Postgres) CreateDeviceLogin(ctx context.Context, d DeviceLogin, maxPend
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO device_logins (`+deviceLoginColumns+`)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		d.DeviceCodeHash, d.UserCode, d.Client, d.Status, d.CreatedAt, d.ExpiresAt, d.ReviewedBy, d.ReviewedRole, d.ReviewedAt)
+		d.DeviceCodeHash, d.UserCode, d.Client, d.Status, d.CreatedAt, d.ExpiresAt, d.ReviewedBy, d.ReviewedAt, d.TokenRole)
 	if isUniqueViolation(err) {
 		return fmt.Errorf("%w: device login exists", ErrConflict)
 	}
@@ -120,16 +120,18 @@ func (s *Postgres) GetDeviceLogin(ctx context.Context, userCode string, now time
 	return d, err
 }
 
-func (s *Postgres) ReviewDeviceLogin(ctx context.Context, userCode, status, by, role string, at time.Time) (DeviceLogin, error) {
+func (s *Postgres) ReviewDeviceLogin(ctx context.Context, userCode string, r DeviceLoginReview) (DeviceLogin, error) {
 	if !Clean(userCode) {
 		return DeviceLogin{}, fmt.Errorf("%w: device login", ErrNotFound)
 	}
-	status, by, role = CleanText(status), CleanText(by), CleanText(role)
+	at := r.At
 	// One conditional UPDATE: of concurrent reviews only one finds it pending.
 	d, err := scanDeviceLogin(s.pool.QueryRow(ctx, `UPDATE device_logins SET
-			status = $2, reviewed_by = $3, reviewed_role = $4, reviewed_at = $5
-		WHERE user_code = $1 AND expires_at > $5 AND status = $6
-		RETURNING `+deviceLoginColumns, userCode, status, by, role, at, DeviceLoginPending))
+			status = $2, reviewed_by = $3, token_role = $4, reviewed_at = $5,
+			expires_at = GREATEST(expires_at, $6)
+		WHERE user_code = $1 AND expires_at > $5 AND status = $7
+		RETURNING `+deviceLoginColumns,
+		userCode, CleanText(r.Status), CleanText(r.By), CleanText(r.TokenRole), at, r.KeepUntil, DeviceLoginPending))
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return d, err
 	}
@@ -175,7 +177,7 @@ func (s *Postgres) ExchangeDeviceLogin(ctx context.Context, deviceCodeHash []byt
 	}
 	var out Session
 	if d.Status == DeviceLoginApproved {
-		a.Name, a.Role, a.Client = d.ReviewedBy, d.ReviewedRole, d.Client
+		a.Name, a.Role, a.Client = d.ReviewedBy, d.TokenRole, d.Client
 		a = a.Clean()
 		out, err = scanSession(tx.QueryRow(ctx, `INSERT INTO auth_sessions (`+sessionColumns+`)
 			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+sessionColumns,

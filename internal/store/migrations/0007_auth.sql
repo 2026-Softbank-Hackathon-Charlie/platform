@@ -28,8 +28,9 @@ CREATE TABLE device_logins (
     created_at       timestamptz NOT NULL,
     expires_at       timestamptz NOT NULL,
     reviewed_by      text NOT NULL DEFAULT '',
-    reviewed_role    text NOT NULL DEFAULT '',
-    reviewed_at      timestamptz
+    reviewed_at      timestamptz,
+    -- the role the approver picked for the CLI token; empty unless approved
+    token_role       text NOT NULL DEFAULT ''
 );
 
 CREATE INDEX device_logins_expires_at_idx ON device_logins (expires_at);

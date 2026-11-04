@@ -27,6 +27,7 @@ func ConformanceAuth(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"DeviceLoginLimitRace", testDeviceLoginLimitRace},
 		{"DeviceLoginReview", testDeviceLoginReview},
 		{"DeviceLoginReviewRace", testDeviceLoginReviewRace},
+		{"DeviceLoginReviewKeepUntil", testDeviceLoginReviewKeepUntil},
 		{"DeviceLoginExchange", testDeviceLoginExchange},
 		{"DeviceLoginExchangeRace", testDeviceLoginExchangeRace},
 		{"AuthText", testAuthText},
@@ -87,9 +88,22 @@ func eqDeviceLogin(t *testing.T, got, want store.DeviceLogin) {
 	eqFields(t, "device login "+want.UserCode, got, want)
 }
 
-// reviewed returns d as ReviewDeviceLogin leaves it.
-func reviewed(d store.DeviceLogin, status, by string, n int) store.DeviceLogin {
-	d.Status, d.ReviewedBy, d.ReviewedRole, d.ReviewedAt = status, by, "operator", ptr(at(n))
+// approve is an approval by by at minute n that gives the CLI token role.
+func approve(by, role string, n int) store.DeviceLoginReview {
+	return store.DeviceLoginReview{Status: store.DeviceLoginApproved, By: by, TokenRole: role, At: at(n)}
+}
+
+// deny is a denial by by at minute n.
+func deny(by string, n int) store.DeviceLoginReview {
+	return store.DeviceLoginReview{Status: store.DeviceLoginDenied, By: by, At: at(n)}
+}
+
+// reviewed returns d as ReviewDeviceLogin(r) leaves it.
+func reviewed(d store.DeviceLogin, r store.DeviceLoginReview) store.DeviceLogin {
+	d.Status, d.ReviewedBy, d.TokenRole, d.ReviewedAt = r.Status, r.By, r.TokenRole, ptr(r.At)
+	if r.KeepUntil.After(d.ExpiresAt) {
+		d.ExpiresAt = r.KeepUntil
+	}
 	return d
 }
 
@@ -184,7 +198,7 @@ func testDeviceLoginLimit(t *testing.T, s store.Store) {
 	wantErr(t, s.CreateDeviceLogin(ctx, newDeviceLogin("hcd_c", "DDDDDDDD", 1), 2), store.ErrDeviceLoginLimit)
 
 	// Only pending ones count.
-	_, err := s.ReviewDeviceLogin(ctx, "BBBBBBBB", store.DeviceLoginApproved, "seohyun", "operator", at(1))
+	_, err := s.ReviewDeviceLogin(ctx, "BBBBBBBB", approve("seohyun", "operator", 1))
 	must(t, err)
 	must(t, s.CreateDeviceLogin(ctx, newDeviceLogin("hcd_c", "DDDDDDDD", 1), 2))
 	wantErr(t, s.CreateDeviceLogin(ctx, newDeviceLogin("hcd_d", "FFFFFFFF", 2), 2), store.ErrDeviceLoginLimit)
@@ -219,30 +233,30 @@ func testDeviceLoginReview(t *testing.T, s store.Store) {
 	ctx := t.Context()
 	d := newDeviceLogin("hcd_a", "BCDFGHJK", 0)
 	must(t, s.CreateDeviceLogin(ctx, d, 50))
-	got, err := s.ReviewDeviceLogin(ctx, "BCDFGHJK", store.DeviceLoginApproved, "seohyun", "operator", at(2))
+	got, err := s.ReviewDeviceLogin(ctx, "BCDFGHJK", approve("seohyun", "agent", 2))
 	must(t, err)
-	want := reviewed(d, store.DeviceLoginApproved, "seohyun", 2)
+	want := reviewed(d, approve("seohyun", "agent", 2))
 	eqDeviceLogin(t, got, want)
 	got, err = s.GetDeviceLogin(ctx, "BCDFGHJK", at(3))
 	must(t, err)
 	eqDeviceLogin(t, got, want)
 
 	// Only a pending one can be reviewed.
-	for _, status := range []string{store.DeviceLoginApproved, store.DeviceLoginDenied} {
-		_, err = s.ReviewDeviceLogin(ctx, "BCDFGHJK", status, "minji", "operator", at(3))
+	for _, r := range []store.DeviceLoginReview{approve("minji", "operator", 3), deny("minji", 3)} {
+		_, err = s.ReviewDeviceLogin(ctx, "BCDFGHJK", r)
 		wantErr(t, err, store.ErrConflict)
 		if !strings.Contains(err.Error(), store.DeviceLoginApproved) {
 			t.Errorf("conflict %q does not name the current status", err)
 		}
 	}
-	_, err = s.ReviewDeviceLogin(ctx, "ZZZZZZZZ", store.DeviceLoginApproved, "minji", "operator", at(3))
+	_, err = s.ReviewDeviceLogin(ctx, "ZZZZZZZZ", approve("minji", "operator", 3))
 	wantErr(t, err, store.ErrNotFound)
 
 	// An expired one is not found, pending or not.
 	must(t, s.CreateDeviceLogin(ctx, newDeviceLogin("hcd_b", "CDFGHJKL", 0), 50))
-	_, err = s.ReviewDeviceLogin(ctx, "CDFGHJKL", store.DeviceLoginDenied, "minji", "operator", at(deviceMinutes))
+	_, err = s.ReviewDeviceLogin(ctx, "CDFGHJKL", deny("minji", deviceMinutes))
 	wantErr(t, err, store.ErrNotFound)
-	_, err = s.ReviewDeviceLogin(ctx, "BCDFGHJK", store.DeviceLoginDenied, "minji", "operator", at(deviceMinutes))
+	_, err = s.ReviewDeviceLogin(ctx, "BCDFGHJK", deny("minji", deviceMinutes))
 	wantErr(t, err, store.ErrNotFound)
 }
 
@@ -254,11 +268,11 @@ func testDeviceLoginReviewRace(t *testing.T, s store.Store) {
 	var won []store.DeviceLogin
 	errs := make([]error, n)
 	parallel(n, func(i int) {
-		status := store.DeviceLoginApproved
+		r := approve(fmt.Sprint("admin", i), "operator", 1)
 		if i%2 == 1 {
-			status = store.DeviceLoginDenied
+			r = deny(fmt.Sprint("admin", i), 1)
 		}
-		d, err := s.ReviewDeviceLogin(ctx, "BCDFGHJK", status, fmt.Sprint("admin", i), "operator", at(1))
+		d, err := s.ReviewDeviceLogin(ctx, "BCDFGHJK", r)
 		errs[i] = err
 		if err == nil {
 			mu.Lock()
@@ -278,6 +292,45 @@ func testDeviceLoginReviewRace(t *testing.T, s store.Store) {
 	must(t, err)
 	if got.Status != won[0].Status || got.ReviewedBy != won[0].ReviewedBy {
 		t.Fatalf("stored %s by %s, but the winner set %s by %s", got.Status, got.ReviewedBy, won[0].Status, won[0].ReviewedBy)
+	}
+}
+
+func testDeviceLoginReviewKeepUntil(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	// Approved at 9 with 10 more minutes: it now expires at 19, not 10.
+	d := newDeviceLogin("hcd_a", "BCDFGHJK", 0)
+	must(t, s.CreateDeviceLogin(ctx, d, 50))
+	r := approve("seohyun", "agent", 9)
+	r.KeepUntil = at(19)
+	got, err := s.ReviewDeviceLogin(ctx, "BCDFGHJK", r)
+	must(t, err)
+	want := reviewed(d, r)
+	if !want.ExpiresAt.Equal(at(19)) {
+		t.Fatalf("test expects ExpiresAt 19, reviewed gives %v", want.ExpiresAt)
+	}
+	eqDeviceLogin(t, got, want)
+	got, err = s.GetDeviceLogin(ctx, "BCDFGHJK", at(deviceMinutes+5))
+	must(t, err)
+	eqDeviceLogin(t, got, want)
+	_, sess, err := s.ExchangeDeviceLogin(ctx, sum("hcd_a"), cliSession("hcs_late", 18), at(18))
+	must(t, err)
+	if sess.Name != "seohyun" || sess.Role != "agent" {
+		t.Fatalf("late exchange gave %+v", sess)
+	}
+
+	// An earlier KeepUntil, or none (a denial), leaves ExpiresAt alone.
+	for i, r := range []store.DeviceLoginReview{approve("seohyun", "agent", 1), deny("seohyun", 1)} {
+		code := []string{"CDFGHJKL", "DFGHJKLM"}[i]
+		d := newDeviceLogin(fmt.Sprint("hcd_", code), code, 0)
+		must(t, s.CreateDeviceLogin(ctx, d, 50))
+		if r.Status == store.DeviceLoginApproved {
+			r.KeepUntil = at(5)
+		}
+		got, err := s.ReviewDeviceLogin(ctx, code, r)
+		must(t, err)
+		if !got.ExpiresAt.Equal(pg(at(deviceMinutes))) {
+			t.Errorf("%s with KeepUntil %v moved ExpiresAt to %v", r.Status, r.KeepUntil, got.ExpiresAt)
+		}
 	}
 }
 
@@ -302,14 +355,15 @@ func testDeviceLoginExchange(t *testing.T, s store.Store) {
 		t.Fatalf("a pending exchange stored a session: %v", err)
 	}
 
-	// Approved: the device login becomes the session, once.
-	_, err = s.ReviewDeviceLogin(ctx, "BCDFGHJK", store.DeviceLoginApproved, "seohyun", "operator", at(2))
+	// Approved: the device login becomes the session, once, with the
+	// approver's name and the role they picked.
+	_, err = s.ReviewDeviceLogin(ctx, "BCDFGHJK", approve("seohyun", "viewer", 2))
 	must(t, err)
 	got, gotS, err = s.ExchangeDeviceLogin(ctx, sum("hcd_a"), sess, at(3))
 	must(t, err)
-	eqDeviceLogin(t, got, reviewed(d, store.DeviceLoginApproved, "seohyun", 2))
+	eqDeviceLogin(t, got, reviewed(d, approve("seohyun", "viewer", 2)))
 	wantS := sess
-	wantS.Name, wantS.Role, wantS.Client = "seohyun", "operator", testClient
+	wantS.Name, wantS.Role, wantS.Client = "seohyun", "viewer", testClient
 	eqSession(t, gotS, wantS)
 	stored, err := s.GetSession(ctx, sess.TokenHash, at(4))
 	must(t, err)
@@ -323,7 +377,7 @@ func testDeviceLoginExchange(t *testing.T, s store.Store) {
 
 	// Denied: removed, no session.
 	must(t, s.CreateDeviceLogin(ctx, newDeviceLogin("hcd_b", "CDFGHJKL", 0), 50))
-	_, err = s.ReviewDeviceLogin(ctx, "CDFGHJKL", store.DeviceLoginDenied, "minji", "operator", at(1))
+	_, err = s.ReviewDeviceLogin(ctx, "CDFGHJKL", deny("minji", 1))
 	must(t, err)
 	got, gotS, err = s.ExchangeDeviceLogin(ctx, sum("hcd_b"), cliSession("hcs_denied", 2), at(2))
 	must(t, err)
@@ -338,7 +392,7 @@ func testDeviceLoginExchange(t *testing.T, s store.Store) {
 
 	// Approved but expired: not found, no session.
 	must(t, s.CreateDeviceLogin(ctx, newDeviceLogin("hcd_c", "DFGHJKLM", 0), 50))
-	_, err = s.ReviewDeviceLogin(ctx, "DFGHJKLM", store.DeviceLoginApproved, "minji", "operator", at(1))
+	_, err = s.ReviewDeviceLogin(ctx, "DFGHJKLM", approve("minji", "operator", 1))
 	must(t, err)
 	_, _, err = s.ExchangeDeviceLogin(ctx, sum("hcd_c"), cliSession("hcs_late", deviceMinutes), at(deviceMinutes))
 	wantErr(t, err, store.ErrNotFound)
@@ -348,7 +402,7 @@ func testDeviceLoginExchange(t *testing.T, s store.Store) {
 
 	// A taken token hash changes nothing: the device login can still be exchanged.
 	must(t, s.CreateDeviceLogin(ctx, newDeviceLogin("hcd_e", "FGHJKLMN", 20), 50))
-	_, err = s.ReviewDeviceLogin(ctx, "FGHJKLMN", store.DeviceLoginApproved, "minji", "operator", at(21))
+	_, err = s.ReviewDeviceLogin(ctx, "FGHJKLMN", approve("minji", "operator", 21))
 	must(t, err)
 	_, _, err = s.ExchangeDeviceLogin(ctx, sum("hcd_e"), cliSession("hcs_cli", 21), at(21))
 	wantErr(t, err, store.ErrConflict)
@@ -362,7 +416,7 @@ func testDeviceLoginExchange(t *testing.T, s store.Store) {
 func testDeviceLoginExchangeRace(t *testing.T, s store.Store) {
 	ctx := t.Context()
 	must(t, s.CreateDeviceLogin(ctx, newDeviceLogin("hcd_a", "BCDFGHJK", 0), 50))
-	_, err := s.ReviewDeviceLogin(ctx, "BCDFGHJK", store.DeviceLoginApproved, "seohyun", "operator", at(1))
+	_, err := s.ReviewDeviceLogin(ctx, "BCDFGHJK", approve("seohyun", "operator", 1))
 	must(t, err)
 	const n = 8
 	errs := make([]error, n)
@@ -402,10 +456,10 @@ func testAuthText(t *testing.T, s store.Store) {
 	// A user code that is not clean names nothing.
 	_, err = s.GetDeviceLogin(ctx, "BCDF\x00GHJK", at(1))
 	wantErr(t, err, store.ErrNotFound)
-	_, err = s.ReviewDeviceLogin(ctx, "BCDF\x00GHJK", store.DeviceLoginApproved, "seohyun", "operator", at(1))
+	_, err = s.ReviewDeviceLogin(ctx, "BCDF\x00GHJK", approve("seohyun", "operator", 1))
 	wantErr(t, err, store.ErrNotFound)
 
-	_, err = s.ReviewDeviceLogin(ctx, "BCDFGHJK", store.DeviceLoginApproved, "sco\x00tt", "operator", at(1))
+	_, err = s.ReviewDeviceLogin(ctx, "BCDFGHJK", approve("sco\x00tt", "operator", 1))
 	must(t, err)
 	_, sess, err := s.ExchangeDeviceLogin(ctx, sum("hcd_a"), cliSession("hcs_a", 2), at(2))
 	must(t, err)

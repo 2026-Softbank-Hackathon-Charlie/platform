@@ -318,6 +318,27 @@ func (h *harness) poll(deviceCode string) (int, []byte) {
 	return h.do("POST", "/v1/auth/device/token", "", apiv1.DeviceTokenRequest{DeviceCode: deviceCode})
 }
 
+// approveAs approves the device login userCode as token, giving role.
+func (h *harness) approveAs(token, userCode string, role apiv1.Role) (int, []byte) {
+	h.t.Helper()
+	return h.do("POST", "/v1/auth/device/"+userCode+"/approve", token, apiv1.DeviceLoginApproveRequest{Role: role})
+}
+
+// cliToken runs a device login for client to the end: seohyun approves it
+// from a console session with role, and the poll returns the CLI token.
+func (h *harness) cliToken(client string, role apiv1.Role) apiv1.Session {
+	h.t.Helper()
+	st := h.startDevice(client)
+	if code, b := h.approveAs(h.session("seohyun").Token, st.UserCode, role); code != 200 {
+		h.t.Fatalf("approve: %d %s", code, b)
+	}
+	code, b := h.poll(st.DeviceCode)
+	if code != 200 {
+		h.t.Fatalf("poll: %d %s", code, b)
+	}
+	return decode[apiv1.Session](h.t, b)
+}
+
 func TestDeviceLogin(t *testing.T) {
 	clock := newClock()
 	h := newHarness(t, withAdmins(clock))
@@ -337,7 +358,7 @@ func TestDeviceLogin(t *testing.T) {
 		code, b := h.do("GET", path, admin.Token, nil)
 		d := decode[apiv1.DeviceLogin](t, b)
 		if code != 200 || d.UserCode != st.UserCode || d.Client != "charlie v0.5.0 on rin-sbx-12" || d.Status != apiv1.DeviceLoginStatusPending ||
-			d.ReviewedBy != nil || !d.ExpiresAt.Equal(clock.Now().Add(10*time.Minute)) {
+			d.ReviewedBy != nil || d.Role != nil || !d.ExpiresAt.Equal(clock.Now().Add(10*time.Minute)) {
 			t.Fatalf("GET %s: %d %s", path, code, b)
 		}
 		if strings.Contains(string(b), st.DeviceCode) {
@@ -345,38 +366,32 @@ func TestDeviceLogin(t *testing.T) {
 		}
 	}
 
-	// Only an operator reviews.
-	for _, tok := range []string{agentToken, viewerToken} {
-		if code, _ := h.do("POST", "/v1/auth/device/"+lower+"/approve", tok, nil); code != 403 {
-			t.Fatalf("approve as a non-operator: %d", code)
-		}
-	}
-	if code, _ := h.do("GET", "/v1/auth/device/"+lower, viewerToken, nil); code != 403 {
-		t.Fatalf("GET as viewer: %d", code)
-	}
-
+	// The approver picks the token's role. Approving a minute in gives the
+	// CLI ten minutes from then, later than the device login's own expiry.
 	clock.Add(time.Minute)
-	code, b := h.do("POST", "/v1/auth/device/"+lower+"/approve", admin.Token, nil)
-	if d := decode[apiv1.DeviceLogin](t, b); code != 200 || d.Status != apiv1.DeviceLoginStatusApproved || d.ReviewedBy == nil || *d.ReviewedBy != "seohyun" {
+	code, b := h.approveAs(admin.Token, lower, apiv1.RoleAgent)
+	if d := decode[apiv1.DeviceLogin](t, b); code != 200 || d.Status != apiv1.DeviceLoginStatusApproved || d.ReviewedBy == nil || *d.ReviewedBy != "seohyun" ||
+		d.Role == nil || *d.Role != apiv1.RoleAgent || !d.ExpiresAt.Equal(clock.Now().Add(10*time.Minute)) {
 		t.Fatalf("approve: %d %s", code, b)
 	}
-	for _, action := range []string{"approve", "deny"} {
-		if code, b := h.do("POST", "/v1/auth/device/"+st.UserCode+"/"+action, admin.Token, nil); code != 409 || errCode(t, b) != "device_login_state_conflict" {
-			t.Fatalf("%s after approval: %d %s", action, code, b)
-		}
+	if code, b := h.approveAs(admin.Token, st.UserCode, apiv1.RoleViewer); code != 409 || errCode(t, b) != "device_login_state_conflict" {
+		t.Fatalf("approve after approval: %d %s", code, b)
+	}
+	if code, b := h.do("POST", "/v1/auth/device/"+st.UserCode+"/deny", admin.Token, nil); code != 409 || errCode(t, b) != "device_login_state_conflict" {
+		t.Fatalf("deny after approval: %d %s", code, b)
 	}
 
-	// The next poll gets the token, once.
+	// The next poll gets the token, once: the approver's name, the picked role.
 	code, b = h.poll(st.DeviceCode)
 	cli := decode[apiv1.Session](t, b)
-	if code != 200 || !strings.HasPrefix(cli.Token, auth.SessionPrefix) || cli.Principal != (apiv1.Principal{Name: "seohyun", Role: apiv1.RoleOperator}) ||
+	if code != 200 || !strings.HasPrefix(cli.Token, auth.SessionPrefix) || cli.Principal != (apiv1.Principal{Name: "seohyun", Role: apiv1.RoleAgent}) ||
 		!cli.ExpiresAt.Equal(clock.Now().Add(30*24*time.Hour)) {
 		t.Fatalf("poll after approval: %d %s", code, b)
 	}
 	if code, b := h.poll(st.DeviceCode); code != 400 || errCode(t, b) != "expired_token" {
 		t.Fatalf("second poll: %d %s", code, b)
 	}
-	if code, me := h.me(cli.Token); code != 200 || me != (apiv1.Principal{Name: "seohyun", Role: apiv1.RoleOperator}) {
+	if code, me := h.me(cli.Token); code != 200 || me != (apiv1.Principal{Name: "seohyun", Role: apiv1.RoleAgent}) {
 		t.Fatalf("me with the CLI token: %d %+v", code, me)
 	}
 	if code, _ := h.do("GET", "/v1/auth/device/"+lower, admin.Token, nil); code != 404 {
@@ -394,14 +409,15 @@ func TestDeviceLogin(t *testing.T) {
 	// The review and the exchange are audited as the approver, without secrets.
 	approve := h.auditOf("POST /v1/auth/device/{userCode}/approve")
 	exchange := h.auditOf("POST /v1/auth/device/token")
-	if len(exchange) != 1 || exchange[0].Actor != "seohyun" || exchange[0].Role != "operator" || exchange[0].Status != 200 ||
+	if len(exchange) != 1 || exchange[0].Actor != "seohyun" || exchange[0].Role != "agent" || exchange[0].Status != 200 ||
 		!strings.Contains(string(exchange[0].Detail), `"client":"charlie v0.5.0 on rin-sbx-12"`) ||
 		!strings.Contains(string(exchange[0].Detail), `"userCode":"`+st.UserCode+`"`) {
 		t.Fatalf("exchange audit %+v %s", exchange, exchange[0].Detail)
 	}
 	var ok bool
 	for _, a := range approve {
-		if a.Actor == "seohyun" && a.Status == 200 && strings.Contains(string(a.Detail), st.UserCode) && strings.Contains(string(a.Detail), "rin-sbx-12") {
+		if a.Actor == "seohyun" && a.Role == "operator" && a.Status == 200 && strings.Contains(string(a.Detail), st.UserCode) &&
+			strings.Contains(string(a.Detail), "rin-sbx-12") && strings.Contains(string(a.Detail), `"tokenRole":"agent"`) {
 			ok = true
 		}
 	}
@@ -417,12 +433,153 @@ func TestDeviceLogin(t *testing.T) {
 	}
 }
 
+func TestDeviceLoginApproveRole(t *testing.T) {
+	h := newHarness(t, withAdmins(newClock()))
+	admin := h.session("seohyun")
+	st := h.startDevice("charlie")
+	for _, body := range []any{nil, `{}`, `{"role":""}`, `{"role":"admin"}`, `{"role":"operator","ttl":60}`} {
+		if code, b := h.do("POST", "/v1/auth/device/"+st.UserCode+"/approve", admin.Token, body); code != 400 || errCode(t, b) != "invalid_request" {
+			t.Errorf("approve with %v: %d %s", body, code, b)
+		}
+	}
+	if code, b := h.poll(st.DeviceCode); code != 400 || errCode(t, b) != "authorization_pending" {
+		t.Fatalf("a refused approval approved it: %d %s", code, b)
+	}
+	for _, role := range []apiv1.Role{apiv1.RoleViewer, apiv1.RoleAgent, apiv1.RoleOperator} {
+		cli := h.cliToken("charlie", role)
+		if code, me := h.me(cli.Token); code != 200 || me != (apiv1.Principal{Name: "seohyun", Role: role}) {
+			t.Errorf("CLI token approved as %s: %d %+v", role, code, me)
+		}
+	}
+}
+
+// Only a person's console session reviews device logins: not a static token
+// and not a CLI token, whatever its role. A bot with an operator CLI token
+// cannot approve its own next login.
+func TestDeviceLoginNeedsConsoleSession(t *testing.T) {
+	h := newHarness(t, withAdmins(newClock()))
+	const bot = "charlie v0.5.0 on rin-sbx-7-a1b2c3"
+	opCLI := h.cliToken(bot, apiv1.RoleOperator)
+	st := h.startDevice(bot)
+	for _, tok := range []string{opToken, opCLI.Token} {
+		for _, req := range []struct {
+			method, path string
+			body         any
+		}{
+			{"GET", "/v1/auth/device/" + st.UserCode, nil},
+			{"POST", "/v1/auth/device/" + st.UserCode + "/approve", apiv1.DeviceLoginApproveRequest{Role: apiv1.RoleOperator}},
+			{"POST", "/v1/auth/device/" + st.UserCode + "/deny", nil},
+		} {
+			if code, b := h.do(req.method, req.path, tok, req.body); code != 403 || errCode(t, b) != "console_session_required" {
+				t.Errorf("%s %s with a %.4s token: %d %s", req.method, req.path, tok, code, b)
+			}
+		}
+	}
+	// Roles below operator are refused by the role check first.
+	for _, tok := range []string{agentToken, viewerToken} {
+		if code, b := h.approveAs(tok, st.UserCode, apiv1.RoleViewer); code != 403 || errCode(t, b) != "forbidden" {
+			t.Errorf("approve as a non-operator: %d %s", code, b)
+		}
+	}
+	if code, b := h.poll(st.DeviceCode); code != 400 || errCode(t, b) != "authorization_pending" {
+		t.Fatalf("a refused review changed it: %d %s", code, b)
+	}
+	// The bot's attempt is audited as the approver of its token, via the bot.
+	var found bool
+	for _, a := range h.auditOf("POST /v1/auth/device/{userCode}/approve") {
+		if a.Status == 403 && a.Actor == "seohyun" && strings.Contains(string(a.Detail), `"via":"`+bot+`"`) &&
+			strings.Contains(string(a.Detail), "console_session_required") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the CLI token's approval attempt is not audited with via: %+v", h.auditOf("POST /v1/auth/device/{userCode}/approve"))
+	}
+}
+
+// Approving gives the CLI ten more minutes, so a bot that polls in a new run
+// after the device login's own expiry still gets its token.
+func TestDeviceLoginApprovalWindow(t *testing.T) {
+	clock := newClock()
+	h := newHarness(t, withAdmins(clock))
+	admin := h.session("seohyun")
+	st := h.startDevice("charlie v0.5.0 on rin-sbx-7-a1b2c3")
+	clock.Add(9 * time.Minute)
+	code, b := h.approveAs(admin.Token, st.UserCode, apiv1.RoleViewer)
+	if d := decode[apiv1.DeviceLogin](t, b); code != 200 || !d.ExpiresAt.Equal(clock.Now().Add(10*time.Minute)) {
+		t.Fatalf("approve at 9m: %d %s", code, b)
+	}
+	clock.Add(9 * time.Minute) // 18m after the start, 8m past the original expiry
+	if code, b := h.do("GET", "/v1/auth/device/"+st.UserCode, admin.Token, nil); code != 200 || decode[apiv1.DeviceLogin](t, b).Status != apiv1.DeviceLoginStatusApproved {
+		t.Fatalf("GET at 18m: %d %s", code, b)
+	}
+	code, b = h.poll(st.DeviceCode)
+	if code != 200 || decode[apiv1.Session](t, b).Principal.Role != apiv1.RoleViewer {
+		t.Fatalf("poll at 18m: %d %s", code, b)
+	}
+
+	// The window ends ten minutes after the approval.
+	st = h.startDevice("charlie")
+	if code, b := h.approveAs(admin.Token, st.UserCode, apiv1.RoleViewer); code != 200 {
+		t.Fatalf("approve: %d %s", code, b)
+	}
+	clock.Add(10 * time.Minute)
+	if code, b := h.poll(st.DeviceCode); code != 400 || errCode(t, b) != "expired_token" {
+		t.Fatalf("poll 10m after the approval: %d %s", code, b)
+	}
+}
+
+// What a CLI token does is audited as the administrator who approved it,
+// with "via" naming the client that logged in. Console sessions and static
+// tokens carry no via.
+func TestCLITokenAuditVia(t *testing.T) {
+	h := newHarness(t, withAdmins(newClock()))
+	const bot = "charlie v0.5.0 on rin-sbx-7-a1b2c3"
+	cli := h.cliToken(bot, apiv1.RoleAgent)
+
+	code, b := h.do("POST", "/v1/plans", cli.Token, planJSON("p1", "a", "b", false))
+	if code != 201 || decode[apiv1.PlanRecord](t, b).SubmittedBy != "seohyun" {
+		t.Fatalf("submit with the CLI token: %d %s", code, b)
+	}
+	ref := decode[apiv1.PlanRecord](t, b).Ref
+	if code, _ := h.do("POST", "/v1/plans/"+ref+"/approve", cli.Token, map[string]string{"comment": "self"}); code != 403 {
+		t.Fatalf("approve with an agent CLI token: %d", code)
+	}
+	for _, action := range []string{"POST /v1/plans", "POST /v1/plans/{ref}/approve"} {
+		a := h.auditOf(action)
+		if len(a) != 1 || a[0].Actor != "seohyun" || a[0].Role != "agent" || !strings.Contains(string(a[0].Detail), `"via":"`+bot+`"`) {
+			t.Fatalf("%s audited as %+v", action, a)
+		}
+	}
+
+	// A console session and a static token act without via.
+	admin := h.session("seohyun")
+	if code, b := h.do("POST", "/v1/plans/"+ref+"/approve", admin.Token, map[string]string{"comment": "ok"}); code != 200 {
+		t.Fatalf("approve with the console session: %d %s", code, b)
+	}
+	if code, _ := h.do("POST", "/v1/auth/logout", opToken, nil); code != 204 {
+		t.Fatalf("logout with a static token: %d", code)
+	}
+	for _, action := range []string{"POST /v1/plans/{ref}/approve", "POST /v1/auth/logout"} {
+		if a := h.auditOf(action); strings.Contains(string(a[0].Detail), "via") {
+			t.Fatalf("%s by %s has via: %s", action, a[0].Actor, a[0].Detail)
+		}
+	}
+
+	all, _ := h.store.ListAudit(t.Context(), 0, 0)
+	for _, e := range all {
+		line, _ := json.Marshal(e)
+		if strings.Contains(string(line), cli.Token) || strings.Contains(string(line), admin.Token) {
+			t.Fatalf("audit entry has a token: %s", line)
+		}
+	}
+}
+
 func TestDeviceLoginDeny(t *testing.T) {
 	h := newHarness(t, withAdmins(newClock()))
 	st := h.startDevice("charlie on laptop")
-	// A static operator token reviews too.
-	code, b := h.do("POST", "/v1/auth/device/"+st.UserCode+"/deny", opToken, nil)
-	if d := decode[apiv1.DeviceLogin](t, b); code != 200 || d.Status != apiv1.DeviceLoginStatusDenied || *d.ReviewedBy != "op" {
+	code, b := h.do("POST", "/v1/auth/device/"+st.UserCode+"/deny", h.session("minji").Token, nil)
+	if d := decode[apiv1.DeviceLogin](t, b); code != 200 || d.Status != apiv1.DeviceLoginStatusDenied || *d.ReviewedBy != "minji" || d.Role != nil {
 		t.Fatalf("deny: %d %s", code, b)
 	}
 	if code, b := h.poll(st.DeviceCode); code != 400 || errCode(t, b) != "access_denied" {
@@ -436,15 +593,20 @@ func TestDeviceLoginDeny(t *testing.T) {
 func TestDeviceLoginExpiry(t *testing.T) {
 	clock := newClock()
 	h := newHarness(t, withAdmins(clock))
+	admin := h.session("seohyun")
 	st := h.startDevice("charlie on laptop")
 	clock.Add(10 * time.Minute)
-	for _, req := range []struct{ method, path string }{
-		{"GET", "/v1/auth/device/" + st.UserCode},
-		{"POST", "/v1/auth/device/" + st.UserCode + "/approve"},
-		{"GET", "/v1/auth/device/ZZZZ-ZZZZ"},
-		{"GET", "/v1/auth/device/not-a-code"},
+	for _, req := range []struct {
+		method, path string
+		body         any
+	}{
+		{"GET", "/v1/auth/device/" + st.UserCode, nil},
+		{"POST", "/v1/auth/device/" + st.UserCode + "/approve", apiv1.DeviceLoginApproveRequest{Role: apiv1.RoleViewer}},
+		{"POST", "/v1/auth/device/" + st.UserCode + "/deny", nil},
+		{"GET", "/v1/auth/device/ZZZZ-ZZZZ", nil},
+		{"GET", "/v1/auth/device/not-a-code", nil},
 	} {
-		if code, b := h.do(req.method, req.path, opToken, nil); code != 404 || errCode(t, b) != "device_login_not_found" {
+		if code, b := h.do(req.method, req.path, admin.Token, req.body); code != 404 || errCode(t, b) != "device_login_not_found" {
 			t.Errorf("%s %s: %d %s", req.method, req.path, code, b)
 		}
 	}
@@ -471,7 +633,7 @@ func TestDeviceLoginLimits(t *testing.T) {
 	clock.Add(10 * time.Minute) // all 50 expire
 	h.startDevice(strings.Repeat("c", 200))
 
-	for _, client := range []string{"", "   ", strings.Repeat("c", 201), "a\x00b", "charlie\non laptop", "charlie ‮evil"} {
+	for _, client := range []string{"", "   ", strings.Repeat("c", 201), "a\x00b", "charlie\non laptop", "charlie \u202eevil"} {
 		if code, b := h.do("POST", "/v1/auth/device", "", apiv1.DeviceLoginStartRequest{Client: client}); code != 400 || errCode(t, b) != "invalid_request" {
 			t.Errorf("client %q: %d %s", client, code, b)
 		}

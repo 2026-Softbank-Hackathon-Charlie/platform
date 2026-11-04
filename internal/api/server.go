@@ -277,13 +277,15 @@ func (s *Server) route(pattern string, need apiv1.Role, h http.HandlerFunc) {
 }
 
 // authenticate checks the bearer token: a static token from PLATFORM_TOKENS
-// first, then a console session or CLI token in the store. err is set only
-// when the store could not be read.
+// first, then a console session or CLI token in the store. The principal
+// says which kind it was. err is set only when the store could not be read.
 func (s *Server) authenticate(r *http.Request) (auth.Principal, bool, error) {
 	if s.cfg.Tokens.Len() == 0 && s.cfg.Admins.Len() == 0 && s.cfg.Insecure {
-		return auth.Principal{Name: "dev", Role: apiv1.RoleOperator}, true, nil
+		// Local development may do everything, approving device logins too.
+		return auth.Principal{Name: "dev", Role: apiv1.RoleOperator, Kind: auth.KindConsole}, true, nil
 	}
 	if p, ok := s.cfg.Tokens.Authenticate(r); ok {
+		p.Kind = auth.KindToken
 		return p, true, nil
 	}
 	raw, ok := auth.BearerToken(r)
@@ -297,13 +299,21 @@ func (s *Server) authenticate(r *http.Request) (auth.Principal, bool, error) {
 	case err != nil:
 		return auth.Principal{}, false, err
 	}
-	return auth.Principal{Name: sess.Name, Role: apiv1.Role(sess.Role)}, true, nil
+	return auth.Principal{Name: sess.Name, Role: apiv1.Role(sess.Role), Kind: sess.Kind, Client: sess.Client}, true, nil
 }
 
 func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status int, note map[string]any) {
 	actor, role := p.Name, string(p.Role)
 	if actor == "" {
 		actor, role = "anonymous", ""
+	}
+	if p.Kind == auth.KindCLI {
+		// The actor is the administrator who approved the CLI token; via
+		// names the program that used it (DeviceLogin.client).
+		if note == nil {
+			note = map[string]any{}
+		}
+		note["via"] = p.Client
 	}
 	var detail []byte
 	if len(note) > 0 {

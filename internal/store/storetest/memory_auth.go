@@ -125,17 +125,20 @@ func (m *memory) GetDeviceLogin(_ context.Context, userCode string, now time.Tim
 	return copyDeviceLogin(d), nil
 }
 
-func (m *memory) ReviewDeviceLogin(_ context.Context, userCode, status, by, role string, at time.Time) (store.DeviceLogin, error) {
+func (m *memory) ReviewDeviceLogin(_ context.Context, userCode string, r store.DeviceLoginReview) (store.DeviceLogin, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k, d, ok := m.liveDeviceLogin(userCode, at)
+	k, d, ok := m.liveDeviceLogin(userCode, r.At)
 	if !ok {
 		return store.DeviceLogin{}, fmt.Errorf("%w: device login", store.ErrNotFound)
 	}
 	if d.Status != store.DeviceLoginPending {
 		return store.DeviceLogin{}, fmt.Errorf("%w: device login is %s", store.ErrConflict, d.Status)
 	}
-	d.Status, d.ReviewedBy, d.ReviewedRole, d.ReviewedAt = status, by, role, &at
+	d.Status, d.ReviewedBy, d.TokenRole, d.ReviewedAt = r.Status, r.By, r.TokenRole, &r.At
+	if keep := pgTime(r.KeepUntil); keep.After(d.ExpiresAt) {
+		d.ExpiresAt = keep
+	}
 	d = copyDeviceLogin(d.Clean())
 	m.auth.devices[k] = d
 	return copyDeviceLogin(d), nil
@@ -154,7 +157,7 @@ func (m *memory) ExchangeDeviceLogin(_ context.Context, deviceCodeHash []byte, s
 	case store.DeviceLoginPending:
 		return copyDeviceLogin(d), store.Session{}, nil
 	case store.DeviceLoginApproved:
-		s.Name, s.Role, s.Client = d.ReviewedBy, d.ReviewedRole, d.Client
+		s.Name, s.Role, s.Client = d.ReviewedBy, d.TokenRole, d.Client
 		var err error
 		if out, err = m.insertSession(s); err != nil {
 			return store.DeviceLogin{}, store.Session{}, err

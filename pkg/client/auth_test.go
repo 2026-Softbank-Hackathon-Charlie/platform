@@ -10,7 +10,7 @@ import (
 
 const (
 	authSessionJSON = `{"token":"hcs_abc","expiresAt":"2026-11-04T21:00:00Z","principal":{"name":"seohyun","role":"operator"}}`
-	deviceLoginJSON = `{"userCode":"BCDF-GHJK","client":"charlie v0.5.0 on rin-sbx-12","status":"approved","createdAt":"2026-11-04T09:00:00Z","expiresAt":"2026-11-04T09:10:00Z","reviewedBy":"seohyun"}`
+	deviceLoginJSON = `{"userCode":"BCDF-GHJK","client":"charlie v0.5.0 on rin-sbx-12","status":"approved","createdAt":"2026-11-04T09:00:00Z","expiresAt":"2026-11-04T09:10:00Z","reviewedBy":"seohyun","role":"agent"}`
 )
 
 func TestAuthOperations(t *testing.T) {
@@ -47,9 +47,13 @@ func TestAuthOperations(t *testing.T) {
 		{name: "GetDeviceLogin escapes", call: func(c *Client) (any, error) { return c.GetDeviceLogin(ctx, "bcdf ghjk") },
 			method: "GET", path: "/v1/auth/device/bcdf%20ghjk", resp: deviceLoginJSON,
 			got: func(v any) string { return v.(*apiv1.DeviceLogin).Client }, want: "charlie v0.5.0 on rin-sbx-12"},
-		{name: "ApproveDeviceLogin", call: func(c *Client) (any, error) { return c.ApproveDeviceLogin(ctx, "BCDF-GHJK") },
-			method: "POST", path: "/v1/auth/device/BCDF-GHJK/approve", resp: deviceLoginJSON,
-			got: func(v any) string { return *v.(*apiv1.DeviceLogin).ReviewedBy }, want: "seohyun"},
+		{name: "ApproveDeviceLogin", call: func(c *Client) (any, error) { return c.ApproveDeviceLogin(ctx, "BCDF-GHJK", apiv1.RoleAgent) },
+			method: "POST", path: "/v1/auth/device/BCDF-GHJK/approve", body: `{"role":"agent"}`, resp: deviceLoginJSON,
+			got: func(v any) string {
+				d := v.(*apiv1.DeviceLogin)
+				return *d.ReviewedBy + " " + string(*d.Role)
+			},
+			want: "seohyun agent"},
 		{name: "DenyDeviceLogin", call: func(c *Client) (any, error) { return c.DenyDeviceLogin(ctx, "BCDF-GHJK") },
 			method: "POST", path: "/v1/auth/device/BCDF-GHJK/deny", resp: deviceLoginJSON,
 			got: func(v any) string { return string(v.(*apiv1.DeviceLogin).Status) }, want: "approved"},
