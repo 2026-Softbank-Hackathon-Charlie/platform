@@ -1,7 +1,7 @@
-# Argo CD renders this chart with two sets of values (deploy/argocd):
+# Argo CD renders this chart with two sets of values (helm/charts/hopcharlie-apps):
 #
 #   - the gitops file apps/<instance>/<env>.yaml as a values file, exactly as
-#     the platform wrote it (ADR 0011). It is the contract between the
+#     the platform wrote it (platform ADR 0011). It is the contract between the
 #     platform and this chart; values.schema.json checks it.
 #   - profile, the environment's profile.
 #
@@ -34,6 +34,17 @@ values:
   #   - {name: db, type: postgres}   # CNPG Cluster <app>-db; DATABASE_URL
   #   - {name: photos, type: s3}     # S3_* from profile.s3
   resources: []
+  # Values the platform sealed with the cluster's Sealed Secrets certificate,
+  # strict scope (platform ADR 0016, 0019). The platform leaves out what it
+  # has nothing for.
+  #   s3:                       # SealedSecret app-s3: the bucket's key pair
+  #     accessKey: <ciphertext>
+  #     secretKey: <ciphertext>
+  #   app:                      # SealedSecret app-secrets, envFrom in every
+  #     HOST_CODE: <ciphertext> # service container
+  #   appChecksum: <hex>        # with app; a pod annotation, so the pods
+  #                             # restart exactly when the secrets change
+  sealedSecrets: {}
 
 profile:
   # The Service of the public service, which the traffic gateway reaches.
@@ -41,6 +52,9 @@ profile:
   # ClusterIP.
   publicService:
     type: ClusterIP
+    # Port of that Service; 0 uses the service's own port. A fixed port keeps
+    # the platform's egress NetworkPolicy from opening every app's port.
+    port: 0
     annotations: {}
 
   # Names of Secrets in the namespace for pulling the images.
@@ -77,15 +91,17 @@ profile:
     storageClass: ""     # empty: the cluster's default StorageClass
     resources: {}        # of the Postgres pod
 
-  # s3 resources. The chart sets the variables; the bucket and the Secret
-  # must already exist.
+  # s3 resources. The chart sets the variables; the platform creates the
+  # bucket (platform ADR 0016).
   s3:
     endpoint: ""         # S3_ENDPOINT, e.g. https://s3.ap-northeast-2.amazonaws.com
     region: ""           # S3_REGION
     pathStyle: false     # S3_PATH_STYLE; true for MinIO
-    bucketPrefix: ""     # S3_BUCKET is <bucketPrefix><namespace>-<resource name>
+    bucketPrefix: ""     # S3_BUCKET is <bucketPrefix><namespace>
     # Secret in the namespace with the key pair (S3_ACCESS_KEY,
-    # S3_SECRET_KEY). Required when the app has an s3 resource.
+    # S3_SECRET_KEY). Required when the app has an s3 resource. With
+    # values.sealedSecrets.s3 the chart renders it, so it must be app-s3 with
+    # the default key names.
     credentialsSecret: ""
     accessKeyKey: accessKey
     secretKeyKey: secretKey

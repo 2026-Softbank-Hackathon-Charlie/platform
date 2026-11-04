@@ -1,5 +1,5 @@
 apiVersion: v2
 name: hopcharlie-app
-description: An app the HopCharlie platform deploys from GitHub (ADR 0011). Argo CD renders it for every apps/<app>/<env>.yaml in the gitops repository.
+description: An app the HopCharlie platform deploys from GitHub (platform ADR 0011). Argo CD renders it for every apps/<app>/<env>.yaml in the gitops repository.
 type: application
 version: 0.1.0

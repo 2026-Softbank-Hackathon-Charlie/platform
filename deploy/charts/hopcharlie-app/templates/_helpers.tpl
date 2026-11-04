@@ -25,7 +25,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 
 {{/*
 The resource of a type, or an empty dict. Fails when there are two: the
-variables of a second one would have no names (ADR 0011).
+variables of a second one would have no names (platform ADR 0011).
 */}}
 {{- define "hopcharlie-app.resource" -}}
 {{- $found := dict -}}
@@ -64,8 +64,9 @@ The variables the platform sets in every container (pkg/appspec Reserved).
 {{- end }}
 - name: S3_ENDPOINT
   value: {{ $s3.endpoint | quote }}
+# One bucket per instance, named after it (platform ADR 0016).
 - name: S3_BUCKET
-  value: {{ printf "%s%s-%s" ($s3.bucketPrefix | default "") $root.Release.Namespace . | quote }}
+  value: {{ printf "%s%s" ($s3.bucketPrefix | default "") $root.Release.Namespace | quote }}
 - name: S3_REGION
   value: {{ $s3.region | default "" | quote }}
 - name: S3_PATH_STYLE
@@ -84,8 +85,35 @@ The variables the platform sets in every container (pkg/appspec Reserved).
 {{- end -}}
 
 {{/*
-Fails on what the schema cannot say: unique service names and at most one
-public service.
+A SealedSecret in the release namespace. strict scope: the ciphertexts open
+only as this name in this namespace. Call with (dict "root" $ "name" <name>
+"data" <key: ciphertext>).
+*/}}
+{{- define "hopcharlie-app.sealedSecret" -}}
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: {{ .name }}
+  namespace: {{ .root.Release.Namespace }}
+  labels:
+    {{- include "hopcharlie-app.namespaceLabels" .root | nindent 4 }}
+  annotations:
+    # With the namespace, before the Deployments: Argo CD waits until the
+    # controller has unsealed it, so new pods read the new values.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  encryptedData:
+    {{- toYaml .data | nindent 4 }}
+  template:
+    metadata:
+      name: {{ .name }}
+      namespace: {{ .root.Release.Namespace }}
+    type: Opaque
+{{- end -}}
+
+{{/*
+Fails on what the schema cannot say: unique service names, at most one
+public service, and no env name that is also a sealed app secret.
 */}}
 {{- define "hopcharlie-app.check" -}}
 {{- $names := dict -}}
@@ -97,6 +125,12 @@ public service.
 {{- $_ := set $names .name true -}}
 {{- if .public -}}
 {{- $public = append $public .name -}}
+{{- end -}}
+{{- $svc := .name -}}
+{{- range $k, $_ := .env -}}
+{{- if hasKey ($.Values.values.sealedSecrets.app | default dict) $k -}}
+{{- fail (printf "values.services[%s].env.%s is also in values.sealedSecrets.app; the secret must win, so env must not set it" $svc $k) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if gt (len $public) 1 -}}

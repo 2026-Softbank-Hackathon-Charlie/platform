@@ -34,3 +34,7 @@ spec:
     - { group: "", kind: ResourceQuota }
     - { group: "", kind: LimitRange }
     - { group: networking.k8s.io, kind: NetworkPolicy }
+    # Keys the platform sealed (platform ADR 0016, 0019). The Secret each one
+    # becomes is the sealed-secrets controller's, not Argo CD's, so Secret
+    # itself stays denied.
+    - { group: bitnami.com, kind: SealedSecret }
