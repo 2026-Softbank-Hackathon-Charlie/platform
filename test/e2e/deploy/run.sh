@@ -9,14 +9,17 @@
 # Argo CD makes of them: a stateless app, an update that never gets ready
 # while the old version keeps serving through the gateway, a good update, a
 # stateful app (moimroom with a database and a bucket) and the deletions.
-# Then the platform does the same from a fake GitHub, and deploys a branch
-# of moimroom as its own instance (ADR 0015). See README.md.
+# Then the platform does the same from a fake GitHub, gives an app with an
+# s3 resource its own MinIO bucket and key and an app secret through the
+# cluster's sealed-secrets controller (ADR 0016, ADR 0019), and deploys a
+# branch of moimroom as its own instance (ADR 0015). See README.md.
 #
 # Needs: docker, kubectl, helm, go, git, curl, and the moimroom checkout
 # next to this repository (MOIMROOM_DIR).
 #   test/e2e/deploy/run.sh                  # run, then remove everything
 #   KEEP=1 test/e2e/deploy/run.sh           # leave everything running
 #   ONLY=instances test/e2e/deploy/run.sh   # only the platform's moimroom and its branch instance
+#   ONLY=storage test/e2e/deploy/run.sh     # only the platform's buckets, keys, secrets and redeploys
 #   INSTANCES=0 test/e2e/deploy/run.sh      # everything but the branch instance
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
@@ -28,8 +31,8 @@ began=$(date +%s)
 only=${ONLY:-}
 instances=${INSTANCES:-1}
 case "$only/$instances" in
-/0 | /1 | instances/1) ;;
-*) echo "ONLY must be empty or instances, INSTANCES 0 or 1, and ONLY=instances needs INSTANCES=1" >&2; exit 1 ;;
+/0 | /1 | instances/1 | storage/0 | storage/1) ;;
+*) echo "ONLY must be empty, instances or storage, INSTANCES 0 or 1, and ONLY=instances needs INSTANCES=1" >&2; exit 1 ;;
 esac
 rand() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n'; }
 busy() { (echo >"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
@@ -218,7 +221,7 @@ finish() {
     for f in gateway api fakegithub; do
       [ -s "$work/$f.log" ] && { echo "== last lines of $f.log"; tail -n 15 "$work/$f.log"; }
     done
-    for a in demo moimroom moimroom--dev; do argo get application "$a-$ENV_NAME" >/dev/null 2>&1 && show_app "$a"; done
+    for a in demo store store--dev moimroom moimroom--dev; do argo get application "$a-$ENV_NAME" >/dev/null 2>&1 && show_app "$a"; done
     echo "== Argo CD"; argo logs deploy/argocd-applicationset-controller --tail=10 2>/dev/null || true
   fi
   echo "== wall time $(($(date +%s) - began))s"
@@ -241,7 +244,9 @@ stop_processes
 rm -rf "$work"/*.log "$work"/*.json "$work"/*.stop "$work/gateway-state.json" "$work/repos" "$work/kit" "$work/github" "$work/runs"
 mkdir -p "$bin" "$work/kit"
 GOBIN="$bin" go install "sigs.k8s.io/kind@$KIND_VERSION"
-for c in api gateway; do go build -o "$bin/$c$exe" "./cmd/$c"; done
+# The minio storage driver is only in builds with -tags minio (ADR 0016).
+go build -tags minio -o "$bin/api$exe" ./cmd/api
+go build -o "$bin/gateway$exe" ./cmd/gateway
 for c in probe fakegithub driver; do go build -o "$bin/$c$exe" "./$here/$c"; done
 arch=$(docker version -f '{{.Server.Arch}}')
 for c in gitserver proxy; do
@@ -327,6 +332,46 @@ wait_http "http://127.0.0.1:$PROXY_PORT/healthz"
 for d in deploy/argocd-repo-server deploy/argocd-applicationset-controller deploy/argocd-redis statefulset/argocd-application-controller; do
   argo rollout status "$d" --timeout=300s
 done
+# Argo CD's health of a SealedSecret as infra sets it (helm/bootstrap
+# argocd-cm): Healthy once the controller unsealed this generation, Degraded
+# when it could not.
+ss_health=$(cat <<'LUA'
+hs = {}
+hs.status = "Progressing"
+hs.message = "Waiting for the sealed-secrets controller to unseal this generation"
+if obj.status ~= nil and obj.metadata.generation ~= nil and obj.status.observedGeneration == obj.metadata.generation and obj.status.conditions ~= nil then
+  for _, c in ipairs(obj.status.conditions) do
+    if c.type == "Synced" and c.status == "True" then
+      hs.status = "Healthy"
+      hs.message = c.message or ""
+    elseif c.type == "Synced" and c.status == "False" then
+      hs.status = "Degraded"
+      hs.message = c.message or ""
+    end
+  end
+end
+return hs
+LUA
+)
+argo create configmap argocd-cm --from-literal="resource.customizations.health.bitnami.com_SealedSecret=$ss_health" \
+  --dry-run=client -o yaml | argo label --local -f - app.kubernetes.io/name=argocd-cm app.kubernetes.io/part-of=argocd -o yaml |
+  argo apply --server-side --force-conflicts --field-manager=e2e-sealedsecret-health -f - >/dev/null
+
+echo "== sealed-secrets controller (chart $SEALED_SECRETS_CHART_VERSION) and its certificate"
+helm upgrade --install sealed-secrets sealed-secrets --repo "$SEALED_SECRETS_REPO" --version "$SEALED_SECRETS_CHART_VERSION" \
+  --namespace kube-system --set fullnameOverride=sealed-secrets-controller --set-string keyrenewperiod=0 \
+  --set image.registry=docker.io --set image.repository=bitnami/sealed-secrets-controller \
+  --set-string "image.tag=$SEALED_SECRETS_IMAGE_TAG" --wait --timeout 300s >/dev/null
+# The public certificate only, from the controller's /v1/cert.pem through the
+# API server's service proxy. The proxy needs the port's name ("http"): with
+# an empty port it finds no endpoints.
+cert_pem() {
+  kubectl get --raw "/api/v1/namespaces/kube-system/services/http:sealed-secrets-controller:http/proxy/v1/cert.pem" >"$work/sealed-secrets.pem" &&
+    grep -q "BEGIN CERTIFICATE" "$work/sealed-secrets.pem"
+}
+# The Service has no endpoint until the controller is ready.
+wait_for 180 "the sealed-secrets controller serves its certificate" cert_pem
+! grep -q PRIVATE "$work/sealed-secrets.pem" || fail "the controller's certificate file holds a private key"
 
 echo "== repositories infra (the chart) and gitops; AppProject and ApplicationSet (deploy/argocd)"
 new_repo "$work/repos/infra" infra
@@ -343,7 +388,7 @@ argo_refresh
 # A kept cluster may still have the apps of the last run: the empty gitops
 # repository makes the ApplicationSet delete them.
 wait_for 300 "Applications of an earlier run are deleted" no_apps
-kubectl delete namespace demo moimroom moimroom--dev --ignore-not-found --wait=true >/dev/null
+kubectl delete namespace demo store store--dev moimroom moimroom--dev --ignore-not-found --wait=true >/dev/null
 
 echo "== gateway (app domain $APP_DOMAIN, backends through the proxy)"
 gw_token=$(rand 24)
@@ -371,18 +416,14 @@ kubectl -n minio create secret generic minio-root --from-literal=MINIO_ROOT_USER
   --from-literal=MINIO_ROOT_PASSWORD="$s3_key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 sed "s|MINIO_IMAGE|$MINIO_IMAGE|" "$here/minio.yaml" | kubectl apply -f - >/dev/null
 kubectl -n minio rollout status deploy/minio --timeout=300s
-# infra's part: the bucket <prefix><namespace>-<resource> (no prefix here),
-# for moimroom and for its branch instance moimroom--dev
+# The by-hand moimroom's bucket <prefix><namespace>, made with the root key
+# (through the platform the storage driver makes each instance's bucket and
+# key), and a bucket of nobody's, which no instance's key may reach.
 s3() { incluster -f -o /dev/null --aws-sigv4 "aws:amz:us-east-1:s3" --user "$s3_user:$s3_key" "$@"; }
-for b in moimroom-photos moimroom--dev-photos; do
+for b in "${BUCKET_PREFIX}moimroom" "${BUCKET_PREFIX}other"; do
   retry 30 s3 -X PUT "http://minio.minio.svc.cluster.local:9000/$b"
   s3 -I "http://minio.minio.svc.cluster.local:9000/$b" || fail "bucket $b is not there"
 done
-# s3_secret namespace: infra's other part, the bucket's keys in the namespace
-s3_secret() {
-  kubectl -n "$1" create secret generic s3-credentials --from-literal=accessKey=$s3_user \
-    --from-literal=secretKey="$s3_key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-}
 
 # ---------------------------------------------------------------------------
 # By hand: the gitops files as run.sh writes them (skipped with ONLY=instances).
@@ -463,9 +504,10 @@ values:
 EOF
   commit_gitops "deploy moimroom" moimroom
   t0=$(date +%s)
-  # infra's other part: the credentials Secret in the app's namespace
+  # By hand the bucket key is the root key in Secret app-s3 (profile.s3);
+  # the platform seals one of the bucket's own instead.
   wait_for 120 "namespace moimroom exists" kubectl get namespace moimroom
-  kubectl -n moimroom create secret generic s3-credentials --from-literal=accessKey=$s3_user \
+  kubectl -n moimroom create secret generic app-s3 --from-literal=accessKey=$s3_user \
     --from-literal=secretKey="$s3_key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   wait_for 600 "moimroom-$ENV_NAME is Synced Healthy" healthy_with moimroom "$moimroom_image" || { show_app moimroom; exit 1; }
   moimroom_healthy=$(since "$t0")
@@ -488,7 +530,7 @@ EOF
   ns_gone=$(since "$t0")
   no_volumes() { [ -z "$(kubectl get pv -o jsonpath="{range .items[?(@.spec.claimRef.namespace==\"$1\")]}{.metadata.name}{end}")" ]; }
   wait_for 120 "the volumes of moimroom are deleted" no_volumes moimroom
-  ! kubectl -n moimroom get secret s3-credentials >/dev/null 2>&1 || fail "the S3 Secret outlived its namespace"
+  ! kubectl -n moimroom get secret app-s3 >/dev/null 2>&1 || fail "the S3 Secret outlived its namespace"
   echo "Applications gone ${apps_gone}s, namespaces (with the database volume and the S3 Secret) ${ns_gone}s after the commit"
 fi
 
@@ -520,7 +562,13 @@ serve fakegithub "http://127.0.0.1:$GITHUB_PORT/healthz" \
   "$bin/fakegithub$exe" -listen "127.0.0.1:$GITHUB_PORT" -root "$ghroot" -key "$work/github-app.pem"
 op_token=$(rand 24)
 hook_secret=$(rand 16)
-PLATFORM_DATABASE_URL="postgres://platform:$store_pw@127.0.0.1:$STORE_PORT/platform?sslmode=disable" \
+secrets_key=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+# HTTP_PROXY: the minio driver calls MinIO by its in-cluster name through the
+# proxy; everything else the API calls is on 127.0.0.1, which Go does not
+# proxy. The MinIO root key is the driver's admin key (envs.yaml).
+HTTP_PROXY=http://127.0.0.1:$PROXY_PORT NO_PROXY=127.0.0.1,localhost \
+  E2E_MINIO_ADMIN_ACCESS_KEY=$s3_user E2E_MINIO_ADMIN_SECRET_KEY=$s3_key PLATFORM_SECRETS_KEY=$secrets_key \
+  PLATFORM_DATABASE_URL="postgres://platform:$store_pw@127.0.0.1:$STORE_PORT/platform?sslmode=disable" \
   PLATFORM_TOKENS="operator:operator:$op_token" \
   PLATFORM_ENVS_FILE=$root/$here/envs.yaml \
   PLATFORM_GATEWAY_URL=http://127.0.0.1:$GW_ADMIN_PORT GATEWAY_TOKEN=$gw_token \
@@ -561,6 +609,18 @@ gitops_file() { # instance: apps/<instance>/kind.yaml at the gitops repository's
   g "$gitops" fetch -q origin
   g "$gitops" show "origin/main:apps/$1/$ENV_NAME.yaml"
 }
+# s3 args...: what a key may do with a bucket (driver s3), by MinIO's
+# in-cluster name through the proxy
+s3check() { HTTP_PROXY=http://127.0.0.1:$PROXY_PORT drv s3 -endpoint minio.minio.svc.cluster.local:9000 "$@"; }
+# bucket_key instance: the bucket key the controller unsealed into the
+# instance's Secret app-s3, as "<access> <secret>"
+bucket_key() {
+  local ak sk
+  ak=$(kubectl -n "$1" get secret app-s3 -o jsonpath='{.data.accessKey}' | base64 -d)
+  sk=$(kubectl -n "$1" get secret app-s3 -o jsonpath='{.data.secretKey}' | base64 -d)
+  [ -n "$ak" ] && [ -n "$sk" ] && echo "$ak $sk"
+}
+has_secret() { kubectl -n "$1" get secret "$2" >/dev/null 2>&1; }
 
 if [ -z "$only" ]; then
   echo "== register e2e/demo (POST /v1/apps) and follow its first deployment"
@@ -607,6 +667,104 @@ if [ -z "$only" ]; then
   echo "Application and namespace gone ${p_delete}s after the DELETE; apps/demo/ is gone from the gitops repository"
 fi
 
+if [ -z "$only" ] || [ "$only" = storage ]; then
+  echo "== storage: register e2e/store (demo with an s3 resource); the platform makes its bucket and key"
+  store_repo=$ghroot/e2e/store
+  mkdir -p "$store_repo"
+  g "$store_repo" init -q -b main
+  cp -r "$here/demo/." "$store_repo/"
+  cat >"$store_repo/platform.yaml" <<EOF
+name: store
+services:
+  - name: web
+    port: 8080
+    healthCheck: /healthz
+    public: true
+    env:
+      DEMO_MESSAGE: plain
+resources:
+  - {name: files, type: s3}
+EOF
+  g "$store_repo" add -A
+  g "$store_repo" commit -q -m "store"
+  t0=$(date +%s)
+  dep=$(drv register -repo e2e/store -env "$ENV_NAME")
+  follow "$dep" healthy
+  s_register=$(since "$t0")
+  file=$(gitops_file store)
+  case "$file" in *"sealedSecrets:"*"s3:"*"accessKey: "*) ;; *) fail "apps/store/$ENV_NAME.yaml has no sealed bucket key; it is:"$'\n'"$file" ;; esac
+  case "$file" in *"appChecksum"*) fail "apps/store/$ENV_NAME.yaml seals app secrets the app does not have" ;; esac
+  wait_for 60 "Host store.$APP_DOMAIN answers 'v1 plain'" gateway_says store "v1 plain"
+  read -r ak sk <<<"$(bucket_key store)" || fail "the controller did not unseal Secret app-s3 in namespace store"
+  case "$file" in *"$ak"* | *"$sk"*) fail "the gitops file has the bucket key in plain text" ;; esac
+  s3check -access "$ak" -secret "$sk" -bucket "${BUCKET_PREFIX}store" -want ok || fail "store's key cannot use its bucket"
+  s3check -access "$ak" -secret "$sk" -bucket "${BUCKET_PREFIX}other" -want denied || fail "store's key reaches another bucket"
+  first=$(drv deployment -id "$dep")
+  echo "store healthy ${s_register}s after POST /v1/apps; its unsealed key ($ak) writes ${BUCKET_PREFIX}store and is denied ${BUCKET_PREFIX}other"
+
+  echo "== an app secret, then redeploy: no build, the pods restart with it and it wins over platform.yaml"
+  drv secret-set -app store -name DEMO_MESSAGE -value "sealed one"
+  [ "$(drv secret-get -app store -name DEMO_MESSAGE)" = "sealed one" ] || fail "the secret does not read back"
+  t0=$(date +%s)
+  rdep=$(drv redeploy -app store)
+  follow "$rdep" healthy
+  s_redeploy=$(since "$t0")
+  read -r trig build image <<<"$(drv deployment -id "$rdep")"
+  [ "$trig $build $image" = "redeploy - ${first##* }" ] || fail "redeploy $rdep is '$trig $build $image', want 'redeploy - ${first##* }' (no build, the first image)"
+  file=$(gitops_file store)
+  case "$file" in *"appChecksum: "*) ;; *) fail "apps/store/$ENV_NAME.yaml has no sealed secrets after the redeploy" ;; esac
+  case "$file" in *"sealed one"*) fail "the gitops file has the secret in plain text" ;; esac
+  case "$file" in *'"DEMO_MESSAGE": "plain"'*) fail "platform.yaml's DEMO_MESSAGE is still in env; the secret must win" ;; esac
+  wait_for 120 "Host store.$APP_DOMAIN answers 'v1 sealed one'" gateway_says store "v1 sealed one"
+  [ "$(kubectl -n store get secret app-secrets -o jsonpath='{.data.DEMO_MESSAGE}' | base64 -d)" = "sealed one" ] ||
+    fail "Secret app-secrets in namespace store does not hold the secret"
+  read -r ak_after _ <<<"$(bucket_key store)"
+  [ "$ak_after" = "$ak" ] || fail "the redeploy changed the bucket key ($ak -> $ak_after)"
+  echo "redeploy healthy ${s_redeploy}s after the request, with the first deployment's image and no build; store answers 'v1 sealed one'"
+
+  echo "== change the secret and redeploy again"
+  drv secret-set -app store -name DEMO_MESSAGE -value "sealed two"
+  t0=$(date +%s)
+  follow "$(drv redeploy -app store)" healthy
+  s_redeploy2=$(since "$t0")
+  wait_for 120 "Host store.$APP_DOMAIN answers 'v1 sealed two'" gateway_says store "v1 sealed two"
+
+  echo "== branch instance store--dev: a bucket and key of its own"
+  g "$store_repo" branch dev
+  t0=$(date +%s)
+  out=$(drv add-instance -app store -branch dev)
+  [ "${out#* }" = store--dev ] || fail "branch dev became instance '${out#* }', want store--dev"
+  follow "${out% *}" healthy
+  s_dev=$(since "$t0")
+  wait_for 60 "Host store--dev.$APP_DOMAIN answers 'v1 sealed two' (the app-wide secret)" gateway_says store--dev "v1 sealed two"
+  read -r dak dsk <<<"$(bucket_key store--dev)" || fail "no Secret app-s3 in namespace store--dev"
+  [ "$dak" != "$ak" ] || fail "store--dev got store's key"
+  s3check -access "$dak" -secret "$dsk" -bucket "${BUCKET_PREFIX}store--dev" -want ok || fail "store--dev's key cannot use its bucket"
+  s3check -access "$dak" -secret "$dsk" -bucket "${BUCKET_PREFIX}store" -want denied || fail "store--dev's key reaches store's bucket"
+  s3check -access "$ak" -secret "$sk" -bucket "${BUCKET_PREFIX}store--dev" -want denied || fail "store's key reaches store--dev's bucket"
+  echo "store--dev healthy ${s_dev}s after POST instances, with its own bucket and key; neither key reaches the other's bucket"
+
+  echo "== DELETE the instance: its bucket and key go, store's stay"
+  t0=$(date +%s)
+  drv delete-instance -app store -instance store--dev
+  wait_for 180 "store--dev-$ENV_NAME and namespace store--dev are deleted" instance_gone store--dev
+  wait_for 120 "bucket ${BUCKET_PREFIX}store--dev is deleted" s3check -access "$s3_user" -secret "$s3_key" -bucket "${BUCKET_PREFIX}store--dev" -want missing
+  s_dev_delete=$(since "$t0")
+  s3check -access "$dak" -secret "$dsk" -bucket "${BUCKET_PREFIX}other" -want badkey || fail "store--dev's key still exists"
+  s3check -access "$ak" -secret "$sk" -bucket "${BUCKET_PREFIX}store" -want ok || fail "deleting store--dev broke store's key"
+  echo "store--dev's Application, namespace, bucket and key gone ${s_dev_delete}s after the DELETE; store's key still works"
+
+  echo "== DELETE /v1/apps/store: its bucket and key go too"
+  t0=$(date +%s)
+  drv delete -app store
+  wait_for 180 "store-$ENV_NAME and namespace store are deleted" instance_gone store
+  wait_for 120 "bucket ${BUCKET_PREFIX}store is deleted" s3check -access "$s3_user" -secret "$s3_key" -bucket "${BUCKET_PREFIX}store" -want missing
+  s_delete=$(since "$t0")
+  s3check -access "$ak" -secret "$sk" -bucket "${BUCKET_PREFIX}other" -want badkey || fail "store's key still exists"
+  echo "store's Application, namespace, bucket and key gone ${s_delete}s after the DELETE"
+fi
+
+if [ "$only" != storage ]; then
 echo "== register e2e/moimroom ($MOIMROOM_DIR at HEAD: postgres and s3)"
 moim_repo=$ghroot/e2e/moimroom
 mkdir -p "$moim_repo"
@@ -616,15 +774,11 @@ g "$moim_repo" add -A
 g "$moim_repo" commit -q -m "moimroom"
 t0=$(date +%s)
 dep=$(drv register -repo e2e/moimroom -env "$ENV_NAME")
-follow "$dep" healthy >"$work/watch-moimroom.out" 2>&1 &
-watcher=$!
-# infra's part again: the S3 keys in the namespace once Argo CD made it (the
-# bucket moimroom-photos is in MinIO)
-wait_for 300 "namespace moimroom exists" kubectl get namespace moimroom
-s3_secret moimroom
-wait "$watcher" || { cat "$work/watch-moimroom.out"; fail "moimroom's first deployment did not become healthy"; }
-cat "$work/watch-moimroom.out"
+# The platform makes (or, after the by-hand part, takes over) the bucket
+# ${BUCKET_PREFIX}moimroom and seals a key for it.
+follow "$dep" healthy
 p_moimroom=$(since "$t0")
+has_secret moimroom app-s3 || fail "no Secret app-s3 in namespace moimroom"
 wait_for 60 "Host moimroom.$APP_DOMAIN /readyz answers 200" gateway_status moimroom /readyz 200
 # spaces instance: how many spaces the instance lists through the gateway
 spaces() { curl -s -H "Host: $1.$APP_DOMAIN" "http://127.0.0.1:$GW_PORT/api/spaces?limit=50" | grep -o '"id":' | wc -l | tr -d ' '; }
@@ -645,18 +799,12 @@ if [ "$instances" = 1 ]; then
     g "$moim_repo" checkout -q main
   }
   # add_dev: POST /v1/apps/moimroom/instances {"branch":"dev"}, then follow
-  # the first deployment to healthy, putting the S3 keys in the new namespace
+  # the first deployment to healthy (the platform makes its bucket and key)
   add_dev() {
-    local out dep watcher
+    local out
     out=$(drv add-instance -app moimroom -branch dev)
-    dep=${out% *}
     [ "${out#* }" = moimroom--dev ] || fail "branch dev became instance '${out#* }', want moimroom--dev"
-    follow "$dep" healthy >"$work/watch-dev.out" 2>&1 &
-    watcher=$!
-    wait_for 300 "namespace moimroom--dev exists" kubectl get namespace moimroom--dev
-    s3_secret moimroom--dev
-    wait "$watcher" || { cat "$work/watch-dev.out"; fail "the first deployment of moimroom--dev did not become healthy"; }
-    cat "$work/watch-dev.out"
+    follow "${out% *}" healthy
   }
 
   echo "== branch instance: add moimroom's branch dev (POST /v1/apps/moimroom/instances)"
@@ -716,6 +864,12 @@ for i in moimroom moimroom--dev; do
   gateway_status "$i" / 404 || fail "the gateway still serves $i"
 done
 echo "moimroom deleted with its namespaces in ${p_moimroom_delete}s"
+for b in moimroom moimroom--dev; do
+  [ "$instances" = 1 ] || [ "$b" = moimroom ] || continue
+  wait_for 120 "bucket ${BUCKET_PREFIX}$b is deleted" s3check -access "$s3_user" -secret "$s3_key" -bucket "${BUCKET_PREFIX}$b" -want missing
+done
+echo "the buckets of moimroom's instances are deleted"
+fi
 
 echo "== results"
 if [ -z "$only" ]; then
@@ -727,16 +881,24 @@ if [ -z "$only" ]; then
   echo "  deleted             Applications ${apps_gone}s, namespaces ${ns_gone}s"
 fi
 echo "through the platform:"
+if [ -z "$only" ] || [ "$only" = storage ]; then
+  echo "  store (s3)          healthy ${s_register}s after POST /v1/apps, with its own bucket and sealed key"
+  echo "  secret + redeploy   healthy ${s_redeploy}s and ${s_redeploy2}s after the request, no build; the pods got the secret"
+  echo "  instance store--dev healthy ${s_dev}s, own bucket and key; deleted with them in ${s_dev_delete}s"
+  echo "  DELETE store        Application, namespace, bucket and key gone in ${s_delete}s"
+fi
 if [ -z "$only" ]; then
   echo "  demo registered     healthy ${p_register}s after POST /v1/apps"
   echo "  failing push        failed ${p_bad}s after the webhook; $(cat "$work/probe-platform-bad.log")"
   echo "  two pushes          first superseded, second healthy ${p_v3}s after the webhooks; $(cat "$work/probe-platform-v3.log")"
   echo "  DELETE              Application and namespace gone in ${p_delete}s"
 fi
-echo "  moimroom            healthy ${p_moimroom}s after POST /v1/apps"
-if [ "$instances" = 1 ]; then
-  echo "  instance dev        healthy ${p_dev}s after POST instances; a push to dev healthy in ${p_dev_push}s, main untouched"
-  echo "  DELETE instance     Application and namespace gone in ${p_dev_delete}s, main kept serving; added again in ${p_dev_again}s"
+if [ "$only" != storage ]; then
+  echo "  moimroom            healthy ${p_moimroom}s after POST /v1/apps"
+  if [ "$instances" = 1 ]; then
+    echo "  instance dev        healthy ${p_dev}s after POST instances; a push to dev healthy in ${p_dev_push}s, main untouched"
+    echo "  DELETE instance     Application and namespace gone in ${p_dev_delete}s, main kept serving; added again in ${p_dev_again}s"
+  fi
+  echo "  DELETE moimroom     every instance's Application and namespace gone in ${p_moimroom_delete}s"
 fi
-echo "  DELETE moimroom     every instance's Application and namespace gone in ${p_moimroom_delete}s"
 echo "== E2E passed"

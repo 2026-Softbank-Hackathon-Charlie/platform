@@ -30,6 +30,8 @@ tags:
   title: 에이전트 활동 (agent)
 - name: apps
   title: 앱 (apps)
+- name: deployments
+  title: 배포 (deployments)
 
 # Per operationId. summary: one line for the endpoint table. role: who may call it.
 # notes: Notion markdown shown in the endpoint's toggle. Order here is the order on the page.
@@ -299,6 +301,34 @@ operations:
     summary: 에이전트 세션 종료
     role: 세션 actor, operator
     notes: '실행 중인 세션을 끝낸다. 세션의 actor나 operator만 끝낼 수 있다. PLATFORM_AGENT_IDLE(기본 30분) 동안 이벤트가 없는 세션은 플랫폼이 cancelled로 끝내고 summary에 "no activity for 30m; closed by the platform"을 남긴다. 오류 코드: agent_session_not_found(404), agent_session_finished(409).'
+  createApp:
+    summary: GitHub 저장소에서 앱 등록과 첫 배포
+    role: operator
+    notes: |-
+      GitHub 저장소의 앱을 등록하고 배포한다. 저장소에는 서비스마다 Dockerfile과 루트의 `platform.yaml`이 있어야 한다. `branch` head의 `platform.yaml`을 GitHub App으로 읽어 `POST /v1/apps/validate`와 같은 규칙으로 검사하고, `name`으로 앱을 저장한 뒤 첫 배포(trigger `register`)를 `environments` 전부로 큐에 넣는다. `autoDeploy`이면 이후 그 브랜치의 push도 배포한다.
+
+      - 배포는 서비스마다 이미지를 빌드하고, gitops 저장소에 `apps/<instance>/<env>.yaml`을 커밋하고, Argo CD가 Application `<instance>-<env>`를 네임스페이스 `<instance>`에 동기화하게 한다. `branch`가 기본 인스턴스(앱 이름)다.
+      - `platform.yaml`에 s3 리소스가 있으면 모든 대상 환경에 저장소 드라이버가 있어야 한다. 플랫폼이 인스턴스마다 버킷과 그 버킷 전용 키를 만들어 봉인한다(ADR 0016).
+      - 앱 이름 `api`, `console`, `app`, `headlamp`는 플랫폼과 infra가 쓴다.
+      - 오류 코드: invalid_request(400), app_exists(409, 같은 이름의 앱이 있거나 예약된 이름), storage_cleanup_pending(409, 지운 같은 이름 앱의 버킷과 키를 아직 지우는 중), invalid_app_spec(422), github_unreachable(502), github_not_configured(503), storage_not_configured(503, s3 리소스가 있는데 저장소 드라이버가 없는 환경).
+  createAppInstance:
+    summary: 브랜치를 인스턴스로 추가하고 첫 배포
+    role: operator
+    notes: |-
+      등록한 앱의 다른 브랜치를 인스턴스 `<app>--<slug>`로 따로 배포한다(ADR 0015). 브랜치 head의 `platform.yaml`을 등록과 같은 규칙으로 검사하고(`name`은 앱 이름이어야 한다) 첫 배포를 앱의 모든 환경으로 큐에 넣는다.
+
+      - 인스턴스 이름은 48자까지이고, 길면 슬러그를 자르고 해시 6자를 붙인다.
+      - s3 리소스가 있으면 인스턴스마다 버킷과 키를 따로 받는다.
+      - 오류 코드: invalid_request(400), app_not_found(404), app_not_registered(409), branch_exists(409), instance_exists(409), instance_limit(409, 기본 인스턴스를 포함해 3개), storage_cleanup_pending(409), invalid_app_spec(422), github_unreachable(502), github_not_configured(503), storage_not_configured(503).
+  createDeployment:
+    summary: 지금 배포하거나 빌드 없이 재배포
+    role: operator
+    notes: |-
+      등록한 앱을 지금 배포한다(trigger `manual`). `branch`가 인스턴스를 고르고(기본은 앱의 브랜치), `ref`를 커밋으로 풀어 그 커밋의 `platform.yaml`을 등록과 같이 검사한 뒤 배포를 큐에 넣는다. 202가 바로 오고, 진행은 `GET /v1/deployments/{id}/events`로 본다.
+
+      - `redeploy: true`(trigger `redeploy`)이면 빌드도 GitHub 읽기도 없이 그 인스턴스의 마지막 healthy 배포를 같은 커밋, 이미지, `platform.yaml`로 지금의 시크릿과 함께 다시 배포한다. 시크릿을 바꾼 뒤에 쓴다. `ref`와 함께 쓸 수 없다.
+      - 그 인스턴스에 끝나지 않은 배포가 있으면 재배포는 409 deployment_in_progress다. 진행 중인 배포는 gitops 커밋 때의 시크릿을 쓰므로 끝난 뒤에 다시 보낸다.
+      - 오류 코드: invalid_request(400, 앱이 배포하지 않는 브랜치, 등록하지 않은 환경, 없는 ref, ref와 redeploy를 함께 보냄), app_not_found(404), app_not_registered(409), nothing_to_redeploy(409, healthy 배포가 없음), deployment_in_progress(409), invalid_app_spec(422), github_unreachable(502), github_not_configured(503).
   listAppSecrets:
     summary: 앱 시크릿 이름 목록
     role: 모든 역할

@@ -35,7 +35,7 @@
 
 - 배포할 때 인스턴스와 환경마다 받는 시크릿을 그 환경 클러스터의 Sealed Secrets 공개 인증서로 봉인한다. 범위는 strict(네임스페이스 = 인스턴스, 이름 = `app-secrets`)다.
 - 앱 차트가 SealedSecret `app-secrets`를 만들고, 모든 서비스 컨테이너에 `envFrom`으로 넣는다.
-- 봉인은 할 때마다 결과가 달라진다. 그래서 파드가 바뀐 값을 받도록, 받는 시크릿 전체(이름과 값)의 HMAC-SHA256을 `appChecksum`으로 넣고 차트가 파드 템플릿 annotation에 쓴다. HMAC 키는 시크릿 키에서 파생한다. 값이 같으면 checksum도 같아서 파드가 다시 뜨지 않는다.
+- 봉인은 할 때마다 결과가 달라진다. 그래서 파드가 바뀐 값을 받도록, 앱, 인스턴스, 받는 시크릿 전체(이름과 값), 버킷 키 id의 HMAC-SHA256을 `appChecksum`으로 넣고 차트가 파드 템플릿 annotation에 쓴다. HMAC 키는 시크릿 키에서 파생한다. 값이 같으면 checksum도 같아서 파드가 다시 뜨지 않는다. 버킷 키 id가 들어가므로 키가 바뀌면 파드도 다시 뜬다(ADR 0016).
 - gitops 파일의 `values`에 다음을 더한다. ADR 0016의 S3 키도 여기에 들어간다.
 
 ```yaml
@@ -73,6 +73,8 @@ environments:
 
 - `POST /v1/apps/{name}/deployments`에 `redeploy: true`를 주면 그 인스턴스의 마지막 healthy 배포를 같은 커밋과 같은 이미지로 다시 배포한다. 빌드와 GitHub 읽기는 하지 않고, 지금의 시크릿으로 gitops 파일만 다시 쓴다. trigger는 `redeploy`다.
 - healthy 배포가 없으면 409 `nothing_to_redeploy`다. `ref`와 함께 쓸 수 없다.
+- 그 인스턴스에 끝나지 않은 배포(queued, building, committing, syncing)가 있으면 409 `deployment_in_progress`다. 진행 중인 배포는 gitops 커밋 때의 시크릿을 이미 쓰므로, 끝난 뒤에 다시 재배포한다.
+- 배포는 읽은 `platform.yaml`을 기록하고, 재배포는 그 기록과 이미지를 복사한다. 그래서 GitHub을 읽지 않는다.
 - 콘솔은 시크릿을 저장한 뒤 "재배포" 버튼으로 이 요청을 보낸다. CLI는 `charlie app secret list|get|set|rm`과 `charlie deploy APP --redeploy`를 쓴다.
 
 ## 검토한 대안

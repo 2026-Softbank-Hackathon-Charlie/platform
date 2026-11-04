@@ -1,8 +1,20 @@
 # PLATFORM_ENVS_FILE for the deploy E2E: one environment, the kind cluster
 # that runs Argo CD and the apps. Its name is the <env> of the gitops files
-# and the gateway backend's name.
+# and the gateway backend's name. The API runs from the repository root, so
+# the certificate path is relative to it; run.sh writes the file from the
+# cluster's sealed-secrets controller. The minio driver reaches MinIO by its
+# in-cluster name through the proxy (the API's HTTP_PROXY), with MinIO's root
+# key from the variables run.sh sets; the API is built with -tags minio.
 environments:
   - name: kind
     provider: onprem
     displayName: kind (deploy E2E)
     kubeContext: kind-hop-deploy
+    sealedSecretsCert: .hopcharlie/e2e-deploy/sealed-secrets.pem
+    storage:
+      driver: minio
+      bucketPrefix: e2e-
+      region: us-east-1
+      endpoint: http://minio.minio.svc.cluster.local:9000
+      adminAccessKeyEnv: E2E_MINIO_ADMIN_ACCESS_KEY
+      adminSecretKeyEnv: E2E_MINIO_ADMIN_SECRET_KEY

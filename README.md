@@ -423,7 +423,7 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 | `DELETE /v1/apps/{name}` | operator | 등록 해제. 추가한 인스턴스도 함께 지움. gitops 파일을 지우면 Argo CD가 워크로드를 지움. 202. 파일에만 있는 앱은 409 |
 | `POST /v1/apps/{name}/instances` | operator | `{branch, autoDeploy?}`. 브랜치를 인스턴스 `<app>--<slug>`로 더함. 브랜치 head의 `platform.yaml`을 등록과 같은 규칙으로 검사하고 첫 배포를 큐에 넣음. 201 + `{instance, deployment}`. 이미 있는 브랜치는 409 `branch_exists`, 인스턴스 이름이 겹치면 409 `instance_exists`, 3개를 넘으면 409 `instance_limit` |
 | `DELETE /v1/apps/{name}/instances/{instance}` | operator | 추가한 인스턴스를 지움. gitops 파일, 게이트웨이 등록, 브랜치와 배포 기록을 지움. 202. 기본 인스턴스는 409 `default_instance` |
-| `POST /v1/apps/{name}/deployments` | operator | `{branch?, ref?, environments?}`로 지금 배포. `branch`가 인스턴스를 고름(기본은 앱의 브랜치). 202 + Deployment |
+| `POST /v1/apps/{name}/deployments` | operator | `{branch?, ref?, environments?, redeploy?}`로 지금 배포. `branch`가 인스턴스를 고름(기본은 앱의 브랜치). `redeploy: true`이면 그 인스턴스의 마지막 healthy 배포를 같은 커밋, 이미지, `platform.yaml`로 빌드 없이 지금의 시크릿으로 다시 배포(trigger `redeploy`). 202 + Deployment |
 | `GET /v1/apps/{name}/deployments` | viewer | 최신순, `?limit=` (기본 20), `?branch=`로 그 브랜치의 배포만 |
 | `GET /v1/deployments/{id}` | viewer | 배포 하나 (상태, 이미지 digest, 환경별 상태) |
 | `GET /v1/deployments/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속) |
@@ -434,7 +434,8 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 | `POST /v1/webhooks/github` | 없음 | GitHub App webhook. `X-Hub-Signature-256`으로 확인. 앱의 브랜치나 추가한 브랜치 가운데 `autoDeploy`가 켜진 브랜치의 push만 그 인스턴스에 배포(202), 나머지는 204 |
 
 - 배포 상태는 `queued`, `building`, `committing`, `syncing`을 거쳐 `healthy`, `failed`, `superseded`로 끝납니다. 같은 환경으로 새 배포가 생기면 끝나지 않은 이전 배포는 `superseded`가 됩니다.
-- 테이블은 마이그레이션 `0005_app_deploy.sql`과 `0006_app_branches.sql`이 만듭니다.
+- 테이블은 마이그레이션 `0005_app_deploy.sql`과 `0006_app_branches.sql`이 만듭니다. 배포가 읽은 `platform.yaml`은 `0008_app_secrets.sql`이 더한 `deployments.spec`에 남아, 재배포가 GitHub을 읽지 않고 그대로 씁니다.
+- 앱 이름 `api`, `console`, `app`, `headlamp`는 플랫폼과 infra가 쓰므로 등록할 수 없습니다(409 `app_exists`).
 
 ### 앱 시크릿
 
@@ -447,7 +448,10 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 - 감사 로그에는 검증을 통과한 앱, 인스턴스, 넣은 이름(`set`), 지운 이름(`deleted`)만 남고 값은 남지 않습니다. 400으로 거절한 요청은 이름 대신 개수(`setCount`, `deleteCount`)만 남깁니다. 이름 자리에 값을 잘못 붙여 넣었을 수 있기 때문입니다. 같은 이유로 규칙에 맞지 않는 앱 이름이나 시크릿 이름은 감사 로그의 경로에 `{invalid}`로 남습니다.
 - 값 조회도 GET이지만 매번 감사 로그에 남습니다. 값을 보내기 전에 감사 로그를 먼저 쓰고, 쓰지 못하면 값을 주지 않고 503 `audit_unavailable`로 답합니다. 서버 로그에도 값과 암호문을 쓰지 않습니다.
 - viewer와 agent 토큰(예: Rin의 CLI 토큰)은 이름만 볼 수 있습니다.
-- 아직은 저장과 조회만 됩니다. 배포할 때 시크릿을 봉인해 gitops 파일의 `values.sealedSecrets`로 넣는 것과 `POST /v1/apps/{name}/deployments`의 `redeploy`는 다음 단계에서 붙입니다.
+- 배포할 때마다 실행기가 그 인스턴스가 받는 시크릿을 환경 클러스터의 Sealed Secrets 인증서로 봉인해 gitops 파일의 `values.sealedSecrets.app`에 넣고(SealedSecret `app-secrets`, 범위 strict), `platform.yaml`의 서비스 env에서 같은 이름을 뺍니다. 시크릿이 이깁니다. 차트가 모든 서비스 컨테이너에 `envFrom`으로 넣습니다.
+- 봉인은 할 때마다 결과가 달라서, 앱, 인스턴스, 시크릿 이름과 값, 버킷 키 id로 만든 HMAC-SHA256(`appChecksum`)을 함께 씁니다. 차트가 파드 annotation에 쓰므로, 시크릿이나 버킷 키가 바뀔 때만 파드가 다시 뜹니다.
+- 시크릿을 바꾼 뒤에는 `POST /v1/apps/{name}/deployments`에 `redeploy: true`를 보냅니다. 마지막 healthy 배포를 같은 커밋, 이미지, `platform.yaml`로 다시 배포하므로 빌드와 GitHub 읽기가 없습니다. healthy 배포가 없으면 409 `nothing_to_redeploy`, 그 인스턴스에 끝나지 않은 배포(queued, building, committing, syncing)가 있으면 409 `deployment_in_progress`입니다. 진행 중인 배포는 gitops 커밋 때의 시크릿을 쓰므로 끝난 뒤에 다시 보냅니다. `ref`와 함께 쓰면 400입니다.
+- 시크릿이 있는 앱인데 서버에 `PLATFORM_SECRETS_KEY`가 없거나, 그 환경에 쓸 수 있는 인증서가 없으면 배포가 `failed`로 끝나고 이유가 `error`에 남습니다.
 
 ### 버킷과 키 드라이버
 
@@ -462,7 +466,11 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 - 모든 작업은 다시 불러도 됩니다. 이미 있는 버킷과 사용자는 그대로 쓰고, 새 키는 사용자를 새로 만들었거나 요청했을 때만 만듭니다. 새 키를 만들기 전에 남길 키 하나를 빼고 나머지 키를 지워서, 중간에 끊긴 뒤 다시 해도 아무도 모르는 키가 쌓이지 않습니다. 삭제는 사용자(키와 정책 포함)를 먼저 지우고, 버킷을 비운 뒤 지웁니다. 이미 없는 것은 건너뜁니다.
 - `gcs`는 아직 구현하지 않았고, 설정하면 서버가 시작하지 않습니다.
 - 인증서 파일이 없거나 읽히지 않으면 시작할 때 경고만 남깁니다. 봉인할 때마다 파일의 수정 시각과 크기를 보고, 바뀌었으면 다시 읽어 내용이 바뀐 경우에만 새 인증서를 씁니다. 인증서를 나중에 넣거나 바꿔도 서버를 다시 띄울 필요가 없습니다. 만료된 인증서와 2048비트보다 짧은 RSA 키는 거절합니다.
-- 지금은 드라이버와 봉인만 준비되어 있고, 배포 실행기가 이것을 부르는 것은 다음 단계입니다. 플랫폼 DB에는 인스턴스와 환경마다 봉인한 키, 키 식별자, 인증서 지문만 저장합니다(`instance_storage`). 이 행은 앱이나 인스턴스를 지워도 남고, 드라이버가 버킷과 키를 지운 뒤에 지웁니다.
+- 배포 실행기가 커밋하기 전에, 인스턴스 잠금 안에서 환경마다 이렇게 합니다. 저장한 키가 없으면 드라이버로 버킷과 새 키를 만들고, 키를 그 환경의 인증서로 봉인(네임스페이스는 인스턴스, Secret `app-s3`)해 저장합니다. 저장한 키가 있고 인증서 지문이 같으면, 드라이버가 그 키가 아직 있는지 확인한 뒤 저장한 암호문을 그대로 씁니다. 키가 사라졌으면 새 키를 만듭니다. 지문이 다르면(평문 키는 남기지 않으므로) 새 키를 만들어 다시 봉인하고, 배포가 healthy가 된 뒤 옛 키를 지웁니다. 이때 시크릿이 없는 앱은 파드가 다시 뜨지 않아 옛 키를 계속 쓸 수 있으므로 옛 키를 남기고, 다음 키 교체 때 지웁니다. 봉인한 키는 `values.sealedSecrets.s3`에 들어갑니다.
+- 플랫폼 DB에는 인스턴스와 환경마다 봉인한 키, 키 식별자, 인증서 지문만 저장합니다(`instance_storage`). 평문 키는 Git, DB, 로그에 남기지 않습니다.
+- 인스턴스나 앱을 지우면 gitops 삭제 커밋 뒤에 실행기가 드라이버로 사용자(키와 정책 포함)를 지우고 버킷을 비운 뒤 지우고, 그다음 행을 지웁니다. 실패하면 행을 남기고 로그를 쓴 뒤, 서버가 시작할 때와 5분마다 다시 합니다. 행이 남아 있는 동안 같은 이름의 등록은 409 `storage_cleanup_pending`입니다.
+- `platform.yaml`에 s3 리소스가 있는데 대상 환경에 저장소 드라이버가 없으면 등록과 인스턴스 추가가 503 `storage_not_configured`입니다. 나중의 push로 s3 리소스가 생겼는데 드라이버나 인증서가 없으면 그 배포가 `failed`로 끝납니다.
+- 앱 차트의 버킷 이름은 프로필의 `profile.s3.bucketPrefix`로 만들므로, 각 환경의 프로필과 `storage.bucketPrefix`를 같게 둡니다. 프로필의 `credentialsSecret`은 `app-s3`여야 합니다.
 
 ### GitHub App 설정
 
@@ -495,10 +503,10 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 - 배포는 앱의 인스턴스 하나로 갑니다(ADR 0015). 기본 인스턴스의 이름은 앱 이름이고, 추가한 브랜치의 인스턴스는 `<app>--<slug>`입니다. 인스턴스 이름이 gitops 경로, 네임스페이스, Application, 게이트웨이 앱 이름, 주소가 되고, 앱 이름은 차트의 `app`과 이미지 저장소에 그대로 씁니다.
 - 새 배포를 큐에 넣을 때, 같은 인스턴스의 끝나지 않은 이전 배포 가운데 환경이 모두 새 배포에 들어가는 것을 `superseded`로 끝냅니다. 다른 인스턴스의 배포는 건드리지 않으므로, `dev`에 push 해도 `main`의 배포가 밀려나지 않습니다. 그 배포의 작업자는 다음 저장에서 멈춥니다. gitops 커밋과 게이트웨이 등록은 인스턴스마다 잠금을 잡고, 배포가 아직 끝나지 않았음을 저장소에 쓴 직후에만 합니다. 그래서 밀려난 배포가 새 배포보다 늦게 커밋하지 않습니다.
 - building: 커밋의 `platform.yaml`을 등록과 같은 규칙(`deploy.CheckSpec`)으로 검사합니다. 틀리면 위치별 오류를 `log` 이벤트로 남기고 `failed`로 끝납니다. 통과했고 인스턴스의 가장 새 배포이면 그 인스턴스의 spec을 그 커밋의 것으로 바꿉니다. 기본 인스턴스는 앱의 spec을, 추가한 브랜치는 그 브랜치의 spec을 바꿉니다. 그 브랜치가 이미 지워졌으면 배포가 `failed`로 끝납니다. 그다음 서비스마다 `<registry>/hopcharlie/apps/<app>/<service>:<commit>`을 빌드해 push하고, digest(`...@sha256:...`)로 고정합니다. 이미지 저장소는 인스턴스가 함께 씁니다.
-- committing: 대상 환경마다 `apps/<instance>/<env>.yaml`을 ADR 0011 형식으로 만들어 커밋 하나로 씁니다. `namespace`는 인스턴스 이름이고, `app`과 `values.app`은 앱 이름입니다. 키 순서가 정해져 있고 문자열은 모두 큰따옴표로 감싸므로, 같은 배포를 다시 쓰면 커밋이 생기지 않습니다. 다른 커밋이 먼저 들어가 push가 거부되면 새 head에서 다시 씁니다. 여러 인스턴스가 한꺼번에 커밋해도 이렇게 다시 씁니다.
-- syncing: ApplicationSet과 Application `<namespace>-<env>`에 refresh를 요청하고, 모든 환경의 Application이 그 gitops 커밋이나 그 뒤의 커밋을 `Synced`, `Healthy`로 보고할 때까지 기다립니다. multi-source Application은 `status.sync.revisions`에서 gitops 커밋을 찾습니다. Application이 아직 없으면 계속 기다립니다. `Degraded`는 환경 상태 `degraded`, 동기화 실패는 `failed`이고, `PLATFORM_ARGOCD_TIMEOUT` 안에 모두 healthy가 되지 않으면 배포가 `failed`로 끝납니다.
+- committing: 인스턴스 잠금 안에서 버킷 키와 시크릿을 봉인하고([앱 시크릿](#앱-시크릿), [버킷과 키 드라이버](#버킷과-키-드라이버)), 대상 환경마다 `apps/<instance>/<env>.yaml`을 ADR 0011 형식으로 만들어 커밋 하나로 씁니다. 봉인할 것이 없으면 `values.sealedSecrets`가 없습니다. `namespace`는 인스턴스 이름이고, `app`과 `values.app`은 앱 이름입니다. 키 순서가 정해져 있고 문자열은 모두 큰따옴표로 감싸므로, 같은 배포를 다시 쓰면 커밋이 생기지 않습니다. 다른 커밋이 먼저 들어가 push가 거부되면 새 head에서 다시 씁니다. 여러 인스턴스가 한꺼번에 커밋해도 이렇게 다시 씁니다.
+- syncing: ApplicationSet과 Application `<namespace>-<env>`에 refresh를 요청하고, 모든 환경의 Application이 그 gitops 커밋이나 그 뒤의 커밋을 `Synced`, `Healthy`로 보고할 때까지 기다립니다. multi-source Application은 `status.sync.revisions`에서 gitops 커밋을 찾습니다. Application이 아직 없으면 계속 기다립니다. `Degraded`는 환경 상태 `degraded`, 동기화 실패는 `failed`이고, `PLATFORM_ARGOCD_TIMEOUT` 안에 모두 healthy가 되지 않으면 배포가 `failed`로 끝납니다. 그 커밋에서 `Synced`, `Degraded`가 1분 이어진 환경이 있으면(파드가 계속 죽거나, progress deadline을 넘었거나, 컨트롤러가 SealedSecret을 열지 못한 경우) 제한 시간을 기다리지 않고 바로 `failed`로 끝납니다.
 - 모든 환경이 healthy이고, 공개 서비스가 있고, 게이트웨이(`PLATFORM_GATEWAY_URL`)가 설정돼 있으면 환경마다 공개 서비스 주소를 찾아 게이트웨이에 인스턴스를 등록합니다(`PUT /apps/<instance>`). 처음 등록하는 앱은 첫 환경으로 쓰기를 보냅니다. 이미 있는 앱은 이전이 옮긴 쓰기 환경과 읽기 비율을 그대로 둡니다. 이전 중이라 쓰기가 보류돼 있으면 게이트웨이를 바꾸지 않고 배포를 `failed`로 끝냅니다.
-- 백엔드 주소는 `PLATFORM_APP_BACKEND_TEMPLATE`가 있으면 그 틀로 만들고, 없으면 환경 클러스터에서 Service `<app>-<service>`(네임스페이스 `<instance>`)의 LoadBalancer 주소를 읽습니다. 게이트웨이의 백엔드 이름은 환경 이름입니다.
+- 백엔드 주소는 `PLATFORM_APP_BACKEND_TEMPLATE`가 있으면 그 틀로 만들고, 없으면 환경 클러스터에서 Service `<app>-<service>`(네임스페이스 `<instance>`)의 LoadBalancer 주소를 읽습니다. 주소를 찾는 것도 커밋 때 시작한 `PLATFORM_ARGOCD_TIMEOUT`의 남은 시간 안에서만 다시 시도합니다. 게이트웨이의 백엔드 이름은 환경 이름입니다.
 - `DELETE /v1/apps/{name}`은 앱의 끝나지 않은 배포를 모두 `superseded`로 끝내고, gitops 저장소에서 기본 인스턴스와 추가한 브랜치 인스턴스의 `apps/<instance>/`를 커밋 하나로 지우고, 게이트웨이에서 인스턴스를 모두 지우고, 앱과 브랜치와 배포 기록을 지웁니다. 게이트웨이가 한 인스턴스라도 쓰기를 보류 중이면 409 `cluster_busy`이고 앱은 남습니다. 다시 부르면 처음부터 하되, 이미 지운 것은 건너뜁니다.
 - `DELETE /v1/apps/{name}/instances/{instance}`는 그 인스턴스의 끝나지 않은 배포만 `superseded`로 끝내고, `apps/<instance>/`를 지우는 커밋을 하고, 게이트웨이에서 그 인스턴스를 지운 뒤, 브랜치와 그 배포 기록을 지웁니다. 오류와 다시 부르기는 앱 삭제와 같습니다.
 - 두 삭제 모두 커밋부터 기록 삭제까지 인스턴스의 잠금을 잡고 있습니다. 그래서 그사이 만든 배포는 잠금을 기다렸다가 자기 기록이 지워진 것을 보고 멈추고, 지운 디렉터리를 다시 커밋하지 않습니다. 앱을 지우는 동안 브랜치가 더해지거나 지워지면 처음부터 다시 하고, 세 번 모두 바뀌면 500으로 답하고 앱을 남깁니다.
@@ -518,7 +526,7 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 | `PLATFORM_ARGOCD_KUBECONTEXT` | Argo CD가 있는 클러스터의 kubeconfig 컨텍스트. 비우면 in-cluster 설정 |
 | `PLATFORM_ARGOCD_NAMESPACE` | Application과 ApplicationSet이 있는 네임스페이스 (기본 `argocd`) |
 | `PLATFORM_ARGOCD_APPSET` | 커밋 뒤 refresh를 요청할 ApplicationSet (기본 `hopcharlie-apps`) |
-| `PLATFORM_ARGOCD_TIMEOUT` | 커밋 뒤 모든 환경이 healthy가 되기를 기다리는 시간 (기본 `10m`) |
+| `PLATFORM_ARGOCD_TIMEOUT` | 커밋 뒤 모든 환경이 healthy가 되고 게이트웨이 백엔드 주소를 찾기까지 기다리는 시간 (기본 `10m`). 그 전에 `Degraded`가 1분 이어지면 바로 실패 |
 | `PLATFORM_APP_BACKEND_TEMPLATE` | 게이트웨이 백엔드 주소의 틀. `{app}`, `{instance}`, `{service}`, `{port}`, `{env}`를 바꿈 (예: `http://{app}-{service}.{instance}.svc.cluster.local:{port}`). `{instance}`는 네임스페이스이고 기본 인스턴스에서는 앱 이름과 같음. 비우면 Service의 LoadBalancer 주소를 읽음 |
 
 - CodeBuild 프로젝트는 소스 없이 인라인 buildspec으로 돌고, docker를 쓰므로 privileged 모드가 필요합니다. 프로젝트 역할에는 ECR push와 `hopcharlie/apps/*` 저장소를 만드는 권한이, 플랫폼 역할에는 `codebuild:StartBuild`, `codebuild:BatchGetBuilds`와 빌드 로그 그룹의 `logs:GetLogEvents`가 필요합니다.

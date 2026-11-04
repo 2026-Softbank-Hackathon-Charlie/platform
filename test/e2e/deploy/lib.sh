@@ -6,6 +6,12 @@ KIND_VERSION=v0.33.0
 ARGOCD_VERSION=v3.5.3           # what production runs
 CNPG_VERSION=1.25.1             # as test/e2e and test/e2e/moimroom
 MINIO_IMAGE=pgsty/minio:RELEASE.2026-08-04T00-00-00Z # as test/e2e/moimroom
+# The sealed-secrets controller, as infra installs it in the workload cluster
+# (helm/gitops chart 2.20.0, clusters/aws-dev-workload/values/sealed-secrets.yaml).
+SEALED_SECRETS_CHART_VERSION=2.20.0
+SEALED_SECRETS_REPO=https://bitnami.github.io/sealed-secrets
+SEALED_SECRETS_IMAGE_TAG=0.40.0@sha256:b1ff382e9300dc9e74991f3177b18cafc06ce43b5c21349c86adbdd1d1c177d3
+BUCKET_PREFIX=e2e-              # storage.bucketPrefix in envs.yaml and profile.s3.bucketPrefix in argocd-values.yaml
 REGISTRY_IMAGE=registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
 STORE_IMAGE=postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
 
