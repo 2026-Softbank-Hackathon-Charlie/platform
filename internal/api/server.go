@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,10 +63,17 @@ type GitHub interface {
 
 // Config configures the API.
 type Config struct {
-	// Tokens authenticates callers. When Insecure is set and Tokens is empty,
-	// every request acts as the operator "dev" (local development only).
+	// Tokens authenticates programs with static tokens. When Insecure is set
+	// and Tokens and Admins are both empty, every request acts as the
+	// operator "dev" (local development only).
 	Tokens   *auth.Tokens
 	Insecure bool
+	// Admins log in with a username and password (POST /v1/auth/login) and
+	// approve CLI device logins; empty answers login 503.
+	Admins *auth.Admins
+	// ConsoleURL is the web console's address; a device login sends people
+	// to ConsoleURL + "/#device". Default DefaultConsoleURL.
+	ConsoleURL string
 	// CORSOrigins lists browser origins allowed to call the API ("*" allows any).
 	CORSOrigins []string
 	Log         *slog.Logger
@@ -79,6 +87,9 @@ type Config struct {
 
 // DefaultAppDomain is Config.AppDomain's default.
 const DefaultAppDomain = "hopcharlie.dev"
+
+// DefaultConsoleURL is Config.ConsoleURL's default.
+const DefaultConsoleURL = "https://console.hopcharlie.dev"
 
 // Deps are the services behind the API.
 type Deps struct {
@@ -122,6 +133,9 @@ type Server struct {
 	mux *http.ServeMux
 
 	startMu sync.Mutex // one start at a time keeps idempotency and plan reservation consistent
+
+	now    func() time.Time   // the clock for sessions, device logins and the login limiter
+	logins *auth.LoginLimiter // failed logins per username
 }
 
 // New wires the routes.
@@ -135,7 +149,15 @@ func New(cfg Config, d Deps) *Server {
 	if cfg.AppDomain == "" {
 		cfg.AppDomain = DefaultAppDomain
 	}
-	s := &Server{cfg: cfg, d: d, mux: http.NewServeMux()}
+	if cfg.Admins == nil {
+		cfg.Admins = &auth.Admins{}
+	}
+	if cfg.ConsoleURL == "" {
+		cfg.ConsoleURL = DefaultConsoleURL
+	}
+	cfg.ConsoleURL = strings.TrimRight(cfg.ConsoleURL, "/")
+	s := &Server{cfg: cfg, d: d, mux: http.NewServeMux(), now: storeTime,
+		logins: auth.NewLoginLimiter(loginMaxFailures, loginWindow, loginMaxUsernames)}
 	if d.Runs != nil {
 		// The observe phase rolls back through the same path as the endpoint.
 		d.Runs.SetAutoRollback(s.autoRollback)
@@ -150,6 +172,15 @@ func New(cfg Config, d Deps) *Server {
 		_, _ = w.Write(specdoc.OpenAPI)
 	})
 	s.route("GET /v1/me", viewer, s.me)
+	// Login and the CLI's side of a device login take no token; the
+	// handlers audit what matters themselves (handlers_auth.go).
+	s.route("POST /v1/auth/login", "", s.login)
+	s.route("POST /v1/auth/logout", viewer, s.logout)
+	s.route("POST /v1/auth/device", "", s.startDeviceLogin)
+	s.route("POST /v1/auth/device/token", "", s.pollDeviceLogin)
+	s.route("GET /v1/auth/device/{userCode}", operator, s.getDeviceLogin)
+	s.route("POST /v1/auth/device/{userCode}/approve", operator, s.approveDeviceLogin)
+	s.route("POST /v1/auth/device/{userCode}/deny", operator, s.denyDeviceLogin)
 	s.route("POST /v1/plans", agent, s.submitPlan)
 	s.route("GET /v1/plans", viewer, s.listPlans)
 	s.route("GET /v1/plans/{ref}", viewer, s.getPlan)
@@ -224,8 +255,11 @@ func (s *Server) route(pattern string, need apiv1.Role, h http.HandlerFunc) {
 		var p auth.Principal
 		if need != "" {
 			var ok bool
-			p, ok = s.authenticate(r)
+			var err error
+			p, ok, err = s.authenticate(r)
 			switch {
+			case err != nil:
+				s.internal(rec, r.WithContext(ctx), err)
 			case !ok:
 				writeError(rec, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 			case !p.Allows(need):
@@ -242,11 +276,28 @@ func (s *Server) route(pattern string, need apiv1.Role, h http.HandlerFunc) {
 	})
 }
 
-func (s *Server) authenticate(r *http.Request) (auth.Principal, bool) {
-	if s.cfg.Tokens.Len() == 0 && s.cfg.Insecure {
-		return auth.Principal{Name: "dev", Role: apiv1.RoleOperator}, true
+// authenticate checks the bearer token: a static token from PLATFORM_TOKENS
+// first, then a console session or CLI token in the store. err is set only
+// when the store could not be read.
+func (s *Server) authenticate(r *http.Request) (auth.Principal, bool, error) {
+	if s.cfg.Tokens.Len() == 0 && s.cfg.Admins.Len() == 0 && s.cfg.Insecure {
+		return auth.Principal{Name: "dev", Role: apiv1.RoleOperator}, true, nil
 	}
-	return s.cfg.Tokens.Authenticate(r)
+	if p, ok := s.cfg.Tokens.Authenticate(r); ok {
+		return p, true, nil
+	}
+	raw, ok := auth.BearerToken(r)
+	if !ok || !strings.HasPrefix(raw, auth.SessionPrefix) {
+		return auth.Principal{}, false, nil
+	}
+	sess, err := s.d.Store.GetSession(r.Context(), auth.HashSecret(raw), s.now())
+	switch {
+	case errors.Is(err, store.ErrNotFound): // unknown, expired or logged out
+		return auth.Principal{}, false, nil
+	case err != nil:
+		return auth.Principal{}, false, err
+	}
+	return auth.Principal{Name: sess.Name, Role: apiv1.Role(sess.Role)}, true, nil
 }
 
 func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status int, note map[string]any) {
@@ -290,7 +341,7 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request) bool {
 	h := w.Header()
 	h.Set("Access-Control-Allow-Origin", origin)
 	h.Add("Vary", "Origin")
-	h.Set("Access-Control-Expose-Headers", "Location, X-Request-Id")
+	h.Set("Access-Control-Expose-Headers", "Location, Retry-After, X-Request-Id")
 	if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, Last-Event-ID, X-Request-Id")
