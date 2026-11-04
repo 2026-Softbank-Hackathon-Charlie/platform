@@ -535,7 +535,7 @@ func (r *renderer) endpointTable() string {
 	return strings.Join(l, "\n")
 }
 
-var errName = map[string]string{"BadRequest": "400", "Unauthorized": "401", "Forbidden": "403", "NotFound": "404", "Conflict": "409", "TooLarge": "413", "BadGateway": "502", "Internal": "500", "Unavailable": "503"}
+var errName = map[string]string{"BadRequest": "400", "Unauthorized": "401", "Forbidden": "403", "NotFound": "404", "Conflict": "409", "TooLarge": "413", "AppSpecInvalid": "422", "TooManyRequests": "429", "BadGateway": "502", "Internal": "500", "Unavailable": "503"}
 
 func (r *renderer) endpointDetails() string {
 	var l []string

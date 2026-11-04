@@ -10,9 +10,9 @@ platform 저장소의 `tools/apidoc`가 이 페이지를 만든다. 페이지를
 
 platform 서버, `charlie` CLI, 웹 콘솔이 이 계약 하나를 함께 쓴다. Go 타입은 `pkg/apiv1`로 생성하고, 콘솔은 `npx openapi-typescript`로 TypeScript 타입을 생성한다.
 
-- 인증: `/v1` 요청은 모두 `Authorization: Bearer <token>` 헤더가 필요하다. `/`, `/healthz`, `/openapi.yaml`은 인증 없이 호출한다.
+- 인증: `/v1` 요청은 모두 `Authorization: Bearer <token>` 헤더가 필요하다. 예외로 GitHub가 서명하는 GitHub App 웹훅(`POST /v1/webhooks/github`)과 `/v1/auth` 아래에서 역할이 인증 없음인 로그인 엔드포인트는 토큰 없이 호출한다. `/`, `/healthz`, `/openapi.yaml`도 인증 없이 호출한다.
 - 오류: 모든 오류 응답은 `Error` 본문(`{"error": {"code", "message"}}`)을 쓴다.
-- 실시간: run과 에이전트 세션의 진행은 SSE로 받는다. 브라우저에서는 fetch 기반 SSE 클라이언트를 쓴다.
+- 실시간: run, 에이전트 세션, 배포의 진행은 SSE로 받는다. 브라우저에서는 fetch 기반 SSE 클라이언트를 쓴다.
 
 ### 토큰 역할
 
@@ -122,7 +122,7 @@ flowchart LR
 
 ## 엔드포인트 한눈에 보기
 
-모두 {{endpoint_count}}개다. 메서드 색은 GET 파랑, POST 초록, PUT 주황이다.
+모두 {{endpoint_count}}개다. 메서드 색은 GET 파랑, POST 초록, PUT 주황, DELETE 빨강이다.
 
 {{endpoint_table}}
 
@@ -159,6 +159,11 @@ classDiagram
     ObserveStep --> GateResult : gate
     EngineState --> StepRecord : steps map
     MatrixRoute --> RunResult : result
+    PlanDraftResult --> EnginePlan : plan
+    PlanDraftResult --> SourceStats : sourceStats
+    BucketInspection --> BucketObservation : observation
+    BucketInspection --> BucketPrefixStatus : prefixes[]
+    BucketInspection --> BucketSample : sample
 ```
 
 ```mermaid
@@ -179,6 +184,32 @@ classDiagram
     AgentEvent --> TokenUsage : usage
     App --> AppDatabase : database
     App --> AppEnvironment : environments[]
+```
+
+```mermaid
+classDiagram
+    direction LR
+    App --> AppDeploy : deploy
+    AppDeploy --> AppSpec : spec
+    AppDeploy --> AppInstance : instances[]
+    AppDeploy --> AppEnvironmentStatus : status[]
+    AppDeploy --> Deployment : lastDeployment
+    AppInstance --> AppSpec : spec
+    AppInstance --> AppEnvironmentStatus : status[]
+    AppInstance --> Deployment : lastDeployment
+    AppSpec --> AppSpecService : services[]
+    AppSpec --> AppSpecResource : resources[]
+    AppSpecValidation --> AppSpec : spec
+    AppSpecValidation --> AppSpecFieldError : errors[]
+    AppCreated --> App : app
+    AppCreated --> Deployment : deployment
+    AppInstanceCreated --> AppInstance : instance
+    AppInstanceCreated --> Deployment : deployment
+    Deployment --> DeploymentImage : images[]
+    Deployment --> DeploymentEnvironment : environments[]
+    AppSecrets --> AppSecretInfo : app[]
+    AppSecrets --> InstanceSecrets : instances[]
+    InstanceSecrets --> AppSecretInfo : secrets[]
 ```
 
 {{schema_groups}}
@@ -235,13 +266,15 @@ data에는 표에 없는 키가 더 있을 수 있다.
 
 | HTTP | code | 상황 |
 |---|---|---|
-| `400` | invalid_request, invalid_plan | 요청이나 계획이 형식, 정책에 맞지 않는다 |
-| `401` | unauthorized | 토큰이 없거나 틀렸다 |
-| `403` | forbidden | 토큰 역할로 할 수 없는 작업이다 |
-| `404` | plan_not_found, run_not_found, env_not_found, attachment_not_found, agent_session_not_found | 대상이 없다 |
-| `409` | plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, agent_session_finished, session_full | 대상의 현재 상태에서 할 수 없다 |
+| `400` | invalid_request, invalid_plan, authorization_pending, access_denied, expired_token | 요청이나 계획이 형식, 정책에 맞지 않는다. 기기 로그인을 토큰으로 바꿀 때의 승인 대기, 거절, 만료도 400이다 |
+| `401` | unauthorized, invalid_credentials, invalid_signature | 토큰이 없거나 틀렸다. 로그인의 아이디나 비밀번호, GitHub 웹훅 서명이 틀렸다 |
+| `403` | forbidden, console_session_required | 토큰 역할로 할 수 없는 작업이거나, 콘솔 세션만 할 수 있는 작업이다 |
+| `404` | plan_not_found, run_not_found, env_not_found, attachment_not_found, agent_session_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found, bucket_not_registered, prefix_not_listed | 대상이 없다 |
+| `409` | plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, agent_session_finished, session_full, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress | 대상의 현재 상태나 정책 때문에 할 수 없다 |
 | `413` | too_large | 본문이 너무 크다 |
+| `422` | invalid_app_spec | platform.yaml을 읽지 못했거나 규칙에 맞지 않는다. 본문은 AppSpecInvalid이고 validation에 위치가 나온다 |
+| `429` | too_many_attempts | 로그인 시도나 승인 대기 중인 기기 로그인이 너무 많다. Retry-After의 초만큼 기다린 뒤 다시 시도한다 |
 | `500` | internal | 예상하지 못한 오류. 자세한 내용은 서버 로그에만 남는다 |
-| `502` | engine_init_failed, gateway_unreachable | 엔진 초기화 실패 또는 게이트웨이 응답 없음 |
-| `503` | gateway_not_configured, security_not_configured | 해당 기능이 서버에 설정되지 않았다 |
+| `502` | engine_init_failed, gateway_unreachable, github_unreachable, bucket_probe_failed | 엔진 초기화 실패, 게이트웨이나 GitHub 응답 없음, 버킷 측정 실패 |
+| `503` | gateway_not_configured, security_not_configured, github_not_configured, login_not_configured, secrets_not_configured, storage_not_configured, residency_not_configured, audit_unavailable | 해당 기능이 서버에 설정되지 않았거나 감사 로그를 쓸 수 없다 |
 
