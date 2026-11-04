@@ -1766,7 +1766,7 @@ components:
       enum: [pending, approved, denied]
 
     DeviceLogin:
-      description: A device login as the console shows it to an administrator. It never contains the device code.
+      description: "A device login as the console shows it to an administrator. It never contains the device code. `role` is the role the CLI token gets, set once approved."
       type: object
       required: [userCode, client, status, createdAt, expiresAt]
       properties:
@@ -1776,7 +1776,7 @@ components:
         createdAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time }
         reviewedBy: { type: string, description: "The administrator who approved or denied it, once reviewed." }
-        role: { $ref: "#/components/schemas/Role", description: "The role the CLI token gets, once approved." }
+        role: { $ref: "#/components/schemas/Role" }
 
     DeviceLoginApproveRequest:
       type: object

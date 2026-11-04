@@ -1429,7 +1429,7 @@ type DeploymentStatus string
 // manual: POST /v1/apps/{name}/deployments.
 type DeploymentTrigger string
 
-// DeviceLogin A device login as the console shows it to an administrator. It never contains the device code.
+// DeviceLogin A device login as the console shows it to an administrator. It never contains the device code. `role` is the role the CLI token gets, set once approved.
 type DeviceLogin struct {
 	Client    string    `json:"client"`
 	CreatedAt time.Time `json:"createdAt"`
