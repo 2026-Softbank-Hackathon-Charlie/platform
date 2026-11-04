@@ -263,11 +263,14 @@ func TestBucketInputAndConfigValidation(t *testing.T) {
 		"provider without location": func(r *preflight.Request) {
 			r.Movements[0].Files.SourceObserved.Location = ""
 		},
-		"bad ip":         func(r *preflight.Request) { r.Movements[0].Files.SourceObserved.EndpointIPs = []string{"TOPSECRET"} },
-		"bad prefix":     func(r *preflight.Request) { r.Movements[0].Files.SourceObserved.Prefixes = []string{"a/b/"} },
-		"dup prefix":     func(r *preflight.Request) { r.Movements[0].Files.SourceObserved.Prefixes = []string{"a/", "a/"} },
-		"bad replica":    func(r *preflight.Request) { r.Movements[0].Files.TargetObserved.Replicas = []string{"arn:aws:s3:::x"} },
-		"self multi-reg": func(r *preflight.Request) { *r.Movements[0].Files.SourceObserved = *onprem(); r.Movements[0].Files.SourceObserved.LocationType = "multi-region" },
+		"bad ip":      func(r *preflight.Request) { r.Movements[0].Files.SourceObserved.EndpointIPs = []string{"TOPSECRET"} },
+		"bad prefix":  func(r *preflight.Request) { r.Movements[0].Files.SourceObserved.Prefixes = []string{"a/b/"} },
+		"dup prefix":  func(r *preflight.Request) { r.Movements[0].Files.SourceObserved.Prefixes = []string{"a/", "a/"} },
+		"bad replica": func(r *preflight.Request) { r.Movements[0].Files.TargetObserved.Replicas = []string{"arn:aws:s3:::x"} },
+		"self multi-reg": func(r *preflight.Request) {
+			*r.Movements[0].Files.SourceObserved = *onprem()
+			r.Movements[0].Files.SourceObserved.LocationType = "multi-region"
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := withFiles("s3:shop-photos", "gcs:shop-photos-tokyo")
