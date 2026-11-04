@@ -382,6 +382,14 @@ func TestMinIOEnsure(t *testing.T) {
 	if k := f.keys(UserPrefix + "moimroom"); !slices.Equal(k, []string{resOther.Key.ID}) {
 		t.Fatalf("the other instance's keys %v", k)
 	}
+	// The key in use still exists: nothing changes. Gone: a new one.
+	if res, err := d.Ensure(ctx, dev, false, "SVC0002"); err != nil || res.Key != nil {
+		t.Fatalf("keep an existing key: %+v, %v", res, err)
+	}
+	must(t, d.DeleteKey(ctx, dev, "SVC0002"))
+	if res, err := d.Ensure(ctx, dev, false, "SVC0002"); err != nil || res.Key == nil {
+		t.Fatalf("keep a key that is gone: %+v, %v", res, err)
+	}
 	res, err = d.Ensure(ctx, dev, true, "")
 	if err != nil || res.Key == nil {
 		t.Fatalf("retry %+v, %v", res, err)

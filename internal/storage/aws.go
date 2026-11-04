@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -112,7 +113,17 @@ func (d *awsDriver) Ensure(ctx context.Context, in Instance, newKey bool, keep s
 	}
 	out := Result{Bucket: n.bucket}
 	if !newKey && !created {
-		return out, nil
+		if keep == "" {
+			return out, nil
+		}
+		ids, err := d.keyIDs(ctx, n.user)
+		if err != nil {
+			return Result{}, err
+		}
+		if slices.Contains(ids, keep) {
+			return out, nil
+		}
+		// The key in use is gone: a new one replaces it.
 	}
 	if err := d.deleteKeys(ctx, n.user, keep); err != nil {
 		return Result{}, err
@@ -235,22 +246,32 @@ func (d *awsDriver) checkUser(ctx context.Context, in Instance, user string) err
 	return checkApp("user "+user, tags, in.App, false)
 }
 
-// deleteKeys deletes the user's access keys except keep.
-func (d *awsDriver) deleteKeys(ctx context.Context, user, keep string) error {
+// keyIDs lists the user's access key ids.
+func (d *awsDriver) keyIDs(ctx context.Context, user string) ([]string, error) {
 	pages := iam.NewListAccessKeysPaginator(d.iam, &iam.ListAccessKeysInput{UserName: &user})
 	var ids []string
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("storage: list access keys of user %s: %w", user, err)
+			return nil, fmt.Errorf("storage: list access keys of user %s: %w", user, err)
 		}
 		for _, k := range page.AccessKeyMetadata {
-			if id := aws.ToString(k.AccessKeyId); id != keep {
-				ids = append(ids, id)
-			}
+			ids = append(ids, aws.ToString(k.AccessKeyId))
 		}
 	}
+	return ids, nil
+}
+
+// deleteKeys deletes the user's access keys except keep.
+func (d *awsDriver) deleteKeys(ctx context.Context, user, keep string) error {
+	ids, err := d.keyIDs(ctx, user)
+	if err != nil {
+		return err
+	}
 	for _, id := range ids {
+		if id == keep {
+			continue
+		}
 		if err := d.deleteKey(ctx, user, id); err != nil {
 			return err
 		}

@@ -25,9 +25,9 @@ import (
 )
 
 // reservedAppNames are served by the platform itself under the app domain
-// (the API, the console and the gateway's default app, ADR 0012), so no
-// registered app may take them.
-var reservedAppNames = []string{"api", "console", "app"}
+// (the API, the console and the gateway's default app, ADR 0012, and the
+// Headlamp ingress of infra), so no registered app may take them.
+var reservedAppNames = []string{"api", "console", "app", "headlamp"}
 
 // appStatusDeployments is how many newest deployments an instance's
 // per-environment status is read from. Each instance is read on its own, so
@@ -111,7 +111,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusConflict, "app_exists", fmt.Sprintf("the platform serves %s.%s itself; rename the app in %s", spec.Name, s.cfg.AppDomain, appspec.FileName))
 		return
 	}
-	if !s.storageCleaned(ctx, w, r, spec.Name) {
+	if !s.storageCleaned(ctx, w, r, spec.Name) || !s.storageReady(w, r, *spec, targets) {
 		return
 	}
 	specJSON, err := json.Marshal(spec)
@@ -215,7 +215,7 @@ func (s *Server) createAppInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	noteAudit(r, "commit", commit)
 	spec := s.appSpecAt(ctx, w, r, app, commit)
-	if spec == nil {
+	if spec == nil || !s.storageReady(w, r, *spec, app.Environments) {
 		return
 	}
 	specJSON, err := json.Marshal(spec)
@@ -303,6 +303,22 @@ func (s *Server) storageCleaned(ctx context.Context, w http.ResponseWriter, r *h
 		}
 		if !live {
 			s.fail(w, r, http.StatusConflict, "storage_cleanup_pending", fmt.Sprintf("the bucket and key of a deleted app or instance named %s are still being deleted; try again in a few minutes", instance))
+			return false
+		}
+	}
+	return true
+}
+
+// storageReady answers 503 storage_not_configured when spec has an s3
+// resource and one of envs has no storage driver to make its bucket (ADR
+// 0016), and reports whether all have one.
+func (s *Server) storageReady(w http.ResponseWriter, r *http.Request, spec appspec.Spec, envs []string) bool {
+	if !slices.ContainsFunc(spec.Resources, func(res appspec.Resource) bool { return res.Type == appspec.TypeS3 }) {
+		return true
+	}
+	for _, env := range envs {
+		if s.d.StorageConfigured == nil || !s.d.StorageConfigured(env) {
+			s.fail(w, r, http.StatusServiceUnavailable, "storage_not_configured", fmt.Sprintf("%s has an s3 resource, but environment %s has no storage driver to make its bucket (storage in PLATFORM_ENVS_FILE)", appspec.FileName, env))
 			return false
 		}
 	}

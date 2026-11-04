@@ -13,7 +13,8 @@ import (
 // commits the removal of apps/<instance>/ from the gitops repository,
 // removes the instance from the traffic gateway and deletes the branch, with
 // the instance's deployments, from the store, holding the instance's lock
-// throughout. Each step can be repeated, so a failed removal is retried by
+// throughout. Then the cleanup deletes the instance's buckets and keys
+// (CleanupStorage). Each step can be repeated, so a failed removal is retried by
 // calling RemoveInstance again. A missing app is store.ErrNotFound; a
 // branch the app has not added (its own branch included) is
 // store.ErrInstanceNotFound, which matches store.ErrNotFound too. Otherwise
@@ -46,5 +47,6 @@ func (e *Executor) RemoveInstance(ctx context.Context, app, branch string) error
 		return err
 	}
 	e.cfg.Log.Info("instance deleted", "app", app, "branch", branch, "instance", instance)
+	e.wakeCleanup() // its buckets and keys
 	return nil
 }

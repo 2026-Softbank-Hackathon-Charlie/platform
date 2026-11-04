@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7"
@@ -121,7 +122,17 @@ func (d *minioDriver) Ensure(ctx context.Context, in Instance, newKey bool, keep
 	}
 	out := Result{Bucket: n.bucket}
 	if !newKey && !created {
-		return out, nil
+		if keep == "" {
+			return out, nil
+		}
+		list, err := d.admin.ListServiceAccounts(ctx, n.user)
+		if err != nil {
+			return Result{}, fmt.Errorf("storage: list service accounts of user %s: %w", n.user, err)
+		}
+		if slices.ContainsFunc(list.Accounts, func(a madmin.ServiceAccountInfo) bool { return a.AccessKey == keep }) {
+			return out, nil
+		}
+		// The key in use is gone: a new one replaces it.
 	}
 	if err := d.deleteKeys(ctx, n.user, keep); err != nil {
 		return Result{}, err

@@ -284,6 +284,7 @@ func main() {
 	agents := agentlog.New(st)
 	deps.Agents = agents
 	deps.Secrets = secretsKey
+	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }
 	go agents.RunSweeper(runCtx, agentIdle, log)
 	// Optional: the GitHub App that apps are registered and deployed from.
 	gh, err := github.FromEnv(os.Getenv)
@@ -317,6 +318,9 @@ func main() {
 			}
 			return envs.NewKubeClient(c, 10*time.Second)
 		},
+		Secrets: secretsKey,
+		Sealer:  envSvc.Sealer,
+		Storage: envSvc.Storage,
 	}
 	if gh != nil {
 		deployOpts.GitHub = gh

@@ -114,6 +114,14 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 		// In the app's order, whatever order they were asked in.
 		targets = slices.DeleteFunc(slices.Clone(app.Environments), func(e string) bool { return !slices.Contains(asked, e) })
 	}
+	if req.Redeploy != nil && *req.Redeploy {
+		if req.Ref != nil {
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", "ref is not allowed with redeploy: a redeploy repeats the instance's last healthy deployment")
+			return
+		}
+		s.redeploy(w, r, app, in, targets)
+		return
+	}
 	ref := branch
 	if req.Ref != nil {
 		if *req.Ref == "" {
@@ -164,6 +172,65 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 	stored, err := s.d.Store.GetDeployment(ctx, d.ID)
 	if err != nil {
 		stored = d // deleted with its app in between: answer what was created
+	}
+	w.Header().Set("Location", "/v1/deployments/"+d.ID)
+	writeJSON(w, http.StatusAccepted, deploymentJSON(stored))
+}
+
+// redeploy queues a redeploy of the instance in: its last healthy
+// deployment's commit, images and platform.yaml again, to targets, with the
+// secrets as they are now (ADR 0019). Nothing is built and GitHub is not
+// read. It is refused while the instance has an unfinished deployment.
+func (s *Server) redeploy(w http.ResponseWriter, r *http.Request, app store.App, in store.AppBranch, targets []string) {
+	noteAudit(r, "redeploy", true)
+	ctx := context.WithoutCancel(r.Context())
+	list, err := s.d.Store.ListInstanceDeployments(ctx, in.Instance, 0)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	var last *store.Deployment
+	for i, d := range list { // newest first
+		if !store.DeploymentFinished(d.Status) {
+			noteAudit(r, "inProgress", d.ID)
+			s.fail(w, r, http.StatusConflict, "deployment_in_progress", fmt.Sprintf("deployment %s of %s is %s; it uses the secrets as they were at its gitops commit, so redeploy once it is done", d.ID, in.Instance, d.Status))
+			return
+		}
+		if last == nil && d.Status == store.DeployHealthy {
+			last = &list[i]
+		}
+	}
+	if last == nil {
+		s.fail(w, r, http.StatusConflict, "nothing_to_redeploy", fmt.Sprintf("%s has no healthy deployment to redeploy; deploy the branch instead", in.Instance))
+		return
+	}
+	noteAudit(r, "of", last.ID)
+	noteAudit(r, "commit", last.Commit)
+	spec := last.Spec
+	if len(spec) == 0 && in.SpecCommit == last.Commit {
+		// Deployed before deployments recorded their spec.
+		spec = in.Spec
+	}
+	to := app
+	to.Environments = targets
+	d := newDeployment(to, in, last.Ref, last.Commit, apiv1.DeploymentTriggerRedeploy, actor(r), storeTime())
+	d.Images, d.Spec = last.Images, spec
+	if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
+		switch {
+		case errors.Is(err, store.ErrInstanceNotFound):
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("branch %s is not deployed by app %s", d.Branch, app.Name))
+		case errors.Is(err, store.ErrNotFound):
+			s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
+		default:
+			s.internal(w, r, err)
+		}
+		return
+	}
+	noteAudit(r, "deploymentId", d.ID)
+	s.enqueue(ctx, d.ID)
+	stored, err := s.d.Store.GetDeployment(ctx, d.ID)
+	if err != nil {
+		stored = d
 	}
 	w.Header().Set("Location", "/v1/deployments/"+d.ID)
 	writeJSON(w, http.StatusAccepted, deploymentJSON(stored))

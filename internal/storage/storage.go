@@ -186,11 +186,13 @@ type Driver interface {
 	Bucket(instance string) string
 	// Ensure makes the instance's bucket (private, tagged with the app and
 	// the instance) and its user with access to that bucket only, keeping
-	// what already exists. It makes a new key when newKey is set or the
-	// user is new; it first deletes the user's other keys except keep (all
-	// of them when keep is empty), so a retry after a crash leaves no key
-	// nobody knows of. ErrInUse when the bucket or the user belongs to
-	// another app.
+	// what already exists. It makes a new key when newKey is set, when the
+	// user is new, or when keep is set but the user has no such key (it was
+	// deleted outside the platform); it first deletes the user's other keys
+	// except keep (all of them when keep is empty), so a retry after a crash
+	// leaves no key nobody knows of. Without a new key it leaves the keys as
+	// they are. ErrInUse when the bucket or the user belongs to another
+	// app.
 	Ensure(ctx context.Context, in Instance, newKey bool, keep string) (Result, error)
 	// DeleteKey deletes one key of the instance's user, e.g. the old one
 	// after a new key is in use. A key that is gone is not an error.

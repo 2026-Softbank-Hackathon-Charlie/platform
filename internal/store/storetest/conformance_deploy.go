@@ -33,6 +33,7 @@ func ConformanceDeploy(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"DeploymentList", testDeploymentList},
 		{"DeploymentListInstance", testDeploymentListInstance},
 		{"DeploymentUpdate", testDeploymentUpdate},
+		{"DeploymentSpec", testDeploymentSpec},
 		{"DeploymentSupersedeRace", testDeploymentSupersedeRace},
 		{"DeploymentUnfinished", testDeploymentUnfinished},
 		{"DeploymentEvents", testDeploymentEvents},
@@ -119,6 +120,7 @@ func eqApp(t *testing.T, got, want store.App) {
 
 func eqDeployment(t *testing.T, got, want store.Deployment) {
 	t.Helper()
+	got.Spec, want.Spec = canonJSON(t, got.Spec), canonJSON(t, want.Spec)
 	want.CreatedAt, want.StartedAt, want.FinishedAt = pg(want.CreatedAt), pgPtr(want.StartedAt), pgPtr(want.FinishedAt)
 	if want.Images == nil {
 		want.Images = []store.DeploymentImage{}
@@ -1281,5 +1283,37 @@ func testWebhookDeliveries(t *testing.T, s store.Store) {
 	}
 	if fresh != 1 {
 		t.Fatalf("%d concurrent records of one delivery were new, want 1", fresh)
+	}
+}
+
+// testDeploymentSpec records the spec a deployment read, and a redeploy
+// that copies it.
+func testDeploymentSpec(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
+	d := newDeployment("dep_1", "moimroom", 1)
+	must(t, s.CreateDeployment(ctx, d))
+	got, err := s.GetDeployment(ctx, "dep_1")
+	must(t, err)
+	if got.Spec != nil {
+		t.Fatalf("a new deployment has spec %s", got.Spec)
+	}
+	d.Status, d.Spec = store.DeployBuilding, []byte(`{"name": "moimroom", "x": "\u0000a"}`)
+	got, err = s.UpdateDeployment(ctx, d)
+	must(t, err)
+	want := d
+	want.Spec = []byte(`{"name": "moimroom", "x": "a"}`)
+	eqDeployment(t, got, want)
+
+	r := newDeployment("dep_2", "moimroom", 2)
+	r.Trigger, r.Spec = "redeploy", got.Spec
+	must(t, s.CreateDeployment(ctx, r))
+	again, err := s.GetDeployment(ctx, "dep_2")
+	must(t, err)
+	eqDeployment(t, again, r)
+	bad := newDeployment("dep_3", "moimroom", 3)
+	bad.Spec = []byte(`{`)
+	if err := s.CreateDeployment(ctx, bad); err == nil {
+		t.Fatal("a deployment with a spec that is not JSON was stored")
 	}
 }

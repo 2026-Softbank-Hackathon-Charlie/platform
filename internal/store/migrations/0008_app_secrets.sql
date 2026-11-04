@@ -14,6 +14,9 @@
 -- cluster's sealed-secrets certificate is kept, and the key id to delete it.
 -- Rows outlive the app and the instance until the driver has deleted the
 -- bucket and the key.
+--
+-- deployments.spec records the platform.yaml a deployment deployed, so a
+-- redeploy (ADR 0019) repeats it without reading GitHub.
 -- No foreign keys, like the other tables.
 
 CREATE TABLE app_secrets (
@@ -44,3 +47,5 @@ CREATE TABLE instance_storage (
 );
 
 CREATE INDEX instance_storage_app_idx ON instance_storage (app);
+
+ALTER TABLE deployments ADD COLUMN spec jsonb;

@@ -121,6 +121,11 @@ type Deps struct {
 	// Secrets encrypts the app secrets (PLATFORM_SECRETS_KEY, ADR 0019); nil
 	// answers the secrets endpoints 503 secrets_not_configured.
 	Secrets *secrets.Cipher
+	// StorageConfigured reports whether an environment has a storage
+	// driver (ADR 0016); nil means none has. Registering an app with an s3
+	// resource for an environment without one answers 503
+	// storage_not_configured.
+	StorageConfigured func(env string) bool
 }
 
 // SourceMeasurer reads a source database's numbers (capacity.Prober). ok is

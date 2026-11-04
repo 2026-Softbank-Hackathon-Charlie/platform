@@ -461,6 +461,20 @@ func TestAWSEnsure(t *testing.T) {
 		t.Fatalf("keys after deleting the old one %v", f.users[devUser].keys)
 	}
 
+	// The key in use still exists: nothing changes. Gone: a new one.
+	res, err = d.Ensure(ctx, dev, false, "AKIA0002")
+	if err != nil || res.Key != nil {
+		t.Fatalf("keep an existing key: %+v, %v", res, err)
+	}
+	must(t, d.DeleteKey(ctx, dev, "AKIA0002"))
+	res, err = d.Ensure(ctx, dev, false, "AKIA0002")
+	if err != nil || res.Key == nil || res.Key.ID == "AKIA0002" {
+		t.Fatalf("keep a key that is gone: %+v, %v", res, err)
+	}
+	if !slices.Equal(f.users[devUser].keys, []string{res.Key.ID}) {
+		t.Fatalf("keys after replacing a gone key %v", f.users[devUser].keys)
+	}
+
 	// A new key keeping none: a retry after a crash deletes keys nobody
 	// knows, so the two-key limit is never hit.
 	for i := range 3 {

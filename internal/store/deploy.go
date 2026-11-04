@@ -117,9 +117,13 @@ type Deployment struct {
 	Environments []DeploymentEnvironment
 	Error        string
 	BuildID      string
-	CreatedAt    time.Time
-	StartedAt    *time.Time // nil until the deployer takes it
-	FinishedAt   *time.Time // nil until it is finished
+	// Spec is the appspec.Spec JSON of platform.yaml at Commit, recorded once
+	// the deployment has read it, or copied from the deployment a redeploy
+	// repeats. Nil until then.
+	Spec       []byte
+	CreatedAt  time.Time
+	StartedAt  *time.Time // nil until the deployer takes it
+	FinishedAt *time.Time // nil until it is finished
 }
 
 // DeploymentEvent is one stored deployment event.
@@ -168,9 +172,10 @@ func (b AppBranch) Clean() (AppBranch, error) {
 	return b, nil
 }
 
-// Clean returns a copy of d with every string passed through CleanText.
-// Stores apply it on every write; the slices of the copy are its own.
-func (d Deployment) Clean() Deployment {
+// Clean returns a copy of d with every string passed through CleanText and
+// Spec through CleanJSON. Stores apply it on every write; the slices of the
+// copy are its own.
+func (d Deployment) Clean() (Deployment, error) {
 	for _, f := range []*string{&d.ID, &d.App, &d.Branch, &d.Instance, &d.Ref, &d.Commit, &d.Trigger, &d.TriggeredBy, &d.Status, &d.Error, &d.BuildID} {
 		*f = CleanText(*f)
 	}
@@ -186,7 +191,12 @@ func (d Deployment) Clean() Deployment {
 		envs[i] = e
 	}
 	d.Images, d.Environments = images, envs
-	return d
+	spec, err := CleanJSON(d.Spec)
+	if err != nil {
+		return Deployment{}, fmt.Errorf("deployment spec: %w", err)
+	}
+	d.Spec = spec
+	return d, nil
 }
 
 // Clean returns e with its strings passed through CleanText. DeploymentID is
@@ -255,7 +265,7 @@ type DeployStore interface {
 	// ListDeployments' order, at most limit (<= 0 means no limit).
 	ListInstanceDeployments(ctx context.Context, instance string, limit int) ([]Deployment, error)
 	// UpdateDeployment replaces Status, Images, Environments, Error, BuildID,
-	// StartedAt and FinishedAt of a deployment that is not finished, in one
+	// Spec, StartedAt and FinishedAt of a deployment that is not finished, in one
 	// conditional write, and returns the stored deployment. ErrNotFound when
 	// the id does not exist; ErrConflict (wrapped, with the current status)
 	// when it is finished, so the worker of a superseded deployment learns

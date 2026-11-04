@@ -9,6 +9,13 @@
 // and ends healthy, failed or superseded. Once every environment is healthy,
 // an instance with a public service is registered with the traffic gateway.
 //
+// Before committing, the executor seals what the instance gets for each
+// environment's cluster (ADR 0016, ADR 0019): the key of the instance's
+// bucket, made by the environment's storage driver, when platform.yaml has
+// an s3 resource, and the app secrets. A redeploy repeats the instance's
+// last healthy deployment with the current secrets: it has the images and
+// the spec already, so it skips the build and GitHub.
+//
 // A deployment goes to one instance of its app (ADR 0015): the default
 // instance, named after the app, or the instance of a branch added to it,
 // named <app>--<slug>. The instance name is the gitops directory, the
@@ -38,6 +45,9 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 )
@@ -83,11 +93,12 @@ const (
 	DefaultPollInterval    = 5 * time.Second
 	DefaultRefreshInterval = 30 * time.Second
 	DefaultMaxLogLines     = 2000
+	DefaultDegradedTimeout = time.Minute
 )
 
 // Config configures an Executor.
 type Config struct {
-	Store   store.DeployStore
+	Store   Store
 	GitHub  GitHub
 	Builder Builder
 	GitOps  GitOps
@@ -110,9 +121,26 @@ type Config struct {
 	// RefreshInterval is how often a refresh is requested again for an
 	// Application that has not seen the commit yet (default 30s).
 	RefreshInterval time.Duration
+	// DegradedTimeout is how long an environment may stay Synced and
+	// Degraded at the deployment's commit before the deployment fails
+	// without waiting for SyncTimeout (default 1m).
+	DegradedTimeout time.Duration
 	// MaxLogLines bounds the build log lines stored per deployment (default 2000).
 	MaxLogLines int
-	Log         *slog.Logger
+	// Secrets decrypts the app secrets (PLATFORM_SECRETS_KEY); nil fails
+	// the deployments of an app that has secrets.
+	Secrets *secrets.Cipher
+	// Sealer returns the sealer of an environment's cluster; nil (or an
+	// error) fails a deployment that has something to seal there.
+	Sealer func(env string) (*sealing.Sealer, error)
+	// Storage returns an environment's storage driver; nil (or an error)
+	// fails a deployment of an app with an s3 resource there, and turns off
+	// the cleanup of deleted instances' buckets.
+	Storage func(env string) (storage.Driver, error)
+	// CleanupInterval is how often the buckets and keys of deleted
+	// instances are deleted again when an earlier try failed (default 5m).
+	CleanupInterval time.Duration
+	Log             *slog.Logger
 }
 
 // Executor runs deployments with a bounded pool of workers. It implements
@@ -129,6 +157,8 @@ type Executor struct {
 	signal  chan struct{}
 	started bool
 	wg      sync.WaitGroup
+
+	cleanupNow chan struct{} // asks cleanupLoop to run
 }
 
 // New checks cfg and returns an executor. Call Start to run it.
@@ -162,6 +192,12 @@ func New(cfg Config) (*Executor, error) {
 	if cfg.MaxLogLines <= 0 {
 		cfg.MaxLogLines = DefaultMaxLogLines
 	}
+	if cfg.DegradedTimeout <= 0 {
+		cfg.DegradedTimeout = DefaultDegradedTimeout
+	}
+	if cfg.CleanupInterval <= 0 {
+		cfg.CleanupInterval = DefaultCleanupInterval
+	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
@@ -172,13 +208,17 @@ func New(cfg Config) (*Executor, error) {
 		running: map[string]context.CancelFunc{},
 		locks:   map[string]*sync.Mutex{},
 		signal:  make(chan struct{}, 1),
+
+		cleanupNow: make(chan struct{}, 1),
 	}, nil
 }
 
 // Start starts the workers and queues the deployments a previous server left
 // unfinished, oldest first, superseding the ones a newer one covers. The
 // workers stop when ctx ends; a deployment they were running stays
-// unfinished and is resumed by the next Start.
+// unfinished and is resumed by the next Start. With storage drivers it also
+// starts deleting the buckets and keys of deleted instances, now and every
+// CleanupInterval (CleanupStorage).
 func (e *Executor) Start(ctx context.Context) error {
 	e.mu.Lock()
 	if e.started {
@@ -202,6 +242,9 @@ func (e *Executor) Start(ctx context.Context) error {
 	}
 	for range e.cfg.Workers {
 		e.wg.Go(func() { e.work(ctx) })
+	}
+	if e.cfg.Storage != nil {
+		e.wg.Go(func() { e.cleanupLoop(ctx) })
 	}
 	return nil
 }
@@ -373,7 +416,7 @@ func (e *Executor) run(parent, ctx context.Context, id string) {
 	if store.DeploymentFinished(d.Status) {
 		return
 	}
-	j := &job{e: e, d: d, contains: map[string]bool{}}
+	j := &job{e: e, d: d, contains: map[string]bool{}, degradedSince: map[string]time.Time{}}
 	err = j.deploy(ctx)
 	switch {
 	case err == nil:
@@ -440,6 +483,9 @@ const (
 	EventDone        = "done"
 )
 
+// TriggerRedeploy is the trigger of a redeploy (apiv1.DeploymentTriggerRedeploy).
+const TriggerRedeploy = "redeploy"
+
 // Environment statuses, mirrored from apiv1.DeploymentEnvironmentStatus.
 const (
 	EnvPending  = "pending"
@@ -496,6 +542,7 @@ func (e *Executor) RemoveApp(ctx context.Context, name string) error {
 			return err
 		case !changed:
 			e.cfg.Log.Info("app deleted", "app", name, "instances", instances)
+			e.wakeCleanup() // its buckets and keys
 			return nil
 		case attempt == removeAppAttempts:
 			return fmt.Errorf("the branches of %s kept changing while it was being deleted; delete it again", name)
