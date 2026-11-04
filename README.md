@@ -526,6 +526,8 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 | `PLATFORM_DEPLOY_BUILDER` | `codebuild` 또는 `docker`. 비우면 실행기가 없고 배포가 `queued`에 머묾. 넣으면 GitHub App 설정이 필요하고, 없으면 서버가 시작하지 않음 |
 | `PLATFORM_IMAGE_REGISTRY` | 실행기를 켜면 필수. 이미지를 push할 레지스트리 (예: `<계정>.dkr.ecr.ap-northeast-2.amazonaws.com`, E2E는 `localhost:5001`) |
 | `PLATFORM_CODEBUILD_PROJECT` | `codebuild`이면 필수. 빌드를 돌릴 CodeBuild 프로젝트. 리전은 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) |
+| `PLATFORM_GKE_IMAGE_REGISTRY` | 선택. GKE용 Artifact Registry prefix (`<location>-docker.pkg.dev/<project>/<repository>`). 아래 인증 설정과 함께 `codebuild`에서만 사용. 둘 다 비우면 기존 ECR 전용 동작 유지 |
+| `PLATFORM_GKE_IMAGE_CREDENTIAL_CONFIG` | 위 prefix와 함께 필요한 공개 AWS WIF ADC JSON 문자열. `type=external_account`, `credential_source.environment_id=aws1`. API의 GCS용 `GOOGLE_APPLICATION_CREDENTIALS`와 별개 |
 | `PLATFORM_DOCKER_CLONE_URL` | `docker`일 때 저장소 주소의 틀. `{repo}`와 `{token}`을 바꿈 (기본 `https://x-access-token:{token}@github.com/{repo}.git`). 로컬 경로도 됨 |
 | `PLATFORM_DEPLOY_WORKERS` | 동시에 실행하는 배포 수 (기본 2, 최대 32) |
 | `PLATFORM_GITOPS_MODE` | `github`(기본, GitHub Git Data API) 또는 `git`(git CLI) |
@@ -539,5 +541,6 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 | `PLATFORM_APP_BACKEND_TEMPLATE` | 게이트웨이 백엔드 주소의 틀. `{app}`, `{instance}`, `{service}`, `{port}`, `{env}`를 바꿈 (예: `http://{app}-{service}.{instance}.svc.cluster.local:{port}`). `{instance}`는 네임스페이스이고 기본 인스턴스에서는 앱 이름과 같음. 비우면 Service의 LoadBalancer 주소를 읽음 |
 
 - CodeBuild 프로젝트는 소스 없이 인라인 buildspec으로 돌고, docker를 쓰므로 privileged 모드가 필요합니다. 프로젝트 역할에는 ECR push와 `hopcharlie/apps/*` 저장소를 만드는 권한이, 플랫폼 역할에는 `codebuild:StartBuild`, `codebuild:BatchGetBuilds`와 빌드 로그 그룹의 `logs:GetLogEvents`가 필요합니다.
+- GKE 이미지 설정을 켜면 모든 서비스 빌드가 끝난 뒤 CodeBuild 역할의 단기 자격 증명으로 GCP에 인증해 같은 이미지를 `<AR prefix>/<app>/<service>`에도 게시합니다. 원격 AR digest가 ECR digest와 다르거나 게시가 실패하면 배포를 중단합니다. GitOps의 `gke` 이미지만 AR 주소로 바꾸며 다른 환경과 저장된 빌드 결과는 ECR 주소를 유지합니다. 설정을 켜기 전에 ECR에만 올린 이미지는 새 빌드로 양쪽에 게시한 뒤 재배포해야 합니다.
 - clone 토큰은 CodeBuild 환경 변수(PLAINTEXT)로 넘깁니다. 한 시간 뒤 만료되는 설치 토큰이지만 빌드 설정 화면에서는 보입니다. buildspec은 토큰을 출력하지 않고, fetch가 끝나면 remote 주소에서 토큰을 지운 뒤에 Dockerfile을 빌드합니다.
 - Argo CD를 읽는 계정에는 `applications.argoproj.io`의 get, patch와 `applicationsets.argoproj.io`의 patch가 필요합니다. ApplicationSet patch가 거부되면 배포 이벤트에 한 번 남기고, ApplicationSet이 스스로 다시 도는 것을 기다립니다.

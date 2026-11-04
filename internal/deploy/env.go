@@ -2,9 +2,11 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -57,8 +59,33 @@ func FromEnv(ctx context.Context, getenv func(string) string, o EnvOptions) (*Ex
 	if registry == "" {
 		return nil, errors.New("PLATFORM_IMAGE_REGISTRY is required with PLATFORM_DEPLOY_BUILDER")
 	}
+	gkeRegistry := getenv("PLATFORM_GKE_IMAGE_REGISTRY")
+	gkeCredentials := getenv("PLATFORM_GKE_IMAGE_CREDENTIAL_CONFIG")
+	if (gkeRegistry == "") != (gkeCredentials == "") {
+		return nil, errors.New("PLATFORM_GKE_IMAGE_REGISTRY and PLATFORM_GKE_IMAGE_CREDENTIAL_CONFIG must be set together")
+	}
+	if gkeRegistry != "" {
+		if builderKind != "codebuild" {
+			return nil, errors.New("GKE image publication requires PLATFORM_DEPLOY_BUILDER=codebuild")
+		}
+		if !regexp.MustCompile(`^[a-z0-9][a-z0-9-]*-docker\.pkg\.dev/[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9._-]*$`).MatchString(gkeRegistry) {
+			return nil, errors.New("PLATFORM_GKE_IMAGE_REGISTRY must be an Artifact Registry prefix: <location>-docker.pkg.dev/<project>/<repository>")
+		}
+		var adc struct {
+			Type             string `json:"type"`
+			CredentialSource struct {
+				EnvironmentID string `json:"environment_id"`
+			} `json:"credential_source"`
+		}
+		if err := json.Unmarshal([]byte(gkeCredentials), &adc); err != nil {
+			return nil, errors.New("PLATFORM_GKE_IMAGE_CREDENTIAL_CONFIG must be valid AWS external_account (aws1) ADC JSON")
+		}
+		if adc.Type != "external_account" || adc.CredentialSource.EnvironmentID != "aws1" {
+			return nil, errors.New("PLATFORM_GKE_IMAGE_CREDENTIAL_CONFIG must be AWS external_account (aws1) ADC JSON")
+		}
+	}
 
-	cfg := Config{Store: o.Store, GitHub: o.GitHub, AppDomain: o.AppDomain, Log: o.Log, Secrets: o.Secrets, Sealer: o.Sealer, Storage: o.Storage}
+	cfg := Config{Store: o.Store, GitHub: o.GitHub, AppDomain: o.AppDomain, Log: o.Log, Secrets: o.Secrets, Sealer: o.Sealer, Storage: o.Storage, GKEImageRegistry: gkeRegistry}
 	switch builderKind {
 	case "codebuild":
 		project := getenv("PLATFORM_CODEBUILD_PROJECT")
@@ -69,7 +96,10 @@ func FromEnv(ctx context.Context, getenv func(string) string, o EnvOptions) (*Ex
 		if err != nil {
 			return nil, fmt.Errorf("AWS configuration: %w", err)
 		}
-		cfg.Builder = &CodeBuildBuilder{Client: codebuild.NewFromConfig(aws), Logs: cloudwatchlogs.NewFromConfig(aws), Project: project, Registry: registry}
+		cfg.Builder = &CodeBuildBuilder{
+			Client: codebuild.NewFromConfig(aws), Logs: cloudwatchlogs.NewFromConfig(aws), Project: project, Registry: registry,
+			GKERegistry: gkeRegistry, GKECredentialConfig: gkeCredentials,
+		}
 	case "docker":
 		cfg.Builder = &DockerBuilder{Registry: registry, CloneURL: getenv("PLATFORM_DOCKER_CLONE_URL")}
 	default:

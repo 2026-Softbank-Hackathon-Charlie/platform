@@ -40,6 +40,8 @@ type CodeBuildBuilder struct {
 	Project string
 	// Registry is the ECR registry, <account>.dkr.ecr.<region>.amazonaws.com.
 	Registry string
+	// GKERegistry and GKECredentialConfig optionally publish the same images to AR.
+	GKERegistry, GKECredentialConfig string
 	// PollInterval is how often the build and its log are read (default 5s).
 	PollInterval time.Duration
 }
@@ -95,12 +97,73 @@ env:
 	return b.String()
 }
 
+func buildspec(services int, publishGKE bool) string {
+	spec := Buildspec(services)
+	if !publishGKE {
+		return spec
+	}
+	// Acquire publishing credentials only after every app Dockerfile has run.
+	return spec + `        set +x
+        python3 -I -m pip install --quiet --disable-pip-version-check --no-input 'google-auth[requests]==2.62.1'
+        python3 -I - <<'PY'
+        import hashlib, json, os, re, subprocess, sys, tempfile, urllib.request
+        import google.auth.aws
+        from google.auth.transport.requests import Request
+
+        try:
+            prefix = os.environ["GKE_IMAGE_REGISTRY"].rstrip("/")
+            host, repository = prefix.split("/", 1)
+            if not re.fullmatch(r"[a-z0-9-]+-docker\.pkg\.dev", host) or not repository:
+                raise ValueError("invalid Artifact Registry prefix")
+            relative = os.environ["AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"]
+            if not relative.startswith("/") or relative.startswith("//"):
+                raise ValueError("invalid CodeBuild credential path")
+            with urllib.request.urlopen("http://169.254.170.2" + relative, timeout=10) as response:
+                aws = json.load(response)
+            os.environ.update(AWS_ACCESS_KEY_ID=aws["AccessKeyId"], AWS_SECRET_ACCESS_KEY=aws["SecretAccessKey"],
+                              AWS_SESSION_TOKEN=aws["Token"], AWS_REGION=os.environ.get("AWS_REGION") or os.environ["AWS_DEFAULT_REGION"])
+            credentials = google.auth.aws.Credentials.from_info(
+                json.loads(os.environ["GKE_IMAGE_CREDENTIAL_CONFIG"]),
+                scopes=["https://www.googleapis.com/auth/cloud-platform"])
+            credentials.refresh(Request())
+            for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+                os.environ.pop(key, None)
+            with tempfile.TemporaryDirectory(prefix="hopcharlie-ar-") as config:
+                docker_env = dict(os.environ, DOCKER_CONFIG=config)
+                subprocess.run(["docker", "login", "--username", "oauth2accesstoken", "--password-stdin", host],
+                               input=credentials.token.encode(), env=docker_env, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                for i in range(int(os.environ["SERVICE_COUNT"])):
+                    name = os.environ["SERVICE_" + str(i) + "_NAME"]
+                    source = os.environ["REGISTRY"] + "/hopcharlie/apps/" + os.environ["APP"] + "/" + name + ":" + os.environ["COMMIT"]
+                    target = prefix + "/" + os.environ["APP"] + "/" + name + ":" + os.environ["COMMIT"]
+                    subprocess.run(["docker", "tag", source, target], env=docker_env, check=True)
+                    subprocess.run(["docker", "push", target], env=docker_env, check=True)
+                    manifest = subprocess.run(["docker", "buildx", "imagetools", "inspect", "--raw", target],
+                                              env=docker_env, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+                    digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+                    if digest != os.environ["DIGEST_" + str(i)]:
+                        raise ValueError("Artifact Registry digest mismatch for " + name)
+                    print("pushed " + prefix + "/" + os.environ["APP"] + "/" + name + "@" + digest, flush=True)
+        except Exception:
+            # Authentication errors may contain token-bearing response bodies.
+            print("Artifact Registry publication failed", file=sys.stderr)
+            sys.exit(1)
+        PY
+`
+}
+
 // Build starts the build, follows it, and returns the pushed images.
 func (c *CodeBuildBuilder) Build(ctx context.Context, req BuildRequest, hooks BuildHooks) (BuildResult, error) {
+	if (c.GKERegistry == "") != (c.GKECredentialConfig == "") {
+		return BuildResult{}, errors.New("CodeBuild GKE registry and credential config must be configured together")
+	}
 	env := []cbtypes.EnvironmentVariable{
 		plain("APP", req.App), plain("REPO", req.Repo), plain("COMMIT", req.Commit),
 		plain("REGISTRY", c.Registry), plain("GITHUB_TOKEN", req.Token),
 		plain("SERVICE_COUNT", strconv.Itoa(len(req.Services))),
+	}
+	if c.GKERegistry != "" {
+		env = append(env, plain("GKE_IMAGE_REGISTRY", c.GKERegistry), plain("GKE_IMAGE_CREDENTIAL_CONFIG", c.GKECredentialConfig))
 	}
 	for i, sv := range req.Services {
 		p := "SERVICE_" + strconv.Itoa(i) + "_"
@@ -109,7 +172,7 @@ func (c *CodeBuildBuilder) Build(ctx context.Context, req BuildRequest, hooks Bu
 	out, err := c.Client.StartBuild(ctx, &codebuild.StartBuildInput{
 		ProjectName:                  aws.String(c.Project),
 		SourceTypeOverride:           cbtypes.SourceTypeNoSource,
-		BuildspecOverride:            aws.String(Buildspec(len(req.Services))),
+		BuildspecOverride:            aws.String(buildspec(len(req.Services), c.GKERegistry != "")),
 		PrivilegedModeOverride:       aws.Bool(true),
 		EnvironmentVariablesOverride: env,
 	})

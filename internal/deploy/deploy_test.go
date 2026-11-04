@@ -83,6 +83,46 @@ func TestDeployHappyPath(t *testing.T) {
 	}
 }
 
+func TestDeployGKEImageRegistry(t *testing.T) {
+	for _, tc := range []struct {
+		name, registry string
+		envs           []string
+	}{
+		{name: "disabled", envs: []string{"gke", "eks"}},
+		{name: "GKE first", registry: testGKERegistry, envs: []string{"gke", "eks", "onprem"}},
+		{name: "EKS first", registry: testGKERegistry, envs: []string{"eks", "gke"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			te.cfg.GKEImageRegistry = tc.registry
+			te.register("shop", tc.envs...)
+			te.start()
+			d := te.deployment("shop", sha("c1"), tc.envs...)
+			te.enqueue(d.ID)
+			got := te.wait(d.ID)
+			if got.Status != store.DeployHealthy {
+				t.Fatalf("deployment %s: %s", got.Status, got.Error)
+			}
+			files, _ := te.git.snapshot()
+			for _, image := range got.Images {
+				if !strings.HasPrefix(image.Image, "registry.test/hopcharlie/apps/shop/") {
+					t.Fatalf("canonical image was changed: %s", image.Image)
+				}
+				for _, env := range tc.envs {
+					want := image.Image
+					if tc.registry != "" && env == "gke" {
+						_, digest, _ := strings.Cut(image.Image, "@")
+						want = tc.registry + "/shop/" + image.Service + "@" + digest
+					}
+					if !strings.Contains(string(files[FilePath("shop", env)]), `image: "`+want+`"`) {
+						t.Errorf("%s image for %s: want %s", env, image.Service, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDeployBuildFailure(t *testing.T) {
 	te := newTestEnv(t)
 	te.builder.err = errors.New("docker build web: exit status 1: COPY failed")

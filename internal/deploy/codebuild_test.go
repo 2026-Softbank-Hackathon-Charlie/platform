@@ -2,7 +2,10 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -193,3 +196,175 @@ func TestCodeBuildBuilderFailures(t *testing.T) {
 		t.Errorf("cancelled: %v", err)
 	}
 }
+
+func TestCodeBuildBuilderGKE(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	cb := &fakeCodeBuild{builds: []cbtypes.Build{{BuildStatus: cbtypes.StatusTypeSucceeded,
+		ExportedEnvironmentVariables: []cbtypes.ExportedEnvironmentVariable{
+			{Name: aws.String("DIGEST_0"), Value: aws.String(digest)},
+			{Name: aws.String("DIGEST_1"), Value: aws.String(digest)},
+		}}}}
+	b := &CodeBuildBuilder{Client: cb, Project: "p", Registry: "ecr.test",
+		GKERegistry: "region-docker.pkg.dev/project/apps", GKECredentialConfig: `{"type":"external_account","credential_source":{"environment_id":"aws1"}}`}
+	result, err := b.Build(t.Context(), codeBuildRequest(), BuildHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"GKE_IMAGE_REGISTRY": b.GKERegistry, "GKE_IMAGE_CREDENTIAL_CONFIG": b.GKECredentialConfig} {
+		got, ok := env(cb.start)[name]
+		if !ok || aws.ToString(got.Value) != want {
+			t.Errorf("CodeBuild environment %s = %q, want %q", name, aws.ToString(got.Value), want)
+		}
+	}
+	if !strings.Contains(aws.ToString(cb.start.BuildspecOverride), "google.auth.aws") {
+		t.Error("GKE configuration did not enable AR publication")
+	}
+	if strings.Contains(aws.ToString(cb.start.BuildspecOverride), b.GKECredentialConfig) {
+		t.Error("ADC configuration must be passed as an environment variable")
+	}
+	if result.Images[0].Image != "ecr.test/hopcharlie/apps/shop/web@"+digest {
+		t.Errorf("stored image must remain the canonical ECR reference: %+v", result.Images)
+	}
+}
+
+func TestCodeBuildBuilderRequiresBothGKESettings(t *testing.T) {
+	for _, b := range []*CodeBuildBuilder{{GKERegistry: "registry"}, {GKECredentialConfig: "{}"}} {
+		if _, err := b.Build(t.Context(), codeBuildRequest(), BuildHooks{}); err == nil {
+			t.Error("a partial GKE image configuration was accepted")
+		}
+	}
+}
+
+func TestCodeBuildGKEPublicationProgram(t *testing.T) {
+	var parsed struct {
+		Phases map[string]struct{ Commands []string }
+	}
+	if err := yaml.Unmarshal([]byte(buildspec(2, true)), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	build := strings.Join(parsed.Phases["build"].Commands, "\n")
+	const marker = "python3 -I - <<'PY'\n"
+	_, program, ok := strings.Cut(build, marker)
+	if !ok {
+		t.Fatal("no isolated Python publication program")
+	}
+	program, _, ok = strings.Cut(program, "\nPY\n")
+	if !ok || !strings.Contains(build[:strings.Index(build, marker)], "done\n") {
+		t.Fatal("AR authentication must follow the entire service build loop")
+	}
+	if strings.Contains(Buildspec(2), "google.auth") || strings.Contains(Buildspec(2), "GKE_IMAGE") {
+		t.Fatal("ECR-only buildspec enables GCP publication")
+	}
+	names := []string{"python3", "python"}
+	if runtime.GOOS == "windows" {
+		names = []string{"python", "python3"}
+	}
+	var python string
+	for _, name := range names {
+		if path, err := exec.LookPath(name); err == nil {
+			python = path
+			break
+		}
+	}
+	if python == "" {
+		t.Skip("Python 3 is required to execute the emitted CodeBuild publication program")
+	}
+	encoded, err := json.Marshal(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []string{"success", "auth failure", "login failure", "push failure", "inspect failure", "digest mismatch"} {
+		t.Run(test, func(t *testing.T) {
+			name, _ := json.Marshal(test)
+			script := "case = " + string(name) + "\n" + codeBuildGKEStubs + "\nexit_code = 0\ntry:\n    exec(" + string(encoded) + ")\nexcept SystemExit as error:\n    exit_code = error.code\n"
+			script += `
+expected = ["metadata", "auth"]
+if case != "auth failure":
+    expected += ["login"]
+if case not in ("auth failure", "login failure"):
+    expected += ["tag:web", "push:web"]
+if case not in ("auth failure", "login failure", "push failure"):
+    expected += ["inspect:web"]
+if case == "success":
+    expected += ["tag:worker", "push:worker", "inspect:worker"]
+assert calls == expected, (calls, expected)
+assert exit_code == (0 if case == "success" else 1), exit_code
+assert all(not os.path.exists(path) for path in docker_configs), "publishing credentials were retained"
+`
+			out, err := exec.CommandContext(t.Context(), python, "-I", "-c", script).CombinedOutput()
+			if err != nil {
+				t.Fatalf("emitted publication program: %v\n%s", err, out)
+			}
+			if strings.Contains(string(out), "DO_NOT_LOG_CREDENTIAL") {
+				t.Fatalf("publication error exposed credential material: %s", out)
+			}
+		})
+	}
+}
+
+const codeBuildGKEStubs = `
+import hashlib, io, json, os, subprocess, sys, tempfile, types, urllib.request
+secret = "DO_NOT_LOG_CREDENTIAL"
+manifest = '{"schemaVersion":2,"note":"☃"}\r\n'.encode()
+digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+os.environ.update(GKE_IMAGE_REGISTRY="asia-northeast3-docker.pkg.dev/project/apps",
+                  GKE_IMAGE_CREDENTIAL_CONFIG='{"type":"external_account","credential_source":{"environment_id":"aws1"}}',
+                  AWS_CONTAINER_CREDENTIALS_RELATIVE_URI="/v2/credentials/test", AWS_REGION="ap-northeast-2",
+                  REGISTRY="ecr.test", APP="shop", COMMIT="commit", SERVICE_COUNT="2",
+                  SERVICE_0_NAME="web", SERVICE_1_NAME="worker", DIGEST_0=digest, DIGEST_1=digest)
+calls, docker_configs = [], set()
+def module(name):
+    value = types.ModuleType(name)
+    sys.modules[name] = value
+    return value
+google = module("google")
+google.auth = module("google.auth")
+google.auth.aws = module("google.auth.aws")
+google.auth.transport = module("google.auth.transport")
+google.auth.transport.requests = module("google.auth.transport.requests")
+google.auth.transport.requests.Request = lambda: object()
+class Credentials:
+    @classmethod
+    def from_info(cls, info, scopes):
+        assert info["credential_source"]["environment_id"] == "aws1"
+        assert scopes == ["https://www.googleapis.com/auth/cloud-platform"]
+        return cls()
+    def refresh(self, request):
+        calls.append("auth")
+        assert os.environ["AWS_SECRET_ACCESS_KEY"] == secret
+        assert os.environ["AWS_SESSION_TOKEN"] == secret
+        assert os.environ["AWS_REGION"] == "ap-northeast-2"
+        if case == "auth failure":
+            raise RuntimeError(secret)
+        self.token = secret
+google.auth.aws.Credentials = Credentials
+def metadata(url, timeout):
+    assert url == "http://169.254.170.2/v2/credentials/test" and timeout == 10
+    calls.append("metadata")
+    return io.BytesIO(json.dumps({"AccessKeyId": secret, "SecretAccessKey": secret, "Token": secret}).encode())
+urllib.request.urlopen = metadata
+def docker(args, env, check, **kwargs):
+    assert check and secret not in " ".join(args)
+    assert all(key not in env for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"))
+    assert os.path.isdir(env["DOCKER_CONFIG"])
+    docker_configs.add(env["DOCKER_CONFIG"])
+    assert len(docker_configs) == 1
+    operation = args[1]
+    if operation == "login":
+        calls.append("login")
+        assert args[2:] == ["--username", "oauth2accesstoken", "--password-stdin", "asia-northeast3-docker.pkg.dev"]
+        assert kwargs["input"] == secret.encode()
+    else:
+        name = args[-1].rsplit("/", 1)[1].split(":", 1)[0]
+        assert args[-1] == "asia-northeast3-docker.pkg.dev/project/apps/shop/" + name + ":commit"
+        if operation == "tag":
+            assert args[2] == "ecr.test/hopcharlie/apps/shop/" + name + ":commit"
+        if operation == "buildx":
+            assert args[2:5] == ["imagetools", "inspect", "--raw"]
+            operation = "inspect"
+        calls.append(operation + ":" + name)
+    if case == operation + " failure":
+        raise subprocess.CalledProcessError(1, args, stderr=secret)
+    return subprocess.CompletedProcess(args, 0, stdout=b"different" if case == "digest mismatch" else manifest)
+subprocess.run = docker
+`
