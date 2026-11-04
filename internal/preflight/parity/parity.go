@@ -83,6 +83,10 @@ type Probe interface {
 
 var ErrInvalidRequest = errors.New("invalid parity request")
 
+// ErrNotConfigured: the server has no parity expectations for the target
+// (for example, no app entry for its namespace). Nothing was evaluated.
+var ErrNotConfigured = errors.New("no parity configuration for the target")
+
 var identifier = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func ValidTarget(t Target) bool {

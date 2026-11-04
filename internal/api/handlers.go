@@ -194,6 +194,7 @@ func (s *Server) startMigration(w http.ResponseWriter, r *http.Request) {
 	noteResidency(r, res.Residency)
 	noteCapacity(r, res.Capacity)
 	noteVersion(r, res.Version)
+	noteParity(r, res.Parity)
 	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
 		PlanRef:    req.PlanRef,
 		Plan:       res.Plan,

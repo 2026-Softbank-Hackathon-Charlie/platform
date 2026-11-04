@@ -32,6 +32,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
@@ -41,6 +42,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"golang.org/x/term"
 	"k8s.io/client-go/kubernetes"
+	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 )
 
 func main() {
@@ -244,6 +246,20 @@ func main() {
 		log.Info("PLATFORM_CAPACITY_GATE is not on: migrations start without a capacity check")
 	default:
 		fatal("PLATFORM_CAPACITY_GATE must be on or off", "value", v)
+	}
+
+	// Optional: record a parity report (target RBAC for the app's service
+	// account, Prometheus scrape health) on every new run's start. Audit mode
+	// only: the report goes to the audit log and never stops a run.
+	if path := os.Getenv("PLATFORM_PARITY_FILE"); path != "" {
+		g, err := parityGate(path, envSvc)
+		if err != nil {
+			fatal("PLATFORM_PARITY_FILE", "err", err)
+		}
+		planSvc.SetParityGate(g)
+		log.Info("parity recording enabled (audit only, never blocks)")
+	} else {
+		log.Info("PLATFORM_PARITY_FILE is not set: no parity report is recorded")
 	}
 
 	// On unless turned off: refuse a run whose source and target clearly run
@@ -478,4 +494,30 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// parityGate loads the parity file. Each environment's SubjectAccessReview
+// client is built on first use from the environment's kubeconfig context,
+// with the platform's own credentials for that cluster.
+func parityGate(path string, envSvc *envs.Service) (*paritygate.Gate, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.New("cannot read the parity file")
+	}
+	cfg, err := paritygate.ParseConfig(raw, envSvc.Names())
+	if err != nil {
+		return nil, err
+	}
+	sar := func(env string) (authorizationclient.SubjectAccessReviewInterface, error) {
+		c, ok := envSvc.Config(env)
+		if !ok {
+			return nil, errors.New("unknown environment")
+		}
+		k, err := envs.NewKubeClient(c, 10*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return k.AuthorizationV1().SubjectAccessReviews(), nil
+	}
+	return paritygate.New(cfg, sar, nil), nil
 }

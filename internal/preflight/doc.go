@@ -5,5 +5,6 @@
 // residency verdict is NOT an execution permit or proof of parity, rehearsal,
 // inventory freshness or human approval. Inventories come from the server's own
 // collector (inventory package), never directly from a submitted plan or an
-// AI-generated report. Parity is not wired into any execution path yet.
+// AI-generated report. Parity is recorded on start (paritygate, audit mode)
+// and never stops a run.
 package preflight

@@ -1,8 +1,8 @@
 # Preflight 코어
 
-**레지던시는 서버에 `PLATFORM_RESIDENCY_POLICY_FILE`이 있을 때 새 run 시작(`plans.Service.Reserve`)을 막는다. 재개는 검사하지 않고 롤백은 면제다. 동등성은 아직 어느 실행 경로에도 연결되지 않았다.**
+**레지던시는 서버에 `PLATFORM_RESIDENCY_POLICY_FILE`이 있을 때 새 run 시작(`plans.Service.Reserve`)을 막는다. 재개는 검사하지 않고 롤백은 면제다. 동등성은 `PLATFORM_PARITY_FILE`이 있을 때 시작 직전에 실행해 감사 로그에 기록만 한다(막지 않음).**
 
-코어(`preflight`, `residency`, `parity`, `probes`)는 엔진·plans·runs·store에 의존하지 않는다. `inventory`는 원본 DB의 시스템 카탈로그만 읽는 수집기이고, `gate`는 엔진 Plan을 레지던시 요청으로 바꾸는 접착 코드다. 설계 근거는 [ADR 0011](../../docs/adr/0011-preflight-core.md)(코어)과 [ADR 0013](../../docs/adr/0013-residency-start-gate.md)(시작 게이트)에 있다.
+코어(`preflight`, `residency`, `parity`, `probes`)는 엔진·plans·runs·store에 의존하지 않는다. `inventory`는 원본 DB의 시스템 카탈로그만 읽는 수집기이고, `gate`는 엔진 Plan을 레지던시 요청으로 바꾸는 접착 코드이고, `paritygate`는 Plan의 대상에 맞춰 RBAC·Prometheus 프로브를 만들어 parity 보고서를 만드는 접착 코드다([ADR 0022](../../docs/adr/0022-parity-audit-mode.md)). 설계 근거는 [ADR 0011](../../docs/adr/0011-preflight-core.md)(코어)과 [ADR 0013](../../docs/adr/0013-residency-start-gate.md)(시작 게이트)에 있다.
 
 ## 시작 게이트 흐름
 
@@ -24,9 +24,10 @@
 | `inventory` | 실제 PostgreSQL 카탈로그 조회로 모든 DB의 테이블·파티션·구체화 뷰 수집, 접속 불가 DB·대용량 객체·미지원 식별자·timeout은 불완전 | DSN이 그 CNPG 클러스터를 가리키는지의 독립 검증, 이미 존재하는 replica 감지 |
 | `capacity` | `PLATFORM_CAPACITY_GATE=on`일 때 시작 전 실측. 대상 접속 한도 부족, replica가 `catchupTimeout` 안에 따라잡지 못함을 차단. 측정 못 한 값은 unknown이며 차단 안 함 ([ADR 0014](../../docs/adr/0014-capacity-preflight.md)) | 7일 피크 접속 수, 대상이 없을 때 회선 처리량, 승인 화면 미리보기 |
 | `pgversion` | 시작 전 원본·대상 PostgreSQL 메이저 버전 비교. 다르면 차단, 읽지 못하면 unknown이며 차단 안 함 ([ADR 0020](../../docs/adr/0020-pg-major-version-gate.md)) | 대상 manifest에 이미지가 없을 때 CNPG operator 기본 이미지 조회, 확장 버전 비교 |
-| `gate` | Plan → 물리 복제 + 버킷 복사 요청 변환, 시작 경로 연결, 버킷 측정 결과 첨부 | parity 연결 |
+| `gate` | Plan → 물리 복제 + 버킷 복사 요청 변환, 시작 경로 연결, 버킷 측정 결과 첨부 | |
+| `paritygate` | `PLATFORM_PARITY_FILE`로 시작 직전 RBAC·Prometheus 실검사, 감사 로그 `parity` 기록. 결과와 무관하게 시작 | 차단 모드, 원본 dependency 발견, secret·audit·backup 프로브, 승인 화면 표시 |
 | `bucketprobe` | rclone 원격 설정으로 S3·MinIO·GCS 버킷 위치, 엔드포인트 IP, 1단계 프리픽스, 복제 대상, MinIO tier 측정. 프리픽스 객체 요약(키·값 없이 개수만) | MinIO site replication, GCS Storage Transfer 작업, 2단계 이하 프리픽스 |
-| `parity` | 원본 요구 + 조직 필수 capability의 합집합, 5종 결과와 필수 검사 fail-closed | 실제 원본 dependency 자동 발견, 운영 API/UI 연결 |
+| `parity` | 원본 요구 + 조직 필수 capability의 합집합, 5종 결과와 필수 검사 fail-closed. 시작 경로에는 기록 전용으로 연결(`paritygate`) | 실제 원본 dependency 자동 발견, UI 표시 |
 | `probes.RBAC` | 실제 Kubernetes client로 앱 SA의 허용/금지 SubjectAccessReview | 클라우드 IAM 권한, 리소스 동작 자체의 성공 |
 | `probes.Prometheus` | 실제 HTTP 조회로 앱 job의 모든 반환 타깃 `up==1`, `timestamp(up)` 기반 최근 scrape 확인 | 알림 규칙 발화·Alertmanager 도착 검증 |
 | 감사·Secret·백업 복구 | 필수이면 미연결 상태를 `unknown`으로 보고 실패 처리 | 검사 요청 생성/로그 검색, 테스트 Job, 임시 CNPG 복구 |

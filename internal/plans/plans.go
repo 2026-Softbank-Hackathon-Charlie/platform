@@ -36,6 +36,7 @@ type Service struct {
 
 	residency ResidencyGate // nil: no residency policy (residency.go)
 	capacity  CapacityGate  // nil: no capacity measurement (capacity.go)
+	parity    ParityGate    // nil: no parity record (parity.go)
 	version   VersionGate   // nil: no PostgreSQL major version check (version.go)
 }
 
@@ -195,6 +196,8 @@ type Reserved struct {
 	Capacity CapacityCheck
 	// Version is what the PostgreSQL major version gate decided.
 	Version VersionCheck
+	// Parity is what the parity probes found. It is recorded, never enforced.
+	Parity ParityCheck
 }
 
 // Reserve moves an approved plan to starting and parses it. With a residency
@@ -227,7 +230,10 @@ func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 		s.Release(ctx, ref)
 		return Reserved{}, err
 	}
-	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf, Residency: check, Capacity: capCheck, Version: verCheck}, nil
+	// Last, and only for a run that will start: parity is a record, so it
+	// must not be what decides, and a denied run needs none.
+	parCheck := s.checkParity(ctx, row.RollbackOf, p)
+	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf, Residency: check, Capacity: capCheck, Version: verCheck, Parity: parCheck}, nil
 }
 
 // Load re-parses a started plan, for resuming its run.
