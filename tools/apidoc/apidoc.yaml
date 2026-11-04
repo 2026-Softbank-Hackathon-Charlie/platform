@@ -56,6 +56,7 @@ operations:
 
       - 없는 아이디와 틀린 비밀번호는 같은 401 invalid_credentials다. 응답 내용과 시간으로 아이디가 있는지 알 수 없다.
       - 아이디마다 10분 안에 10번 실패하면 429 too_many_attempts이고, Retry-After에 다시 시도할 수 있을 때까지의 초를 준다. 막힌 동안에는 비밀번호를 확인하지 않는다.
+      - 서버는 비밀번호 확인을 전체에서 동시에 2개까지만 한다. 빈자리가 없으면 확인하지 않고 바로 429 too_many_attempts, Retry-After 1로 답한다. 이 응답은 아이디의 실패로 세지 않고 감사 로그에도 남기지 않는다.
       - 관리자가 없는 서버는 503 login_not_configured다.
       - 성공과 실패를 모두 감사 로그에 남긴다. 비밀번호는 남기지 않는다.
   logout:
@@ -69,8 +70,8 @@ operations:
       CLI가 브라우저 없이 로그인하는 device code 흐름(RFC 8628 방식)을 시작한다. 사람에게 userCode와 verificationUri(콘솔의 CLI 로그인 화면)를 보여 주고, 관리자가 콘솔에서 승인할 때까지 interval초마다 POST /v1/auth/device/token을 보낸다.
 
       - deviceCode는 CLI만 아는 비밀이다. 화면이나 로그에 남기지 않는다.
-      - client는 관리자가 승인하기 전에 보는 문자열이다. 무엇이 요청하는지 적는다 (예: `charlie v0.5.0 on rin-sbx-12`). 앞뒤 공백을 빼고 1자에서 200자이며 제어 문자는 쓸 수 없다.
-      - 10분 뒤에 만료된다. 승인 대기 중인 기기 로그인이 이미 50개면 429 too_many_attempts이고 Retry-After는 60이다.
+      - client는 관리자가 승인하기 전에 보는 문자열이다. 무엇이 요청하는지 적는다 (예: `charlie v0.5.0 on rin-sbx-12`). 앞뒤 공백을 빼고 1자에서 200자다. 글자, 결합 부호, 숫자, 문장 부호, 기호와 ASCII 공백만 쓸 수 있다. 다른 공백과 줄 구분자, 제어와 서식 문자, 사용자 정의 영역 문자, 보이지 않는 채움 문자(U+3164 등)는 400 invalid_request다.
+      - 10분 뒤에 만료된다. 승인 대기 중인 기기 로그인이 이미 1000개면 429 too_many_attempts이고 Retry-After는 60이다.
   pollDeviceLogin:
     summary: 승인된 기기 로그인을 CLI 토큰으로 교환
     role: 인증 없음
