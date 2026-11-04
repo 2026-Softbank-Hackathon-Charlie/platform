@@ -55,7 +55,9 @@ jobs:
           echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
 
+      # A self-hosted runner keeps ~/go between jobs; restoring over it races with parallel jobs.
       - name: Restore Go cache from main
+        if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -133,7 +135,7 @@ jobs:
       # Only main saves, so a PR spends no time uploading and always starts
       # from main's latest state.
       - name: Save Go cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: runner.environment == 'github-hosted' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: |
