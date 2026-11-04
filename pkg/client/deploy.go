@@ -75,8 +75,10 @@ func (c *Client) ValidateAppSpec(ctx context.Context, req apiv1.AppSpecValidateR
 }
 
 // CreateDeployment deploys a registered app now. An empty request deploys the
-// app's branch into its default instance, to all its environments. An
-// invalid platform.yaml at the ref is an *AppSpecError.
+// app's branch into its default instance, to all its environments. With
+// Redeploy set it deploys the instance's last healthy deployment again with
+// the current secrets, without a build (ErrorCode nothing_to_redeploy when
+// there is none). An invalid platform.yaml at the ref is an *AppSpecError.
 func (c *Client) CreateDeployment(ctx context.Context, app string, req apiv1.DeploymentCreateRequest) (*apiv1.Deployment, error) {
 	return call[apiv1.Deployment](ctx, c, request{method: http.MethodPost, path: "/v1/apps/%s/deployments", params: []string{app}, body: req})
 }

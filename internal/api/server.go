@@ -23,6 +23,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -117,6 +118,14 @@ type Deps struct {
 	Remover AppRemover
 	// GitHub reads app repositories; nil answers the endpoints that need it 503 github_not_configured.
 	GitHub GitHub
+	// Secrets encrypts the app secrets (PLATFORM_SECRETS_KEY, ADR 0019); nil
+	// answers the secrets endpoints 503 secrets_not_configured.
+	Secrets *secrets.Cipher
+	// StorageConfigured reports whether an environment has a storage
+	// driver (ADR 0016); nil means none has. Registering an app with an s3
+	// resource for an environment without one answers 503
+	// storage_not_configured.
+	StorageConfigured func(env string) bool
 }
 
 // SourceMeasurer reads a source database's numbers (capacity.Prober). ok is
@@ -230,6 +239,9 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/apps/{name}/deployments", viewer, s.listDeployments)
 	s.route("GET /v1/deployments/{id}", viewer, s.getDeployment)
 	s.route("GET /v1/deployments/{id}/events", viewer, s.deploymentEvents)
+	s.route("GET /v1/apps/{name}/secrets", viewer, s.listAppSecrets)
+	s.route("PUT /v1/apps/{name}/secrets", operator, s.updateAppSecrets)
+	s.route(revealSecretRoute, operator, s.getAppSecret)
 	return s
 }
 
@@ -310,7 +322,10 @@ func (s *Server) authenticate(r *http.Request) (auth.Principal, bool, error) {
 	return auth.Principal{Name: sess.Name, Role: apiv1.Role(sess.Role), Kind: sess.Kind, Client: sess.Client}, true, nil
 }
 
-func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status int, note map[string]any) {
+// audit writes one audit entry and returns the store's error, which it also
+// logs. Most callers write it after the response, and the error only goes
+// to the log; getAppSecret writes it before the value and refuses on error.
+func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status int, note map[string]any) error {
 	actor, role := p.Name, string(p.Role)
 	if actor == "" {
 		actor, role = "anonymous", ""
@@ -336,7 +351,7 @@ func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status
 		Actor:     actor,
 		Role:      role,
 		Action:    pattern,
-		Target:    r.URL.Path,
+		Target:    auditTarget(r, pattern),
 		Status:    status,
 		RequestID: reqID,
 		Detail:    detail,
@@ -344,6 +359,7 @@ func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status
 	if err != nil {
 		s.cfg.Log.Error("audit log write failed", "err", err, "action", pattern, "actor", actor)
 	}
+	return err
 }
 
 // cors answers preflight requests and sets CORS headers. It reports whether
@@ -391,7 +407,9 @@ func actor(r *http.Request) string {
 
 // shouldAudit records state changes and every denied request. Written-record
 // batches are excluded unless denied: a load generator sends them every few
-// seconds, and they are data, not decisions an auditor needs to see.
+// seconds, and they are data, not decisions an auditor needs to see. Reading
+// a secret's value is a read here: getAppSecret records every call it
+// answers itself, before it sends the value.
 func shouldAudit(pattern, method string, status int) bool {
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return true

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
@@ -114,6 +115,14 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 		// In the app's order, whatever order they were asked in.
 		targets = slices.DeleteFunc(slices.Clone(app.Environments), func(e string) bool { return !slices.Contains(asked, e) })
 	}
+	if req.Redeploy != nil && *req.Redeploy {
+		if req.Ref != nil {
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", "ref is not allowed with redeploy: a redeploy repeats the instance's last healthy deployment")
+			return
+		}
+		s.redeploy(w, r, app, in, targets, req.Environments != nil)
+		return
+	}
 	ref := branch
 	if req.Ref != nil {
 		if *req.Ref == "" {
@@ -164,6 +173,81 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 	stored, err := s.d.Store.GetDeployment(ctx, d.ID)
 	if err != nil {
 		stored = d // deleted with its app in between: answer what was created
+	}
+	w.Header().Set("Location", "/v1/deployments/"+d.ID)
+	writeJSON(w, http.StatusAccepted, deploymentJSON(stored))
+}
+
+// redeploy queues a redeploy of the instance in: its last healthy
+// deployment's commit, images and platform.yaml again, with the secrets as
+// they are now (ADR 0019). Nothing is built and GitHub is not read. It goes
+// only to environments that deployment went to: by default all of them the
+// app still deploys to, or targets when they were asked for (asked), all of
+// which it must have gone to; another environment may run another version.
+// It is refused while the instance has an unfinished deployment.
+func (s *Server) redeploy(w http.ResponseWriter, r *http.Request, app store.App, in store.AppBranch, targets []string, asked bool) {
+	noteAudit(r, "redeploy", true)
+	ctx := context.WithoutCancel(r.Context())
+	list, err := s.d.Store.ListInstanceDeployments(ctx, in.Instance, 0)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	var last *store.Deployment
+	for i, d := range list { // newest first
+		if !store.DeploymentFinished(d.Status) {
+			noteAudit(r, "inProgress", d.ID)
+			s.fail(w, r, http.StatusConflict, "deployment_in_progress", fmt.Sprintf("deployment %s of %s is %s; it uses the secrets as they were at its gitops commit, so redeploy once it is done", d.ID, in.Instance, d.Status))
+			return
+		}
+		if last == nil && d.Status == store.DeployHealthy {
+			last = &list[i]
+		}
+	}
+	if last == nil {
+		s.fail(w, r, http.StatusConflict, "nothing_to_redeploy", fmt.Sprintf("%s has no healthy deployment to redeploy; deploy the branch instead", in.Instance))
+		return
+	}
+	noteAudit(r, "of", last.ID)
+	noteAudit(r, "commit", last.Commit)
+	went := func(e string) bool {
+		return slices.ContainsFunc(last.Environments, func(le store.DeploymentEnvironment) bool { return le.Env == e })
+	}
+	if missing := slices.DeleteFunc(slices.Clone(targets), went); asked && len(missing) > 0 {
+		s.fail(w, r, http.StatusConflict, "nothing_to_redeploy", fmt.Sprintf("the last healthy deployment %s of %s did not go to %s, so there is nothing to redeploy there; deploy the branch there instead", last.ID, in.Instance, strings.Join(missing, ", ")))
+		return
+	}
+	targets = slices.DeleteFunc(slices.Clone(targets), func(e string) bool { return !went(e) })
+	if len(targets) == 0 {
+		s.fail(w, r, http.StatusConflict, "nothing_to_redeploy", fmt.Sprintf("the last healthy deployment %s of %s went only to environments app %s no longer deploys to; deploy the branch instead", last.ID, in.Instance, app.Name))
+		return
+	}
+	noteAudit(r, "environments", targets)
+	spec := last.Spec
+	if len(spec) == 0 && in.SpecCommit == last.Commit {
+		// Deployed before deployments recorded their spec.
+		spec = in.Spec
+	}
+	to := app
+	to.Environments = targets
+	d := newDeployment(to, in, last.Ref, last.Commit, apiv1.DeploymentTriggerRedeploy, actor(r), storeTime())
+	d.Images, d.Spec = last.Images, spec
+	if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
+		switch {
+		case errors.Is(err, store.ErrInstanceNotFound):
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("branch %s is not deployed by app %s", d.Branch, app.Name))
+		case errors.Is(err, store.ErrNotFound):
+			s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
+		default:
+			s.internal(w, r, err)
+		}
+		return
+	}
+	noteAudit(r, "deploymentId", d.ID)
+	s.enqueue(ctx, d.ID)
+	stored, err := s.d.Store.GetDeployment(ctx, d.ID)
+	if err != nil {
+		stored = d
 	}
 	w.Header().Set("Location", "/v1/deployments/"+d.ID)
 	writeJSON(w, http.StatusAccepted, deploymentJSON(stored))

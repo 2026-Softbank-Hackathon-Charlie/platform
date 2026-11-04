@@ -25,9 +25,9 @@ import (
 )
 
 // reservedAppNames are served by the platform itself under the app domain
-// (the API, the console and the gateway's default app, ADR 0012), so no
-// registered app may take them.
-var reservedAppNames = []string{"api", "console", "app"}
+// (the API, the console and the gateway's default app, ADR 0012, and the
+// Headlamp ingress of infra), so no registered app may take them.
+var reservedAppNames = []string{"api", "console", "app", "headlamp"}
 
 // appStatusDeployments is how many newest deployments an instance's
 // per-environment status is read from. Each instance is read on its own, so
@@ -109,6 +109,9 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	noteAudit(r, "app", spec.Name)
 	if slices.Contains(reservedAppNames, spec.Name) {
 		s.fail(w, r, http.StatusConflict, "app_exists", fmt.Sprintf("the platform serves %s.%s itself; rename the app in %s", spec.Name, s.cfg.AppDomain, appspec.FileName))
+		return
+	}
+	if !s.storageCleaned(ctx, w, r, spec.Name) || !s.storageReady(w, r, *spec, targets) {
 		return
 	}
 	specJSON, err := json.Marshal(spec)
@@ -197,6 +200,9 @@ func (s *Server) createAppInstance(w http.ResponseWriter, r *http.Request) {
 		s.instanceConflict(w, r, err, app.Name, branch, instance)
 		return
 	}
+	if !s.storageCleaned(ctx, w, r, instance) {
+		return
+	}
 
 	commit, err := s.d.GitHub.ResolveRef(ctx, app.Repo, branch)
 	switch {
@@ -209,7 +215,7 @@ func (s *Server) createAppInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	noteAudit(r, "commit", commit)
 	spec := s.appSpecAt(ctx, w, r, app, commit)
-	if spec == nil {
+	if spec == nil || !s.storageReady(w, r, *spec, app.Environments) {
 		return
 	}
 	specJSON, err := json.Marshal(spec)
@@ -275,6 +281,60 @@ func (s *Server) instanceConflict(w http.ResponseWriter, r *http.Request, err er
 		return false
 	}
 	return true
+}
+
+// storageCleaned answers 409 storage_cleanup_pending when buckets and keys
+// made for an earlier instance with this name are still waiting to be
+// deleted, and reports whether there are none. Ownership of buckets and
+// keys goes by name, so a new app or instance must not take them over. The
+// rows of an instance that still exists are not pending: the store's own
+// conflict (app_exists, instance_exists) answers that case.
+func (s *Server) storageCleaned(ctx context.Context, w http.ResponseWriter, r *http.Request, instance string) bool {
+	rows, err := s.d.Store.ListInstanceStorage(ctx, "", instance)
+	if err != nil {
+		s.internal(w, r, err)
+		return false
+	}
+	for _, row := range rows {
+		live, err := s.instanceLive(ctx, row.App, row.Instance)
+		if err != nil {
+			s.internal(w, r, err)
+			return false
+		}
+		if !live {
+			s.fail(w, r, http.StatusConflict, "storage_cleanup_pending", fmt.Sprintf("the bucket and key of a deleted app or instance named %s are still being deleted; try again in a few minutes", instance))
+			return false
+		}
+	}
+	return true
+}
+
+// storageReady answers 503 storage_not_configured when spec has an s3
+// resource and one of envs has no storage driver to make its bucket (ADR
+// 0016), and reports whether all have one.
+func (s *Server) storageReady(w http.ResponseWriter, r *http.Request, spec appspec.Spec, envs []string) bool {
+	if !slices.ContainsFunc(spec.Resources, func(res appspec.Resource) bool { return res.Type == appspec.TypeS3 }) {
+		return true
+	}
+	for _, env := range envs {
+		if s.d.StorageConfigured == nil || !s.d.StorageConfigured(env) {
+			s.fail(w, r, http.StatusServiceUnavailable, "storage_not_configured", fmt.Sprintf("%s has an s3 resource, but environment %s has no storage driver to make its bucket (storage in PLATFORM_ENVS_FILE)", appspec.FileName, env))
+			return false
+		}
+	}
+	return true
+}
+
+// instanceLive reports whether app is registered and has the instance.
+func (s *Server) instanceLive(ctx context.Context, app, instance string) (bool, error) {
+	a, err := s.d.Store.GetApp(ctx, app)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return s.isInstance(ctx, a, instance)
 }
 
 // targetEnvs checks the environments of a registration and returns them in

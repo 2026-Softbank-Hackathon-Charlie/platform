@@ -22,7 +22,8 @@ environments:
         endpoint: http://minio.minio.svc.cluster.local:9000
         region: us-east-1
         pathStyle: true
-        credentialsSecret: s3-credentials
+        bucketPrefix: e2e- # BUCKET_PREFIX in lib.sh, storage.bucketPrefix in envs.yaml
+        credentialsSecret: app-s3
       quota:
         enabled: true
         hard: { requests.cpu: "1", requests.memory: 1Gi, limits.memory: 2Gi, pods: "10", persistentvolumeclaims: "2" }

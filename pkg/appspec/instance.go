@@ -15,8 +15,10 @@ const (
 	// included.
 	MaxInstances = 3
 	// MaxInstanceName is the longest instance name. The instance name is the
-	// Helm release name, which Helm limits to 53 characters.
-	MaxInstanceName = 53
+	// Helm release name, which Helm limits to 53 characters, and the end of
+	// the instance's bucket name, which S3 limits to 63 characters with a
+	// bucket prefix of up to 15 (ADR 0016).
+	MaxInstanceName = 48
 )
 
 // instanceHash is how many hex digits of the branch's SHA-256 a shortened
@@ -70,7 +72,7 @@ func InstanceName(app, branch string) (string, error) {
 	if len(name) <= MaxInstanceName {
 		return name, nil
 	}
-	// At least 12 slug characters stay, as an app name has at most 32.
+	// At least 7 slug characters stay, as an app name has at most 32.
 	keep := MaxInstanceName - len(app) - len("--") - 1 - instanceHash
 	sum := sha256.Sum256([]byte(branch))
 	return app + "--" + strings.TrimRight(slug[:keep], "-") + "-" + hex.EncodeToString(sum[:])[:instanceHash], nil

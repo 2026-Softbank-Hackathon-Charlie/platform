@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -20,6 +21,10 @@ type job struct {
 
 	logLines int
 	contains map[string]bool // gitops revision -> whether it includes the commit
+
+	syncDeadline  time.Time            // SyncTimeout after the commit, for syncing and the backend addresses
+	degradedSince map[string]time.Time // by environment: since when Argo CD reports it Synced and Degraded
+	keys          []sealedKey          // the bucket keys this deployment sealed, by environment
 }
 
 func (j *job) deploy(ctx context.Context) error {
@@ -28,6 +33,9 @@ func (j *job) deploy(ctx context.Context) error {
 		j.d.StartedAt = &now
 	}
 	msg := "reading platform.yaml at " + short(j.d.Commit)
+	if j.d.Trigger == TriggerRedeploy {
+		msg = "redeploying " + short(j.d.Commit) + " with its images and the current secrets; no build"
+	}
 	if j.d.Status != store.DeployQueued {
 		msg = "resumed after a restart (was " + j.d.Status + "); " + msg
 	}
@@ -45,9 +53,17 @@ func (j *job) deploy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	spec, err := j.spec(ctx, app, branch)
-	if err != nil {
-		return err
+	var spec appspec.Spec
+	if len(j.d.Spec) > 0 {
+		// A redeploy, or a deployment resumed after it read platform.yaml.
+		if err := json.Unmarshal(j.d.Spec, &spec); err != nil {
+			return fmt.Errorf("the recorded platform.yaml of %s does not decode: %w", j.d.ID, err)
+		}
+	} else {
+		if spec, err = j.spec(ctx, app, branch); err != nil {
+			return err
+		}
+		j.d.Spec = specJSON(spec) // stored with the next write
 	}
 	if err := j.build(ctx, app, spec); err != nil {
 		return err
@@ -65,6 +81,7 @@ func (j *job) deploy(ctx context.Context) error {
 	if err := j.register(ctx, app, spec); err != nil {
 		return err
 	}
+	j.deleteOldKeys(ctx)
 	done := "every environment is synced and healthy"
 	if _, ok := publicService(spec); ok {
 		if u := AppURL(j.e.cfg.AppDomain, j.d.Instance); u != "" {
@@ -213,11 +230,19 @@ func (j *job) updateSpec(ctx context.Context, app store.App, branch *store.AppBr
 	return nil
 }
 
-// build builds the images unless an earlier attempt of this deployment did.
+// build builds the images unless the deployment has them: a redeploy, or
+// an earlier attempt of this deployment.
 func (j *job) build(ctx context.Context, app store.App, spec appspec.Spec) error {
 	if imagesFor(j.d.Images, spec) != nil {
-		j.note(ctx, "images were built before the restart; not building again")
+		if j.d.Trigger == TriggerRedeploy {
+			j.note(ctx, "using the images of the last healthy deployment: "+imageServices(j.d.Images))
+		} else {
+			j.note(ctx, "images were built before the restart; not building again")
+		}
 		return nil
+	}
+	if j.d.Trigger == TriggerRedeploy {
+		return errors.New("a redeploy has no images for every service; deploy the branch instead")
 	}
 	token, err := j.e.cfg.GitHub.Token(ctx)
 	if err != nil {
@@ -293,29 +318,26 @@ func imageServices(images []store.DeploymentImage) string {
 
 // --- committing ---
 
+// commit seals what the instance gets and writes its gitops files, all
+// under the instance's lock.
 func (j *job) commit(ctx context.Context, app store.App, spec appspec.Spec) (string, error) {
 	images := imagesFor(j.d.Images, spec)
-	files := map[string][]byte{}
-	for _, env := range j.d.Environments {
-		b, err := Render(File{App: app.Name, Instance: j.d.Instance, Env: env.Env, Commit: j.d.Commit, Deployment: j.d.ID, Spec: spec, Images: images})
-		if err != nil {
-			return "", err
-		}
-		files[FilePath(j.d.Instance, env.Env)] = b
-	}
 	msg := fmt.Sprintf("deploy %s %s to %s (%s)", j.d.Instance, short(j.d.Commit), envNames(j.d.Environments), j.d.ID)
+	var files map[string][]byte
 	var sha string
 	var changed bool
 	err := j.locked(ctx, func() error {
 		var err error
-		sha, changed, err = j.e.cfg.GitOps.Write(ctx, files, msg)
-		return err
+		if files, err = j.sealedFiles(ctx, app, spec, images); err != nil {
+			return err
+		}
+		if sha, changed, err = j.e.cfg.GitOps.Write(ctx, files, msg); err != nil {
+			return fmt.Errorf("commit to the gitops repository: %w", err)
+		}
+		return nil
 	})
-	if errors.Is(err, errStopped) {
-		return "", err
-	}
 	if err != nil {
-		return "", fmt.Errorf("commit to the gitops repository: %w", err)
+		return "", err
 	}
 	if changed {
 		j.note(ctx, "committed "+strings.Join(sortedKeys(files), ", ")+" as "+short(sha))
@@ -360,7 +382,8 @@ func (j *job) sync(ctx context.Context, commit string) error {
 		refresh(e.Env)
 	}
 
-	deadline := j.e.now().Add(j.e.cfg.SyncTimeout)
+	j.syncDeadline = j.e.now().Add(j.e.cfg.SyncTimeout)
+	deadline := j.syncDeadline
 	tick := time.NewTicker(j.e.cfg.PollInterval)
 	defer tick.Stop()
 	for {
@@ -390,6 +413,16 @@ func (j *job) sync(ctx context.Context, commit string) error {
 				healthy++
 			case EnvFailed:
 				failed = append(failed, e.Env+": "+e.Message)
+			}
+			// Degraded at the commit for DegradedTimeout: it is not coming
+			// back on its own (a crashing pod, a progress deadline, a
+			// SealedSecret the controller cannot open), so fail now.
+			if e.Status != EnvDegraded {
+				delete(j.degradedSince, e.Env)
+			} else if since, ok := j.degradedSince[e.Env]; !ok {
+				j.degradedSince[e.Env] = j.e.now()
+			} else if j.e.now().Sub(since) >= j.e.cfg.DegradedTimeout {
+				failed = append(failed, fmt.Sprintf("%s: Degraded for %s: %s", e.Env, j.e.cfg.DegradedTimeout, e.Message))
 			}
 		}
 		if len(changed) > 0 {
@@ -616,9 +649,13 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) er
 }
 
 // backendURL resolves an environment's URL, retrying until the sync
-// deadline: a load balancer can still be getting its address.
+// deadline set at the commit (a load balancer can still be getting its
+// address), so syncing and this wait together take at most SyncTimeout.
 func (j *job) backendURL(ctx context.Context, app, instance, env string, svc appspec.Service) (string, error) {
-	deadline := j.e.now().Add(j.e.cfg.SyncTimeout)
+	deadline := j.syncDeadline
+	if deadline.IsZero() {
+		deadline = j.e.now().Add(j.e.cfg.SyncTimeout)
+	}
 	for {
 		u, err := j.e.cfg.Backends.URL(ctx, app, instance, env, svc)
 		if err == nil {

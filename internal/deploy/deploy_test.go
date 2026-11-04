@@ -279,6 +279,78 @@ func TestDeploySupersedeWhileBuilding(t *testing.T) {
 	te.wait(b.ID)
 }
 
+func TestRedeployNeverRunsBesideADeployment(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke", "eks")
+	te.start()
+	first := te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(first.ID)
+	base := te.wait(first.ID)
+	setHealth := func(h string) {
+		te.argo.mu.Lock()
+		te.argo.health["shop-gke"] = h
+		te.argo.mu.Unlock()
+	}
+
+	// A redeploy is syncing when a deployment comes: the deployment
+	// supersedes it, though it goes to fewer environments.
+	setHealth("Progressing")
+	r := te.redeployment(base, "gke", "eks")
+	te.enqueue(r.ID)
+	waitFor(t, func() bool { return te.get(r.ID).Status == store.DeploySyncing })
+	push := te.deployment("shop", sha("c1"), "gke")
+	te.enqueue(push.ID)
+	if got := te.get(r.ID); got.Status != store.DeploySuperseded {
+		t.Fatalf("the redeploy is %s, want superseded by the deployment", got.Status)
+	}
+	setHealth("")
+	if got := te.wait(push.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("deployment %s %q", got.Status, got.Error)
+	}
+
+	// A deployment is building when a redeploy comes: the redeploy
+	// supersedes itself and the deployment goes on.
+	push = te.deployment("shop", sha("c1"), "gke")
+	started, release := te.builder.hold(push.ID)
+	te.enqueue(push.ID)
+	<-started
+	r = te.redeployment(base, "gke", "eks")
+	te.enqueue(r.ID)
+	got := te.get(r.ID)
+	evs := te.events(r.ID)
+	if got.Status != store.DeploySuperseded || !strings.Contains(evs[len(evs)-1].Message, push.ID+", which started meanwhile; it uses the current secrets") {
+		t.Fatalf("the redeploy is %s\n%s", got.Status, te.dump(r.ID))
+	}
+	release()
+	if got := te.wait(push.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("deployment %s %q", got.Status, got.Error)
+	}
+	if _, msgs := te.git.snapshot(); slices.ContainsFunc(msgs, func(m string) bool { return strings.Contains(m, r.ID) }) {
+		t.Fatalf("the superseded redeploy committed: %q", msgs)
+	}
+
+	// After a restart, in either order.
+	for _, redeployFirst := range []bool{false, true} {
+		te := newTestEnv(t)
+		te.register("shop", "gke")
+		var push, r store.Deployment
+		if redeployFirst {
+			r = te.redeployment(base, "gke")
+			push = te.deployment("shop", sha("c1"), "gke")
+		} else {
+			push = te.deployment("shop", sha("c1"), "gke")
+			r = te.redeployment(base, "gke")
+		}
+		te.start()
+		if got := te.wait(push.ID); got.Status != store.DeployHealthy {
+			t.Fatalf("redeploy first %v: deployment %s %q", redeployFirst, got.Status, got.Error)
+		}
+		if got := te.get(r.ID); got.Status != store.DeploySuperseded {
+			t.Fatalf("redeploy first %v: the redeploy is %s\n%s", redeployFirst, got.Status, te.dump(r.ID))
+		}
+	}
+}
+
 func waitIdle(t *testing.T, ex *Executor) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

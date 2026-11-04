@@ -36,6 +36,7 @@ func copyAppBranch(b store.AppBranch) store.AppBranch {
 }
 
 func copyDeployment(d store.Deployment) store.Deployment {
+	d.Spec = bytes.Clone(d.Spec)
 	d.Images = append([]store.DeploymentImage{}, d.Images...)
 	d.Environments = append([]store.DeploymentEnvironment{}, d.Environments...)
 	d.StartedAt, d.FinishedAt = pgTimePtr(d.StartedAt), pgTimePtr(d.FinishedAt)
@@ -116,6 +117,7 @@ func (m *memory) DeleteApp(_ context.Context, name string) error {
 	}
 	delete(m.deploy.apps, name)
 	delete(m.deploy.branches, name)
+	m.secrets.deleteSecrets(func(k secretKey) bool { return k.app == name })
 	m.deleteDeployments(func(d store.Deployment) bool { return d.App == name })
 	return nil
 }
@@ -215,6 +217,7 @@ func (m *memory) DeleteAppBranch(_ context.Context, app, branch string) error {
 		return fmt.Errorf("%w: app %s branch %s", store.ErrNotFound, app, branch)
 	}
 	delete(m.deploy.branches[app], branch)
+	m.secrets.deleteSecrets(func(k secretKey) bool { return k.app == app && k.instance == b.Instance })
 	m.deleteDeployments(func(d store.Deployment) bool { return d.App == app && d.Instance == b.Instance })
 	return nil
 }
@@ -231,7 +234,10 @@ func (m *memory) CreateDeployment(_ context.Context, d store.Deployment) error {
 			return fmt.Errorf("%w: app %s has no instance %s of branch %s", store.ErrInstanceNotFound, d.App, d.Instance, d.Branch)
 		}
 	}
-	d = d.Clean()
+	d, err := d.Clean()
+	if err != nil {
+		return err
+	}
 	if _, ok := m.deploy.deployments[d.ID]; ok {
 		return fmt.Errorf("%w: deployment %s exists", store.ErrConflict, d.ID)
 	}
@@ -303,7 +309,10 @@ func (m *memory) UpdateDeployment(_ context.Context, d store.Deployment) (store.
 	if !store.Clean(d.ID) {
 		return store.Deployment{}, fmt.Errorf("%w: deployment %q", store.ErrNotFound, d.ID)
 	}
-	d = d.Clean()
+	d, err := d.Clean()
+	if err != nil {
+		return store.Deployment{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.deploy.deployments[d.ID]
@@ -315,6 +324,7 @@ func (m *memory) UpdateDeployment(_ context.Context, d store.Deployment) (store.
 	}
 	cur.Status, cur.Images, cur.Environments = d.Status, d.Images, d.Environments
 	cur.Error, cur.BuildID, cur.StartedAt, cur.FinishedAt = d.Error, d.BuildID, d.StartedAt, d.FinishedAt
+	cur.Spec = d.Spec
 	cur = copyDeployment(cur)
 	m.deploy.deployments[d.ID] = cur
 	return copyDeployment(cur), nil

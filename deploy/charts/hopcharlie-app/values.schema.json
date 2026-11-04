@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "hopcharlie-app values: the gitops file (ADR 0011, pkg/appspec rules) and the environment profile",
+  "title": "hopcharlie-app values: the gitops file (platform ADR 0011, pkg/appspec rules) and the environment profile",
   "type": "object",
   "additionalProperties": false,
   "required": ["values", "profile"],
@@ -53,6 +53,36 @@
               "type": { "enum": ["postgres", "s3"] }
             }
           }
+        },
+        "sealedSecrets": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "s3": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["accessKey", "secretKey"],
+              "properties": {
+                "accessKey": { "$ref": "#/definitions/ciphertext" },
+                "secretKey": { "$ref": "#/definitions/ciphertext" }
+              }
+            },
+            "app": {
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": {
+                "pattern": "^[A-Z_][A-Z0-9_]*$",
+                "maxLength": 64,
+                "not": { "anyOf": [{ "enum": ["PORT", "DATABASE_URL"] }, { "pattern": "^S3_" }] }
+              },
+              "additionalProperties": { "$ref": "#/definitions/ciphertext" }
+            },
+            "appChecksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          },
+          "dependencies": {
+            "app": ["appChecksum"],
+            "appChecksum": ["app"]
+          }
         }
       }
     },
@@ -65,6 +95,7 @@
           "additionalProperties": false,
           "properties": {
             "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+            "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
             "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
           }
         },
@@ -128,6 +159,7 @@
     }
   },
   "definitions": {
-    "partName": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$" }
+    "partName": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$" },
+    "ciphertext": { "type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$" }
   }
 }

@@ -176,6 +176,7 @@ func (e DeploymentStatus) Valid() bool {
 const (
 	DeploymentTriggerManual   DeploymentTrigger = "manual"
 	DeploymentTriggerPush     DeploymentTrigger = "push"
+	DeploymentTriggerRedeploy DeploymentTrigger = "redeploy"
 	DeploymentTriggerRegister DeploymentTrigger = "register"
 )
 
@@ -185,6 +186,8 @@ func (e DeploymentTrigger) Valid() bool {
 	case DeploymentTriggerManual:
 		return true
 	case DeploymentTriggerPush:
+		return true
+	case DeploymentTriggerRedeploy:
 		return true
 	case DeploymentTriggerRegister:
 		return true
@@ -974,6 +977,51 @@ type AppList struct {
 	Apps []App `json:"apps"`
 }
 
+// AppSecretInfo A secret without its value.
+type AppSecretInfo struct {
+	// Name Example: HOST_CODE
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updatedAt"`
+
+	// UpdatedBy The principal who last set it.
+	UpdatedBy string `json:"updatedBy"`
+}
+
+// AppSecretValue defines model for AppSecretValue.
+type AppSecretValue struct {
+	// Instance The instance whose override this is; absent for an app-wide secret.
+	Instance  *string   `json:"instance,omitempty"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	UpdatedBy string    `json:"updatedBy"`
+	Value     string    `json:"value"`
+}
+
+// AppSecrets defines model for AppSecrets.
+type AppSecrets struct {
+	// App App-wide secrets, by name. Every instance gets them unless it overrides one.
+	App []AppSecretInfo `json:"app"`
+
+	// Instances The instances that override at least one secret, by instance name.
+	Instances []InstanceSecrets `json:"instances"`
+}
+
+// AppSecretsUpdate defines model for AppSecretsUpdate.
+type AppSecretsUpdate struct {
+	// Delete Names to remove. A name not present is ignored.
+	Delete *[]string `json:"delete,omitempty"`
+
+	// Instance Change this instance's overrides (the app's name for the default instance); without it, or empty, the app-wide secrets change.
+	//
+	// Example: moimroom--dev
+	Instance *string `json:"instance,omitempty"`
+
+	// Set Secrets to create or replace, name to value. Each value is 1 to 4096 bytes of UTF-8 (maxLength counts characters; the server counts bytes).
+	//
+	// Example: {"HOST_CODE":"4821"}
+	Set *map[string]string `json:"set,omitempty"`
+}
+
 // AppSpec `platform.yaml` at the root of an app's repository, with defaults
 // applied. pkg/appspec parses it strictly (unknown keys are an error)
 // and checks these rules:
@@ -1310,6 +1358,7 @@ type Deployment struct {
 	// Trigger register: the first deployment of an app (POST /v1/apps) or of an added instance (POST /v1/apps/{name}/instances).
 	// push: a push to a branch the app deploys (the GitHub webhook).
 	// manual: POST /v1/apps/{name}/deployments.
+	// redeploy: POST /v1/apps/{name}/deployments with `redeploy`: the last healthy deployment's commit and images again, without a build, to apply changed secrets.
 	Trigger DeploymentTrigger `json:"trigger"`
 
 	// TriggeredBy the token name (register, manual), or github:<login> of the pusher (push)
@@ -1327,6 +1376,9 @@ type DeploymentCreateRequest struct {
 
 	// Environments A subset of the app's environments; defaults to all of them.
 	Environments *[]string `json:"environments,omitempty"`
+
+	// Redeploy Deploy the instance's last healthy deployment again (same commit and images, no build) with the current secrets, only to environments it went to. Not with ref.
+	Redeploy *bool `json:"redeploy,omitempty"`
 
 	// Ref a branch, tag or commit sha of the app's repository to deploy into that instance; defaults to branch
 	//
@@ -1427,6 +1479,7 @@ type DeploymentStatus string
 // DeploymentTrigger register: the first deployment of an app (POST /v1/apps) or of an added instance (POST /v1/apps/{name}/instances).
 // push: a push to a branch the app deploys (the GitHub webhook).
 // manual: POST /v1/apps/{name}/deployments.
+// redeploy: POST /v1/apps/{name}/deployments with `redeploy`: the last healthy deployment's commit and images again, without a build, to apply changed secrets.
 type DeploymentTrigger string
 
 // DeviceLogin A device login as the console shows it to an administrator. It never contains the device code. `role` is the role the CLI token gets, set once approved.
@@ -1686,6 +1739,15 @@ type Health struct {
 type InFlight struct {
 	Reads  int `json:"reads"`
 	Writes int `json:"writes"`
+}
+
+// InstanceSecrets defines model for InstanceSecrets.
+type InstanceSecrets struct {
+	// Instance Example: moimroom--dev
+	Instance string `json:"instance"`
+
+	// Secrets This instance's overrides, by name.
+	Secrets []AppSecretInfo `json:"secrets"`
 }
 
 // LoginRequest defines model for LoginRequest.
@@ -2450,6 +2512,12 @@ type ListDeploymentsParams struct {
 	Branch *string `form:"branch,omitempty" json:"branch,omitempty"`
 }
 
+// GetAppSecretParams defines parameters for GetAppSecret.
+type GetAppSecretParams struct {
+	// Instance Read this instance's override instead of the app-wide value.
+	Instance *string `form:"instance,omitempty" json:"instance,omitempty"`
+}
+
 // ListAuditParams defines parameters for ListAudit.
 type ListAuditParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
@@ -2532,6 +2600,9 @@ type CreateDeploymentJSONRequestBody = DeploymentCreateRequest
 
 // CreateAppInstanceJSONRequestBody defines body for CreateAppInstance for application/json ContentType.
 type CreateAppInstanceJSONRequestBody = AppInstanceCreateRequest
+
+// UpdateAppSecretsJSONRequestBody defines body for UpdateAppSecrets for application/json ContentType.
+type UpdateAppSecretsJSONRequestBody = AppSecretsUpdate
 
 // StartDeviceLoginJSONRequestBody defines body for StartDeviceLogin for application/json ContentType.
 type StartDeviceLoginJSONRequestBody = DeviceLoginStartRequest

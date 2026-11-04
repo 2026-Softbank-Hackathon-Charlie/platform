@@ -111,6 +111,15 @@ jobs:
           docker exec pg pg_isready -U charlie || { cat /tmp/pg.log; exit 1; }
           go test -race ./...
 
+      # The minio storage driver links madmin-go (AGPL-3.0), so it is only in
+      # binaries built with -tags minio (kind E2E, on-prem); the published
+      # image is built without it (publish-image.yml). Keep it compiling and
+      # tested.
+      - name: Test the minio driver (-tags minio)
+        run: |
+          go vet -race -tags minio ./internal/storage/... ./internal/envs/... ./cmd/api/...
+          go test -race -tags minio ./internal/storage/... ./internal/envs/...
+
       # Only main saves, so a PR spends no time uploading and always starts
       # from main's latest state.
       - name: Save Go cache

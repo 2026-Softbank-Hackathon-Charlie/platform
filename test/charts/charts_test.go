@@ -316,7 +316,7 @@ func TestStatelessApp(t *testing.T) {
 func TestStatefulApp(t *testing.T) {
 	docs := mustRender(t, appChart, "moimroom", filepath.Join(appChart, "ci", "stateful-values.yaml"))
 	want := []string{"Cluster/moimroom-db", "Deployment/moimroom-web", "LimitRange/hopcharlie-app", "Namespace/moimroom",
-		"NetworkPolicy/hopcharlie-app", "ResourceQuota/hopcharlie-app", "Service/moimroom-web"}
+		"NetworkPolicy/hopcharlie-app", "ResourceQuota/hopcharlie-app", "SealedSecret/app-s3", "SealedSecret/app-secrets", "Service/moimroom-web"}
 	if got := keys(docs); !slices.Equal(got, want) {
 		t.Fatalf("rendered %v, want %v", got, want)
 	}
@@ -344,8 +344,10 @@ func TestStatefulApp(t *testing.T) {
 	if d.Annotations["hopcharlie.dev/commit"] != "0f2fa18d0c2e4a1b9f3e5d7c6b8a9e0f1a2b3c4d" || d.Annotations["hopcharlie.dev/deployment"] != "dep-2" {
 		t.Errorf("annotations %v, want the gitops file's commit and deployment", d.Annotations)
 	}
-	if len(d.Spec.Template.Annotations) != 0 {
-		t.Errorf("pod annotations %v: a new deployment of the same commit would restart the pods", d.Spec.Template.Annotations)
+	// Only the secrets' checksum is on the pods: they restart when the
+	// secrets change, not on every deployment of the same commit.
+	if a := d.Spec.Template.Annotations; len(a) != 1 || a["hopcharlie.dev/secrets-checksum"] != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
+		t.Errorf("pod annotations %v, want only the secrets checksum", a)
 	}
 	pod := d.Spec.Template.Spec
 	if len(pod.ImagePullSecrets) != 1 || pod.ImagePullSecrets[0].Name != "ecr-pull" {
@@ -362,7 +364,7 @@ func TestStatefulApp(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"S3_ENDPOINT":   "https://s3.ap-northeast-2.amazonaws.com",
-		"S3_BUCKET":     "hopcharlie-eks-moimroom-photos",
+		"S3_BUCKET":     "hopcharlie-eks-moimroom",
 		"S3_REGION":     "ap-northeast-2",
 		"S3_PATH_STYLE": "false",
 	} {
@@ -375,6 +377,40 @@ func TestStatefulApp(t *testing.T) {
 	}
 	if got := secretRef(t, env["S3_SECRET_KEY"]); got != "app-s3/secretKey" {
 		t.Errorf("S3_SECRET_KEY from %s", got)
+	}
+	if ef := c.EnvFrom; len(ef) != 1 || ef[0].SecretRef == nil || ef[0].SecretRef.Name != "app-secrets" {
+		t.Errorf("envFrom %+v, want Secret app-secrets", ef)
+	}
+	// The sealed values, as SealedSecrets the controller opens in this
+	// namespace under these names, before the Deployments change.
+	for name, keys := range map[string][]string{"app-s3": {"accessKey", "secretKey"}, "app-secrets": {"ADMIN_TOKEN", "HOST_CODE"}} {
+		var ss struct {
+			APIVersion string `json:"apiVersion"`
+			Metadata   struct {
+				Name, Namespace string
+				Annotations     map[string]string
+			} `json:"metadata"`
+			Spec struct {
+				EncryptedData map[string]string `json:"encryptedData"`
+				Template      struct {
+					Metadata struct{ Name, Namespace string } `json:"metadata"`
+					Type     string                           `json:"type"`
+				} `json:"template"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal(docs["SealedSecret/"+name], &ss); err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for k := range ss.Spec.EncryptedData {
+			got = append(got, k)
+		}
+		slices.Sort(got)
+		if ss.APIVersion != "bitnami.com/v1alpha1" || ss.Metadata.Name != name || ss.Metadata.Namespace != "moimroom" ||
+			ss.Metadata.Annotations["argocd.argoproj.io/sync-wave"] != "-1" || !slices.Equal(got, keys) ||
+			ss.Spec.Template.Metadata.Name != name || ss.Spec.Template.Metadata.Namespace != "moimroom" || ss.Spec.Template.Type != "Opaque" {
+			t.Errorf("SealedSecret %s: %+v", name, ss)
+		}
 	}
 
 	var s corev1.Service
@@ -448,6 +484,12 @@ func TestRejectsBadValues(t *testing.T) {
 		{"two postgres resources", file(web(""), "[{name: a, type: postgres}, {name: b, type: postgres}]"), "only one postgres resource is allowed (a and b)"},
 		{"s3 without a profile", file(web(""), "[{name: files, type: s3}]"), "profile.s3.endpoint and profile.s3.credentialsSecret are required"},
 		{"quota without its size", file(web(""), "[]") + "profile: {quota: {enabled: true}}\n", "profile.quota.hard is required"},
+		{"secrets without a checksum", file(web(""), "[]") + "  sealedSecrets: {app: {A: AgA1}}\n", "appChecksum"},
+		{"a reserved secret name", file(web(""), "[]") + "  sealedSecrets: {app: {PORT: AgA1}, appChecksum: " + strings.Repeat("a", 64) + "}\n", "PORT"},
+		{"a ciphertext that is not base64", file(web(""), "[]") + "  sealedSecrets: {app: {A: \"not base64!\"}, appChecksum: " + strings.Repeat("a", 64) + "}\n", "does not match pattern"},
+		{"an env name that is also a secret", file(web(", env: {A: x}"), "[]") + "  sealedSecrets: {app: {A: AgA1}, appChecksum: " + strings.Repeat("a", 64) + "}\n", "the secret must win"},
+		{"a sealed key read from another Secret", file(web(""), "[{name: files, type: s3}]") + "  sealedSecrets: {s3: {accessKey: AgA1, secretKey: AgA2}}\n" +
+			"profile: {s3: {endpoint: http://s3, credentialsSecret: s3-credentials}}\n", "profile.s3 must read exactly those"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := render(t, appChart, "a", writeValues(t, c.values))
@@ -618,7 +660,7 @@ func TestAppProject(t *testing.T) {
 		kinds = append(kinds, k["kind"])
 	}
 	slices.Sort(kinds)
-	if !slices.Equal(kinds, []string{"Cluster", "Deployment", "LimitRange", "NetworkPolicy", "ResourceQuota", "Service"}) {
+	if !slices.Equal(kinds, []string{"Cluster", "Deployment", "LimitRange", "NetworkPolicy", "ResourceQuota", "SealedSecret", "Service"}) {
 		t.Errorf("namespaceResourceWhitelist %v", ps.NamespaceResourceWhitelist)
 	}
 }
@@ -723,7 +765,7 @@ func TestApplicationSet(t *testing.T) {
 			var d appsv1.Deployment
 			decode(t, rendered, "Deployment/moimroom-web", &d)
 			env := envByName(d.Spec.Template.Spec.Containers[0])
-			if want := "hopcharlie-eks-" + c.instance + "-photos"; env["S3_BUCKET"].Value != want || env["KEY"].Value != "0755" {
+			if want := "hopcharlie-eks-" + c.instance; env["S3_BUCKET"].Value != want || env["KEY"].Value != "0755" {
 				t.Errorf("S3_BUCKET %q (want %q), KEY %q", env["S3_BUCKET"].Value, want, env["KEY"].Value)
 			}
 			if got := secretRef(t, env["DATABASE_URL"]); got != "moimroom-db-app/uri" {

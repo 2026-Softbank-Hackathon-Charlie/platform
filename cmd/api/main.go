@@ -35,6 +35,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
@@ -78,6 +79,17 @@ func main() {
 	if tokens.Len() == 0 && admins.Len() == 0 && !*insecure {
 		fatal("no tokens or administrators: set PLATFORM_TOKENS (name:role:token,...) or PLATFORM_ADMINS (name:bcrypt-hash,...), or use -insecure-no-auth for local development")
 	}
+	// Optional: the key app secrets are stored under (ADR 0019). A value that
+	// is not base64 of 32 bytes stops the server.
+	secretsKey, err := secrets.FromEnv(os.Getenv)
+	if err != nil {
+		fatal("PLATFORM_SECRETS_KEY", "err", err)
+	}
+	if secretsKey == nil {
+		log.Warn("PLATFORM_SECRETS_KEY is not set: the app secrets API answers 503 secrets_not_configured")
+	} else {
+		log.Info("app secrets enabled", "keyVersion", secrets.KeyVersion, "keyCheck", secretsKey.KeyCheck())
+	}
 
 	dbURL := os.Getenv("PLATFORM_DATABASE_URL")
 	if dbURL == "" {
@@ -91,6 +103,18 @@ func main() {
 		fatal("open platform database", "err", err)
 	}
 	defer st.Close()
+	if secretsKey != nil {
+		// Secrets stored under another key cannot be read or deployed; say
+		// so now rather than at the first deployment.
+		checkCtx, cancelCheck := context.WithTimeout(ctx, 30*time.Second)
+		switch n, err := secretsKey.OtherKeyRows(checkCtx, st); {
+		case err != nil:
+			log.Warn("could not check the stored app secrets against PLATFORM_SECRETS_KEY", "err", err)
+		case n > 0:
+			log.Error("stored app secrets were written with another PLATFORM_SECRETS_KEY: they cannot be read or deployed until the key that wrote them is back", "rows", n, "keyCheck", secretsKey.KeyCheck())
+		}
+		cancelCheck()
+	}
 
 	envPath := os.Getenv("PLATFORM_ENVS_FILE")
 	if envPath == "" {
@@ -103,6 +127,24 @@ func main() {
 	envSvc, err := envs.New(envCfg, envs.Options{})
 	if err != nil {
 		fatal("environments", "err", err)
+	}
+	// What each environment can take: sealing needs the cluster's
+	// sealed-secrets certificate, buckets need a storage driver (ADR 0016).
+	// A certificate that is missing now is read again when it is needed.
+	for _, c := range envCfg.Environments {
+		storageDriver, bucketPrefix, sealing := "none", "", "none"
+		if c.Storage != nil {
+			storageDriver, bucketPrefix = c.Storage.Driver, c.Storage.BucketPrefix
+		}
+		switch sl, err := envSvc.Sealer(c.Name); {
+		case errors.Is(err, envs.ErrSealingNotConfigured):
+		case err != nil:
+			sealing = "unavailable"
+			log.Warn("sealed-secrets certificate is not usable yet: deployments that need sealing fail until it is", "env", c.Name, "path", c.SealedSecretsCert, "err", err)
+		default:
+			sealing = sl.Fingerprint()
+		}
+		log.Info("environment sealing and storage", "env", c.Name, "storage", storageDriver, "bucketPrefix", bucketPrefix, "sealing", sealing)
 	}
 
 	policy := plans.DefaultPolicy()
@@ -255,6 +297,8 @@ func main() {
 	}
 	agents := agentlog.New(st)
 	deps.Agents = agents
+	deps.Secrets = secretsKey
+	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }
 	go agents.RunSweeper(runCtx, agentIdle, log)
 	// Optional: the GitHub App that apps are registered and deployed from.
 	gh, err := github.FromEnv(os.Getenv)
@@ -288,6 +332,9 @@ func main() {
 			}
 			return envs.NewKubeClient(c, 10*time.Second)
 		},
+		Secrets: secretsKey,
+		Sealer:  envSvc.Sealer,
+		Storage: envSvc.Storage,
 	}
 	if gh != nil {
 		deployOpts.GitHub = gh

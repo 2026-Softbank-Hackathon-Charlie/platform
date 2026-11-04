@@ -1,6 +1,6 @@
 # 0016. 앱 인스턴스마다 플랫폼이 버킷과 그 버킷 전용 키를 만들고, 키는 Sealed Secrets로 gitops에 넣는다
 
-- 상태: 채택
+- 상태: 채택, 구현됨(2026-11-04)
 - 날짜: 2026-11-03
 
 ## 상황
@@ -32,6 +32,10 @@
 | `minio` | 온프렘, kind E2E | MinIO 관리 API로 사용자와 그 버킷만 허용하는 정책 |
 
 - 드라이버의 관리 자격 증명은 플랫폼만 가진다. AWS는 플랫폼 pod 역할을 쓰고, GCP와 MinIO는 SSM에 둔 값을 쓴다.
+- `minio` 드라이버가 쓰는 MinIO 관리 클라이언트(madmin-go)는 AGPL-3.0이다. 그래서 이 드라이버는 빌드 태그 `minio`로 빌드한 API에만 들어간다(kind E2E, 온프렘). 기본 빌드와 게시하는 플랫폼 이미지에는 없고, 그 빌드는 `minio` 저장소 설정을 시작할 때 거절한다.
+- 소유는 태그 `hopcharlie:app`으로 가린다. 다른 앱의 태그가 붙은 버킷과 사용자는 쓰지도 지우지도 않는다. IAM 사용자는 만드는 호출에서 태그가 붙으므로 태그가 없으면 플랫폼의 것이 아니다. 태그가 없는 버킷은 같은 계정이 방금 만든 경우에만 이어서 쓴다.
+- 앱 이름으로 소유를 가리므로, 지운 앱이나 인스턴스의 버킷과 키를 지우는 중이면 같은 이름의 앱 등록과 인스턴스 추가를 409 `storage_cleanup_pending`으로 거절한다.
+- 사용자 이름은 인스턴스 이름만으로 정한다. 그래서 두 환경이 같은 AWS 계정이나 같은 MinIO 서버에 사용자를 만들면 이름이 같은 인스턴스가 사용자를 나눠 쓰게 된다. `aws` 드라이버는 한 환경만 쓸 수 있고 `minio` 드라이버는 환경마다 엔드포인트가 달라야 하며, 어기면 서버가 환경 설정을 읽을 때 거절한다.
 
 ### 키 전달: Sealed Secrets
 
@@ -44,6 +48,17 @@
 
 - 인스턴스나 앱을 지우면 gitops 삭제 커밋으로 네임스페이스와 Secret이 사라진다. 그 뒤 플랫폼이 드라이버로 키(와 사용자 또는 서비스 계정)를 지우고, 버킷을 비운 뒤 삭제한다. DB가 네임스페이스와 함께 지워지는 것과 같은 수명이다.
 - 앱을 다른 환경으로 이전하면 플랫폼이 대상 환경의 드라이버로 버킷과 키를 만들고, 대상 클러스터의 인증서로 암호화한다. 버킷 데이터의 복사는 지금처럼 이전 엔진이 맡는다.
+
+### 구현
+
+- 드라이버는 `internal/storage`의 `aws`(S3, IAM 사용자, 인라인 정책 `hopcharlie-bucket`, 액세스 키)와 `minio`(버킷, 사용자, 같은 이름의 canned policy, 서비스 계정)다. `gcs`는 아직 없고, 설정하면 시작하지 않는다. `minio`는 빌드 태그 `minio`가 있어야 들어간다.
+- 배포 실행기가 커밋하기 전에 인스턴스 잠금 안에서 환경마다 버킷과 키를 확인한다. 저장한 키가 없으면 새로 만들어 봉인하고, 있으면 그 키가 아직 있는지 확인해 저장한 암호문을 다시 쓴다(사라졌으면 새 키). 저장한 행을 만든 드라이버가 그 환경의 지금 드라이버와 다르면 새 키를 만들지 않고 배포를 실패시킨다.
+- 인증서 지문이 바뀌었으면 새 키를 만들어 다시 봉인하고, 바뀌기 전 키를 행의 `old_key_id`에 적는다. 돌고 있는 파드가 옛 키를 쓸 수 있으므로 커밋할 때는 지우지 않는다. 시크릿이 있는 앱은 `appChecksum`에 키 id가 들어가 키가 바뀌면 파드가 다시 뜬다. 그래서 그 뒤 healthy가 된 배포가 무엇이든 옛 키를 지우고 `old_key_id`를 비운다.
+- 사용자당 키는 둘까지다(AWS 한도이고, `minio`도 같게 둔다). `old_key_id`가 남아 있을 때 인증서가 또 바뀌면 지금 키와 옛 키를 모두 지켜야 하므로, 새 키를 만들지 않고 배포를 실패시킨다.
+- 배포 이벤트에는 키 id의 마지막 4자만 보인다.
+- 인스턴스와 앱을 지운 뒤 실행기가 드라이버로 사용자, 키, 버킷을 지우고 행을 지운다. 실패하면 행을 남기고 서버 시작 때와 5분마다 다시 한다.
+- 환경이 설정에서 빠졌거나 드라이버가 바뀐 행은 플랫폼이 지울 수 없다. 실행기는 시도할 때마다 error 로그 `cannot delete the bucket and key of a deleted instance`를 instance, env, driver, bucket과 함께 남긴다. 운영자는 옛 드라이버의 도구로 버킷, 사용자, 키를 지운 뒤(AWS는 `aws s3 rb s3://<bucket> --force`, `aws iam delete-access-key`, `aws iam delete-user-policy --policy-name hopcharlie-bucket`, `aws iam delete-user`, MinIO는 `mc rb --force <alias>/<bucket>`, `mc admin user rm <alias> hopcharlie-app-<instance>`, `mc admin policy rm <alias> hopcharlie-app-<instance>`) 행을 지운다: `DELETE FROM instance_storage WHERE instance = '<instance>' AND env = '<env>';`. 살아 있는 인스턴스의 환경 드라이버를 바꾼 경우도 같은 방법으로 옛 버킷과 행을 지우면(데이터가 필요하면 먼저 복사한다) 다음 배포가 새 드라이버로 버킷과 키를 만든다.
+- 버킷 이름은 차트가 `profile.s3.bucketPrefix`로 만들므로 각 환경의 프로필과 `storage.bucketPrefix`를 같게 둔다. kind E2E는 sealed-secrets 컨트롤러(chart 2.20.0)와 `minio` 드라이버로 버킷, 키 격리, 삭제까지 확인한다.
 
 ## 검토한 대안
 
@@ -66,3 +81,4 @@
 - sealed-secrets 컨트롤러가 각 클러스터에 떠 있어야 한다. 컨트롤러 키를 잃으면 암호문을 다시 만들어야 하므로, 플랫폼은 키 식별자로 키를 새로 만들어 다시 커밋할 수 있어야 한다.
 - 인스턴스 이름이 48자를 넘는 브랜치는 이름이 잘리고 해시가 붙는다(ADR 0015의 규칙과 같다).
 - kind E2E는 sealed-secrets와 MinIO 드라이버로 온프렘 경로를 그대로 검증한다.
+- 알려진 한계: 시크릿이 없는 앱은 키가 바뀌어도 파드가 다시 뜨지 않으므로 옛 키가 `old_key_id`에 남는다. 앱에 시크릿을 하나 넣고 다시 배포하거나 재배포하면 healthy가 된 뒤 지워진다. 그 전에 인증서가 또 바뀌면 배포가 실패하고, 운영자가 파드를 다시 띄운 뒤(`kubectl -n <instance> rollout restart deployment`) 옛 키를 지우면(`aws iam delete-access-key --user-name hopcharlie-app-<instance> --access-key-id <old_key_id>`, MinIO는 `mc admin user svcacct rm <alias> <old_key_id>`) 다음 배포가 이어서 교체한다. 컨트롤러의 `keyrenewperiod`가 0이라 인증서는 컨트롤러 키를 잃었을 때만 바뀌므로 드물다.

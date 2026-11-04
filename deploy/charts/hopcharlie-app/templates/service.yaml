@@ -18,7 +18,7 @@ spec:
     {{- include "hopcharlie-app.selectorLabels" $ctx | nindent 4 }}
   ports:
     - name: http
-      port: {{ $svc.port }}
+      port: {{ if and $svc.public $public.port }}{{ $public.port }}{{ else }}{{ $svc.port }}{{ end }}
       targetPort: http
       protocol: TCP
 {{- end }}

@@ -96,9 +96,10 @@ func (s *Postgres) UpdateApp(ctx context.Context, a App) error {
 	return tx.Commit(ctx)
 }
 
-// DeleteApp deletes the app row first. Its lock waits for a CreateDeployment
-// or CreateAppBranch that holds the row, so the branches and deployments
-// deleted next include theirs; a later create finds no app. Deleting the
+// DeleteApp deletes the app row first. Its lock waits for a CreateDeployment,
+// CreateAppBranch or ChangeAppSecrets that holds the row, so the branches,
+// secrets and deployments deleted next include theirs; a later create finds
+// no app. Deleting the
 // deployments waits for appends that hold them, so the events deleted last
 // include theirs.
 func (s *Postgres) DeleteApp(ctx context.Context, name string) error {
@@ -119,6 +120,9 @@ func (s *Postgres) DeleteApp(ctx context.Context, name string) error {
 		return fmt.Errorf("%w: app %s", ErrNotFound, name)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM app_branches WHERE app = $1`, name); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM app_secrets WHERE app = $1`, name); err != nil {
 		return err
 	}
 	if err := deleteDeployments(ctx, tx, `app = $1`, name); err != nil {
@@ -249,8 +253,9 @@ func (s *Postgres) UpdateAppBranch(ctx context.Context, b AppBranch) error {
 }
 
 // DeleteAppBranch deletes the branch row first. Its lock waits for a
-// CreateDeployment that holds the row, so the deployments deleted next
-// include that one; a later create finds no branch.
+// CreateDeployment or ChangeAppSecrets that holds the row, so the instance's
+// overrides and deployments deleted next include theirs; a later create
+// finds no branch.
 func (s *Postgres) DeleteAppBranch(ctx context.Context, app, branch string) error {
 	if !Clean(app) || !Clean(branch) {
 		return fmt.Errorf("%w: app %q branch %q", ErrNotFound, app, branch)
@@ -269,6 +274,9 @@ func (s *Postgres) DeleteAppBranch(ctx context.Context, app, branch string) erro
 	if err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM app_secrets WHERE app = $1 AND instance = $2`, app, instance); err != nil {
+		return err
+	}
 	if err := deleteDeployments(ctx, tx, `app = $1 AND instance = $2`, app, instance); err != nil {
 		return err
 	}
@@ -276,13 +284,13 @@ func (s *Postgres) DeleteAppBranch(ctx context.Context, app, branch string) erro
 }
 
 const deploymentColumns = `id, app, branch, instance, ref, commit_sha, trigger, triggered_by, status, images, environments,
-	error, build_id, created_at, started_at, finished_at`
+	error, build_id, spec, created_at, started_at, finished_at`
 
 func scanDeployment(row pgx.Row) (Deployment, error) {
 	var d Deployment
 	var images, envs []byte
 	err := row.Scan(&d.ID, &d.App, &d.Branch, &d.Instance, &d.Ref, &d.Commit, &d.Trigger, &d.TriggeredBy, &d.Status, &images, &envs,
-		&d.Error, &d.BuildID, &d.CreatedAt, &d.StartedAt, &d.FinishedAt)
+		&d.Error, &d.BuildID, &d.Spec, &d.CreatedAt, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return Deployment{}, err
 	}
@@ -327,7 +335,10 @@ func (s *Postgres) CreateDeployment(ctx context.Context, d Deployment) error {
 	if !Clean(d.Branch) || !Clean(d.Instance) {
 		return fmt.Errorf("%w: branch %q instance %q", ErrInstanceNotFound, d.Branch, d.Instance)
 	}
-	d = d.Clean()
+	d, err := d.Clean()
+	if err != nil {
+		return err
+	}
 	images, envs, err := deploymentJSON(d)
 	if err != nil {
 		return err
@@ -358,9 +369,9 @@ func (s *Postgres) CreateDeployment(ctx context.Context, d Deployment) error {
 		}
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO deployments (`+deploymentColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		d.ID, d.App, d.Branch, d.Instance, d.Ref, d.Commit, d.Trigger, d.TriggeredBy, d.Status, images, envs,
-		d.Error, d.BuildID, d.CreatedAt, d.StartedAt, d.FinishedAt)
+		d.Error, d.BuildID, d.Spec, d.CreatedAt, d.StartedAt, d.FinishedAt)
 	if isUniqueViolation(err) {
 		return fmt.Errorf("%w: deployment %s exists", ErrConflict, d.ID)
 	}
@@ -420,16 +431,19 @@ func (s *Postgres) UpdateDeployment(ctx context.Context, d Deployment) (Deployme
 	if !Clean(d.ID) {
 		return Deployment{}, fmt.Errorf("%w: deployment %q", ErrNotFound, d.ID)
 	}
-	d = d.Clean()
+	d, err := d.Clean()
+	if err != nil {
+		return Deployment{}, err
+	}
 	images, envs, err := deploymentJSON(d)
 	if err != nil {
 		return Deployment{}, err
 	}
 	out, err := scanDeployment(s.pool.QueryRow(ctx, `UPDATE deployments SET
-			status = $2, images = $3, environments = $4, error = $5, build_id = $6, started_at = $7, finished_at = $8
-		WHERE id = $1 AND status <> ALL($9::text[])
+			status = $2, images = $3, environments = $4, error = $5, build_id = $6, spec = $7, started_at = $8, finished_at = $9
+		WHERE id = $1 AND status <> ALL($10::text[])
 		RETURNING `+deploymentColumns,
-		d.ID, d.Status, images, envs, d.Error, d.BuildID, d.StartedAt, d.FinishedAt, finishedDeployment))
+		d.ID, d.Status, images, envs, d.Error, d.BuildID, d.Spec, d.StartedAt, d.FinishedAt, finishedDeployment))
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return out, err
 	}

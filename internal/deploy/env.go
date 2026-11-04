@@ -13,12 +13,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage"
 )
 
 // EnvOptions are what FromEnv does not read from the environment.
 type EnvOptions struct {
-	Store  store.DeployStore
+	Store  Store
 	GitHub GitHub // nil fails when a builder is configured
 	// Gateway is the traffic gateway admin client; nil leaves the gateway alone.
 	Gateway Gateway
@@ -26,7 +28,12 @@ type EnvOptions struct {
 	Kube func(env string) (kubernetes.Interface, error)
 	// AppDomain names the app URL in the events.
 	AppDomain string
-	Log       *slog.Logger
+	// Secrets, Sealer and Storage are Config's: the app secrets' cipher and
+	// each environment's sealer and storage driver.
+	Secrets *secrets.Cipher
+	Sealer  func(env string) (*sealing.Sealer, error)
+	Storage func(env string) (storage.Driver, error)
+	Log     *slog.Logger
 }
 
 // FromEnv builds the executor from the PLATFORM_* variables (see the README).
@@ -51,7 +58,7 @@ func FromEnv(ctx context.Context, getenv func(string) string, o EnvOptions) (*Ex
 		return nil, errors.New("PLATFORM_IMAGE_REGISTRY is required with PLATFORM_DEPLOY_BUILDER")
 	}
 
-	cfg := Config{Store: o.Store, GitHub: o.GitHub, AppDomain: o.AppDomain, Log: o.Log}
+	cfg := Config{Store: o.Store, GitHub: o.GitHub, AppDomain: o.AppDomain, Log: o.Log, Secrets: o.Secrets, Sealer: o.Sealer, Storage: o.Storage}
 	switch builderKind {
 	case "codebuild":
 		project := getenv("PLATFORM_CODEBUILD_PROJECT")

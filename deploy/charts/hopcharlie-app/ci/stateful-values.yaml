@@ -1,5 +1,6 @@
-# ADR 0011's example gitops file (moimroom with a database and a bucket)
-# with a production-like profile, guardrails on.
+# platform ADR 0011's example gitops file (moimroom with a database and a bucket)
+# with a production-like profile, guardrails on, and the sealed values of
+# platform ADR 0016 and 0019 (made-up ciphertexts, sealed with no real key).
 app: "moimroom"
 env: "eks"
 namespace: "moimroom"
@@ -12,6 +13,14 @@ values:
   resources:
     - {name: "db", type: "postgres"}
     - {name: "photos", type: "s3"}
+  sealedSecrets:
+    s3:
+      accessKey: "AgBvA1Zx0dGVzdC1hY2Nlc3Mta2V5LW5vdC1yZWFsCg=="
+      secretKey: "AgCm9Rk3dGVzdC1zZWNyZXQta2V5LW5vdC1yZWFsCg=="
+    app:
+      HOST_CODE: "AgAhb3N0LWNvZGUtbm90LXJlYWwK"
+      ADMIN_TOKEN: "AgBhZG1pbi10b2tlbi1ub3QtcmVhbAo="
+    appChecksum: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 profile:
   publicService:
     type: LoadBalancer
