@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,6 +197,39 @@ func TestParseCertErrors(t *testing.T) {
 		if _, err := ParseCert([]byte(data)); err == nil {
 			t.Errorf("%s: no error", name)
 		}
+	}
+}
+
+func TestParseCertRefusesExpiredAndShortKeys(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := func(key *rsa.PrivateKey, notAfter time.Time) []byte {
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "sealed-secret"},
+			NotBefore: notAfter.Add(-2 * time.Hour), NotAfter: notAfter}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	}
+	if _, err := ParseCert(cert(key, time.Now().Add(-time.Minute))); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired: %v", err)
+	}
+	if _, err := ParseCert(cert(key, time.Now().Add(time.Hour))); err != nil {
+		t.Fatalf("valid: %v", err)
+	}
+	short, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseCert(cert(short, time.Now().Add(time.Hour))); err == nil || !strings.Contains(err.Error(), "1024 bits") {
+		t.Fatalf("1024-bit key: %v", err)
+	}
+	der, _ := x509.MarshalPKIXPublicKey(&short.PublicKey)
+	if _, err := ParseCert(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})); err == nil {
+		t.Fatal("1024-bit public key accepted")
 	}
 }
 

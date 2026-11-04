@@ -83,6 +83,7 @@ func (m *memory) ChangeAppSecrets(_ context.Context, app, instance string, set [
 			scope[k.name] = s
 		}
 	}
+	before := len(scope)
 	for _, n := range del {
 		delete(scope, n)
 	}
@@ -92,7 +93,7 @@ func (m *memory) ChangeAppSecrets(_ context.Context, app, instance string, set [
 		r.UpdatedAt = pgTime(r.UpdatedAt)
 		scope[r.Name] = r
 	}
-	if len(scope) > max {
+	if len(scope) > max && len(scope) > before {
 		return fmt.Errorf("%w: the change leaves %d secrets, at most %d are allowed", store.ErrSecretLimit, len(scope), max)
 	}
 	m.secrets.deleteSecrets(func(k secretKey) bool { return k.app == app && k.instance == instance })
@@ -113,7 +114,11 @@ func (m *memory) PutInstanceStorage(_ context.Context, s store.InstanceStorage) 
 	if m.secrets.storage == nil {
 		m.secrets.storage = map[storageKey]store.InstanceStorage{}
 	}
-	m.secrets.storage[storageKey{s.Instance, s.Env}] = s
+	k := storageKey{s.Instance, s.Env}
+	if old, ok := m.secrets.storage[k]; ok {
+		s.CreatedAt = old.CreatedAt
+	}
+	m.secrets.storage[k] = s
 	return nil
 }
 
@@ -127,12 +132,12 @@ func (m *memory) GetInstanceStorage(_ context.Context, instance, env string) (st
 	return s, nil
 }
 
-func (m *memory) ListInstanceStorage(_ context.Context, app string) ([]store.InstanceStorage, error) {
+func (m *memory) ListInstanceStorage(_ context.Context, app, instance string) ([]store.InstanceStorage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := []store.InstanceStorage{}
 	for _, s := range m.secrets.storage {
-		if s.App == app {
+		if (app == "" || s.App == app) && (instance == "" || s.Instance == instance) {
 			out = append(out, s)
 		}
 	}

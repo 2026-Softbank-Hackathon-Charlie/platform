@@ -111,6 +111,9 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusConflict, "app_exists", fmt.Sprintf("the platform serves %s.%s itself; rename the app in %s", spec.Name, s.cfg.AppDomain, appspec.FileName))
 		return
 	}
+	if !s.storageCleaned(ctx, w, r, spec.Name) {
+		return
+	}
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		s.internal(w, r, err)
@@ -197,6 +200,9 @@ func (s *Server) createAppInstance(w http.ResponseWriter, r *http.Request) {
 		s.instanceConflict(w, r, err, app.Name, branch, instance)
 		return
 	}
+	if !s.storageCleaned(ctx, w, r, instance) {
+		return
+	}
 
 	commit, err := s.d.GitHub.ResolveRef(ctx, app.Repo, branch)
 	switch {
@@ -275,6 +281,44 @@ func (s *Server) instanceConflict(w http.ResponseWriter, r *http.Request, err er
 		return false
 	}
 	return true
+}
+
+// storageCleaned answers 409 storage_cleanup_pending when buckets and keys
+// made for an earlier instance with this name are still waiting to be
+// deleted, and reports whether there are none. Ownership of buckets and
+// keys goes by name, so a new app or instance must not take them over. The
+// rows of an instance that still exists are not pending: the store's own
+// conflict (app_exists, instance_exists) answers that case.
+func (s *Server) storageCleaned(ctx context.Context, w http.ResponseWriter, r *http.Request, instance string) bool {
+	rows, err := s.d.Store.ListInstanceStorage(ctx, "", instance)
+	if err != nil {
+		s.internal(w, r, err)
+		return false
+	}
+	for _, row := range rows {
+		live, err := s.instanceLive(ctx, row.App, row.Instance)
+		if err != nil {
+			s.internal(w, r, err)
+			return false
+		}
+		if !live {
+			s.fail(w, r, http.StatusConflict, "storage_cleanup_pending", fmt.Sprintf("the bucket and key of a deleted app or instance named %s are still being deleted; try again in a few minutes", instance))
+			return false
+		}
+	}
+	return true
+}
+
+// instanceLive reports whether app is registered and has the instance.
+func (s *Server) instanceLive(ctx context.Context, app, instance string) (bool, error) {
+	a, err := s.d.Store.GetApp(ctx, app)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return s.isInstance(ctx, a, instance)
 }
 
 // targetEnvs checks the environments of a registration and returns them in

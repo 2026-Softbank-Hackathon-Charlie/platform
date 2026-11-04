@@ -47,15 +47,6 @@ environments:
       region: ap-northeast-2
       iamPath: /hopcharlie-apps/
       permissionsBoundary: arn:aws:iam::123456789012:policy/hopcharlie-app-boundary
-  - name: onprem
-    provider: onprem
-    kubeContext: k3s
-    storage:
-      driver: minio
-      bucketPrefix: hopcharlie-op-
-      endpoint: http://minio.minio.svc:9000
-      adminAccessKeyEnv: MINIO_ADMIN_ACCESS_KEY
-      adminSecretKeyEnv: MINIO_ADMIN_SECRET_KEY
   - name: gke
     provider: gcp
     kubeContext: gke
@@ -64,15 +55,12 @@ environments:
 	if err != nil {
 		t.Fatal(err)
 	}
-	eks, onprem, gke := cfg.Environments[0], cfg.Environments[1], cfg.Environments[2]
+	eks, gke := cfg.Environments[0], cfg.Environments[1]
 	if eks.SealedSecretsCert != "/config/sealed-secrets/eks.pem" || eks.Storage == nil || eks.Storage.Driver != "aws" ||
 		eks.Storage.PermissionsBoundary != "arn:aws:iam::123456789012:policy/hopcharlie-app-boundary" {
 		t.Fatalf("eks %+v %+v", eks, eks.Storage)
 	}
-	if onprem.SealedSecretsCert != "" || onprem.Storage == nil || onprem.Storage.Endpoint != "http://minio.minio.svc:9000" || onprem.Storage.AdminSecretKeyEnv != "MINIO_ADMIN_SECRET_KEY" {
-		t.Fatalf("onprem %+v %+v", onprem, onprem.Storage)
-	}
-	if gke.Storage != nil {
+	if gke.SealedSecretsCert != "" || gke.Storage != nil {
 		t.Fatalf("gke storage %+v", gke.Storage)
 	}
 }
@@ -104,7 +92,8 @@ func TestLoadExampleConfigStorage(t *testing.T) {
 			drivers[e.Name] = e.Storage.Driver
 		}
 	}
-	if drivers["eks"] != "aws" || drivers["onprem"] != "minio" || drivers["gke"] != "" {
+	// The onprem minio block is commented out: it needs -tags minio.
+	if drivers["eks"] != "aws" || drivers["onprem"] != "" || drivers["gke"] != "" {
 		t.Fatalf("example storage drivers %v", drivers)
 	}
 }
@@ -152,19 +141,16 @@ func TestServiceStorage(t *testing.T) {
 }
 
 func TestServiceStorageDefaultDriver(t *testing.T) {
-	cfg := Config{Environments: []EnvConfig{{Name: "onprem", Provider: "onprem", KubeContext: "k3s", Storage: &storage.Config{
-		Driver: "minio", BucketPrefix: "hc-", Endpoint: "http://127.0.0.1:9", AdminAccessKeyEnv: "HC_TEST_MINIO_AK", AdminSecretKeyEnv: "HC_TEST_MINIO_SK"}}}}
-	if _, err := New(cfg, Options{}); err == nil || !strings.Contains(err.Error(), "HC_TEST_MINIO_AK") {
-		t.Fatalf("without the admin key: %v", err)
-	}
-	t.Setenv("HC_TEST_MINIO_AK", "admin")
-	t.Setenv("HC_TEST_MINIO_SK", "secret-key")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	cfg := Config{Environments: []EnvConfig{{Name: "eks", Provider: "aws", KubeContext: "eks", Storage: &storage.Config{
+		Driver: "aws", BucketPrefix: "hc-", Region: "ap-northeast-2", IAMPath: "/hopcharlie-apps/", PermissionsBoundary: "arn:aws:iam::123456789012:policy/b"}}}}
 	s, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d, err := s.Storage("onprem"); err != nil || d.Name() != "minio" || d.Bucket("moimroom") != "hc-moimroom" {
-		t.Fatalf("Storage(onprem) = %v, %v", d, err)
+	if d, err := s.Storage("eks"); err != nil || d.Name() != "aws" || d.Bucket("moimroom") != "hc-moimroom" {
+		t.Fatalf("Storage(eks) = %v, %v", d, err)
 	}
 }
 
@@ -199,11 +185,35 @@ func TestServiceSealer(t *testing.T) {
 	if err != nil || !strings.HasPrefix(first.Fingerprint(), "SHA256:") {
 		t.Fatalf("cert added later: %v, %v", first, err)
 	}
-	if err := os.Remove(certPath); err != nil {
+	if again, err := s.Sealer("eks"); err != nil || again != first {
+		t.Fatalf("kept sealer: %v, %v", again, err)
+	}
+	// Touched without a change: the same sealer.
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(certPath, later, later); err != nil {
 		t.Fatal(err)
 	}
 	if again, err := s.Sealer("eks"); err != nil || again != first {
-		t.Fatalf("kept sealer: %v, %v", again, err)
+		t.Fatalf("touched cert: %v, %v", again, err)
+	}
+	// Replaced: the new certificate is used.
+	if err := os.WriteFile(certPath, certPEM(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evenLater := later.Add(time.Minute)
+	if err := os.Chtimes(certPath, evenLater, evenLater); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Sealer("eks")
+	if err != nil || second == first || second.Fingerprint() == first.Fingerprint() {
+		t.Fatalf("replaced cert: %v, %v", second, err)
+	}
+	// Removed: an error, not the old sealer.
+	if err := os.Remove(certPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Sealer("eks"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("removed cert: %v", err)
 	}
 	if _, err := s.Sealer("gke"); !errors.Is(err, ErrSealingNotConfigured) {
 		t.Fatalf("Sealer(gke) err = %v", err)

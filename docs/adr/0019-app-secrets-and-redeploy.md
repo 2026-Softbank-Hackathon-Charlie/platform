@@ -22,12 +22,12 @@
 
 - `GET /v1/apps/{name}/secrets`(viewer): 이름, 바꾼 시각, 바꾼 사람만 돌려준다.
 - `PUT /v1/apps/{name}/secrets`(operator): `instance`가 없으면 앱 단위, 있으면 그 인스턴스의 덮어쓰기를 `set`, `delete`로 한 번에 바꾼다. 감사 로그에는 이름만 남는다.
-- `GET /v1/apps/{name}/secrets/{secret}?instance=`(operator): 값 하나를 돌려준다. 콘솔의 눈 버튼이 부른다. GET이지만 부를 때마다 감사 로그에 남기고 `Cache-Control: no-store`를 붙인다.
+- `GET /v1/apps/{name}/secrets/{secret}?instance=`(operator): 값 하나를 돌려준다. 콘솔의 눈 버튼이 부른다. GET이지만 부를 때마다 감사 로그에 남기고 `Cache-Control: no-store`를 붙인다. 감사 로그를 값보다 먼저 쓰고, 쓰지 못하면 값을 주지 않고 503 `audit_unavailable`로 답한다.
 - agent나 viewer 역할의 토큰(예: Rin에게 준 CLI 토큰)은 이름만 볼 수 있고 값은 볼 수 없다.
 
 ### 보관
 
-- 플랫폼 DB에 앱, 인스턴스(앱 단위는 빈 문자열), 이름마다 한 행을 두고, 값은 AES-256-GCM 암호문과 nonce로 저장한다. AAD는 `<app>/<instance>/<name>`이라서 다른 행으로 옮겨 붙이면 복호화되지 않는다. 키 버전 컬럼을 두어 나중에 키를 바꿀 수 있게 한다.
+- 플랫폼 DB에 앱, 인스턴스(앱 단위는 빈 문자열), 이름마다 한 행을 두고, 값은 AES-256-GCM 암호문과 nonce로 저장한다. AAD는 앱, 인스턴스, 이름을 각각 길이와 함께 이어 붙인 값이라서 다른 행으로 옮겨 붙이면 복호화되지 않는다. 키 버전 컬럼을 두어 나중에 키를 바꿀 수 있게 하고, 키에서 HKDF로 만든 짧은 키 확인값을 행마다 저장한다. 다른 키로 띄운 서버는 시작할 때 그런 행이 있다고 로그에 남기고, 그 값을 읽으려 하면 키가 다르다고 분명히 실패한다.
 - 키는 32바이트이고 SSM `/hopcharlie/app-secrets-key`(Terraform이 만든다)에서 API의 `PLATFORM_SECRETS_KEY`(base64)로 받는다. 키가 없으면 시크릿 API는 503 `secrets_not_configured`이고, 시크릿이 없는 앱의 배포는 영향을 받지 않는다.
 - ADR 0016과 다른 점: 플랫폼이 만든 S3 키는 다시 만들 수 있으므로 봉인한 암호문만 둔다. 사람이 넣은 시크릿은 다시 보여 주고 새 인스턴스와 새 환경에도 넣어야 하므로, 플랫폼이 평문을 되살릴 수 있게 보관한다.
 

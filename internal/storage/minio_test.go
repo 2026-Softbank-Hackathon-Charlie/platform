@@ -1,3 +1,5 @@
+//go:build minio
+
 package storage
 
 import (
@@ -33,6 +35,7 @@ type fakeMinIOBucket struct {
 	region  string
 	tags    map[string]string
 	objects []string
+	uploads []string // keys of unfinished multipart uploads
 }
 
 func newFakeMinIO() *fakeMinIO {
@@ -126,6 +129,37 @@ func (f *fakeMinIO) RemoveObjects(_ context.Context, bucket string, objects <-ch
 	return errs
 }
 
+func (f *fakeMinIO) ListIncompleteUploads(_ context.Context, bucket, _ string, _ bool) <-chan minio.ObjectMultipartInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.buckets[bucket]
+	n := 1
+	if ok {
+		n += len(b.uploads)
+	}
+	ch := make(chan minio.ObjectMultipartInfo, n)
+	defer close(ch)
+	if !ok {
+		ch <- minio.ObjectMultipartInfo{Err: s3Err("NoSuchBucket")}
+		return ch
+	}
+	for _, k := range b.uploads {
+		ch <- minio.ObjectMultipartInfo{Key: k}
+	}
+	return ch
+}
+
+func (f *fakeMinIO) RemoveIncompleteUpload(_ context.Context, bucket, object string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.buckets[bucket]
+	if !ok {
+		return s3Err("NoSuchBucket")
+	}
+	b.uploads = slices.DeleteFunc(b.uploads, func(k string) bool { return k == object })
+	return nil
+}
+
 func (f *fakeMinIO) RemoveBucket(_ context.Context, bucket string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -133,7 +167,7 @@ func (f *fakeMinIO) RemoveBucket(_ context.Context, bucket string) error {
 	if !ok {
 		return s3Err("NoSuchBucket")
 	}
-	if len(b.objects) > 0 {
+	if len(b.objects)+len(b.uploads) > 0 {
 		return s3Err("BucketNotEmpty")
 	}
 	delete(f.buckets, bucket)
@@ -237,6 +271,17 @@ func (f *fakeMinIO) ListServiceAccounts(_ context.Context, user string) (madmin.
 	return out, nil
 }
 
+func (f *fakeMinIO) InfoServiceAccount(_ context.Context, accessKey string) (madmin.InfoServiceAccountResp, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for user, accts := range f.accounts {
+		if _, ok := accts[accessKey]; ok {
+			return madmin.InfoServiceAccountResp{ParentUser: user}, nil
+		}
+	}
+	return madmin.InfoServiceAccountResp{}, adminErr("XMinioInvalidIAMCredentials")
+}
+
 func (f *fakeMinIO) DeleteServiceAccount(_ context.Context, accessKey string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -246,7 +291,7 @@ func (f *fakeMinIO) DeleteServiceAccount(_ context.Context, accessKey string) er
 			return nil
 		}
 	}
-	return adminErr("XMinioAdminServiceAccountNotFound")
+	return adminErr("XMinioInvalidIAMCredentials")
 }
 
 func (f *fakeMinIO) keys(user string) []string {
@@ -267,6 +312,30 @@ func newMinIODriver(f *fakeMinIO) *minioDriver {
 const (
 	devMinIOBucket = "hopcharlie-op-moimroom--dev"
 )
+
+func TestMinIOConfig(t *testing.T) {
+	m := validMinIO()
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	m.Region, m.Endpoint = "us-east-1", "https://minio.example.com/"
+	if err := m.Validate(); err != nil {
+		t.Errorf("minio with region and https: %v", err)
+	}
+	env := map[string]string{"MINIO_ADMIN_ACCESS_KEY": "admin", "MINIO_ADMIN_SECRET_KEY": "secret-key"}
+	d, err := New(t.Context(), validMinIO(), func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Name() != DriverMinIO || d.Bucket("moimroom--dev") != "hopcharlie-op-moimroom--dev" {
+		t.Fatalf("driver %s, bucket %s", d.Name(), d.Bucket("moimroom--dev"))
+	}
+	delete(env, "MINIO_ADMIN_SECRET_KEY")
+	_, err = New(t.Context(), validMinIO(), func(k string) string { return env[k] })
+	if err == nil || !strings.Contains(err.Error(), "MINIO_ADMIN_SECRET_KEY") || strings.Contains(err.Error(), "secret-key") {
+		t.Fatalf("missing secret key: %v", err)
+	}
+}
 
 func TestMinIOEnsure(t *testing.T) {
 	f := newFakeMinIO()
@@ -301,6 +370,18 @@ func TestMinIOEnsure(t *testing.T) {
 	}
 	must(t, d.DeleteKey(ctx, dev, "SVC0001"))
 	must(t, d.DeleteKey(ctx, dev, "SVC0001"))
+	// Another instance's key is not deleted through this one.
+	other := Instance{App: "moimroom", Name: "moimroom"}
+	resOther, err := d.Ensure(ctx, other, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DeleteKey(ctx, dev, resOther.Key.ID); !errors.Is(err, ErrInUse) {
+		t.Fatalf("deleting another instance's key: %v", err)
+	}
+	if k := f.keys(UserPrefix + "moimroom"); !slices.Equal(k, []string{resOther.Key.ID}) {
+		t.Fatalf("the other instance's keys %v", k)
+	}
 	res, err = d.Ensure(ctx, dev, true, "")
 	if err != nil || res.Key == nil {
 		t.Fatalf("retry %+v, %v", res, err)
@@ -350,6 +431,7 @@ func TestMinIODelete(t *testing.T) {
 	for i := range 250 {
 		f.buckets[devMinIOBucket].objects = append(f.buckets[devMinIOBucket].objects, fmt.Sprintf("photos/%d.jpg@v1", i))
 	}
+	f.buckets[devMinIOBucket].uploads = []string{"big.bin"}
 	must(t, d.Delete(ctx, dev))
 	if len(f.buckets) != 0 || len(f.users) != 0 || len(f.policies) != 0 || len(f.accounts) != 0 {
 		t.Fatalf("left %d buckets, %d users, %d policies, %d accounts", len(f.buckets), len(f.users), len(f.policies), len(f.accounts))
@@ -371,10 +453,15 @@ func TestMinIODelete(t *testing.T) {
 		t.Fatal("bucket kept")
 	}
 
-	// Another app's bucket is not deleted.
-	f.buckets[devMinIOBucket] = &fakeMinIOBucket{tags: map[string]string{TagApp: "other"}}
-	if err := d.Delete(ctx, dev); !errors.Is(err, ErrInUse) {
-		t.Fatalf("err = %v, want ErrInUse", err)
+	// Another app's bucket, or one without the app tag, is not deleted.
+	for _, tags := range []map[string]string{{TagApp: "other"}, {}} {
+		f.buckets[devMinIOBucket] = &fakeMinIOBucket{tags: tags, objects: []string{"keep@1"}}
+		if err := d.Delete(ctx, dev); !errors.Is(err, ErrInUse) {
+			t.Fatalf("tags %v: err = %v, want ErrInUse", tags, err)
+		}
+		if len(f.buckets[devMinIOBucket].objects) != 1 {
+			t.Fatalf("tags %v: objects deleted", tags)
+		}
 	}
 }
 
@@ -467,8 +554,16 @@ func TestMinIOLive(t *testing.T) {
 	}
 	must(t, d.DeleteKey(ctx, a, resA.Key.ID))
 	must(t, d.DeleteKey(ctx, a, resA.Key.ID))
+	if err := d.DeleteKey(ctx, a, resB.Key.ID); !errors.Is(err, ErrInUse) {
+		t.Fatalf("deleting b's key through a: %v", err)
+	}
 	if _, err := appA.StatObject(ctx, resA.Bucket, "hello.txt", minio.StatObjectOptions{}); err == nil {
 		t.Fatal("the deleted key still reads")
+	}
+	// An unfinished multipart upload does not keep the bucket.
+	core := minio.Core{Client: asApp(rot.Key)}
+	if _, err := core.NewMultipartUpload(ctx, rot.Bucket, "big.bin", minio.PutObjectOptions{}); err != nil {
+		t.Fatalf("start a multipart upload: %v", err)
 	}
 
 	// Delete empties and removes the bucket and the user, and is

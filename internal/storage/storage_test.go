@@ -17,15 +17,8 @@ func validMinIO() Config {
 }
 
 func TestConfigValidate(t *testing.T) {
-	for name, c := range map[string]Config{"aws": validAWS(), "minio": validMinIO()} {
-		if err := c.Validate(); err != nil {
-			t.Errorf("%s: %v", name, err)
-		}
-	}
-	m := validMinIO()
-	m.Region, m.Endpoint = "us-east-1", "https://minio.example.com/"
-	if err := m.Validate(); err != nil {
-		t.Errorf("minio with region and https: %v", err)
+	if err := validAWS().Validate(); err != nil {
+		t.Errorf("aws: %v", err)
 	}
 
 	cases := map[string]struct {
@@ -67,20 +60,7 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestNewMinIOReadsAdminKey(t *testing.T) {
-	env := map[string]string{"MINIO_ADMIN_ACCESS_KEY": "admin", "MINIO_ADMIN_SECRET_KEY": "secret-key"}
-	d, err := New(t.Context(), validMinIO(), func(k string) string { return env[k] })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Name() != DriverMinIO || d.Bucket("moimroom--dev") != "hopcharlie-op-moimroom--dev" {
-		t.Fatalf("driver %s, bucket %s", d.Name(), d.Bucket("moimroom--dev"))
-	}
-	delete(env, "MINIO_ADMIN_SECRET_KEY")
-	_, err = New(t.Context(), validMinIO(), func(k string) string { return env[k] })
-	if err == nil || !strings.Contains(err.Error(), "MINIO_ADMIN_SECRET_KEY") || strings.Contains(err.Error(), "admin\"") {
-		t.Fatalf("missing secret key: %v", err)
-	}
+func TestNewGCS(t *testing.T) {
 	if _, err := New(t.Context(), Config{Driver: "gcs", BucketPrefix: "x-"}, nil); err == nil {
 		t.Fatal("gcs: no error")
 	}
@@ -107,6 +87,11 @@ func TestInstanceNames(t *testing.T) {
 	long := strings.Repeat("a", 48)
 	if _, err := instanceNames("hopcharlie-eks-", Instance{App: "a", Name: long}); err != nil {
 		t.Fatalf("48-character instance: %v", err)
+	}
+	// A short prefix leaves room for a longer bucket name, but IAM user
+	// names stop at 64.
+	if _, err := instanceNames("a-", Instance{App: "a", Name: strings.Repeat("a", 50)}); err == nil || !strings.Contains(err.Error(), "user name") {
+		t.Fatalf("65-character user name: %v", err)
 	}
 	for name, in := range map[string]Instance{
 		"too long":     {App: "a", Name: long + "b"},

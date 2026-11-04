@@ -26,7 +26,9 @@
 #            platform uses its own AWS credentials (the pod's role).
 #     minio: endpoint (http(s)://host:port the platform calls),
 #            adminAccessKeyEnv, adminSecretKeyEnv (names of the platform's
-#            environment variables that hold the MinIO admin key)
+#            environment variables that hold the MinIO admin key). Only a
+#            platform API built with -tags minio has this driver (the MinIO
+#            admin client is AGPL-3.0); the default build refuses it.
 environments:
   - name: gke
     provider: gcp
@@ -51,9 +53,10 @@ environments:
     region: team server
     kubeContext: onprem-hopcharlie
     sealedSecretsCert: /config/sealed-secrets/onprem.pem
-    storage:
-      driver: minio
-      bucketPrefix: hopcharlie-op-
-      endpoint: http://minio.onprem.ts.net:9000
-      adminAccessKeyEnv: ONPREM_MINIO_ADMIN_ACCESS_KEY
-      adminSecretKeyEnv: ONPREM_MINIO_ADMIN_SECRET_KEY
+    # With a platform API built with -tags minio:
+    # storage:
+    #   driver: minio
+    #   bucketPrefix: hopcharlie-op-
+    #   endpoint: http://minio.onprem.ts.net:9000
+    #   adminAccessKeyEnv: ONPREM_MINIO_ADMIN_ACCESS_KEY
+    #   adminSecretKeyEnv: ONPREM_MINIO_ADMIN_SECRET_KEY

@@ -2,9 +2,12 @@ package api
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
@@ -310,5 +313,123 @@ func TestAppSecretsDeletedWithApp(t *testing.T) {
 	code, b := h.do("GET", "/v1/apps/shop/secrets", viewerToken, nil)
 	if code != 200 || string(bytes.TrimSpace(b)) != `{"app":[],"instances":[]}` {
 		t.Fatalf("a re-registered app: %d %s", code, b)
+	}
+}
+
+// failingAudit is a store whose audit log cannot be written while fail is
+// set.
+type failingAudit struct {
+	store.Store
+	fail *atomic.Bool
+}
+
+func (f failingAudit) AppendAudit(ctx context.Context, a store.Audit) (int64, error) {
+	if f.fail.Load() {
+		return 0, errors.New("audit log is down")
+	}
+	return f.Store.AppendAudit(ctx, a)
+}
+
+func TestRevealSecretAuditFailsClosed(t *testing.T) {
+	var fail atomic.Bool
+	h := newHarness(t, withApps(""), withGitHub(instanceGitHub(), nil), withSecrets(testCipher(t)),
+		func(_ *harness, _ *runs.Config, d *Deps) { d.Store = failingAudit{d.Store, &fail} })
+	h.registerShop()
+	h.putSecrets(map[string]any{"set": map[string]string{"HOST_CODE": "4821"}})
+	before, _ := h.store.ListAudit(t.Context(), 0, 0)
+
+	fail.Store(true)
+	code, b := h.do("GET", "/v1/apps/shop/secrets/HOST_CODE", opToken, nil)
+	if code != 503 || errCode(t, b) != "audit_unavailable" || strings.Contains(string(b), "4821") {
+		t.Fatalf("with the audit log down: %d %s", code, b)
+	}
+	fail.Store(false)
+	code, b = h.do("GET", "/v1/apps/shop/secrets/HOST_CODE", opToken, nil)
+	if code != 200 || decode[apiv1.AppSecretValue](t, b).Value != "4821" {
+		t.Fatalf("with the audit log back: %d %s", code, b)
+	}
+	// Exactly one entry for the read that returned the value: the route does
+	// not add a second one.
+	after, _ := h.store.ListAudit(t.Context(), 0, 0)
+	if len(after) != len(before)+1 || after[0].Action != revealSecretRoute || after[0].Status != 200 {
+		t.Fatalf("audit entries %d before, %d after; newest %+v", len(before), len(after), after[0])
+	}
+}
+
+func TestSecretAuditRecordsOnlyValidNames(t *testing.T) {
+	h := secretsHarness(t)
+	pasted := "sk-live-PASTEDVALUE123"
+	// A refused change records counts, not the names.
+	code, b := h.do("PUT", "/v1/apps/shop/secrets", opToken, map[string]any{"set": map[string]string{pasted: "x", "OK_NAME": "y"}, "delete": []string{"OTHER"}})
+	if code != 400 {
+		t.Fatalf("%d %s", code, b)
+	}
+	a := h.lastAudit()
+	if strings.Contains(string(a.Detail), "PASTED") || strings.Contains(string(a.Detail), "OK_NAME") ||
+		!strings.Contains(string(a.Detail), `"setCount":2`) || !strings.Contains(string(a.Detail), `"deleteCount":1`) {
+		t.Fatalf("refused change audit %s", a.Detail)
+	}
+	// An unknown instance is not recorded either.
+	code, _ = h.do("PUT", "/v1/apps/shop/secrets", opToken, map[string]any{"instance": pasted, "set": map[string]string{"A": "b"}})
+	if a := h.lastAudit(); code != 404 || strings.Contains(string(a.Detail), "PASTED") {
+		t.Fatalf("unknown instance: %d %s", code, a.Detail)
+	}
+	// A reveal by a name that breaks the rules: not found, and the audit
+	// target hides the name.
+	code, b = h.do("GET", "/v1/apps/shop/secrets/"+pasted, opToken, nil)
+	if code != 404 || errCode(t, b) != "secret_not_found" {
+		t.Fatalf("pasted name: %d %s", code, b)
+	}
+	a = h.lastAudit()
+	if a.Target != "/v1/apps/shop/secrets/{invalid}" || strings.Contains(string(a.Detail), "PASTED") {
+		t.Fatalf("pasted name audit %+v %s", a, a.Detail)
+	}
+	// Denied requests hide it too.
+	if code, _ := h.do("GET", "/v1/apps/shop/secrets/"+pasted, viewerToken, nil); code != 403 {
+		t.Fatalf("viewer: %d", code)
+	}
+	if a := h.lastAudit(); a.Status != 403 || a.Target != "/v1/apps/shop/secrets/{invalid}" {
+		t.Fatalf("denied audit %+v", a)
+	}
+	if code, _ := h.do("GET", "/v1/apps/shop/secrets/HOST?instance="+pasted, opToken, nil); code != 404 {
+		t.Fatalf("unknown instance reveal: %d", code)
+	}
+	if a := h.lastAudit(); strings.Contains(string(a.Detail), "PASTED") {
+		t.Fatalf("unknown instance reveal audit %s", a.Detail)
+	}
+}
+
+func TestRegisterRefusesPendingStorageCleanup(t *testing.T) {
+	gh := instanceGitHub()
+	h := newHarness(t, withApps(""), withGitHub(gh, nil))
+	ctx := t.Context()
+	// A deleted app's bucket and key are still being deleted.
+	row := store.InstanceStorage{Instance: "shop", Env: "eks", App: "shop", Driver: "aws", Bucket: "hopcharlie-eks-shop", KeyID: "AKIA1", CreatedAt: storeTime()}
+	if err := h.store.PutInstanceStorage(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	code, b := h.do("POST", "/v1/apps", opToken, map[string]any{"repo": shopRepo, "environments": []string{"gke", "eks"}})
+	if code != 409 || errCode(t, b) != "storage_cleanup_pending" {
+		t.Fatalf("register over a pending cleanup: %d %s", code, b)
+	}
+	if err := h.store.DeleteInstanceStorage(ctx, "shop", "eks"); err != nil {
+		t.Fatal(err)
+	}
+	h.registerShop()
+	// The live app's own rows are not pending: registering again is app_exists.
+	if err := h.store.PutInstanceStorage(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	code, b = h.do("POST", "/v1/apps", opToken, map[string]any{"repo": shopRepo, "environments": []string{"gke", "eks"}})
+	if code != 409 || errCode(t, b) != "app_exists" {
+		t.Fatalf("register a live app again: %d %s", code, b)
+	}
+	// An instance name whose earlier instance is being cleaned up.
+	if err := h.store.PutInstanceStorage(ctx, store.InstanceStorage{Instance: "shop--dev", Env: "eks", App: "shop", Driver: "aws", Bucket: "b", CreatedAt: storeTime()}); err != nil {
+		t.Fatal(err)
+	}
+	code, b = h.do("POST", "/v1/apps/shop/instances", opToken, map[string]any{"branch": "dev"})
+	if code != 409 || errCode(t, b) != "storage_cleanup_pending" {
+		t.Fatalf("add an instance over a pending cleanup: %d %s", code, b)
 	}
 }

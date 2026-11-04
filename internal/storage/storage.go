@@ -5,6 +5,11 @@
 // service account as the key. The platform seals the key for the cluster
 // and keeps only the sealed key and the key id.
 //
+// The minio driver links the MinIO admin client (madmin-go, AGPL-3.0), so it
+// is only in binaries built with -tags minio (the kind E2E and on-prem
+// builds). The default build, which the published image uses, refuses a
+// minio storage block (MinIOBuilt).
+//
 // Every operation is idempotent: what already exists and belongs to the
 // same app is kept, and what is already gone is skipped, so a caller may
 // retry after any failure.
@@ -12,7 +17,6 @@ package storage
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,9 +133,19 @@ func (c Config) Validate() error {
 				return fmt.Errorf("storage %s %q must name an environment variable", name, v)
 			}
 		}
-		return only(DriverAWS, map[string]string{"iamPath": c.IAMPath, "permissionsBoundary": c.PermissionsBoundary})
+		if err := only(DriverAWS, map[string]string{"iamPath": c.IAMPath, "permissionsBoundary": c.PermissionsBoundary}); err != nil {
+			return err
+		}
+		if !MinIOBuilt {
+			return errMinIONotBuilt
+		}
+		return nil
 	}
 }
+
+// errMinIONotBuilt is the error for a minio storage block in a binary built
+// without the minio driver.
+var errMinIONotBuilt = errors.New("storage driver minio is not in this build: build the platform API with -tags minio (the MinIO admin client is AGPL-3.0, so the default build and the published image leave it out)")
 
 // minioEndpoint returns the host:port of Endpoint and whether it is https.
 func (c Config) minioEndpoint() (host string, secure bool, err error) {
@@ -209,8 +223,12 @@ func New(ctx context.Context, c Config, getenv func(string) string) (Driver, err
 // names are the names of an instance's bucket and user.
 type names struct{ bucket, user string }
 
-// maxBucket is S3's (and MinIO's) longest bucket name.
-const maxBucket = 63
+// maxBucket is S3's (and MinIO's) longest bucket name, maxUser IAM's
+// longest user name.
+const (
+	maxBucket = 63
+	maxUser   = 64
+)
 
 func instanceNames(prefix string, in Instance) (names, error) {
 	if in.App == "" || in.Name == "" {
@@ -224,6 +242,8 @@ func instanceNames(prefix string, in Instance) (names, error) {
 		return names{}, fmt.Errorf("storage: %s is not a valid bucket name", b)
 	case strings.HasSuffix(b, "-s3alias") || strings.HasSuffix(b, "--ol-s3") || strings.HasSuffix(b, "--x-s3") || strings.HasSuffix(b, "--table-s3"):
 		return names{}, fmt.Errorf("storage: bucket name %s ends with a suffix S3 reserves", b)
+	case len(n.user) > maxUser:
+		return names{}, fmt.Errorf("storage: user name %s is longer than %d characters", n.user, maxUser)
 	}
 	return n, nil
 }
@@ -252,24 +272,26 @@ func bucketPolicy(arn string) string {
 	return string(b)
 }
 
-// checkApp returns ErrInUse when tags name an app other than app. A
-// bucket or user without the tag is taken over: a crash can leave one
-// between its creation and its tagging.
-func checkApp(what string, tags map[string]string, app string) error {
-	if owner, ok := tags[TagApp]; ok && owner != app {
+// checkApp returns ErrInUse when tags name an app other than app, or have
+// no app tag unless untagged is allowed. Only a bucket the driver is about
+// to make or has just made may be untagged: a crash can leave one between
+// its creation and its tagging. An IAM user gets its tags in the same call
+// that creates it, so an untagged one is not the platform's.
+func checkApp(what string, tags map[string]string, app string, untagged bool) error {
+	owner, ok := tags[TagApp]
+	switch {
+	case !ok && untagged:
+		return nil
+	case !ok:
+		return fmt.Errorf("%w: %s has no %s tag, so the platform did not make it", ErrInUse, what, TagApp)
+	case owner != app:
 		return fmt.Errorf("%w: %s is app %s's", ErrInUse, what, owner)
 	}
 	return nil
 }
 
-// randomSecret is a password for a MinIO user, which is never used: the
-// app gets a service account of the user.
-func randomSecret() string {
-	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 40)
-	_, _ = rand.Read(b)
-	for i := range b {
-		b[i] = alphabet[int(b[i])%len(alphabet)]
-	}
-	return string(b)
-}
+// errNoBucket means the bucket does not exist.
+var errNoBucket = errors.New("no such bucket")
+
+// noBucket is errNoBucket naming the bucket.
+func noBucket(bucket string) error { return fmt.Errorf("storage: bucket %s: %w", bucket, errNoBucket) }

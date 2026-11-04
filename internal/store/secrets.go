@@ -20,8 +20,11 @@ type AppSecret struct {
 	App      string
 	Instance string // "" for app-wide
 	Name     string
-	// KeyVersion is the version of the secrets key that encrypted it.
+	// KeyVersion is the version of the secrets key that encrypted it, and
+	// KeyCheck a short value derived from that key (secrets.Cipher.KeyCheck),
+	// so a server with another key can tell.
 	KeyVersion int
+	KeyCheck   string
 	Nonce      []byte
 	Ciphertext []byte
 	UpdatedAt  time.Time
@@ -53,7 +56,7 @@ type InstanceStorage struct {
 // Clean returns s with every string passed through CleanText and its byte
 // slices copied. Stores apply it on every write.
 func (s AppSecret) Clean() AppSecret {
-	for _, f := range []*string{&s.App, &s.Instance, &s.Name, &s.UpdatedBy} {
+	for _, f := range []*string{&s.App, &s.Instance, &s.Name, &s.KeyCheck, &s.UpdatedBy} {
 		*f = CleanText(*f)
 	}
 	s.Nonce, s.Ciphertext = bytes.Clone(s.Nonce), bytes.Clone(s.Ciphertext)
@@ -96,22 +99,26 @@ type SecretStore interface {
 	// an existing secret replaces it) and deletes the names in del (a name
 	// that is not there is ignored). ErrNotFound when the app does not
 	// exist; ErrInstanceNotFound when instance is not one of its instances;
-	// ErrSecretLimit, with nothing changed, when the scope would then hold
-	// more than max secrets. Changes to one app's secrets are serialized,
+	// ErrSecretLimit, with nothing changed, when the change would grow the
+	// scope to more than max secrets (a change that only deletes or replaces
+	// is allowed above max, say after max was lowered). Changes to one app's
+	// secrets are serialized,
 	// and a concurrent DeleteApp or DeleteAppBranch either sees the change
 	// and removes it or makes it fail.
 	ChangeAppSecrets(ctx context.Context, app, instance string, set []AppSecret, del []string, max int) error
 
 	// PutInstanceStorage stores the bucket and key of s.Instance in s.Env,
-	// replacing the row there is.
+	// replacing the row there is but keeping its CreatedAt.
 	PutInstanceStorage(ctx context.Context, s InstanceStorage) error
 	// GetInstanceStorage returns ErrNotFound when the instance has no row in
 	// env.
 	GetInstanceStorage(ctx context.Context, instance, env string) (InstanceStorage, error)
-	// ListInstanceStorage returns the rows of an app's instances, by
-	// Instance and then Env in byte order, also those whose instance or app
-	// is gone. It is empty, not nil, when there are none.
-	ListInstanceStorage(ctx context.Context, app string) ([]InstanceStorage, error)
+	// ListInstanceStorage returns the rows of app's instances, or of the
+	// instance named instance, or both; an empty app or instance matches
+	// every one, so ("", "") lists all rows. Rows whose instance or app is
+	// gone are included. By Instance and then Env in byte order; empty, not
+	// nil, when there are none.
+	ListInstanceStorage(ctx context.Context, app, instance string) ([]InstanceStorage, error)
 	// DeleteInstanceStorage removes one row. ErrNotFound when there is none.
 	DeleteInstanceStorage(ctx context.Context, instance, env string) error
 }

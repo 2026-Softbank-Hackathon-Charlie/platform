@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	sscrypto "github.com/bitnami-labs/sealed-secrets/pkg/crypto"
 )
@@ -26,6 +27,10 @@ const (
 	AppSecret = "app-secrets"
 )
 
+// MinKeyBits is the smallest RSA key ParseCert accepts. The controller
+// makes 4096-bit keys by default.
+const MinKeyBits = 2048
+
 // Sealer seals values with one controller's public key. It is safe for
 // concurrent use.
 type Sealer struct {
@@ -34,8 +39,12 @@ type Sealer struct {
 }
 
 // ParseCert reads the controller's PEM certificate, as `kubeseal
-// --fetch-cert` prints it. A PEM public key (PKIX) is accepted too.
-func ParseCert(data []byte) (*Sealer, error) {
+// --fetch-cert` prints it. A PEM public key (PKIX) is accepted too. It
+// refuses a certificate that has expired and an RSA key shorter than
+// MinKeyBits.
+func ParseCert(data []byte) (*Sealer, error) { return parseCert(data, time.Now()) }
+
+func parseCert(data []byte, now time.Time) (*Sealer, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
 		return nil, errors.New("sealed-secrets certificate: no PEM block")
@@ -46,6 +55,9 @@ func ParseCert(data []byte) (*Sealer, error) {
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
 			return nil, fmt.Errorf("sealed-secrets certificate: %w", err)
+		}
+		if now.After(cert.NotAfter) {
+			return nil, fmt.Errorf("sealed-secrets certificate expired at %s; fetch the controller's current one (kubeseal --fetch-cert)", cert.NotAfter.UTC().Format(time.RFC3339))
 		}
 		key = cert.PublicKey
 	case "PUBLIC KEY":
@@ -60,6 +72,9 @@ func ParseCert(data []byte) (*Sealer, error) {
 	pub, ok := key.(*rsa.PublicKey)
 	if !ok {
 		return nil, fmt.Errorf("sealed-secrets certificate: key is %T, want RSA", key)
+	}
+	if bits := pub.N.BitLen(); bits < MinKeyBits {
+		return nil, fmt.Errorf("sealed-secrets certificate: RSA key has %d bits, at least %d are required", bits, MinKeyBits)
 	}
 	fp, err := sscrypto.PublicKeyFingerprint(pub)
 	if err != nil {

@@ -35,7 +35,7 @@ func TestInstanceName(t *testing.T) {
 	}
 	app32 := "abcdefghijklmnopqrstuvwxyz012345"
 	long := "feature/a-very-long-branch-name"
-	dashAtCut := "feature/abc-defghijklmnop" // the first 12 slug characters end with "-"
+	dashAtCut := "featur/abcdefghijklmnop" // the first 7 slug characters end with "-"
 	xs := strings.Repeat("x", 60)
 	for _, c := range []struct {
 		app, branch, want string
@@ -44,12 +44,13 @@ func TestInstanceName(t *testing.T) {
 		{"moimroom", "feature/Login_Page", "moimroom--feature-login-page"},
 		{"moimroom", "release/1.2", "moimroom--release-1-2"},
 		{"moimroom", "--x--", "moimroom--x"},
-		// The longest name that is not shortened.
-		{app32, "abcdefghijklmnopqrs", app32 + "--abcdefghijklmnopqrs"},
-		// Shortened: exactly 53 characters, ending with the branch's hash.
-		{app32, long, app32 + "--feature-a-ve-" + hash(long)},
-		{app32, dashAtCut, app32 + "--feature-abc-" + hash(dashAtCut)},
-		{"moimroom", xs, "moimroom--" + strings.Repeat("x", 36) + "-" + hash(xs)},
+		// The longest name that is not shortened: 48 characters.
+		{app32, "abcdefghijklmn", app32 + "--abcdefghijklmn"},
+		// Shortened: exactly 48 characters, ending with the branch's hash.
+		{app32, "abcdefghijklmno", app32 + "--abcdefg-" + hash("abcdefghijklmno")},
+		{app32, long, app32 + "--feature-" + hash(long)},
+		{app32, dashAtCut, app32 + "--featur-" + hash(dashAtCut)},
+		{"moimroom", xs, "moimroom--" + strings.Repeat("x", 31) + "-" + hash(xs)},
 	} {
 		got, err := InstanceName(c.app, c.branch)
 		if err != nil {

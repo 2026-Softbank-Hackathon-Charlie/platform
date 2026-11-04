@@ -1011,12 +1011,12 @@ type AppSecretsUpdate struct {
 	// Delete Names to remove. A name not present is ignored.
 	Delete *[]string `json:"delete,omitempty"`
 
-	// Instance Change this instance's overrides; without it the app-wide secrets change.
+	// Instance Change this instance's overrides (the app's name for the default instance); without it, or empty, the app-wide secrets change.
 	//
 	// Example: moimroom--dev
 	Instance *string `json:"instance,omitempty"`
 
-	// Set Secrets to create or replace, name to value.
+	// Set Secrets to create or replace, name to value. Each value is 1 to 4096 bytes of UTF-8 (maxLength counts characters; the server counts bytes).
 	//
 	// Example: {"HOST_CODE":"4821"}
 	Set *map[string]string `json:"set,omitempty"`

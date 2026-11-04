@@ -2,7 +2,9 @@ package secrets
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 
@@ -78,7 +80,6 @@ func TestSealOpen(t *testing.T) {
 		"other app":      func() (string, error) { return c.Open("shop", "", "HOST_CODE", v, nonce, ct) },
 		"other instance": func() (string, error) { return c.Open("moimroom", "moimroom--dev", "HOST_CODE", v, nonce, ct) },
 		"other name":     func() (string, error) { return c.Open("moimroom", "", "ADMIN_TOKEN", v, nonce, ct) },
-		"other version":  func() (string, error) { return c.Open("moimroom", "", "HOST_CODE", 2, nonce, ct) },
 		"other key":      func() (string, error) { return other.Open("moimroom", "", "HOST_CODE", v, nonce, ct) },
 		"short nonce":    func() (string, error) { return c.Open("moimroom", "", "HOST_CODE", v, nonce[:4], ct) },
 		"tampered": func() (string, error) {
@@ -86,8 +87,7 @@ func TestSealOpen(t *testing.T) {
 			bad[0] ^= 1
 			return c.Open("moimroom", "", "HOST_CODE", v, nonce, bad)
 		},
-		// "a/b" + "/c" and "a" + "/b/c" must not share additional data.
-		"shifted slash": func() (string, error) { return c.Open("moimroom/", "", "HOST_CODE", v, nonce, ct) },
+		"other version": func() (string, error) { return c.Open("moimroom", "", "HOST_CODE", 2, nonce, ct) },
 	} {
 		got, err := open()
 		if err == nil {
@@ -95,6 +95,13 @@ func TestSealOpen(t *testing.T) {
 		} else if strings.Contains(err.Error(), "4821") {
 			t.Errorf("%s: error shows the value: %v", name, err)
 		}
+	}
+
+	// Fields joined with a separator would let ("a/b", "", "C") and
+	// ("a", "b/", "C") share additional data; length prefixes do not.
+	n3, ct3, v3, _ := c.Seal("a/b", "", "C", "x")
+	if got, err := c.Open("a", "b/", "C", v3, n3, ct3); err == nil {
+		t.Fatalf("a shifted separator decrypted to %q", got)
 	}
 
 	// A random nonce every time.
@@ -121,7 +128,8 @@ func TestRowAndInstanceValues(t *testing.T) {
 		row("moimroom--dev", "DEV_ONLY", "dev"),
 		row("moimroom--dev", "HOST_CODE", "dev-host"),
 	}
-	if r := rows[2]; r.App != "moimroom" || r.Instance != "moimroom" || r.Name != "HOST_CODE" || r.UpdatedBy != "seohyun" || r.KeyVersion != KeyVersion {
+	if r := rows[2]; r.App != "moimroom" || r.Instance != "moimroom" || r.Name != "HOST_CODE" || r.UpdatedBy != "seohyun" ||
+		r.KeyVersion != KeyVersion || r.KeyCheck != c.KeyCheck() || len(r.KeyCheck) != 12 {
 		t.Fatalf("row %+v", r)
 	}
 	for instance, want := range map[string]map[string]string{
@@ -162,19 +170,64 @@ func TestRowAndInstanceValues(t *testing.T) {
 	if v, err := c.OpenRow(rows[3]); err != nil || v != "dev" {
 		t.Fatalf("OpenRow = %q, %v", v, err)
 	}
+
+	// A row written with another key says so, and shows only key checks.
+	other, _ := NewCipher(bytes.Repeat([]byte{8}, KeySize))
+	if other.KeyCheck() == c.KeyCheck() {
+		t.Fatal("two keys share a key check")
+	}
+	_, err = other.OpenRow(rows[3])
+	if !errors.Is(err, ErrKeyMismatch) || !strings.Contains(err.Error(), c.KeyCheck()) || strings.Contains(err.Error(), "dev\"") {
+		t.Fatalf("other key: %v", err)
+	}
+	if _, err := other.InstanceValues(rows, "moimroom"); !errors.Is(err, ErrKeyMismatch) {
+		t.Fatalf("InstanceValues with another key: %v", err)
+	}
+}
+
+type fakeLister struct {
+	apps []store.App
+	rows map[string][]store.AppSecret
+}
+
+func (f fakeLister) ListApps(context.Context) ([]store.App, error) { return f.apps, nil }
+func (f fakeLister) ListAppSecrets(_ context.Context, app string) ([]store.AppSecret, error) {
+	return f.rows[app], nil
+}
+
+func TestOtherKeyRows(t *testing.T) {
+	c := newCipher(t)
+	other, _ := NewCipher(bytes.Repeat([]byte{8}, KeySize))
+	mine, _ := c.Row("shop", "", "A", "1", "op")
+	theirs, _ := other.Row("shop", "", "B", "2", "op")
+	theirs2, _ := other.Row("moimroom", "moimroom", "C", "3", "op")
+	l := fakeLister{apps: []store.App{{Name: "shop"}, {Name: "moimroom"}, {Name: "empty"}},
+		rows: map[string][]store.AppSecret{"shop": {mine, theirs}, "moimroom": {theirs2}}}
+	if n, err := c.OtherKeyRows(t.Context(), l); err != nil || n != 2 {
+		t.Fatalf("OtherKeyRows = %d, %v; want 2", n, err)
+	}
+	if n, _ := other.OtherKeyRows(t.Context(), l); n != 1 {
+		t.Fatalf("OtherKeyRows with the other key = %d; want 1", n)
+	}
 }
 
 func TestChecksum(t *testing.T) {
 	c := newCipher(t)
-	a := c.Checksum(map[string]string{"HOST_CODE": "4821", "ADMIN_TOKEN": "t"})
-	if len(a) != 64 {
-		t.Fatalf("checksum %q is not hex SHA-256", a)
+	sum := func(set map[string]string) string { return c.Checksum("moimroom", "moimroom--dev", set) }
+	a := sum(map[string]string{"HOST_CODE": "4821", "ADMIN_TOKEN": "t"})
+	if len(a) != 64 || strings.ToLower(a) != a {
+		t.Fatalf("checksum %q is not lowercase hex SHA-256", a)
 	}
 	// Same set, same checksum, whatever the map order.
 	for range 20 {
-		if b := c.Checksum(map[string]string{"ADMIN_TOKEN": "t", "HOST_CODE": "4821"}); b != a {
+		if b := sum(map[string]string{"ADMIN_TOKEN": "t", "HOST_CODE": "4821"}); b != a {
 			t.Fatalf("checksum changed: %s, %s", a, b)
 		}
+	}
+	// Another instance or app with the same values: another checksum.
+	if c.Checksum("moimroom", "moimroom", map[string]string{"HOST_CODE": "4821", "ADMIN_TOKEN": "t"}) == a ||
+		c.Checksum("shop", "moimroom--dev", map[string]string{"HOST_CODE": "4821", "ADMIN_TOKEN": "t"}) == a {
+		t.Fatal("the checksum does not depend on the app and the instance")
 	}
 	seen := map[string]string{a: "base"}
 	for name, set := range map[string]map[string]string{
@@ -188,15 +241,15 @@ func TestChecksum(t *testing.T) {
 		"moved prefix":  {"AB": "", "C": "x"},
 		"moved suffix":  {"A": "B", "C": "x"},
 	} {
-		sum := c.Checksum(set)
-		if prev, ok := seen[sum]; ok {
+		got := sum(set)
+		if prev, ok := seen[got]; ok {
 			t.Errorf("%s has the checksum of %s", name, prev)
 		}
-		seen[sum] = name
+		seen[got] = name
 	}
 	// Another key, another checksum: the checksum does not reveal the values.
 	other, _ := NewCipher(bytes.Repeat([]byte{8}, KeySize))
-	if other.Checksum(map[string]string{"HOST_CODE": "4821", "ADMIN_TOKEN": "t"}) == a {
+	if other.Checksum("moimroom", "moimroom--dev", map[string]string{"HOST_CODE": "4821", "ADMIN_TOKEN": "t"}) == a {
 		t.Fatal("two keys give the same checksum")
 	}
 }

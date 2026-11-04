@@ -317,7 +317,10 @@ func (s *Server) authenticate(r *http.Request) (auth.Principal, bool, error) {
 	return auth.Principal{Name: sess.Name, Role: apiv1.Role(sess.Role), Kind: sess.Kind, Client: sess.Client}, true, nil
 }
 
-func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status int, note map[string]any) {
+// audit writes one audit entry and returns the store's error, which it also
+// logs. Most callers write it after the response, and the error only goes
+// to the log; getAppSecret writes it before the value and refuses on error.
+func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status int, note map[string]any) error {
 	actor, role := p.Name, string(p.Role)
 	if actor == "" {
 		actor, role = "anonymous", ""
@@ -343,7 +346,7 @@ func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status
 		Actor:     actor,
 		Role:      role,
 		Action:    pattern,
-		Target:    r.URL.Path,
+		Target:    auditTarget(r, pattern),
 		Status:    status,
 		RequestID: reqID,
 		Detail:    detail,
@@ -351,6 +354,7 @@ func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status
 	if err != nil {
 		s.cfg.Log.Error("audit log write failed", "err", err, "action", pattern, "actor", actor)
 	}
+	return err
 }
 
 // cors answers preflight requests and sets CORS headers. It reports whether
@@ -399,9 +403,10 @@ func actor(r *http.Request) string {
 // shouldAudit records state changes and every denied request. Written-record
 // batches are excluded unless denied: a load generator sends them every few
 // seconds, and they are data, not decisions an auditor needs to see. Reading
-// a secret's value is recorded although it is a read.
+// a secret's value is a read here: getAppSecret records every call it
+// answers itself, before it sends the value.
 func shouldAudit(pattern, method string, status int) bool {
-	if status == http.StatusUnauthorized || status == http.StatusForbidden || pattern == revealSecretRoute {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return true
 	}
 	return !isRead(method) && pattern != "POST /v1/written-records/{stream}"

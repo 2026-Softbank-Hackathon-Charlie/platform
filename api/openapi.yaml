@@ -1113,6 +1113,8 @@ paths:
         another registered app has the name, or the platform serves the name
         itself under the app domain: `api`, `console` and the gateway's
         default app `app`; a name only in PLATFORM_APPS_FILE is not taken),
+        storage_cleanup_pending (409: the bucket and key of a deleted app or
+        instance with this name are still being deleted; try again later),
         invalid_app_spec (422: the repository, the branch or
         platform.yaml could not be read, or platform.yaml breaks a rule),
         github_unreachable (502), github_not_configured (503). Role operator.
@@ -1317,7 +1319,9 @@ paths:
         branch_exists (409: the app's own branch, or a branch already added),
         instance_exists (409: another branch has the same instance name),
         instance_limit (409: the app already has 3 instances, the default one
-        included), invalid_app_spec (422: the branch or platform.yaml could
+        included), storage_cleanup_pending (409: the bucket and key of a
+        deleted instance with this name are still being deleted; try again
+        later), invalid_app_spec (422: the branch or platform.yaml could
         not be read, or platform.yaml breaks a rule), github_unreachable
         (502), github_not_configured (503). Role operator.
       requestBody:
@@ -1462,11 +1466,14 @@ paths:
       description: |
         One secret's value, for the console's show button. Every call is
         written to the audit log (with the name, never the value), and the
-        answer is not cached (`Cache-Control: no-store`).
+        answer is not cached (`Cache-Control: no-store`). The audit entry is
+        written before the value is sent: when it cannot be written, the
+        value is not returned.
 
         Error codes: app_not_found (404), instance_not_found (404),
         secret_not_found (404), app_not_registered (409),
-        secrets_not_configured (503). Role operator.
+        secrets_not_configured (503), audit_unavailable (503: the audit
+        entry could not be written). Role operator.
       responses:
         "200":
           description: The secret with its value.
@@ -1763,7 +1770,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, device_login_state_conflict, nothing_to_redeploy"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1788,7 +1795,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unavailable:
-      description: "gateway_not_configured, github_not_configured, login_not_configured, secrets_not_configured, storage_not_configured"
+      description: "gateway_not_configured, github_not_configured, login_not_configured, secrets_not_configured, storage_not_configured, audit_unavailable"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -3319,16 +3326,18 @@ components:
       properties:
         instance:
           type: string
-          description: Change this instance's overrides; without it the app-wide secrets change.
+          description: Change this instance's overrides (the app's name for the default instance); without it, or empty, the app-wide secrets change.
           example: moimroom--dev
         set:
-          description: Secrets to create or replace, name to value.
+          description: Secrets to create or replace, name to value. Each value is 1 to 4096 bytes of UTF-8 (maxLength counts characters; the server counts bytes).
           type: object
+          maxProperties: 50
           additionalProperties: { type: string, minLength: 1, maxLength: 4096 }
           example: { HOST_CODE: "4821" }
         delete:
           description: Names to remove. A name not present is ignored.
           type: array
+          maxItems: 50
           uniqueItems: true
           items: { type: string }
 

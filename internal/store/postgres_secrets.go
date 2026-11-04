@@ -8,11 +8,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const appSecretColumns = `app, instance, name, key_version, nonce, ciphertext, updated_at, updated_by`
+const appSecretColumns = `app, instance, name, key_version, key_check, nonce, ciphertext, updated_at, updated_by`
 
 func scanAppSecret(row pgx.Row) (AppSecret, error) {
 	var s AppSecret
-	if err := row.Scan(&s.App, &s.Instance, &s.Name, &s.KeyVersion, &s.Nonce, &s.Ciphertext, &s.UpdatedAt, &s.UpdatedBy); err != nil {
+	if err := row.Scan(&s.App, &s.Instance, &s.Name, &s.KeyVersion, &s.KeyCheck, &s.Nonce, &s.Ciphertext, &s.UpdatedAt, &s.UpdatedBy); err != nil {
 		return AppSecret{}, err
 	}
 	s.UpdatedAt = s.UpdatedAt.UTC()
@@ -78,6 +78,10 @@ func (s *Postgres) ChangeAppSecrets(ctx context.Context, app, instance string, s
 			return err
 		}
 	}
+	var before int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM app_secrets WHERE app = $1 AND instance = $2`, app, instance).Scan(&before); err != nil {
+		return err
+	}
 	var gone []string
 	for _, n := range del {
 		if Clean(n) { // no stored name is unclean
@@ -92,10 +96,10 @@ func (s *Postgres) ChangeAppSecrets(ctx context.Context, app, instance string, s
 	}
 	for _, r := range set {
 		r = r.Clean()
-		if _, err := tx.Exec(ctx, `INSERT INTO app_secrets (`+appSecretColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (app, instance, name) DO UPDATE SET key_version = EXCLUDED.key_version, nonce = EXCLUDED.nonce,
-				ciphertext = EXCLUDED.ciphertext, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
-			app, instance, r.Name, r.KeyVersion, r.Nonce, r.Ciphertext, r.UpdatedAt, r.UpdatedBy); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO app_secrets (`+appSecretColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (app, instance, name) DO UPDATE SET key_version = EXCLUDED.key_version, key_check = EXCLUDED.key_check,
+				nonce = EXCLUDED.nonce, ciphertext = EXCLUDED.ciphertext, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
+			app, instance, r.Name, r.KeyVersion, r.KeyCheck, r.Nonce, r.Ciphertext, r.UpdatedAt, r.UpdatedBy); err != nil {
 			return err
 		}
 	}
@@ -103,7 +107,7 @@ func (s *Postgres) ChangeAppSecrets(ctx context.Context, app, instance string, s
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM app_secrets WHERE app = $1 AND instance = $2`, app, instance).Scan(&count); err != nil {
 		return err
 	}
-	if count > max {
+	if count > max && count > before {
 		return fmt.Errorf("%w: the change leaves %d secrets, at most %d are allowed", ErrSecretLimit, count, max)
 	}
 	return tx.Commit(ctx)
@@ -125,7 +129,7 @@ func (s *Postgres) PutInstanceStorage(ctx context.Context, is InstanceStorage) e
 	_, err := s.pool.Exec(ctx, `INSERT INTO instance_storage (`+instanceStorageColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (instance, env) DO UPDATE SET app = EXCLUDED.app, driver = EXCLUDED.driver, bucket = EXCLUDED.bucket,
 			key_id = EXCLUDED.key_id, sealed_access_key = EXCLUDED.sealed_access_key, sealed_secret_key = EXCLUDED.sealed_secret_key,
-			cert_fingerprint = EXCLUDED.cert_fingerprint, created_at = EXCLUDED.created_at`,
+			cert_fingerprint = EXCLUDED.cert_fingerprint`,
 		is.Instance, is.Env, is.App, is.Driver, is.Bucket, is.KeyID, is.SealedAccessKey, is.SealedSecretKey, is.CertFingerprint, is.CreatedAt)
 	return err
 }
@@ -142,12 +146,12 @@ func (s *Postgres) GetInstanceStorage(ctx context.Context, instance, env string)
 	return out, err
 }
 
-func (s *Postgres) ListInstanceStorage(ctx context.Context, app string) ([]InstanceStorage, error) {
-	if !Clean(app) {
+func (s *Postgres) ListInstanceStorage(ctx context.Context, app, instance string) ([]InstanceStorage, error) {
+	if !Clean(app) || !Clean(instance) {
 		return []InstanceStorage{}, nil
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+instanceStorageColumns+` FROM instance_storage
-		WHERE app = $1 ORDER BY instance COLLATE "C", env COLLATE "C"`, app)
+		WHERE ($1 = '' OR app = $1) AND ($2 = '' OR instance = $2) ORDER BY instance COLLATE "C", env COLLATE "C"`, app, instance)
 	if err != nil {
 		return nil, err
 	}

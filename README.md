@@ -268,7 +268,7 @@ PLATFORM_TEST_DATABASE_URL='postgres://charlie:charlie@localhost:55432/charlie?s
 - API 테스트는 모든 응답과 SSE 메시지를 `api/openapi.yaml`로 검증합니다. 명세와 구현이 어긋나면 실패합니다.
 - 저장소 구현은 `storetest.Conformance`를 통과해야 합니다. 메모리 저장소(`storetest.NewMemory`)는 테스트에서만 씁니다.
 - `api/openapi.yaml`을 고친 뒤에는 `go generate ./pkg/apiv1`로 타입을 다시 만듭니다.
-- `minio` 드라이버를 실제 MinIO에 돌려 보려면 `PLATFORM_TEST_MINIO_ENDPOINT=http://127.0.0.1:9000 PLATFORM_TEST_MINIO_ACCESS_KEY=<관리 키> PLATFORM_TEST_MINIO_SECRET_KEY=<관리 비밀 키> go test -run TestMinIOLive ./internal/storage`를 실행합니다. 버킷 두 개를 만들고, 한 키가 다른 버킷에 쓰지 못하는지 본 뒤 모두 지웁니다.
+- `minio` 드라이버 테스트는 `-tags minio`가 필요합니다. 실제 MinIO에 돌려 보려면 `PLATFORM_TEST_MINIO_ENDPOINT=http://127.0.0.1:9000 PLATFORM_TEST_MINIO_ACCESS_KEY=<관리 키> PLATFORM_TEST_MINIO_SECRET_KEY=<관리 비밀 키> go test -tags minio -run TestMinIOLive ./internal/storage`를 실행합니다. 버킷 두 개를 만들고, 한 키가 다른 버킷에 쓰지 못하는지 본 뒤 모두 지웁니다.
 
 ### CI
 
@@ -442,9 +442,10 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 
 - 시크릿은 앱 단위로 두고, 인스턴스마다 덮어쓸 수 있습니다. 인스턴스가 받는 값은 앱 단위 값 위에 그 인스턴스의 덮어쓰기를 얹은 것입니다. 덮어쓰기를 지우면 앱 단위 값으로 돌아갑니다. 기본 인스턴스의 덮어쓰기는 `instance`에 앱 이름을 씁니다.
 - 이름은 `^[A-Z_][A-Z0-9_]*$`, 64자까지이고 `PORT`, `DATABASE_URL`, `S3_*`는 쓸 수 없습니다. 값은 1바이트에서 4096바이트까지이고(빈 값은 400), 앱 단위와 인스턴스마다 50개까지입니다. 한 요청에서 같은 이름을 넣고 지우면 400, 바꿀 것이 없어도 400입니다. 50개는 바꾼 뒤의 개수로 셉니다.
-- 값은 `PLATFORM_SECRETS_KEY`로 AES-256-GCM 암호화해 플랫폼 DB에 저장합니다. nonce는 값마다 무작위이고, AAD가 `<앱>/<인스턴스>/<이름>`이라서 다른 행으로 옮긴 암호문은 복호화되지 않습니다. 행마다 키 버전(지금은 1)을 저장합니다. 테이블은 `0008_app_secrets.sql`이 만듭니다.
+- 값은 `PLATFORM_SECRETS_KEY`로 AES-256-GCM 암호화해 플랫폼 DB에 저장합니다. nonce는 값마다 무작위이고, AAD는 앱, 인스턴스, 이름을 각각 길이와 함께 이어 붙인 값이라서 다른 행으로 옮긴 암호문은 복호화되지 않습니다. 행마다 키 버전(지금은 1)과 키 확인값(키에서 HKDF로 만든 16진수 12자)을 저장합니다. 다른 키로 띄운 서버는 시작할 때 그런 행의 개수를 오류 로그로 남기고, 그 값의 조회는 500이며 서버 로그에 두 키 확인값을 남깁니다. 키 자체는 어디에도 남기지 않습니다. 테이블은 `0008_app_secrets.sql`이 만듭니다.
 - 앱을 지우면 시크릿이 모두, 인스턴스를 지우면 그 인스턴스의 덮어쓰기가 같은 트랜잭션에서 지워집니다. 같은 이름으로 다시 등록해도 이전 시크릿은 없습니다.
-- 감사 로그에는 앱, 인스턴스, 넣은 이름(`set`), 지운 이름(`deleted`)만 남고 값은 남지 않습니다. 값 조회도 GET이지만 매번 남습니다. 서버 로그에도 값과 암호문을 쓰지 않습니다.
+- 감사 로그에는 검증을 통과한 앱, 인스턴스, 넣은 이름(`set`), 지운 이름(`deleted`)만 남고 값은 남지 않습니다. 400으로 거절한 요청은 이름 대신 개수(`setCount`, `deleteCount`)만 남깁니다. 이름 자리에 값을 잘못 붙여 넣었을 수 있기 때문입니다. 같은 이유로 규칙에 맞지 않는 앱 이름이나 시크릿 이름은 감사 로그의 경로에 `{invalid}`로 남습니다.
+- 값 조회도 GET이지만 매번 감사 로그에 남습니다. 값을 보내기 전에 감사 로그를 먼저 쓰고, 쓰지 못하면 값을 주지 않고 503 `audit_unavailable`로 답합니다. 서버 로그에도 값과 암호문을 쓰지 않습니다.
 - viewer와 agent 토큰(예: Rin의 CLI 토큰)은 이름만 볼 수 있습니다.
 - 아직은 저장과 조회만 됩니다. 배포할 때 시크릿을 봉인해 gitops 파일의 `values.sealedSecrets`로 넣는 것과 `POST /v1/apps/{name}/deployments`의 `redeploy`는 다음 단계에서 붙입니다.
 
@@ -452,12 +453,15 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 
 `platform.yaml`에 s3 리소스가 있는 앱은 인스턴스마다 버킷 하나와 그 버킷에만 쓸 수 있는 키를 받습니다([ADR 0016](docs/adr/0016-app-object-storage.md)). 키를 만드는 방법은 `PLATFORM_ENVS_FILE`의 환경별 `storage.driver`가 정하고, 만든 키는 그 환경 클러스터의 Sealed Secrets 인증서(`sealedSecretsCert`)로 봉인합니다. 필드는 [examples/envs.yaml](examples/envs.yaml)에 있습니다.
 
-- 버킷 이름은 `<bucketPrefix><인스턴스>`이고, `bucketPrefix`는 15자까지입니다. 버킷과 사용자에는 태그 `hopcharlie:app`, `hopcharlie:instance`를 붙입니다. 같은 이름의 버킷이나 사용자가 다른 앱의 태그를 달고 있으면 드라이버는 그것을 쓰지도 지우지도 않습니다.
+- 버킷 이름은 `<bucketPrefix><인스턴스>`이고, `bucketPrefix`는 15자까지, 인스턴스 이름은 48자까지라서 버킷 이름은 S3 상한인 63자를 넘지 않습니다. IAM 사용자 이름이 64자를 넘으면 API를 부르기 전에 거절합니다.
+- 버킷과 사용자에는 태그 `hopcharlie:app`, `hopcharlie:instance`를 붙입니다. 같은 이름의 버킷이나 사용자가 다른 앱의 태그를 달고 있으면 드라이버는 그것을 쓰지도 지우지도 않습니다. IAM 사용자는 만드는 호출에서 태그가 같이 붙으므로, 태그가 없는 사용자는 플랫폼이 만든 것이 아니라고 보고 거절합니다. 태그가 없는 버킷은 같은 계정이 방금 만든 경우(만든 직후 태그 전에 끊긴 경우)에만 이어서 씁니다. 지울 때는 태그가 맞는 버킷과 사용자만 지웁니다.
+- 앱 이름으로 소유를 가리므로, 지운 앱이나 인스턴스의 버킷과 키를 아직 지우는 중이면(`instance_storage`에 행이 남아 있으면) 같은 이름의 앱 등록과 인스턴스 추가는 409 `storage_cleanup_pending`입니다.
 - `aws`: 그 리전에 S3 버킷을 만들고 공개 접근 차단 네 가지를 모두 켭니다. IAM 사용자 `hopcharlie-app-<인스턴스>`를 `iamPath` 아래에 `permissionsBoundary`를 붙여 만들고, 인라인 정책 `hopcharlie-bucket`으로 그 버킷의 목록, 객체 읽기, 쓰기, 지우기만 허용한 뒤 액세스 키를 만듭니다. 플랫폼의 AWS 자격 증명(pod 역할)을 씁니다.
-- `minio`: MinIO 관리 API(admin API v3)로 버킷, 사용자 `hopcharlie-app-<인스턴스>`, 같은 이름의 canned policy(그 버킷만 허용)를 만들고, 키는 그 사용자의 서비스 계정으로 만듭니다. 관리 키는 `adminAccessKeyEnv`, `adminSecretKeyEnv`가 가리키는 플랫폼 환경 변수에서 읽고, 비어 있으면 서버가 시작하지 않습니다.
+- `minio`: MinIO 관리 API(admin API v3)로 버킷, 사용자 `hopcharlie-app-<인스턴스>`, 같은 이름의 canned policy(그 버킷만 허용)를 만들고, 키는 그 사용자의 서비스 계정으로 만듭니다. 키를 지울 때는 그 서비스 계정의 상위 사용자가 그 인스턴스의 사용자인지 먼저 확인합니다. 관리 키는 `adminAccessKeyEnv`, `adminSecretKeyEnv`가 가리키는 플랫폼 환경 변수에서 읽고, 비어 있으면 서버가 시작하지 않습니다.
+- `minio` 드라이버는 AGPL-3.0인 MinIO 관리 클라이언트(madmin-go)를 링크하므로 `-tags minio`로 빌드한 API에만 들어갑니다(kind E2E, 온프렘). 기본 빌드와 게시하는 이미지에는 없고, `minio` 저장소 설정이 있으면 "built with -tags minio" 오류로 서버가 시작하지 않습니다. CI는 태그를 붙인 빌드도 vet과 테스트합니다.
 - 모든 작업은 다시 불러도 됩니다. 이미 있는 버킷과 사용자는 그대로 쓰고, 새 키는 사용자를 새로 만들었거나 요청했을 때만 만듭니다. 새 키를 만들기 전에 남길 키 하나를 빼고 나머지 키를 지워서, 중간에 끊긴 뒤 다시 해도 아무도 모르는 키가 쌓이지 않습니다. 삭제는 사용자(키와 정책 포함)를 먼저 지우고, 버킷을 비운 뒤 지웁니다. 이미 없는 것은 건너뜁니다.
 - `gcs`는 아직 구현하지 않았고, 설정하면 서버가 시작하지 않습니다.
-- 인증서 파일이 없거나 읽히지 않으면 시작할 때 경고만 남기고, 봉인이 필요할 때마다 다시 읽습니다. 인증서를 나중에 넣어도 서버를 다시 띄울 필요가 없습니다.
+- 인증서 파일이 없거나 읽히지 않으면 시작할 때 경고만 남깁니다. 봉인할 때마다 파일의 수정 시각과 크기를 보고, 바뀌었으면 다시 읽어 내용이 바뀐 경우에만 새 인증서를 씁니다. 인증서를 나중에 넣거나 바꿔도 서버를 다시 띄울 필요가 없습니다. 만료된 인증서와 2048비트보다 짧은 RSA 키는 거절합니다.
 - 지금은 드라이버와 봉인만 준비되어 있고, 배포 실행기가 이것을 부르는 것은 다음 단계입니다. 플랫폼 DB에는 인스턴스와 환경마다 봉인한 키, 키 식별자, 인증서 지문만 저장합니다(`instance_storage`). 이 행은 앱이나 인스턴스를 지워도 남고, 드라이버가 버킷과 키를 지운 뒤에 지웁니다.
 
 ### GitHub App 설정

@@ -2,6 +2,7 @@ package envs
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -51,9 +52,6 @@ type Options struct {
 	// block, in New. Nil uses storage.New with the process environment;
 	// tests inject fakes.
 	NewStorage func(storage.Config) (storage.Driver, error)
-	// LoadCert reads a sealed-secrets certificate file. Nil uses
-	// sealing.LoadCert.
-	LoadCert func(path string) (*sealing.Sealer, error)
 }
 
 // Service is the environment registry. It is safe for concurrent use.
@@ -64,7 +62,6 @@ type Service struct {
 	ttl       time.Duration
 	now       func() time.Time
 	newProber func(EnvConfig) (Prober, error)
-	loadCert  func(string) (*sealing.Sealer, error)
 }
 
 // env is one environment and its cached status.
@@ -72,8 +69,11 @@ type env struct {
 	cfg     EnvConfig
 	storage storage.Driver // nil without a storage block
 
-	sealMu sync.Mutex
-	sealer *sealing.Sealer // read on first use; a failed read is retried
+	sealMu   sync.Mutex
+	sealer   *sealing.Sealer // nil until the certificate is read
+	certMod  time.Time       // the file's modification time and size when read
+	certSize int64
+	certHash [sha256.Size]byte // of the file's content
 
 	buildMu sync.Mutex
 	prober  Prober // built on first use; a failed build is retried on the next probe
@@ -106,7 +106,6 @@ func New(cfg Config, opt Options) (*Service, error) {
 		ttl:       opt.CacheTTL,
 		now:       opt.Now,
 		newProber: opt.NewProber,
-		loadCert:  opt.LoadCert,
 	}
 	if s.timeout <= 0 {
 		s.timeout = DefaultProbeTimeout
@@ -120,9 +119,6 @@ func New(cfg Config, opt Options) (*Service, error) {
 	if s.newProber == nil {
 		timeout := s.timeout
 		s.newProber = func(c EnvConfig) (Prober, error) { return NewKubeProber(c, timeout) }
-	}
-	if s.loadCert == nil {
-		s.loadCert = sealing.LoadCert
 	}
 	newStorage := opt.NewStorage
 	if newStorage == nil {
@@ -144,12 +140,14 @@ func New(cfg Config, opt Options) (*Service, error) {
 }
 
 // Sealer returns the sealer for an environment's sealed-secrets controller.
-// The certificate is read on the first call and kept. While it cannot be
-// read (missing or not a certificate), every call reads it again, so a
-// certificate added later is used without a restart. ErrNotFound for an
-// unknown environment; ErrSealingNotConfigured when it has no
-// sealedSecretsCert; an error wrapping fs.ErrNotExist when the file is not
-// there.
+// Every call checks the certificate file and reads it again when its
+// modification time or size changed; a new sealer is made only when the
+// content changed. So a certificate added or replaced later is used
+// without a restart. A file that is missing, cannot be read, is not a
+// certificate, has expired or has a short key is an error, also when an
+// earlier version was read. ErrNotFound for an unknown environment;
+// ErrSealingNotConfigured when it has no sealedSecretsCert; an error
+// wrapping fs.ErrNotExist when the file is not there.
 func (s *Service) Sealer(name string) (*sealing.Sealer, error) {
 	e, ok := s.byName[name]
 	if !ok {
@@ -160,20 +158,34 @@ func (s *Service) Sealer(name string) (*sealing.Sealer, error) {
 	}
 	e.sealMu.Lock()
 	defer e.sealMu.Unlock()
-	if e.sealer == nil {
-		sl, err := s.loadCert(e.cfg.SealedSecretsCert)
-		// Like the kube clients' errors, these name no file paths.
-		var pathErr *fs.PathError
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			return nil, fmt.Errorf("environment %s: sealed-secrets certificate file not found: %w", name, fs.ErrNotExist)
-		case errors.As(err, &pathErr):
-			return nil, fmt.Errorf("environment %s: sealed-secrets certificate file could not be read", name)
-		case err != nil:
+	path := e.cfg.SealedSecretsCert
+	// Like the kube clients' errors, these name no file paths.
+	fileErr := func(err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("environment %s: sealed-secrets certificate file not found: %w", name, fs.ErrNotExist)
+		}
+		return fmt.Errorf("environment %s: sealed-secrets certificate file could not be read", name)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, fileErr(err)
+	}
+	if e.sealer != nil && fi.ModTime().Equal(e.certMod) && fi.Size() == e.certSize {
+		return e.sealer, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fileErr(err)
+	}
+	sum := sha256.Sum256(data)
+	if e.sealer == nil || sum != e.certHash {
+		sl, err := sealing.ParseCert(data)
+		if err != nil {
 			return nil, fmt.Errorf("environment %s: %w", name, err)
 		}
-		e.sealer = sl
+		e.sealer, e.certHash = sl, sum
 	}
+	e.certMod, e.certSize = fi.ModTime(), fi.Size()
 	return e.sealer, nil
 }
 

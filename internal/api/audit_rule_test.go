@@ -15,8 +15,9 @@ func TestShouldAudit(t *testing.T) {
 		{"POST /v1/written-records/{stream}", "POST", 403, true},
 		{"PUT /v1/plans/{ref}/attachments/{name}", "PUT", 200, true},
 		{"GET /v1/apps/{name}/secrets", "GET", 200, false},
-		{"GET /v1/apps/{name}/secrets/{secret}", "GET", 200, true},
-		{"GET /v1/apps/{name}/secrets/{secret}", "GET", 404, true},
+		// The handler records the reads it answers; the route only denials.
+		{"GET /v1/apps/{name}/secrets/{secret}", "GET", 200, false},
+		{"GET /v1/apps/{name}/secrets/{secret}", "GET", 403, true},
 	}
 	for _, c := range cases {
 		if got := shouldAudit(c.pattern, c.method, c.status); got != c.want {

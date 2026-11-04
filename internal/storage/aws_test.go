@@ -508,9 +508,10 @@ func TestAWSEnsureUSEast1(t *testing.T) {
 func TestAWSEnsureTakesOverLeftovers(t *testing.T) {
 	f := newFakeAWS()
 	d := newAWSDriver(f)
-	// A crash left the bucket untagged and the user without a policy or key.
+	// A crash left the bucket untagged and the user (tagged when created)
+	// without a policy or key.
 	f.buckets[devBucket] = &fakeBucket{region: "ap-northeast-2"}
-	f.users[devUser] = &fakeUser{path: "/hopcharlie-apps/", tags: map[string]string{}, policies: map[string]string{}}
+	f.users[devUser] = &fakeUser{path: "/hopcharlie-apps/", tags: map[string]string{TagApp: "moimroom", TagInstance: "moimroom--dev"}, policies: map[string]string{}}
 	res, err := d.Ensure(t.Context(), dev, true, "")
 	if err != nil || res.Key == nil {
 		t.Fatalf("%+v, %v", res, err)
@@ -531,7 +532,11 @@ func TestAWSEnsureRefusesOthers(t *testing.T) {
 			f.users[devUser] = &fakeUser{path: "/hopcharlie-apps/", tags: map[string]string{TagApp: "other"}, policies: map[string]string{}}
 		},
 		"user on another path": func(f *fakeAWS) {
-			f.users[devUser] = &fakeUser{path: "/", tags: map[string]string{}, policies: map[string]string{}}
+			f.users[devUser] = &fakeUser{path: "/", tags: map[string]string{TagApp: "moimroom"}, policies: map[string]string{}}
+		},
+		// CreateUser tags the user, so one without the tag is not ours.
+		"untagged user": func(f *fakeAWS) {
+			f.users[devUser] = &fakeUser{path: "/hopcharlie-apps/", tags: map[string]string{}, policies: map[string]string{}}
 		},
 	}
 	for name, setup := range cases {
@@ -636,6 +641,15 @@ func TestAWSDeleteRefusesOthers(t *testing.T) {
 	}
 	if _, ok := f.users[devUser]; !ok {
 		t.Fatal("the user was deleted although the bucket is another app's")
+	}
+	// A bucket without the app tag is not deleted either.
+	f.buckets[devBucket].tags = map[string]string{}
+	f.buckets[devBucket].versions = []string{"keep@1"}
+	if err := d.Delete(ctx, dev); !errors.Is(err, ErrInUse) {
+		t.Fatalf("untagged bucket: err = %v, want ErrInUse", err)
+	}
+	if len(f.buckets[devBucket].versions) != 1 {
+		t.Fatal("an untagged bucket was emptied")
 	}
 }
 

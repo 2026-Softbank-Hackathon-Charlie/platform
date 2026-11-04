@@ -142,7 +142,7 @@ func (d *awsDriver) ensureBucket(ctx context.Context, in Instance, bucket string
 		if err != nil {
 			return err
 		}
-		if err := checkApp("bucket "+bucket, tags, in.App); err != nil {
+		if err := checkApp("bucket "+bucket, tags, in.App, true); err != nil {
 			return err
 		}
 	case code == "BucketAlreadyExists":
@@ -168,9 +168,6 @@ func (d *awsDriver) ensureBucket(ctx context.Context, in Instance, bucket string
 	return nil
 }
 
-// errNoBucket means the bucket does not exist.
-var errNoBucket = errors.New("no such bucket")
-
 // bucketTags returns the bucket's tags; errNoBucket when it does not exist.
 func (d *awsDriver) bucketTags(ctx context.Context, bucket string) (map[string]string, error) {
 	out, err := d.s3.GetBucketTagging(ctx, &s3.GetBucketTaggingInput{Bucket: &bucket})
@@ -182,7 +179,7 @@ func (d *awsDriver) bucketTags(ctx context.Context, bucket string) (map[string]s
 	case "NoSuchTagSet":
 		return map[string]string{}, nil
 	case "NoSuchBucket":
-		return nil, errNoBucket
+		return nil, noBucket(bucket)
 	default:
 		return nil, fmt.Errorf("storage: read tags of bucket %s: %w", bucket, err)
 	}
@@ -195,7 +192,7 @@ func (d *awsDriver) bucketTags(ctx context.Context, bucket string) (map[string]s
 
 // ensureUser creates the user under the driver's path with the permissions
 // boundary and the tags, and reports whether it did. An existing user is
-// kept when it is under the path and not another app's.
+// kept when it is under the path and tagged with the instance's app.
 func (d *awsDriver) ensureUser(ctx context.Context, in Instance, user string) (bool, error) {
 	var tags []iamtypes.Tag
 	for _, k := range []string{TagApp, TagInstance} {
@@ -218,7 +215,8 @@ func (d *awsDriver) ensureUser(ctx context.Context, in Instance, user string) (b
 var errNoUser = errors.New("no such user")
 
 // checkUser returns ErrInUse when the user is not under the driver's path
-// or is another app's, and errNoUser when it does not exist.
+// or not tagged with the instance's app, and errNoUser when it does not
+// exist.
 func (d *awsDriver) checkUser(ctx context.Context, in Instance, user string) error {
 	out, err := d.iam.GetUser(ctx, &iam.GetUserInput{UserName: &user})
 	if errorCode(err) == "NoSuchEntity" {
@@ -234,7 +232,7 @@ func (d *awsDriver) checkUser(ctx context.Context, in Instance, user string) err
 	for _, t := range out.User.Tags {
 		tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
 	}
-	return checkApp("user "+user, tags, in.App)
+	return checkApp("user "+user, tags, in.App, false)
 }
 
 // deleteKeys deletes the user's access keys except keep.
@@ -291,7 +289,7 @@ func (d *awsDriver) Delete(ctx context.Context, in Instance) error {
 		return bucketErr
 	}
 	if bucketErr == nil {
-		if err := checkApp("bucket "+n.bucket, tags, in.App); err != nil {
+		if err := checkApp("bucket "+n.bucket, tags, in.App, false); err != nil {
 			return err
 		}
 	}

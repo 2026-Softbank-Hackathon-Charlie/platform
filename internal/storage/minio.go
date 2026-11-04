@@ -1,7 +1,10 @@
+//go:build minio
+
 package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 
@@ -11,6 +14,10 @@ import (
 	"github.com/minio/minio-go/v7/pkg/tags"
 )
 
+// MinIOBuilt reports whether this binary has the minio driver: it is built
+// with -tags minio.
+const MinIOBuilt = true
+
 // minioS3 is the part of the MinIO S3 client the minio driver uses.
 type minioS3 interface {
 	MakeBucket(ctx context.Context, bucket string, opts minio.MakeBucketOptions) error
@@ -18,6 +25,8 @@ type minioS3 interface {
 	SetBucketTagging(ctx context.Context, bucket string, t *tags.Tags) error
 	ListObjects(ctx context.Context, bucket string, opts minio.ListObjectsOptions) <-chan minio.ObjectInfo
 	RemoveObjects(ctx context.Context, bucket string, objects <-chan minio.ObjectInfo, opts minio.RemoveObjectsOptions) <-chan minio.RemoveObjectError
+	ListIncompleteUploads(ctx context.Context, bucket, prefix string, recursive bool) <-chan minio.ObjectMultipartInfo
+	RemoveIncompleteUpload(ctx context.Context, bucket, object string) error
 	RemoveBucket(ctx context.Context, bucket string) error
 }
 
@@ -31,6 +40,7 @@ type minioAdmin interface {
 	RemoveUser(ctx context.Context, accessKey string) error
 	AddServiceAccount(ctx context.Context, req madmin.AddServiceAccountReq) (madmin.Credentials, error)
 	ListServiceAccounts(ctx context.Context, user string) (madmin.ListServiceAccountsResp, error)
+	InfoServiceAccount(ctx context.Context, accessKey string) (madmin.InfoServiceAccountResp, error)
 	DeleteServiceAccount(ctx context.Context, accessKey string) error
 }
 
@@ -44,7 +54,7 @@ type minioDriver struct {
 	admin          minioAdmin
 }
 
-func newMinIO(c Config, getenv func(string) string) (*minioDriver, error) {
+func newMinIO(c Config, getenv func(string) string) (Driver, error) {
 	host, secure, err := c.minioEndpoint()
 	if err != nil {
 		return nil, err
@@ -140,7 +150,7 @@ func (d *minioDriver) ensureBucket(ctx context.Context, in Instance, bucket stri
 		if err != nil {
 			return err
 		}
-		if err := checkApp("bucket "+bucket, t, in.App); err != nil {
+		if err := checkApp("bucket "+bucket, t, in.App, true); err != nil {
 			return err
 		}
 	default:
@@ -168,7 +178,7 @@ func (d *minioDriver) bucketTags(ctx context.Context, bucket string) (map[string
 	case "NoSuchTagSet":
 		return map[string]string{}, nil
 	case "NoSuchBucket":
-		return nil, errNoBucket
+		return nil, noBucket(bucket)
 	default:
 		return nil, fmt.Errorf("storage: read tags of bucket %s: %w", bucket, err)
 	}
@@ -191,27 +201,37 @@ func (d *minioDriver) deleteKeys(ctx context.Context, user, keep string) error {
 	return nil
 }
 
+// serviceAccountGone reports the error codes of a service account that
+// does not exist. MinIO answers an unknown one with
+// XMinioInvalidIAMCredentials ("The specified service account is not
+// found"); a bad admin key is InvalidAccessKeyId or SignatureDoesNotMatch.
+func serviceAccountGone(err error) bool {
+	c := minioCode(err)
+	return c == "XMinioAdminServiceAccountNotFound" || c == "XMinioInvalidIAMCredentials"
+}
+
 func (d *minioDriver) deleteKey(ctx context.Context, id string) error {
-	err := d.admin.DeleteServiceAccount(ctx, id)
-	switch minioCode(err) {
-	case "":
-		if err != nil {
-			return fmt.Errorf("storage: delete service account %s: %w", id, err)
-		}
-	case "XMinioAdminServiceAccountNotFound", "XMinioInvalidIAMCredentials":
-		// Gone already. MinIO answers an unknown service account with
-		// XMinioInvalidIAMCredentials ("The specified service account is
-		// not found"); a bad admin key is InvalidAccessKeyId or
-		// SignatureDoesNotMatch.
-	default:
+	if err := d.admin.DeleteServiceAccount(ctx, id); err != nil && !serviceAccountGone(err) {
 		return fmt.Errorf("storage: delete service account %s: %w", id, err)
 	}
 	return nil
 }
 
+// DeleteKey deletes the service account only when it belongs to the
+// instance's user.
 func (d *minioDriver) DeleteKey(ctx context.Context, in Instance, keyID string) error {
-	if _, err := instanceNames(d.prefix, in); err != nil {
+	n, err := instanceNames(d.prefix, in)
+	if err != nil {
 		return err
+	}
+	info, err := d.admin.InfoServiceAccount(ctx, keyID)
+	switch {
+	case serviceAccountGone(err):
+		return nil
+	case err != nil:
+		return fmt.Errorf("storage: read service account %s: %w", keyID, err)
+	case info.ParentUser != n.user:
+		return fmt.Errorf("%w: service account %s belongs to %s, not %s", ErrInUse, keyID, info.ParentUser, n.user)
 	}
 	return d.deleteKey(ctx, keyID)
 }
@@ -226,7 +246,7 @@ func (d *minioDriver) Delete(ctx context.Context, in Instance) error {
 		return bucketErr
 	}
 	if bucketErr == nil {
-		if err := checkApp("bucket "+n.bucket, t, in.App); err != nil {
+		if err := checkApp("bucket "+n.bucket, t, in.App, false); err != nil {
 			return err
 		}
 	}
@@ -250,8 +270,28 @@ func (d *minioDriver) Delete(ctx context.Context, in Instance) error {
 	return nil
 }
 
-// emptyBucket removes every object version of the bucket.
+// emptyBucket removes every object version of the bucket, then its
+// unfinished multipart uploads.
 func (d *minioDriver) emptyBucket(ctx context.Context, bucket string) error {
+	if err := d.removeObjects(ctx, bucket); err != nil {
+		return err
+	}
+	for u := range d.s3.ListIncompleteUploads(ctx, bucket, "", true) {
+		if u.Err != nil {
+			if minioCode(u.Err) == "NoSuchBucket" {
+				return nil
+			}
+			return fmt.Errorf("storage: list multipart uploads of bucket %s: %w", bucket, u.Err)
+		}
+		if err := d.s3.RemoveIncompleteUpload(ctx, bucket, u.Key); err != nil && minioCode(err) != "NoSuchUpload" {
+			return fmt.Errorf("storage: abort multipart upload of bucket %s: %w", bucket, err)
+		}
+	}
+	return nil
+}
+
+// removeObjects removes every object version of the bucket.
+func (d *minioDriver) removeObjects(ctx context.Context, bucket string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var listErr error
@@ -288,4 +328,16 @@ func (d *minioDriver) emptyBucket(ctx context.Context, bucket string) error {
 		return fmt.Errorf("storage: list objects of bucket %s: %w", bucket, listErr)
 	}
 	return nil
+}
+
+// randomSecret is a password for a MinIO user, which is never used: the
+// app gets a service account of the user.
+func randomSecret() string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 40)
+	_, _ = rand.Read(b)
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return string(b)
 }

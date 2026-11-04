@@ -4,8 +4,9 @@
 -- app_secrets holds one row per app, scope and name: instance is '' for an
 -- app-wide secret, or the instance whose override it is (the app's name for
 -- the default instance). The value is only stored as AES-256-GCM ciphertext
--- under the platform's secrets key, whose version is key_version; the
--- additional data is "<app>/<instance>/<name>". DeleteApp removes an app's
+-- under the platform's secrets key, whose version is key_version and whose
+-- key check (a short value derived from the key) is key_check; the
+-- additional data is the app, instance and name. DeleteApp removes an app's
 -- rows and DeleteAppBranch the overrides of the branch's instance.
 --
 -- instance_storage holds, per instance and environment, the bucket and the
@@ -20,6 +21,7 @@ CREATE TABLE app_secrets (
     instance    text NOT NULL DEFAULT '',
     name        text NOT NULL,
     key_version integer NOT NULL,
+    key_check   text NOT NULL DEFAULT '',
     nonce       bytea NOT NULL,
     ciphertext  bytea NOT NULL,
     updated_at  timestamptz NOT NULL,

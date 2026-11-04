@@ -3,11 +3,14 @@
 // when the secrets an instance gets change.
 //
 // Values are encrypted with AES-256-GCM under PLATFORM_SECRETS_KEY with a
-// random nonce, and the additional data is "<app>/<instance>/<name>", so a
-// ciphertext moved to another row does not decrypt.
+// random nonce, and the additional data is the row's app, instance and name,
+// so a ciphertext moved to another row does not decrypt. Every row also
+// keeps a key check, a short value derived from the key, so a server started
+// with another key says so instead of failing to decrypt.
 package secrets
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
@@ -36,15 +39,23 @@ const KeySize = 32
 // it has no key for.
 const KeyVersion = 1
 
-// checksumLabel derives the checksum key from the secrets key (HKDF info),
-// so the checksum never uses the encryption key itself.
-const checksumLabel = "hopcharlie app-secrets checksum v1"
+// HKDF info labels of the keys derived from the secrets key, so neither the
+// checksum nor the key check uses the encryption key itself.
+const (
+	checksumLabel = "hopcharlie app-secrets checksum v1"
+	keyCheckLabel = "hopcharlie app-secrets key check v1"
+)
+
+// ErrKeyMismatch means a stored secret was written with another secrets
+// key than the server's.
+var ErrKeyMismatch = errors.New("the secret was stored with another PLATFORM_SECRETS_KEY")
 
 // Cipher encrypts and decrypts app secrets with one key. It is safe for
 // concurrent use.
 type Cipher struct {
 	aead     cipher.AEAD
 	checksum []byte // HMAC-SHA256 key of Checksum
+	keyCheck string // 12 hex digits derived from the key
 }
 
 // FromEnv reads KeyEnv with getenv. An unset or empty variable returns nil
@@ -88,13 +99,31 @@ func NewCipher(key []byte) (*Cipher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Cipher{aead: aead, checksum: mk}, nil
+	kc, err := hkdf.Key(sha256.New, key, nil, keyCheckLabel, 6)
+	if err != nil {
+		return nil, err
+	}
+	return &Cipher{aead: aead, checksum: mk, keyCheck: hex.EncodeToString(kc)}, nil
 }
 
-// additionalData binds a ciphertext to its row. App names, instance names
-// and secret names have no "/", so the form is unambiguous.
+// KeyCheck identifies the key without revealing it: 12 hex digits derived
+// from it with HKDF. Rows store it, and logs may show it.
+func (c *Cipher) KeyCheck() string { return c.keyCheck }
+
+// lengthPrefixed joins parts, each after its length, so no two different
+// lists encode alike.
+func lengthPrefixed(parts ...string) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = binary.BigEndian.AppendUint32(out, uint32(len(p)))
+		out = append(out, p...)
+	}
+	return out
+}
+
+// additionalData binds a ciphertext to its row.
 func additionalData(app, instance, name string) []byte {
-	return []byte(app + "/" + instance + "/" + name)
+	return lengthPrefixed(app, instance, name)
 }
 
 // Seal encrypts value for the secret name of app, app-wide when instance is
@@ -126,19 +155,52 @@ func (c *Cipher) Open(app, instance, name string, version int, nonce, ciphertext
 	return string(out), nil
 }
 
-// Row encrypts value into a stored secret row (Seal), with the given
-// updatedBy and no UpdatedAt; the caller sets the time.
+// Row encrypts value into a stored secret row (Seal) with the key check,
+// the given updatedBy and no UpdatedAt; the caller sets the time.
 func (c *Cipher) Row(app, instance, name, value, updatedBy string) (store.AppSecret, error) {
 	nonce, ct, v, err := c.Seal(app, instance, name, value)
 	if err != nil {
 		return store.AppSecret{}, err
 	}
-	return store.AppSecret{App: app, Instance: instance, Name: name, KeyVersion: v, Nonce: nonce, Ciphertext: ct, UpdatedBy: updatedBy}, nil
+	return store.AppSecret{App: app, Instance: instance, Name: name, KeyVersion: v, KeyCheck: c.keyCheck,
+		Nonce: nonce, Ciphertext: ct, UpdatedBy: updatedBy}, nil
 }
 
-// OpenRow decrypts a stored secret row (Open).
+// OpenRow decrypts a stored secret row (Open). A row whose key check is not
+// this key's is ErrKeyMismatch, with both checks in the message.
 func (c *Cipher) OpenRow(r store.AppSecret) (string, error) {
+	if r.KeyCheck != c.keyCheck {
+		return "", fmt.Errorf("secret %s of %s: %w (stored with key check %q, the server's key has %q)", r.Name, r.App, ErrKeyMismatch, r.KeyCheck, c.keyCheck)
+	}
 	return c.Open(r.App, r.Instance, r.Name, r.KeyVersion, r.Nonce, r.Ciphertext)
+}
+
+// Lister is the part of the store OtherKeyRows reads.
+type Lister interface {
+	ListApps(ctx context.Context) ([]store.App, error)
+	ListAppSecrets(ctx context.Context, app string) ([]store.AppSecret, error)
+}
+
+// OtherKeyRows counts the stored secrets written with another key, for a
+// warning at startup: they cannot be read or deployed with this key.
+func (c *Cipher) OtherKeyRows(ctx context.Context, st Lister) (int, error) {
+	apps, err := st.ListApps(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, a := range apps {
+		rows, err := st.ListAppSecrets(ctx, a.Name)
+		if err != nil {
+			return 0, err
+		}
+		for _, r := range rows {
+			if r.KeyCheck != c.keyCheck {
+				n++
+			}
+		}
+	}
+	return n, nil
 }
 
 // InstanceValues returns the secrets instance gets, decrypted: the
@@ -167,29 +229,25 @@ func (c *Cipher) InstanceValues(rows []store.AppSecret, instance string) (map[st
 	return out, nil
 }
 
-// Checksum is the HMAC-SHA256, in hex, of the set of names and values, for
+// Checksum is the HMAC-SHA256, in lowercase hex, of the app, the instance
+// and the set of names and values the instance gets, for
 // values.sealedSecrets.appChecksum (ADR 0019): the chart puts it on the pod
 // template, so pods restart when the secrets change and only then (sealing
 // differs every time, so the sealed values cannot tell). Its key is derived
 // from the secrets key, so the checksum reveals nothing about the values to
-// anyone without the key. Each name and value is length-prefixed in name
-// order, so no two different sets encode alike.
-func (c *Cipher) Checksum(values map[string]string) string {
+// anyone without the key. Everything is length-prefixed, names in order, so
+// no two different inputs encode alike.
+func (c *Cipher) Checksum(app, instance string, values map[string]string) string {
 	names := make([]string, 0, len(values))
 	for n := range values {
 		names = append(names, n)
 	}
 	slices.Sort(names)
-	mac := hmac.New(sha256.New, c.checksum)
-	var n [8]byte
-	write := func(s string) {
-		binary.BigEndian.PutUint64(n[:], uint64(len(s)))
-		mac.Write(n[:])
-		mac.Write([]byte(s))
-	}
+	parts := []string{app, instance}
 	for _, name := range names {
-		write(name)
-		write(values[name])
+		parts = append(parts, name, values[name])
 	}
+	mac := hmac.New(sha256.New, c.checksum)
+	mac.Write(lengthPrefixed(parts...))
 	return hex.EncodeToString(mac.Sum(nil))
 }

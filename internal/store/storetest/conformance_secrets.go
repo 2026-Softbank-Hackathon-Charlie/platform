@@ -42,6 +42,7 @@ func newSecret(name, value string, updatedAt int) store.AppSecret {
 	return store.AppSecret{
 		Name:       name,
 		KeyVersion: 1,
+		KeyCheck:   "0a1b2c3d4e5f",
 		Nonce:      []byte("nonce-" + name),
 		Ciphertext: []byte("sealed:" + value),
 		UpdatedAt:  at(updatedAt),
@@ -91,7 +92,7 @@ func testSecretsChangeList(t *testing.T, s store.Store) {
 
 	// Replacing one, deleting another and an absent name in one change.
 	newHost := newSecret("HOST_CODE", "9999", 2)
-	newHost.UpdatedBy, newHost.KeyVersion = "jiwoo", 2
+	newHost.UpdatedBy, newHost.KeyVersion, newHost.KeyCheck = "jiwoo", 2, "ffeeddccbbaa"
 	must(t, s.ChangeAppSecrets(ctx, "moimroom", "", []store.AppSecret{newHost}, []string{"ADMIN_TOKEN", "NEVER_SET"}, manySecrets))
 	list, err = s.ListAppSecrets(ctx, "moimroom")
 	must(t, err)
@@ -164,6 +165,16 @@ func testSecretsLimit(t *testing.T, s store.Store) {
 	eqList(t, "after replacing and deleting", secretNames(list), []string{"/A", "/C", "/D"})
 	// Each scope has its own limit.
 	must(t, s.ChangeAppSecrets(ctx, "moimroom", "moimroom", []store.AppSecret{newSecret("A", "1", 4), newSecret("E", "1", 4), newSecret("F", "1", 4)}, nil, 3))
+
+	// Above a lowered limit, deleting and replacing still work; growing does not.
+	must(t, s.ChangeAppSecrets(ctx, "moimroom", "", []store.AppSecret{newSecret("A", "3", 5)}, nil, 1))
+	must(t, s.ChangeAppSecrets(ctx, "moimroom", "", nil, []string{"C"}, 1))
+	wantErr(t, s.ChangeAppSecrets(ctx, "moimroom", "", []store.AppSecret{newSecret("G", "1", 6)}, nil, 1), store.ErrSecretLimit)
+	wantErr(t, s.ChangeAppSecrets(ctx, "moimroom", "", []store.AppSecret{newSecret("G", "1", 6), newSecret("H", "1", 6)}, []string{"D"}, 1), store.ErrSecretLimit)
+	must(t, s.ChangeAppSecrets(ctx, "moimroom", "", []store.AppSecret{newSecret("G", "1", 7)}, []string{"D"}, 1))
+	list, err = s.ListAppSecrets(ctx, "moimroom")
+	must(t, err)
+	eqList(t, "after changes above a lowered limit", secretNames(list), []string{"/A", "/G", "moimroom/A", "moimroom/E", "moimroom/F"})
 }
 
 // testSecretsLimitRace changes one scope from many goroutines at once: the
@@ -357,7 +368,7 @@ func storageKeys(ss []store.InstanceStorage) []string {
 
 func testInstanceStorage(t *testing.T, s store.Store) {
 	ctx := t.Context()
-	list, err := s.ListInstanceStorage(ctx, "moimroom")
+	list, err := s.ListInstanceStorage(ctx, "moimroom", "")
 	must(t, err)
 	if list == nil || len(list) != 0 {
 		t.Fatalf("ListInstanceStorage before any row = %v, want an empty non-nil slice", list)
@@ -373,9 +384,21 @@ func testInstanceStorage(t *testing.T, s store.Store) {
 	for _, r := range rows {
 		must(t, s.PutInstanceStorage(ctx, r))
 	}
-	list, err = s.ListInstanceStorage(ctx, "moimroom")
+	list, err = s.ListInstanceStorage(ctx, "moimroom", "")
 	must(t, err)
 	eqList(t, "moimroom storage", storageKeys(list), []string{"moimroom@eks", "moimroom@onprem", "moimroom--dev@eks"})
+	list, err = s.ListInstanceStorage(ctx, "", "moimroom")
+	must(t, err)
+	eqList(t, "instance moimroom", storageKeys(list), []string{"moimroom@eks", "moimroom@onprem"})
+	list, err = s.ListInstanceStorage(ctx, "moimroom", "moimroom--dev")
+	must(t, err)
+	eqList(t, "app and instance", storageKeys(list), []string{"moimroom--dev@eks"})
+	list, err = s.ListInstanceStorage(ctx, "shop", "moimroom")
+	must(t, err)
+	eqList(t, "another app's instance", storageKeys(list), []string{})
+	list, err = s.ListInstanceStorage(ctx, "", "")
+	must(t, err)
+	eqList(t, "all rows", storageKeys(list), []string{"moimroom@eks", "moimroom@onprem", "moimroom--dev@eks", "shop@eks"})
 	want := rows[1]
 	want.CreatedAt = pg(want.CreatedAt)
 	eqFields(t, "moimroom@onprem", list[1], want)
@@ -385,19 +408,20 @@ func testInstanceStorage(t *testing.T, s store.Store) {
 	_, err = s.GetInstanceStorage(ctx, "moimroom", "gke")
 	wantErr(t, err, store.ErrNotFound)
 
-	// Put replaces the row: a new key sealed with a new certificate.
+	// Put replaces the row, a new key sealed with a new certificate, and
+	// keeps when it was first made.
 	r := newInstanceStorage("moimroom", "eks", "moimroom", 5)
 	r.KeyID, r.SealedAccessKey, r.SealedSecretKey, r.CertFingerprint = "AKIANEW", "AgBuZXc=", "AgBuZXcy", "SHA256:def"
 	must(t, s.PutInstanceStorage(ctx, r))
 	got, err = s.GetInstanceStorage(ctx, "moimroom", "eks")
 	must(t, err)
-	r.CreatedAt = pg(r.CreatedAt)
+	r.CreatedAt = pg(at(3))
 	eqFields(t, "replaced moimroom@eks", got, r)
 
 	// Deleting the app does not delete the rows.
 	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
 	must(t, s.DeleteApp(ctx, "moimroom"))
-	list, err = s.ListInstanceStorage(ctx, "moimroom")
+	list, err = s.ListInstanceStorage(ctx, "moimroom", "")
 	must(t, err)
 	if len(list) != 3 {
 		t.Fatalf("storage rows after deleting the app = %v, want all 3", storageKeys(list))
@@ -407,7 +431,7 @@ func testInstanceStorage(t *testing.T, s store.Store) {
 	wantErr(t, s.DeleteInstanceStorage(ctx, "moimroom", "eks"), store.ErrNotFound)
 	_, err = s.GetInstanceStorage(ctx, "moimroom", "eks")
 	wantErr(t, err, store.ErrNotFound)
-	list, err = s.ListInstanceStorage(ctx, "moimroom")
+	list, err = s.ListInstanceStorage(ctx, "moimroom", "")
 	must(t, err)
 	eqList(t, "after delete", storageKeys(list), []string{"moimroom@onprem", "moimroom--dev@eks"})
 
@@ -423,7 +447,7 @@ func testInstanceStorage(t *testing.T, s store.Store) {
 	_, err = s.GetInstanceStorage(ctx, "moim\x00room--x", "e\x00ks")
 	wantErr(t, err, store.ErrNotFound)
 	wantErr(t, s.DeleteInstanceStorage(ctx, "moim\x00room--x", "e\x00ks"), store.ErrNotFound)
-	list, err = s.ListInstanceStorage(ctx, "moim\x00room")
+	list, err = s.ListInstanceStorage(ctx, "moim\x00room", "")
 	must(t, err)
 	if len(list) != 0 {
 		t.Fatalf("an unclean app lists %v", storageKeys(list))

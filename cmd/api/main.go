@@ -87,7 +87,7 @@ func main() {
 	if secretsKey == nil {
 		log.Warn("PLATFORM_SECRETS_KEY is not set: the app secrets API answers 503 secrets_not_configured")
 	} else {
-		log.Info("app secrets enabled", "keyVersion", secrets.KeyVersion)
+		log.Info("app secrets enabled", "keyVersion", secrets.KeyVersion, "keyCheck", secretsKey.KeyCheck())
 	}
 
 	dbURL := os.Getenv("PLATFORM_DATABASE_URL")
@@ -102,6 +102,18 @@ func main() {
 		fatal("open platform database", "err", err)
 	}
 	defer st.Close()
+	if secretsKey != nil {
+		// Secrets stored under another key cannot be read or deployed; say
+		// so now rather than at the first deployment.
+		checkCtx, cancelCheck := context.WithTimeout(ctx, 30*time.Second)
+		switch n, err := secretsKey.OtherKeyRows(checkCtx, st); {
+		case err != nil:
+			log.Warn("could not check the stored app secrets against PLATFORM_SECRETS_KEY", "err", err)
+		case n > 0:
+			log.Error("stored app secrets were written with another PLATFORM_SECRETS_KEY: they cannot be read or deployed until the key that wrote them is back", "rows", n, "keyCheck", secretsKey.KeyCheck())
+		}
+		cancelCheck()
+	}
 
 	envPath := os.Getenv("PLATFORM_ENVS_FILE")
 	if envPath == "" {
