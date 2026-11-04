@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -50,7 +51,7 @@ func testAdmins(t *testing.T) *auth.Admins {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := auth.ParseAdmins("seohyun:" + string(hash) + ",minji:" + string(hash))
+	a, err := auth.ParseAdmins("seohyun:"+string(hash)+",minji:"+string(hash), bcrypt.MinCost)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,19 +624,131 @@ func TestDeviceLoginExpiry(t *testing.T) {
 func TestDeviceLoginLimits(t *testing.T) {
 	clock := newClock()
 	h := newHarness(t, withAdmins(clock))
-	for range 50 {
-		h.startDevice("charlie")
+	// Fill to one below the cap straight in the store; the API takes the last.
+	const letters = "BCDFGHJKLMNPQRSTVWXZ"
+	for i := range maxPendingDeviceLogins - 1 {
+		code := []byte("BBBBBBBB")
+		for j, n := 7, i; n > 0; j, n = j-1, n/20 {
+			code[j] = letters[n%20]
+		}
+		d := store.DeviceLogin{DeviceCodeHash: auth.HashSecret(fmt.Sprint("hcd_fill_", i)), UserCode: string(code), Client: "charlie",
+			Status: store.DeviceLoginPending, CreatedAt: clock.Now(), ExpiresAt: clock.Now().Add(10 * time.Minute)}
+		if err := h.store.CreateDeviceLogin(t.Context(), d, maxPendingDeviceLogins); err != nil {
+			t.Fatal(err)
+		}
 	}
 	code, hdr, b := h.public("POST", "/v1/auth/device", apiv1.DeviceLoginStartRequest{Client: "charlie"})
-	if code != 429 || errCode(t, b) != "too_many_attempts" || hdr.Get("Retry-After") != "60" {
-		t.Fatalf("51st pending device login: %d Retry-After %q %s", code, hdr.Get("Retry-After"), b)
+	if code != 200 || hdr.Get("Cache-Control") != "no-store" {
+		t.Fatalf("1000th pending device login: %d Cache-Control %q %s", code, hdr.Get("Cache-Control"), b)
 	}
-	clock.Add(10 * time.Minute) // all 50 expire
+	st := decode[apiv1.DeviceLoginStart](t, b)
+	if code, hdr, b := h.public("POST", "/v1/auth/device/token", apiv1.DeviceTokenRequest{DeviceCode: st.DeviceCode}); code != 400 || hdr.Get("Cache-Control") != "no-store" {
+		t.Fatalf("poll: %d Cache-Control %q %s", code, hdr.Get("Cache-Control"), b)
+	}
+	code, hdr, b = h.public("POST", "/v1/auth/device", apiv1.DeviceLoginStartRequest{Client: "charlie"})
+	if code != 429 || errCode(t, b) != "too_many_attempts" || hdr.Get("Retry-After") != "60" {
+		t.Fatalf("1001st pending device login: %d Retry-After %q %s", code, hdr.Get("Retry-After"), b)
+	}
+	clock.Add(10 * time.Minute) // all of them expire
 	h.startDevice(strings.Repeat("c", 200))
 
-	for _, client := range []string{"", "   ", strings.Repeat("c", 201), "a\x00b", "charlie\non laptop", "charlie \u202eevil"} {
+	// Only letters, marks, digits, punctuation, symbols and the ASCII space:
+	// no other separators, control or format characters, private use or
+	// invisible fillers.
+	in := func(r rune) string { return "charlie" + string(r) + "laptop" }
+	for _, client := range []string{"", "   ", strings.Repeat("c", 201), "a\x00b", "charlie\non laptop", "charlie\tlaptop",
+		in(0x202e), in(0x200b), in(0x2028), in(0x2029), in(0x00a0), in(0x3000), in(0xe000), in(0x3164), in(0x115f), in(0xffa0), in(0x2800), in(0x034f)} {
 		if code, b := h.do("POST", "/v1/auth/device", "", apiv1.DeviceLoginStartRequest{Client: client}); code != 400 || errCode(t, b) != "invalid_request" {
 			t.Errorf("client %q: %d %s", client, code, b)
+		}
+	}
+	for _, client := range []string{"charlie v0.5.0 on rin-sbx-7-a1b2c3 (봇) ✓", "cafe" + string(rune(0x301)) + " 日本語 ホスト", "ci@runner#12: ok! ~/x [y] $5 +3%"} {
+		if code, b := h.do("POST", "/v1/auth/device", "", apiv1.DeviceLoginStartRequest{Client: client}); code != 200 {
+			t.Errorf("client %q: %d %s", client, code, b)
+		}
+	}
+}
+
+// At most two bcrypt comparisons run at once, for all usernames together. A
+// login that finds no free slot is refused at once with Retry-After 1, is not
+// counted against the username and is not audited.
+func TestLoginBusy(t *testing.T) {
+	h := newHarness(t, withAdmins(newClock()))
+	for range loginConcurrency {
+		h.api.loginSlots <- struct{}{}
+	}
+	for range 15 {
+		code, hdr, b := h.public("POST", "/v1/auth/login", apiv1.LoginRequest{Username: "seohyun", Password: adminPassword})
+		if code != 429 || errCode(t, b) != "too_many_attempts" || hdr.Get("Retry-After") != "1" || hdr.Get("Cache-Control") != "no-store" {
+			t.Fatalf("login with no free slot: %d Retry-After %q Cache-Control %q %s", code, hdr.Get("Retry-After"), hdr.Get("Cache-Control"), b)
+		}
+	}
+	if a := h.auditOf("POST /v1/auth/login"); len(a) != 0 {
+		t.Fatalf("busy refusals audited: %+v", a)
+	}
+	for range loginConcurrency {
+		<-h.api.loginSlots
+	}
+
+	code, hdr, b := h.public("POST", "/v1/auth/login", apiv1.LoginRequest{Username: "seohyun", Password: adminPassword})
+	if code != 200 || hdr.Get("Cache-Control") != "no-store" {
+		t.Fatalf("login with free slots: %d Cache-Control %q %s", code, hdr.Get("Cache-Control"), b)
+	}
+	// The 15 refusals did not count: ten failures are still answered 401
+	// before the limiter steps in.
+	for i := range 10 {
+		if code, b := h.login("seohyun", "wrong"); code != 401 {
+			t.Fatalf("failure %d after the busy refusals: %d %s", i+1, code, b)
+		}
+	}
+	if code, _ := h.login("seohyun", "wrong"); code != 429 {
+		t.Fatalf("11th failure: %d", code)
+	}
+	if n := len(h.api.loginSlots); n != 0 {
+		t.Fatalf("%d bcrypt slots still taken after the logins finished", n)
+	}
+}
+
+// Removing an administrator from PLATFORM_ADMINS and restarting ends their
+// console sessions and every CLI token they approved.
+func TestRemovedAdminLosesSessions(t *testing.T) {
+	clock := newClock()
+	h := newHarness(t, withAdmins(clock))
+	console := h.session("seohyun")
+	cli := h.cliToken("charlie on laptop", apiv1.RoleAgent)
+	minji := h.session("minji")
+	for _, tok := range []string{console.Token, cli.Token, minji.Token} {
+		if code, _ := h.me(tok); code != 200 {
+			t.Fatalf("before the restart: %d", code)
+		}
+	}
+
+	// The same store behind a server whose PLATFORM_ADMINS has only minji.
+	hash, err := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onlyMinji, err := auth.ParseAdmins("minji:"+string(hash), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(Config{Admins: onlyMinji}, Deps{Store: h.store})
+	restarted.now = clock.Now
+	srv := httptest.NewServer(restarted)
+	defer srv.Close()
+	for _, c := range []struct {
+		token string
+		want  int
+	}{{console.Token, 401}, {cli.Token, 401}, {minji.Token, 200}} {
+		req, _ := http.NewRequest("GET", srv.URL+"/v1/me", nil)
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != c.want {
+			t.Errorf("token %.8s after removing seohyun: %d, want %d", c.token, resp.StatusCode, c.want)
 		}
 	}
 }

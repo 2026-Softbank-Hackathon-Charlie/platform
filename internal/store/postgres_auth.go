@@ -179,7 +179,8 @@ func (s *Postgres) ExchangeDeviceLogin(ctx context.Context, deviceCodeHash []byt
 	if d.Status == DeviceLoginApproved {
 		a.Name, a.Role, a.Client = d.ReviewedBy, d.TokenRole, d.Client
 		a = a.Clean()
-		out, err = scanSession(tx.QueryRow(ctx, `INSERT INTO auth_sessions (`+sessionColumns+`)
+		out, err = scanSession(tx.QueryRow(ctx, `WITH expired AS (DELETE FROM auth_sessions WHERE expires_at <= $6)
+			INSERT INTO auth_sessions (`+sessionColumns+`)
 			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+sessionColumns,
 			a.TokenHash, a.Name, a.Role, a.Kind, a.Client, a.CreatedAt, a.ExpiresAt))
 		if isUniqueViolation(err) {

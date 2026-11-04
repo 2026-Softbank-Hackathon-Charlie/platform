@@ -107,9 +107,11 @@ paths:
         Error codes: invalid_request (400), invalid_credentials (401: an
         unknown username or a wrong password; the answer does not say
         which), too_many_attempts (429: 10 failed attempts for this
-        username in the last 10 minutes; `Retry-After` gives the seconds to
+        username in the last 10 minutes, or the server is already checking
+        as many logins as it can at once; `Retry-After` gives the seconds to
         wait), login_not_configured (503: the server has no administrators).
-        Every success and failure is written to the audit log.
+        Every success and failure is written to the audit log; a login
+        refused because the server was busy is not.
       requestBody:
         required: true
         content:
@@ -161,7 +163,7 @@ paths:
         or log it. `client` is shown to the administrator before they
         approve, so say what is asking, e.g. "charlie v0.5.0 on rin-sbx-12".
 
-        Error codes: invalid_request (400), too_many_attempts (429: 50
+        Error codes: invalid_request (400), too_many_attempts (429: 1000
         device logins are already pending).
       requestBody:
         required: true
@@ -1722,7 +1724,7 @@ components:
       type: object
       required: [username, password]
       properties:
-        username: { type: string, maxLength: 64 }
+        username: { type: string, minLength: 1, maxLength: 64 }
         password: { type: string, maxLength: 256 }
 
     Session:

@@ -70,7 +70,7 @@ func main() {
 	if t := os.Getenv("PLATFORM_API_TOKEN"); t != "" { // the first version's single operator token
 		tokens.Add("operator", apiv1.RoleOperator, t)
 	}
-	admins, err := auth.ParseAdmins(os.Getenv("PLATFORM_ADMINS"))
+	admins, err := auth.ParseAdmins(os.Getenv("PLATFORM_ADMINS"), auth.MinHashCost)
 	if err != nil {
 		fatal("PLATFORM_ADMINS", "err", err)
 	}
@@ -364,7 +364,9 @@ func residencyGate(ctx context.Context, path string, registered []string) (*gate
 
 // hashPassword reads one password from in, without echo when in is a
 // terminal, and writes its bcrypt hash for PLATFORM_ADMINS to out. The prompt
-// goes to prompt so out holds only the hash.
+// goes to prompt so out holds only the hash. When in is not a terminal (a
+// pipe, or Git Bash's mintty without ConPTY, where typing still echoes) it
+// says so on prompt and reads the first line.
 func hashPassword(in *os.File, out, prompt io.Writer) error {
 	var pw []byte
 	var err error
@@ -373,6 +375,7 @@ func hashPassword(in *os.File, out, prompt io.Writer) error {
 		pw, err = term.ReadPassword(fd)
 		fmt.Fprintln(prompt)
 	} else {
+		fmt.Fprintln(prompt, "stdin is not a terminal; reading the password from stdin (it may be visible)")
 		pw, err = readLine(in)
 	}
 	if err != nil {

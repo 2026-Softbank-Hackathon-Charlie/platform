@@ -134,8 +134,9 @@ type Server struct {
 
 	startMu sync.Mutex // one start at a time keeps idempotency and plan reservation consistent
 
-	now    func() time.Time   // the clock for sessions, device logins and the login limiter
-	logins *auth.LoginLimiter // failed logins per username
+	now        func() time.Time   // the clock for sessions, device logins and the login limiter
+	logins     *auth.LoginLimiter // failed logins per username
+	loginSlots chan struct{}      // one token per bcrypt comparison in progress
 }
 
 // New wires the routes.
@@ -157,7 +158,8 @@ func New(cfg Config, d Deps) *Server {
 	}
 	cfg.ConsoleURL = strings.TrimRight(cfg.ConsoleURL, "/")
 	s := &Server{cfg: cfg, d: d, mux: http.NewServeMux(), now: storeTime,
-		logins: auth.NewLoginLimiter(loginMaxFailures, loginWindow, loginMaxUsernames)}
+		logins:     auth.NewLoginLimiter(loginMaxFailures, loginWindow, loginMaxUsernames),
+		loginSlots: make(chan struct{}, loginConcurrency)}
 	if d.Runs != nil {
 		// The observe phase rolls back through the same path as the endpoint.
 		d.Runs.SetAutoRollback(s.autoRollback)
@@ -298,6 +300,12 @@ func (s *Server) authenticate(r *http.Request) (auth.Principal, bool, error) {
 		return auth.Principal{}, false, nil
 	case err != nil:
 		return auth.Principal{}, false, err
+	}
+	// A session lives only as long as its administrator: removing a name
+	// from PLATFORM_ADMINS and restarting ends their console sessions and
+	// every CLI token they approved.
+	if !s.cfg.Admins.Has(sess.Name) {
+		return auth.Principal{}, false, nil
 	}
 	return auth.Principal{Name: sess.Name, Role: apiv1.Role(sess.Role), Kind: sess.Kind, Client: sess.Client}, true, nil
 }

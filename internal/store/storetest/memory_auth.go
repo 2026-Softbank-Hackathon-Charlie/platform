@@ -42,15 +42,20 @@ func (m *memory) insertSession(s store.Session) (store.Session, error) {
 	return copySession(s), nil
 }
 
-func (m *memory) CreateSession(_ context.Context, s store.Session) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := pgTime(s.CreatedAt)
+// purgeSessions removes the sessions that expired at now. Call with m.mu held.
+func (m *memory) purgeSessions(now time.Time) {
+	now = pgTime(now)
 	for k, old := range m.auth.sessions {
 		if !old.ExpiresAt.After(now) {
 			delete(m.auth.sessions, k)
 		}
 	}
+}
+
+func (m *memory) CreateSession(_ context.Context, s store.Session) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.purgeSessions(s.CreatedAt)
 	_, err := m.insertSession(s)
 	return err
 }
@@ -158,6 +163,10 @@ func (m *memory) ExchangeDeviceLogin(_ context.Context, deviceCodeHash []byte, s
 		return copyDeviceLogin(d), store.Session{}, nil
 	case store.DeviceLoginApproved:
 		s.Name, s.Role, s.Client = d.ReviewedBy, d.TokenRole, d.Client
+		if _, taken := m.auth.sessions[string(s.TokenHash)]; taken {
+			return store.DeviceLogin{}, store.Session{}, fmt.Errorf("%w: session exists", store.ErrConflict)
+		}
+		m.purgeSessions(s.CreatedAt)
 		var err error
 		if out, err = m.insertSession(s); err != nil {
 			return store.DeviceLogin{}, store.Session{}, err

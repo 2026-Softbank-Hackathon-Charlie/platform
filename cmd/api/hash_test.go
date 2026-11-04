@@ -40,8 +40,9 @@ func TestHashPasswordFlag(t *testing.T) {
 	if err := bcrypt.CompareHashAndPassword([]byte(h), []byte("correct horse ")); err != nil {
 		t.Fatalf("the hash is not of the first line: %v", err)
 	}
-	if prompt.Len() != 0 {
-		t.Errorf("prompted %q without a terminal", prompt.String())
+	// Typing into a pipe echoes (Git Bash without winpty): say so, on stderr.
+	if !strings.Contains(prompt.String(), "stdin is not a terminal") || strings.Contains(prompt.String(), "correct horse") {
+		t.Errorf("prompt %q, want the not-a-terminal warning and no password", prompt.String())
 	}
 
 	out.Reset()

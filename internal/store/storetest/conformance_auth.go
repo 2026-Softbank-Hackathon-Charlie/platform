@@ -160,6 +160,18 @@ func testSessionPurge(t *testing.T, s store.Store) {
 	if _, err := s.GetSession(ctx, b.TokenHash, at(1)); err != nil {
 		t.Fatalf("live session removed: %v", err)
 	}
+
+	// The CLI session an exchange inserts removes them too: b expired at
+	// consoleMinutes+1.
+	at2 := consoleMinutes + 1
+	must(t, s.CreateDeviceLogin(ctx, newDeviceLogin("hcd_a", "BCDFGHJK", at2), 50))
+	_, err := s.ReviewDeviceLogin(ctx, "BCDFGHJK", approve("seohyun", "viewer", at2))
+	must(t, err)
+	_, _, err = s.ExchangeDeviceLogin(ctx, sum("hcd_a"), cliSession("hcs_cli", at2), at(at2))
+	must(t, err)
+	if _, err := s.GetSession(ctx, b.TokenHash, at(1)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expired session not removed by the exchange: %v", err)
+	}
 }
 
 func testDeviceLoginCreateGet(t *testing.T, s store.Store) {

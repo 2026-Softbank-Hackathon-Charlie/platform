@@ -24,33 +24,50 @@ func testHash(t *testing.T, password string) string {
 
 func TestParseAdmins(t *testing.T) {
 	seohyun, minji := testHash(t, "correct horse"), testHash(t, "battery staple")
-	a, err := ParseAdmins(" seohyun:" + seohyun + " , minji.k:" + minji + ",")
-	if err != nil || a.Len() != 2 {
+	a, err := ParseAdmins(" seohyun:"+seohyun+" , minji.k:"+minji+",", bcrypt.MinCost)
+	if err != nil || a.Len() != 2 || !a.Has("SEOHYUN") || !a.Has("minji.k") || a.Has("nobody") {
 		t.Fatalf("good spec: %v, %d admins", err, a.Len())
 	}
-	if a, err := ParseAdmins(""); err != nil || a.Len() != 0 {
+	if a, err := ParseAdmins("", MinHashCost); err != nil || a.Len() != 0 {
 		t.Fatalf("empty spec: %v, %d admins", err, a.Len())
 	}
 
 	notBcrypt := "$1$saltsalt$NotABcryptHashAtAllButLongEnoughToPassTheLengthCheck01"
-	for name, c := range map[string]struct{ spec, want string }{
-		"bad hash":      {"seohyun:" + notBcrypt, `admin "seohyun": the password hash is not a bcrypt hash`},
-		"short hash":    {"seohyun:$2a$12$abc", "not a bcrypt hash"},
-		"no hash":       {"seohyun", "admin entry 1: want name:<bcrypt hash>"},
-		"hash only":     {seohyun, "admin entry 1: want name:<bcrypt hash>"},
-		"empty hash":    {"seohyun:", "want name:<bcrypt hash>"},
-		"bad name":      {"minji:" + minji + ",se hyun:" + seohyun, "admin entry 2: name must use"},
-		"reversed":      {seohyun + ":seohyun", "name must use"},
-		"duplicate":     {"seohyun:" + seohyun + ",seohyun:" + minji, `admin "seohyun" appears twice`},
-		"case variants": {"seohyun:" + seohyun + ",SeoHyun:" + minji, `admin "SeoHyun" appears twice`},
+	// bcrypt.Cost only reads the prefix, so this parses as cost 15 without
+	// hashing anything; ParseAdmins must refuse it before making a dummy.
+	cost15 := "$2a$15$" + strings.Repeat("a", 53)
+	h, err := bcrypt.GenerateFromPassword([]byte("x"), bcrypt.MinCost+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cost5 := string(h)
+	for name, c := range map[string]struct {
+		spec, want string
+		min        int
+	}{
+		"too cheap":     {"seohyun:" + seohyun, `admin "seohyun": the password hash has bcrypt cost 4; use 10 to 14`, MinHashCost},
+		"too costly":    {"seohyun:" + cost15, "bcrypt cost 15; use 4 to 14", 0},
+		"mixed costs":   {"seohyun:" + seohyun + ",minji:" + cost5, `admin "minji": the password hash has bcrypt cost 5 but the ones before it have 4`, 0},
+		"bad hash":      {"seohyun:" + notBcrypt, `admin "seohyun": the password hash is not a bcrypt hash`, 0},
+		"short hash":    {"seohyun:$2a$12$abc", "not a bcrypt hash", 0},
+		"no hash":       {"seohyun", "admin entry 1: want name:<bcrypt hash>", 0},
+		"hash only":     {seohyun, "admin entry 1: want name:<bcrypt hash>", 0},
+		"empty hash":    {"seohyun:", "want name:<bcrypt hash>", 0},
+		"bad name":      {"minji:" + minji + ",se hyun:" + seohyun, "admin entry 2: name must use", 0},
+		"reversed":      {seohyun + ":seohyun", "name must use", 0},
+		"duplicate":     {"seohyun:" + seohyun + ",seohyun:" + minji, `admin "seohyun" appears twice`, 0},
+		"case variants": {"seohyun:" + seohyun + ",SeoHyun:" + minji, `admin "SeoHyun" appears twice`, 0},
 	} {
-		_, err := ParseAdmins(c.spec)
+		if c.min == 0 {
+			c.min = bcrypt.MinCost
+		}
+		_, err := ParseAdmins(c.spec, c.min)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err = %v, want it to contain %q", name, err, c.want)
 			continue
 		}
 		// No error quotes a hash, not even its first bytes.
-		for _, h := range []string{seohyun, minji, notBcrypt, "$2a$12$abc"} {
+		for _, h := range []string{seohyun, minji, notBcrypt, "$2a$12$abc", cost15, cost5} {
 			if strings.Contains(err.Error(), h[:7]) {
 				t.Errorf("%s: error %q contains a hash", name, err)
 			}
@@ -60,7 +77,7 @@ func TestParseAdmins(t *testing.T) {
 
 func TestAdminsCheck(t *testing.T) {
 	long := strings.Repeat("x", 72)
-	a, err := ParseAdmins("SeoHyun:" + testHash(t, "correct horse") + ",long:" + testHash(t, long))
+	a, err := ParseAdmins("SeoHyun:"+testHash(t, "correct horse")+",long:"+testHash(t, long), bcrypt.MinCost)
 	if err != nil {
 		t.Fatal(err)
 	}

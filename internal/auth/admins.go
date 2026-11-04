@@ -14,6 +14,14 @@ import (
 // HashCost is the bcrypt cost of HashPassword (hopcharlie-api -hash-password).
 const HashCost = 12
 
+// The bcrypt costs PLATFORM_ADMINS may use at startup. Below 10 a stolen hash
+// is cheap to crack; above 14 every login, and every unknown name, costs
+// seconds of CPU.
+const (
+	MinHashCost = 10
+	MaxHashCost = 14
+)
+
 // maxPasswordBytes is as much of a password as bcrypt reads. A longer one
 // would match every password that shares its first 72 bytes, so HashPassword
 // refuses it and Check never accepts it.
@@ -35,8 +43,11 @@ type Admins struct {
 // ParseAdmins reads "name:bcrypt-hash" entries separated by commas, e.g.
 // "seohyun:$2a$12$...,minji:$2a$12$...". Names follow the token name rules;
 // logins match them case-insensitively, so two names may not differ only in
-// case. Errors never contain a hash.
-func ParseAdmins(spec string) (*Admins, error) {
+// case. Every hash must have the same bcrypt cost, from minCost to
+// MaxHashCost, so the dummy comparison for an unknown name takes as long as a
+// real one. The server passes MinHashCost; tests pass bcrypt.MinCost to stay
+// fast. Errors never contain a hash.
+func ParseAdmins(spec string, minCost int) (*Admins, error) {
 	a := &Admins{byKey: map[string]admin{}}
 	cost := 0
 	for i, item := range strings.Split(spec, ",") {
@@ -56,12 +67,21 @@ func ParseAdmins(spec string) (*Admins, error) {
 		if err != nil { // bcrypt's errors quote the hash's first byte
 			return nil, fmt.Errorf("admin %q: the password hash is not a bcrypt hash; make one with hopcharlie-api -hash-password", name)
 		}
+		// Checked before the dummy hash is made, which costs 2^cost.
+		if c < minCost || c > MaxHashCost {
+			return nil, fmt.Errorf("admin %q: the password hash has bcrypt cost %d; use %d to %d (hopcharlie-api -hash-password makes %d)",
+				name, c, minCost, MaxHashCost, HashCost)
+		}
+		if cost != 0 && c != cost {
+			return nil, fmt.Errorf("admin %q: the password hash has bcrypt cost %d but the ones before it have %d; all must be the same so an unknown name takes as long as a known one",
+				name, c, cost)
+		}
 		key := strings.ToLower(name)
 		if _, dup := a.byKey[key]; dup {
 			return nil, fmt.Errorf("admin %q appears twice (names are not case-sensitive)", name)
 		}
 		a.byKey[key] = admin{name: name, hash: []byte(hash)}
-		cost = max(cost, c)
+		cost = c
 	}
 	if len(a.byKey) > 0 {
 		secret := make([]byte, 32)
@@ -77,6 +97,12 @@ func ParseAdmins(spec string) (*Admins, error) {
 
 // Len is the number of administrators.
 func (a *Admins) Len() int { return len(a.byKey) }
+
+// Has reports whether name (in any case) is an administrator.
+func (a *Admins) Has(name string) bool {
+	_, ok := a.byKey[strings.ToLower(name)]
+	return ok
+}
 
 // Check returns the administrator called name (in any case) when password is
 // theirs. An unknown name costs one bcrypt comparison too, so the time an

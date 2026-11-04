@@ -236,6 +236,7 @@ type harness struct {
 	webhookSecret string           // Config.GitHubWebhookSecret
 	admins        *auth.Admins     // Config.Admins
 	now           func() time.Time // Server.now; nil keeps the real clock
+	api           *Server          // the server behind srv
 }
 
 type option func(*harness, *runs.Config, *Deps)
@@ -293,6 +294,7 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	if h.now != nil {
 		api.now = h.now
 	}
+	h.api = api
 	h.srv = httptest.NewServer(api)
 	t.Cleanup(func() {
 		h.srv.Close()

@@ -22,10 +22,11 @@ const (
 	deviceLoginTTL    = 10 * time.Minute
 	// After an approval the CLI has at least this long to exchange it.
 	approvalExchangeWindow = 10 * time.Minute
-	devicePollInterval     = 5 // seconds between polls of POST /v1/auth/device/token
-	maxPendingDeviceLogins = 50
-	deviceLoginRetryAfter  = 60 // seconds, once maxPendingDeviceLogins are pending
+	devicePollInterval     = 5    // seconds between polls of POST /v1/auth/device/token
+	maxPendingDeviceLogins = 1000 // rows are small; enough that a trickle of starts cannot crowd out real ones
+	deviceLoginRetryAfter  = 60   // seconds, once maxPendingDeviceLogins are pending
 
+	loginConcurrency  = 2 // bcrypt comparisons at once, for all usernames together
 	loginMaxFailures  = 10
 	loginWindow       = 10 * time.Minute
 	loginMaxUsernames = 10000 // usernames the login limiter remembers
@@ -42,6 +43,7 @@ const (
 // password was right and otherwise as the username tried (anonymous when it
 // cannot be a name). The password is never logged or recorded.
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store") // the answer holds a token
 	p, status := s.handleLogin(w, r)
 	if status == 0 {
 		return
@@ -52,7 +54,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 
 // handleLogin answers a login and returns whom to audit it as and the status
 // it sent; status 0 means the request was no attempt (no administrators, a
-// malformed body).
+// malformed body, no free bcrypt slot).
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) (auth.Principal, int) {
 	if s.cfg.Admins.Len() == 0 {
 		s.fail(w, r, http.StatusServiceUnavailable, "login_not_configured", "this server has no administrators (PLATFORM_ADMINS)")
@@ -70,6 +72,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) (auth.Princ
 	var tried auth.Principal // anonymous unless the username can be a name
 	if auth.ValidName(req.Username) {
 		tried.Name = req.Username
+	}
+	// Every login, for any username, known or not, costs one bcrypt
+	// comparison (hundreds of milliseconds of CPU), and the API has one CPU.
+	// At most loginConcurrency run at once; a login that finds no free slot
+	// is refused at once, without a comparison, without counting against the
+	// username and without an audit entry, so a flood costs almost nothing.
+	select {
+	case s.loginSlots <- struct{}{}:
+		defer func() { <-s.loginSlots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		s.fail(w, r, http.StatusTooManyRequests, "too_many_attempts", "the server is busy checking other logins; try again in a second")
+		return auth.Principal{}, 0
 	}
 	// The attempt counts before the password is checked, so parallel
 	// guesses cannot pass the limit; a limited username gets no check.
@@ -115,18 +130,16 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 // POST /v1/auth/device. Not audited: nothing is decided until an
 // administrator reviews it, and the review is audited.
 func (s *Server) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store") // the answer holds the device code
 	var req apiv1.DeviceLoginStartRequest
 	if !s.decode(w, r, &req, true) {
 		return
 	}
-	// The administrator reads client before approving: no control or
-	// formatting characters (such as bidi overrides) that could change how
-	// it looks.
 	client := strings.TrimSpace(req.Client)
 	if n := utf8.RuneCountInString(client); n == 0 || n > maxClientChars ||
-		strings.ContainsFunc(client, func(c rune) bool { return unicode.IsControl(c) || unicode.Is(unicode.Cf, c) }) {
+		strings.ContainsFunc(client, func(c rune) bool { return !clientChar(c) }) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request",
-			fmt.Sprintf("client is required: 1 to %d characters without control characters", maxClientChars))
+			fmt.Sprintf("client is required: 1 to %d letters, digits, punctuation marks, symbols and spaces", maxClientChars))
 		return
 	}
 	code, sum := auth.NewDeviceCode()
@@ -166,6 +179,7 @@ func (s *Server) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 // approved it with the role they picked. Polls that get no token are not
 // audited.
 func (s *Server) pollDeviceLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store") // the answer holds a token
 	var req apiv1.DeviceTokenRequest
 	if !s.decode(w, r, &req, true) {
 		return
@@ -287,6 +301,22 @@ func (s *Server) reviewDeviceLogin(w http.ResponseWriter, r *http.Request, rev s
 		noteAudit(r, "client", d.Client)
 		writeJSON(w, http.StatusOK, deviceLoginJSON(d))
 	}
+}
+
+// clientChar reports whether c may appear in a device login's client, which
+// the administrator reads before approving: letters, marks, digits,
+// punctuation, symbols and the ASCII space. Other spaces and line or
+// paragraph separators, control and format characters (bidi overrides),
+// private-use characters and invisible fillers such as U+3164 could hide
+// part of the string or make it look like something else.
+func clientChar(c rune) bool {
+	switch {
+	case c == ' ':
+		return true
+	case unicode.Is(unicode.Other_Default_Ignorable_Code_Point, c), c == '\u2800': // U+3164 and kin, braille blank
+		return false
+	}
+	return unicode.In(c, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S)
 }
 
 // userCode reads the {userCode} path parameter in its stored form. One that

@@ -123,7 +123,8 @@ type AuthStore interface {
 	//   - denied: it is removed.
 	//   - approved: it is removed, and in the same transaction s is inserted
 	//     with Name from the review (ReviewedBy), Role from TokenRole and
-	//     Client from the device login; the stored session is returned too.
+	//     Client from the device login, and the sessions that expired at
+	//     s.CreatedAt are removed; the stored session is returned too.
 	// ErrNotFound when there is none (unknown, expired or already settled);
 	// ErrConflict, with nothing changed, if s.TokenHash exists. Of concurrent
 	// calls for one device login, only one gets it approved or denied.
