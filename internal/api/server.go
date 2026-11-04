@@ -23,6 +23,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -117,6 +118,9 @@ type Deps struct {
 	Remover AppRemover
 	// GitHub reads app repositories; nil answers the endpoints that need it 503 github_not_configured.
 	GitHub GitHub
+	// Secrets encrypts the app secrets (PLATFORM_SECRETS_KEY, ADR 0019); nil
+	// answers the secrets endpoints 503 secrets_not_configured.
+	Secrets *secrets.Cipher
 }
 
 // SourceMeasurer reads a source database's numbers (capacity.Prober). ok is
@@ -230,6 +234,9 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/apps/{name}/deployments", viewer, s.listDeployments)
 	s.route("GET /v1/deployments/{id}", viewer, s.getDeployment)
 	s.route("GET /v1/deployments/{id}/events", viewer, s.deploymentEvents)
+	s.route("GET /v1/apps/{name}/secrets", viewer, s.listAppSecrets)
+	s.route("PUT /v1/apps/{name}/secrets", operator, s.updateAppSecrets)
+	s.route(revealSecretRoute, operator, s.getAppSecret)
 	return s
 }
 
@@ -391,9 +398,10 @@ func actor(r *http.Request) string {
 
 // shouldAudit records state changes and every denied request. Written-record
 // batches are excluded unless denied: a load generator sends them every few
-// seconds, and they are data, not decisions an auditor needs to see.
+// seconds, and they are data, not decisions an auditor needs to see. Reading
+// a secret's value is recorded although it is a read.
 func shouldAudit(pattern, method string, status int) bool {
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden || pattern == revealSecretRoute {
 		return true
 	}
 	return !isRead(method) && pattern != "POST /v1/written-records/{stream}"

@@ -1416,12 +1416,12 @@ paths:
         names.
 
         Names match `^[A-Z_][A-Z0-9_]*$`, at most 64 characters, and are not
-        set by the platform (PORT, DATABASE_URL, S3_*). Values are at most
-        4096 bytes. At most 50 secrets per app-wide set and per instance.
+        set by the platform (PORT, DATABASE_URL, S3_*). Values are 1 to 4096
+        bytes. At most 50 secrets per app-wide set and per instance.
 
-        Error codes: invalid_request (400: a bad or reserved name, a value
-        too long, too many secrets, a name both set and deleted, or nothing
-        to change), app_not_found (404), instance_not_found (404: `instance`
+        Error codes: invalid_request (400: a bad or reserved name, an empty
+        value or one too long, too many secrets, a name both set and deleted,
+        or nothing to change), app_not_found (404), instance_not_found (404: `instance`
         is not one of the app's instances), app_not_registered (409),
         secrets_not_configured (503). Role operator.
       requestBody:
@@ -3323,7 +3323,7 @@ components:
         set:
           description: Secrets to create or replace, name to value.
           type: object
-          additionalProperties: { type: string, maxLength: 4096 }
+          additionalProperties: { type: string, minLength: 1, maxLength: 4096 }
           example: { HOST_CODE: "4821" }
         delete:
           description: Names to remove. A name not present is ignored.

@@ -28,6 +28,8 @@ tags:
   title: 보안 (security)
 - name: agent
   title: 에이전트 활동 (agent)
+- name: apps
+  title: 앱 (apps)
 
 # Per operationId. summary: one line for the endpoint table. role: who may call it.
 # notes: Notion markdown shown in the endpoint's toggle. Order here is the order on the page.
@@ -297,6 +299,37 @@ operations:
     summary: 에이전트 세션 종료
     role: 세션 actor, operator
     notes: '실행 중인 세션을 끝낸다. 세션의 actor나 operator만 끝낼 수 있다. PLATFORM_AGENT_IDLE(기본 30분) 동안 이벤트가 없는 세션은 플랫폼이 cancelled로 끝내고 summary에 "no activity for 30m; closed by the platform"을 남긴다. 오류 코드: agent_session_not_found(404), agent_session_finished(409).'
+  listAppSecrets:
+    summary: 앱 시크릿 이름 목록
+    role: 모든 역할
+    notes: |-
+      GitHub에서 등록한 앱의 시크릿 이름, 바꾼 시각, 바꾼 사람을 돌려준다. 값은 돌려주지 않는다.
+
+      - app은 모든 인스턴스가 받는 앱 단위 시크릿이고, instances는 덮어쓰기가 하나라도 있는 인스턴스별 목록이다. 둘 다 이름순이다.
+      - 인스턴스는 앱 단위 시크릿 위에 자기 덮어쓰기를 얹어서 받는다. platform.yaml의 env와 이름이 같으면 시크릿이 이긴다.
+      - 시크릿은 다음 배포 때 환경 변수로 들어간다(ADR 0019).
+      - 오류 코드: app_not_found(404), app_not_registered(409, PLATFORM_APPS_FILE에만 있는 앱), secrets_not_configured(503, 서버에 PLATFORM_SECRETS_KEY가 없음).
+  updateAppSecrets:
+    summary: 앱 시크릿 넣기와 지우기
+    role: operator
+    notes: |-
+      한 범위의 시크릿을 한 번에 바꾸고, 바꾼 뒤의 이름 목록을 돌려준다. instance가 없으면 앱 단위, 있으면 그 인스턴스의 덮어쓰기를 바꾼다. 기본 인스턴스는 앱 이름으로 가리킨다.
+
+      - set은 이름과 값이고, 있는 이름이면 값을 바꾼다. delete는 지울 이름이고, 없는 이름은 무시한다. 덮어쓰기를 지우면 그 인스턴스는 앱 단위 값으로 돌아간다.
+      - 이름은 `^[A-Z_][A-Z0-9_]*$`, 64자까지이고 PORT, DATABASE_URL, S3_*는 쓸 수 없다. 값은 1바이트에서 4096바이트까지다. 앱 단위와 인스턴스마다 50개까지이고, 바꾼 뒤의 개수로 센다.
+      - 값은 서버의 시크릿 키로 AES-256-GCM 암호화해 저장하고 로그에 쓰지 않는다. 감사 로그에는 넣은 이름(set)과 지운 이름(deleted)만 남는다.
+      - 떠 있는 인스턴스는 다시 배포할 때까지 이전 값을 쓴다.
+      - 오류 코드: invalid_request(400, 이름이 틀리거나 예약됨, 빈 값이나 너무 긴 값, 50개 초과, 같은 이름을 넣고 지움, 바꿀 것이 없음), app_not_found(404), instance_not_found(404, 앱의 인스턴스가 아님), app_not_registered(409), secrets_not_configured(503).
+  getAppSecret:
+    summary: 앱 시크릿 값 하나 (눈 버튼)
+    role: operator
+    notes: |-
+      시크릿 하나의 값을 돌려준다. 콘솔의 눈 버튼이 부른다.
+
+      - instance가 없으면 앱 단위 값, 있으면 그 인스턴스의 덮어쓰기다. 덮어쓰기가 없으면 앱 단위 값이 있어도 404 secret_not_found다.
+      - GET이지만 부를 때마다 감사 로그에 남는다. 이름과 인스턴스만 남고 값은 남지 않는다. 응답에는 `Cache-Control: no-store`가 붙는다.
+      - viewer와 agent 토큰은 403이다.
+      - 오류 코드: app_not_found(404), instance_not_found(404), secret_not_found(404), app_not_registered(409), secrets_not_configured(503).
 
 # Parameter descriptions.
 params:
@@ -322,6 +355,11 @@ params:
   name@putPlanAttachment: 첨부 이름, `^[A-Za-z0-9._-]{1,100}$` (`.`과 `..` 제외)
   name@getPlanAttachment: 첨부 이름
   userCode: 'CLI가 보여 준 코드 (예: BCDF-GHJK). 대소문자, 공백, `-`는 무시한다'
+  name@listAppSecrets: 앱 이름
+  name@updateAppSecrets: 앱 이름
+  name@getAppSecret: 앱 이름
+  secret@getAppSecret: '시크릿 이름 (예: HOST_CODE)'
+  instance@getAppSecret: 이 인스턴스의 덮어쓰기를 읽는다. 없으면 앱 단위 값
 
 # Schema toggles under the 스키마 section, in this order. Enum-only schemas are listed in 열거형 instead.
 schemaGroups:
@@ -416,6 +454,13 @@ schemaGroups:
   - AgentEventList
   - TokenUsage
   - FinishAgentSessionRequest
+- title: 앱 시크릿
+  schemas:
+  - AppSecrets
+  - AppSecretInfo
+  - InstanceSecrets
+  - AppSecretsUpdate
+  - AppSecretValue
 
 # One paragraph above a schema's field table.
 schemas:
@@ -438,6 +483,10 @@ schemas:
   App: PLATFORM_APPS_FILE에 등록된 애플리케이션이다.
   Session: '콘솔 세션이나 CLI 토큰이다. token을 `Authorization: Bearer <token>`으로 보낸다.'
   DeviceLogin: 관리자가 콘솔에서 보는 기기 로그인이다. deviceCode는 들어 있지 않다.
+  AppSecrets: 앱의 시크릿 이름이다. 값은 들어 있지 않다.
+  AppSecretInfo: 값을 뺀 시크릿 하나다.
+  AppSecretsUpdate: 한 범위(앱 단위 또는 인스턴스 하나)의 시크릿을 한 번에 바꾸는 요청이다. set과 delete 중 하나는 있어야 한다.
+  AppSecretValue: 값을 포함한 시크릿 하나다. operator만 받는다.
 
 # Field descriptions in the schema tables.
 fields:
@@ -581,6 +630,15 @@ fields:
   DeviceLogin.role: CLI 토큰이 받을 역할. 승인한 뒤에만 있다
   DeviceLogin.expiresAt: 만료 시각. 승인하면 승인 시각 뒤 10분보다 이르지 않게 늘어난다
   DeviceLoginApproveRequest.role: CLI 토큰에 줄 역할 (viewer, agent, operator)
+  AppSecretInfo.updatedBy: 마지막으로 넣은 사람
+  InstanceSecrets.secrets: 이 인스턴스의 덮어쓰기, 이름순
+  AppSecrets.app: 앱 단위 시크릿, 이름순. 덮어쓰지 않은 인스턴스는 모두 이 값을 받는다
+  AppSecrets.instances: 덮어쓰기가 하나라도 있는 인스턴스, 인스턴스 이름순
+  AppSecretsUpdate.instance: 이 인스턴스의 덮어쓰기를 바꾼다. 없으면 앱 단위 시크릿을 바꾼다
+  AppSecretsUpdate.set: 넣거나 바꿀 시크릿, 이름과 값. 값은 1바이트에서 4096바이트
+  AppSecretsUpdate.delete: 지울 이름. 없는 이름은 무시한다
+  AppSecretValue.instance: 이 값이 덮어쓰기인 인스턴스. 앱 단위 값이면 없다
+  DeploymentCreateRequest.redeploy: 인스턴스의 마지막 healthy 배포를 같은 커밋과 이미지로 빌드 없이 지금의 시크릿으로 다시 배포한다. ref와 함께 쓸 수 없다
 
 # Meaning of enum values, used by {{enum:Name:...}} in template.md.
 enums:

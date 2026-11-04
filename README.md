@@ -142,7 +142,8 @@ go run ./cmd/gateway
 | `PLATFORM_API_TOKEN` | 첫 버전 호환용. operator 토큰 하나로 추가됨 |
 | `PLATFORM_ADMINS` | 콘솔에 아이디와 비밀번호로 로그인하는 관리자. `이름:bcrypt 해시`를 쉼표로 구분 ([해시 만들기](#관리자-비밀번호-해시), [ADR 0018](docs/adr/0018-admin-login-device-code.md)). 모두 operator. 이름 규칙은 토큰과 같고 로그인할 때 대소문자를 가리지 않음. 해시가 bcrypt가 아니거나, cost가 10에서 14 사이가 아니거나, 관리자마다 cost가 다르면 서버가 시작하지 않음. `PLATFORM_TOKENS`와 둘 다 비면 `-insecure-no-auth` 없이는 시작하지 않음 |
 | `PLATFORM_CONSOLE_URL` | 콘솔 주소 (기본 `https://console.hopcharlie.dev`). CLI device 로그인이 사람을 `<주소>/#device`로 안내함 |
-| `PLATFORM_ENVS_FILE` | 필수. 환경 설정 파일 ([로컬 개발 예시](examples/envs.yaml); 운영 설정은 infra에서 관리) |
+| `PLATFORM_ENVS_FILE` | 필수. 환경 설정 파일 ([로컬 개발 예시](examples/envs.yaml); 운영 설정은 infra에서 관리). 환경마다 Sealed Secrets 인증서(`sealedSecretsCert`)와 저장소 드라이버(`storage`)를 둘 수 있음 ([버킷과 키 드라이버](#버킷과-키-드라이버)) |
+| `PLATFORM_SECRETS_KEY` | 앱 시크릿을 암호화하는 키. 32바이트를 base64로 ([앱 시크릿](#앱-시크릿), [ADR 0019](docs/adr/0019-app-secrets-and-redeploy.md)). 비우면 시크릿 API가 503 `secrets_not_configured`. base64가 아니거나 32바이트가 아니면 서버가 시작하지 않음 |
 | `PLATFORM_GATEWAY_URL`, `GATEWAY_TOKEN` | 게이트웨이 관리 API 주소와 토큰. 비우면 카나리와 `/v1/traffic`이 꺼지고 `gateway.mode: http` Plan을 거부 |
 | `PLATFORM_CORS_ORIGINS` | 콘솔 주소. 쉼표 구분, `*`는 전부 허용 |
 | `PLATFORM_ADDR`, `PLATFORM_STATE_DIR` | 주소(기본 `:8080`), 엔진 상태 디렉터리 |
@@ -267,6 +268,7 @@ PLATFORM_TEST_DATABASE_URL='postgres://charlie:charlie@localhost:55432/charlie?s
 - API 테스트는 모든 응답과 SSE 메시지를 `api/openapi.yaml`로 검증합니다. 명세와 구현이 어긋나면 실패합니다.
 - 저장소 구현은 `storetest.Conformance`를 통과해야 합니다. 메모리 저장소(`storetest.NewMemory`)는 테스트에서만 씁니다.
 - `api/openapi.yaml`을 고친 뒤에는 `go generate ./pkg/apiv1`로 타입을 다시 만듭니다.
+- `minio` 드라이버를 실제 MinIO에 돌려 보려면 `PLATFORM_TEST_MINIO_ENDPOINT=http://127.0.0.1:9000 PLATFORM_TEST_MINIO_ACCESS_KEY=<관리 키> PLATFORM_TEST_MINIO_SECRET_KEY=<관리 비밀 키> go test -run TestMinIOLive ./internal/storage`를 실행합니다. 버킷 두 개를 만들고, 한 키가 다른 버킷에 쓰지 못하는지 본 뒤 모두 지웁니다.
 
 ### CI
 
@@ -425,11 +427,38 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 | `GET /v1/apps/{name}/deployments` | viewer | 최신순, `?limit=` (기본 20), `?branch=`로 그 브랜치의 배포만 |
 | `GET /v1/deployments/{id}` | viewer | 배포 하나 (상태, 이미지 digest, 환경별 상태) |
 | `GET /v1/deployments/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속) |
+| `GET /v1/apps/{name}/secrets` | viewer | 앱 시크릿의 이름, 바꾼 시각, 바꾼 사람. 앱 단위(`app`)와 인스턴스별 덮어쓰기(`instances`). 값은 없음 |
+| `PUT /v1/apps/{name}/secrets` | operator | `{instance?, set?, delete?}`로 한 범위(앱 단위, 또는 `instance`의 덮어쓰기)를 한 번에 바꿈. 200 + 바꾼 뒤의 이름 목록 |
+| `GET /v1/apps/{name}/secrets/{secret}` | operator | 값 하나. `?instance=`이면 그 인스턴스의 덮어쓰기. 부를 때마다 감사 로그에 남고 `Cache-Control: no-store` |
 | `GET /v1/github/repos` | viewer | GitHub App 설치가 볼 수 있는 저장소 |
 | `POST /v1/webhooks/github` | 없음 | GitHub App webhook. `X-Hub-Signature-256`으로 확인. 앱의 브랜치나 추가한 브랜치 가운데 `autoDeploy`가 켜진 브랜치의 push만 그 인스턴스에 배포(202), 나머지는 204 |
 
 - 배포 상태는 `queued`, `building`, `committing`, `syncing`을 거쳐 `healthy`, `failed`, `superseded`로 끝납니다. 같은 환경으로 새 배포가 생기면 끝나지 않은 이전 배포는 `superseded`가 됩니다.
 - 테이블은 마이그레이션 `0005_app_deploy.sql`과 `0006_app_branches.sql`이 만듭니다.
+
+### 앱 시크릿
+
+GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고치고, 다시 봅니다. 설계는 [ADR 0019](docs/adr/0019-app-secrets-and-redeploy.md)에 있습니다.
+
+- 시크릿은 앱 단위로 두고, 인스턴스마다 덮어쓸 수 있습니다. 인스턴스가 받는 값은 앱 단위 값 위에 그 인스턴스의 덮어쓰기를 얹은 것입니다. 덮어쓰기를 지우면 앱 단위 값으로 돌아갑니다. 기본 인스턴스의 덮어쓰기는 `instance`에 앱 이름을 씁니다.
+- 이름은 `^[A-Z_][A-Z0-9_]*$`, 64자까지이고 `PORT`, `DATABASE_URL`, `S3_*`는 쓸 수 없습니다. 값은 1바이트에서 4096바이트까지이고(빈 값은 400), 앱 단위와 인스턴스마다 50개까지입니다. 한 요청에서 같은 이름을 넣고 지우면 400, 바꿀 것이 없어도 400입니다. 50개는 바꾼 뒤의 개수로 셉니다.
+- 값은 `PLATFORM_SECRETS_KEY`로 AES-256-GCM 암호화해 플랫폼 DB에 저장합니다. nonce는 값마다 무작위이고, AAD가 `<앱>/<인스턴스>/<이름>`이라서 다른 행으로 옮긴 암호문은 복호화되지 않습니다. 행마다 키 버전(지금은 1)을 저장합니다. 테이블은 `0008_app_secrets.sql`이 만듭니다.
+- 앱을 지우면 시크릿이 모두, 인스턴스를 지우면 그 인스턴스의 덮어쓰기가 같은 트랜잭션에서 지워집니다. 같은 이름으로 다시 등록해도 이전 시크릿은 없습니다.
+- 감사 로그에는 앱, 인스턴스, 넣은 이름(`set`), 지운 이름(`deleted`)만 남고 값은 남지 않습니다. 값 조회도 GET이지만 매번 남습니다. 서버 로그에도 값과 암호문을 쓰지 않습니다.
+- viewer와 agent 토큰(예: Rin의 CLI 토큰)은 이름만 볼 수 있습니다.
+- 아직은 저장과 조회만 됩니다. 배포할 때 시크릿을 봉인해 gitops 파일의 `values.sealedSecrets`로 넣는 것과 `POST /v1/apps/{name}/deployments`의 `redeploy`는 다음 단계에서 붙입니다.
+
+### 버킷과 키 드라이버
+
+`platform.yaml`에 s3 리소스가 있는 앱은 인스턴스마다 버킷 하나와 그 버킷에만 쓸 수 있는 키를 받습니다([ADR 0016](docs/adr/0016-app-object-storage.md)). 키를 만드는 방법은 `PLATFORM_ENVS_FILE`의 환경별 `storage.driver`가 정하고, 만든 키는 그 환경 클러스터의 Sealed Secrets 인증서(`sealedSecretsCert`)로 봉인합니다. 필드는 [examples/envs.yaml](examples/envs.yaml)에 있습니다.
+
+- 버킷 이름은 `<bucketPrefix><인스턴스>`이고, `bucketPrefix`는 15자까지입니다. 버킷과 사용자에는 태그 `hopcharlie:app`, `hopcharlie:instance`를 붙입니다. 같은 이름의 버킷이나 사용자가 다른 앱의 태그를 달고 있으면 드라이버는 그것을 쓰지도 지우지도 않습니다.
+- `aws`: 그 리전에 S3 버킷을 만들고 공개 접근 차단 네 가지를 모두 켭니다. IAM 사용자 `hopcharlie-app-<인스턴스>`를 `iamPath` 아래에 `permissionsBoundary`를 붙여 만들고, 인라인 정책 `hopcharlie-bucket`으로 그 버킷의 목록, 객체 읽기, 쓰기, 지우기만 허용한 뒤 액세스 키를 만듭니다. 플랫폼의 AWS 자격 증명(pod 역할)을 씁니다.
+- `minio`: MinIO 관리 API(admin API v3)로 버킷, 사용자 `hopcharlie-app-<인스턴스>`, 같은 이름의 canned policy(그 버킷만 허용)를 만들고, 키는 그 사용자의 서비스 계정으로 만듭니다. 관리 키는 `adminAccessKeyEnv`, `adminSecretKeyEnv`가 가리키는 플랫폼 환경 변수에서 읽고, 비어 있으면 서버가 시작하지 않습니다.
+- 모든 작업은 다시 불러도 됩니다. 이미 있는 버킷과 사용자는 그대로 쓰고, 새 키는 사용자를 새로 만들었거나 요청했을 때만 만듭니다. 새 키를 만들기 전에 남길 키 하나를 빼고 나머지 키를 지워서, 중간에 끊긴 뒤 다시 해도 아무도 모르는 키가 쌓이지 않습니다. 삭제는 사용자(키와 정책 포함)를 먼저 지우고, 버킷을 비운 뒤 지웁니다. 이미 없는 것은 건너뜁니다.
+- `gcs`는 아직 구현하지 않았고, 설정하면 서버가 시작하지 않습니다.
+- 인증서 파일이 없거나 읽히지 않으면 시작할 때 경고만 남기고, 봉인이 필요할 때마다 다시 읽습니다. 인증서를 나중에 넣어도 서버를 다시 띄울 필요가 없습니다.
+- 지금은 드라이버와 봉인만 준비되어 있고, 배포 실행기가 이것을 부르는 것은 다음 단계입니다. 플랫폼 DB에는 인스턴스와 환경마다 봉인한 키, 키 식별자, 인증서 지문만 저장합니다(`instance_storage`). 이 행은 앱이나 인스턴스를 지워도 남고, 드라이버가 버킷과 키를 지운 뒤에 지웁니다.
 
 ### GitHub App 설정
 
