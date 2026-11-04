@@ -9,13 +9,30 @@ info:
 
     Every `/v1` request needs `Authorization: Bearer <token>`, except the
     GitHub App webhook (`POST /v1/webhooks/github`), which GitHub signs
-    instead. Each token has a role:
+    instead, and the login endpoints under `/v1/auth` marked as public.
+    Each token has a role:
 
     | role     | may |
     |----------|-----|
     | viewer   | read everything |
     | agent    | read, and submit plans (the AI planner) |
     | operator | everything, including approve, start, switch, abort, register and deploy apps |
+
+    A token is one of three kinds, all sent the same way:
+
+    - A console session: an administrator (`PLATFORM_ADMINS`) logs in with
+      a username and password (`POST /v1/auth/login`). Role operator, 12 hours.
+    - A CLI token: the CLI starts a device login (`POST /v1/auth/device`),
+      an administrator logged in to the console enters the code it shows,
+      and the CLI exchanges the approved login for a token
+      (`POST /v1/auth/device/token`). It carries the approver's name and
+      the role the approver picked when approving (operator, agent or
+      viewer), 30 days. Only a console session may approve, so a CLI token
+      can never mint another token.
+    - A static token from `PLATFORM_TOKENS` for programs that cannot log
+      in (the AI planner, the load generator, E2E tests). It never expires.
+
+    Sessions and CLI tokens end early with `POST /v1/auth/logout`.
 
     Errors always use the `Error` body.
 
@@ -28,6 +45,7 @@ security:
 
 tags:
   - name: system
+  - name: auth
   - name: plans
   - name: migrations
   - name: environments
@@ -75,6 +93,208 @@ paths:
               schema: { $ref: "#/components/schemas/Principal" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         default: { $ref: "#/components/responses/Internal" }
+
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      security: []
+      description: |
+        Logs an administrator in with a username and password from
+        `PLATFORM_ADMINS` and returns a console session token (role
+        operator, valid for 12 hours or until POST /v1/auth/logout).
+
+        Error codes: invalid_request (400), invalid_credentials (401: an
+        unknown username or a wrong password; the answer does not say
+        which), too_many_attempts (429: 10 failed attempts for this
+        username in the last 10 minutes, or the server is already checking
+        as many logins as it can at once; `Retry-After` gives the seconds to
+        wait), login_not_configured (503: the server has no administrators).
+        Every success and failure is written to the audit log; a login
+        refused because the server was busy is not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Logged in.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "invalid_credentials: unknown username or wrong password"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      description: |
+        Ends the console session or CLI token that made the request; the
+        token answers 401 from then on. A static token from
+        `PLATFORM_TOKENS` cannot be ended this way and keeps working; the
+        answer is 204 all the same.
+      responses:
+        "204":
+          description: Logged out.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/auth/device:
+    post:
+      tags: [auth]
+      operationId: startDeviceLogin
+      security: []
+      description: |
+        Starts a device login for the CLI (after RFC 8628). Show the person
+        `userCode` and `verificationUri` (the console's CLI login page);
+        they log in to the console as an administrator and enter the code.
+        Meanwhile poll POST /v1/auth/device/token with `deviceCode` every
+        `interval` seconds until it returns a token or `expiresIn` seconds
+        (10 minutes) pass. `deviceCode` is this client's secret: never show
+        or log it. `client` is shown to the administrator before they
+        approve, so say what is asking, e.g. "charlie v0.5.0 on rin-sbx-12".
+
+        Error codes: invalid_request (400), too_many_attempts (429: 1000
+        device logins are already pending).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceLoginStartRequest" }
+      responses:
+        "200":
+          description: The device login, pending approval.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceLoginStart" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/auth/device/token:
+    post:
+      tags: [auth]
+      operationId: pollDeviceLogin
+      security: []
+      description: |
+        Exchanges an approved device login for a CLI token with the name of
+        the administrator who approved it and the role they picked, valid for 30 days or
+        until POST /v1/auth/logout. One device login gives one token: the
+        first successful answer ends it.
+
+        Error codes, all 400: invalid_request, authorization_pending (not
+        approved yet: ask again after `interval` seconds), access_denied (an
+        administrator denied it; it is gone), expired_token (unknown,
+        expired, or already exchanged).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceTokenRequest" }
+      responses:
+        "200":
+          description: The CLI token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400":
+          description: "invalid_request, authorization_pending, access_denied, expired_token"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/auth/device/{userCode}:
+    parameters:
+      - $ref: "#/components/parameters/UserCode"
+    get:
+      tags: [auth]
+      operationId: getDeviceLogin
+      description: |
+        A device login that has not expired, so the console can show which
+        client asks before the administrator approves. Needs operator and
+        a console session. Error codes: console_session_required (403),
+        device_login_not_found (404: unknown or expired).
+      responses:
+        "200":
+          description: The device login.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceLogin" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/auth/device/{userCode}/approve:
+    parameters:
+      - $ref: "#/components/parameters/UserCode"
+    post:
+      tags: [auth]
+      operationId: approveDeviceLogin
+      description: |
+        Approves a pending device login. The CLI's next poll gets a token
+        with the caller's name and the `role` picked here; give a bot only
+        what it needs (viewer to read, agent to also submit plans, operator
+        to deploy and approve). Approving also gives the CLI 10 more minutes
+        from now to exchange it, so `expiresAt` may move later.
+        Needs operator and a console session (a password login): CLI tokens
+        and static tokens get 403 console_session_required.
+        Error codes: invalid_request (400: no or unknown role),
+        console_session_required (403), device_login_not_found (404: unknown
+        or expired), device_login_state_conflict (409: already approved or
+        denied).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceLoginApproveRequest" }
+      responses:
+        "200":
+          description: The device login, now approved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceLogin" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/auth/device/{userCode}/deny:
+    parameters:
+      - $ref: "#/components/parameters/UserCode"
+    post:
+      tags: [auth]
+      operationId: denyDeviceLogin
+      description: |
+        Denies a pending device login. The CLI's next poll gets
+        access_denied. Needs operator and a console session.
+        Error codes: console_session_required (403),
+        device_login_not_found (404: unknown or expired),
+        device_login_state_conflict (409: already approved or denied).
+      responses:
+        "200":
+          description: The device login, now denied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceLogin" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        default: { $ref: "#/components/responses/Internal" }
+
   /v1/plans:
     post:
       tags: [plans]
@@ -1399,6 +1619,12 @@ components:
       in: path
       required: true
       schema: { type: string }
+    UserCode:
+      name: userCode
+      in: path
+      required: true
+      description: The code the CLI shows. Case, spaces and '-' do not matter.
+      schema: { type: string, example: BCDF-GHJK }
 
   responses:
     BadRequest:
@@ -1412,17 +1638,17 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: "forbidden: the token's role may not do this"
+      description: "forbidden: the token's role may not do this; console_session_required: only a console session may do this"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
-      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found"
+      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, device_login_state_conflict"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1447,7 +1673,16 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unavailable:
-      description: "gateway_not_configured, github_not_configured"
+      description: "gateway_not_configured, github_not_configured, login_not_configured"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooManyRequests:
+      description: "too_many_attempts"
+      headers:
+        Retry-After:
+          description: Seconds to wait before trying again.
+          schema: { type: integer }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1481,6 +1716,74 @@ components:
       required: [name, role]
       properties:
         name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+
+    # ---------- auth ----------
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 64 }
+        password: { type: string, maxLength: 256 }
+
+    Session:
+      description: "A console session or CLI token. Send `token` as `Authorization: Bearer <token>`."
+      type: object
+      required: [token, expiresAt, principal]
+      properties:
+        token: { type: string, description: "Opaque. Shown only in this answer; the server keeps only its hash." }
+        expiresAt: { type: string, format: date-time }
+        principal: { $ref: "#/components/schemas/Principal" }
+
+    DeviceLoginStartRequest:
+      type: object
+      required: [client]
+      properties:
+        client:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: What is asking, shown to the administrator before they approve.
+          example: charlie v0.5.0 on rin-sbx-12
+
+    DeviceLoginStart:
+      type: object
+      required: [deviceCode, userCode, verificationUri, expiresIn, interval]
+      properties:
+        deviceCode: { type: string, description: "The client's secret for POST /v1/auth/device/token. Never show it." }
+        userCode: { type: string, example: BCDF-GHJK, description: "Eight letters in two groups of four, for the person to enter in the console." }
+        verificationUri: { type: string, example: "https://console.hopcharlie.dev/#device", description: "The console page where the code is entered." }
+        expiresIn: { type: integer, example: 600, description: Seconds until the device login expires. }
+        interval: { type: integer, example: 5, description: Seconds to wait between polls. }
+
+    DeviceTokenRequest:
+      type: object
+      required: [deviceCode]
+      properties:
+        deviceCode: { type: string }
+
+    DeviceLoginStatus:
+      type: string
+      enum: [pending, approved, denied]
+
+    DeviceLogin:
+      description: "A device login as the console shows it to an administrator. It never contains the device code. `role` is the role the CLI token gets, set once approved."
+      type: object
+      required: [userCode, client, status, createdAt, expiresAt]
+      properties:
+        userCode: { type: string, example: BCDF-GHJK }
+        client: { type: string }
+        status: { $ref: "#/components/schemas/DeviceLoginStatus" }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        reviewedBy: { type: string, description: "The administrator who approved or denied it, once reviewed." }
+        role: { $ref: "#/components/schemas/Role" }
+
+    DeviceLoginApproveRequest:
+      type: object
+      required: [role]
+      properties:
         role: { $ref: "#/components/schemas/Role" }
 
     # ---------- plans ----------

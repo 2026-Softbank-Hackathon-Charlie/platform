@@ -154,4 +154,5 @@ type Store interface {
 	PlanTools   // written-records streams and plan attachments (written.go)
 	AgentStore  // agent sessions and events (agent.go)
 	DeployStore // apps from GitHub, their added branches, deployments and their events, webhook deliveries (deploy.go)
+	AuthStore   // console sessions, CLI tokens and device logins (auth.go)
 }

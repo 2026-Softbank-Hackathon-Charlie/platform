@@ -193,6 +193,27 @@ func (e DeploymentTrigger) Valid() bool {
 	}
 }
 
+// Defines values for DeviceLoginStatus.
+const (
+	DeviceLoginStatusApproved DeviceLoginStatus = "approved"
+	DeviceLoginStatusDenied   DeviceLoginStatus = "denied"
+	DeviceLoginStatusPending  DeviceLoginStatus = "pending"
+)
+
+// Valid indicates whether the value is a known member of the DeviceLoginStatus enum.
+func (e DeviceLoginStatus) Valid() bool {
+	switch e {
+	case DeviceLoginStatusApproved:
+		return true
+	case DeviceLoginStatusDenied:
+		return true
+	case DeviceLoginStatusPending:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EngineOutcome.
 const (
 	EngineOutcomeFailed     EngineOutcome = "failed"
@@ -1408,6 +1429,68 @@ type DeploymentStatus string
 // manual: POST /v1/apps/{name}/deployments.
 type DeploymentTrigger string
 
+// DeviceLogin A device login as the console shows it to an administrator. It never contains the device code. `role` is the role the CLI token gets, set once approved.
+type DeviceLogin struct {
+	Client    string    `json:"client"`
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// ReviewedBy The administrator who approved or denied it, once reviewed.
+	ReviewedBy *string           `json:"reviewedBy,omitempty"`
+	Role       *Role             `json:"role,omitempty"`
+	Status     DeviceLoginStatus `json:"status"`
+
+	// UserCode Example: BCDF-GHJK
+	UserCode string `json:"userCode"`
+}
+
+// DeviceLoginApproveRequest defines model for DeviceLoginApproveRequest.
+type DeviceLoginApproveRequest struct {
+	Role Role `json:"role"`
+}
+
+// DeviceLoginStart defines model for DeviceLoginStart.
+type DeviceLoginStart struct {
+	// DeviceCode The client's secret for POST /v1/auth/device/token. Never show it.
+	DeviceCode string `json:"deviceCode"`
+
+	// ExpiresIn Seconds until the device login expires.
+	//
+	// Example: 600
+	ExpiresIn int `json:"expiresIn"`
+
+	// Interval Seconds to wait between polls.
+	//
+	// Example: 5
+	Interval int `json:"interval"`
+
+	// UserCode Eight letters in two groups of four, for the person to enter in the console.
+	//
+	// Example: BCDF-GHJK
+	UserCode string `json:"userCode"`
+
+	// VerificationUri The console page where the code is entered.
+	//
+	// Example: https://console.hopcharlie.dev/#device
+	VerificationUri string `json:"verificationUri"`
+}
+
+// DeviceLoginStartRequest defines model for DeviceLoginStartRequest.
+type DeviceLoginStartRequest struct {
+	// Client What is asking, shown to the administrator before they approve.
+	//
+	// Example: charlie v0.5.0 on rin-sbx-12
+	Client string `json:"client"`
+}
+
+// DeviceLoginStatus defines model for DeviceLoginStatus.
+type DeviceLoginStatus string
+
+// DeviceTokenRequest defines model for DeviceTokenRequest.
+type DeviceTokenRequest struct {
+	DeviceCode string `json:"deviceCode"`
+}
+
 // EngineOutcome defines model for EngineOutcome.
 type EngineOutcome string
 
@@ -1603,6 +1686,12 @@ type Health struct {
 type InFlight struct {
 	Reads  int `json:"reads"`
 	Writes int `json:"writes"`
+}
+
+// LoginRequest defines model for LoginRequest.
+type LoginRequest struct {
+	Password string `json:"password"`
+	Username string `json:"username"`
 }
 
 // Matrix defines model for Matrix.
@@ -2106,6 +2195,15 @@ type ServiceInfo struct {
 	Name string `json:"name"`
 }
 
+// Session A console session or CLI token. Send `token` as `Authorization: Bearer <token>`.
+type Session struct {
+	ExpiresAt time.Time `json:"expiresAt"`
+	Principal Principal `json:"principal"`
+
+	// Token Opaque. Shown only in this answer; the server keeps only its hash.
+	Token string `json:"token"`
+}
+
 // SeverityCounts defines model for SeverityCounts.
 type SeverityCounts struct {
 	Critical int `json:"critical"`
@@ -2290,6 +2388,9 @@ type PlanRef = string
 // RunId defines model for RunId.
 type RunId = string
 
+// UserCode Example: BCDF-GHJK
+type UserCode = string
+
 // BadGateway defines model for BadGateway.
 type BadGateway = Error
 
@@ -2310,6 +2411,9 @@ type NotFound = Error
 
 // TooLarge defines model for TooLarge.
 type TooLarge = Error
+
+// TooManyRequests defines model for TooManyRequests.
+type TooManyRequests = Error
 
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
@@ -2428,6 +2532,18 @@ type CreateDeploymentJSONRequestBody = DeploymentCreateRequest
 
 // CreateAppInstanceJSONRequestBody defines body for CreateAppInstance for application/json ContentType.
 type CreateAppInstanceJSONRequestBody = AppInstanceCreateRequest
+
+// StartDeviceLoginJSONRequestBody defines body for StartDeviceLogin for application/json ContentType.
+type StartDeviceLoginJSONRequestBody = DeviceLoginStartRequest
+
+// PollDeviceLoginJSONRequestBody defines body for PollDeviceLogin for application/json ContentType.
+type PollDeviceLoginJSONRequestBody = DeviceTokenRequest
+
+// ApproveDeviceLoginJSONRequestBody defines body for ApproveDeviceLogin for application/json ContentType.
+type ApproveDeviceLoginJSONRequestBody = DeviceLoginApproveRequest
+
+// LoginJSONRequestBody defines body for Login for application/json ContentType.
+type LoginJSONRequestBody = LoginRequest
 
 // StartMigrationJSONRequestBody defines body for StartMigration for application/json ContentType.
 type StartMigrationJSONRequestBody = StartMigrationRequest

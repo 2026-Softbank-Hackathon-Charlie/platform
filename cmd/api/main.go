@@ -4,9 +4,13 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,15 +37,25 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
+	"golang.org/x/term"
 	"k8s.io/client-go/kubernetes"
 )
 
 func main() {
 	addr := flag.String("addr", envOr("PLATFORM_ADDR", ":8080"), "listen address")
 	stateDir := flag.String("state-dir", envOr("PLATFORM_STATE_DIR", filepath.Join(".hopcharlie", "runs")), "engine run state directory")
-	insecure := flag.Bool("insecure-no-auth", false, "run without tokens; every caller is the operator \"dev\" (local development only)")
+	insecure := flag.Bool("insecure-no-auth", false, "run without tokens or administrators; every caller is the operator \"dev\" (local development only)")
 	drain := flag.Duration("shutdown-wait", 15*time.Minute, "how long to wait for active migrations on shutdown")
+	hashPw := flag.Bool("hash-password", false, "read a password from stdin, print its bcrypt hash for PLATFORM_ADMINS and exit")
 	flag.Parse()
+
+	if *hashPw {
+		if err := hashPassword(os.Stdin, os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "hash-password:", err)
+			os.Exit(2)
+		}
+		return
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	fatal := func(msg string, args ...any) {
@@ -56,8 +70,12 @@ func main() {
 	if t := os.Getenv("PLATFORM_API_TOKEN"); t != "" { // the first version's single operator token
 		tokens.Add("operator", apiv1.RoleOperator, t)
 	}
-	if tokens.Len() == 0 && !*insecure {
-		fatal("no tokens: set PLATFORM_TOKENS (name:role:token,...) or use -insecure-no-auth for local development")
+	admins, err := auth.ParseAdmins(os.Getenv("PLATFORM_ADMINS"), auth.MinHashCost)
+	if err != nil {
+		fatal("PLATFORM_ADMINS", "err", err)
+	}
+	if tokens.Len() == 0 && admins.Len() == 0 && !*insecure {
+		fatal("no tokens or administrators: set PLATFORM_TOKENS (name:role:token,...) or PLATFORM_ADMINS (name:bcrypt-hash,...), or use -insecure-no-auth for local development")
 	}
 
 	dbURL := os.Getenv("PLATFORM_DATABASE_URL")
@@ -278,6 +296,8 @@ func main() {
 		Handler: api.New(api.Config{
 			Tokens:      tokens,
 			Insecure:    *insecure,
+			Admins:      admins,
+			ConsoleURL:  os.Getenv("PLATFORM_CONSOLE_URL"),
 			CORSOrigins: splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
 			Log:         log,
 
@@ -290,7 +310,7 @@ func main() {
 	sig, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
-		log.Info("platform api listening", "addr", *addr, "tokens", tokens.Len(), "insecure", *insecure,
+		log.Info("platform api listening", "addr", *addr, "tokens", tokens.Len(), "admins", admins.Len(), "insecure", *insecure,
 			"gatewayURL", policy.GatewayURL, "environments", envSvc.Names())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("listen", "err", err)
@@ -340,6 +360,43 @@ func residencyGate(ctx context.Context, path string, registered []string) (*gate
 		}
 	}
 	return gate.New(ctx, cfg, nil)
+}
+
+// hashPassword reads one password from in, without echo when in is a
+// terminal, and writes its bcrypt hash for PLATFORM_ADMINS to out. The prompt
+// goes to prompt so out holds only the hash. When in is not a terminal (a
+// pipe, or Git Bash's mintty without ConPTY, where typing still echoes) it
+// says so on prompt and reads the first line.
+func hashPassword(in *os.File, out, prompt io.Writer) error {
+	var pw []byte
+	var err error
+	if fd := int(in.Fd()); term.IsTerminal(fd) {
+		fmt.Fprint(prompt, "Password: ")
+		pw, err = term.ReadPassword(fd)
+		fmt.Fprintln(prompt)
+	} else {
+		fmt.Fprintln(prompt, "stdin is not a terminal; reading the password from stdin (it may be visible)")
+		pw, err = readLine(in)
+	}
+	if err != nil {
+		return err
+	}
+	h, err := auth.HashPassword(pw)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, h)
+	return err
+}
+
+// readLine returns the first line of r without its line ending.
+func readLine(r io.Reader) ([]byte, error) {
+	line, err := bufio.NewReader(r).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	line = bytes.TrimSuffix(line, []byte("\n"))
+	return bytes.TrimSuffix(line, []byte("\r")), nil
 }
 
 func envOr(k, def string) string {

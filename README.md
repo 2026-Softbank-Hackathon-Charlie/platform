@@ -68,6 +68,10 @@ sequenceDiagram
 | 요청 | 역할 | 설명 |
 | --- | --- | --- |
 | `GET /v1/me` | viewer | 토큰 주인 확인 |
+| `POST /v1/auth/login` | 없음 | 관리자(`PLATFORM_ADMINS`) 아이디와 비밀번호로 콘솔 세션(operator, 12시간)을 받음. 이름마다 10분에 10번 실패하면 429 |
+| `POST /v1/auth/logout` | viewer | 요청한 콘솔 세션이나 CLI 토큰을 끝냄. 정적 토큰은 그대로 |
+| `POST /v1/auth/device`, `POST /v1/auth/device/token` | 없음 | CLI의 device code 로그인 시작과 폴링. 승인되면 CLI 토큰(승인한 관리자 이름과 고른 역할, 30일) |
+| `GET /v1/auth/device/{userCode}`, `/approve`, `/deny` | operator, 콘솔 세션 | 기기 로그인 조회, 역할을 골라 승인(10분 더 교환 가능), 거절. CLI 토큰과 정적 토큰은 403 `console_session_required` |
 | `POST /v1/plans` | agent | 엔진 Plan JSON을 그대로 제출. 보안 정책 검사 후 `pending_approval` |
 | `GET /v1/plans`, `GET /v1/plans/{ref}` | viewer | DSN과 토큰은 응답에 넣지 않음 |
 | `POST /v1/plans/{ref}/approve`, `/reject` | operator | 사람의 승인 또는 거절 (거절은 사유 필수, 첨부가 있는 Plan의 승인은 검토한 `revision` 필수) |
@@ -136,6 +140,8 @@ go run ./cmd/gateway
 | `PLATFORM_DATABASE_URL` | 필수. 플랫폼 DB. 시작할 때 스키마를 자동으로 적용 |
 | `PLATFORM_TOKENS` | `이름:역할:토큰`을 쉼표로 구분. 역할은 viewer, agent, operator. 토큰은 16자 이상 |
 | `PLATFORM_API_TOKEN` | 첫 버전 호환용. operator 토큰 하나로 추가됨 |
+| `PLATFORM_ADMINS` | 콘솔에 아이디와 비밀번호로 로그인하는 관리자. `이름:bcrypt 해시`를 쉼표로 구분 ([해시 만들기](#관리자-비밀번호-해시), [ADR 0018](docs/adr/0018-admin-login-device-code.md)). 모두 operator. 이름 규칙은 토큰과 같고 로그인할 때 대소문자를 가리지 않음. 해시가 bcrypt가 아니거나, cost가 10에서 14 사이가 아니거나, 관리자마다 cost가 다르면 서버가 시작하지 않음. `PLATFORM_TOKENS`와 둘 다 비면 `-insecure-no-auth` 없이는 시작하지 않음 |
+| `PLATFORM_CONSOLE_URL` | 콘솔 주소 (기본 `https://console.hopcharlie.dev`). CLI device 로그인이 사람을 `<주소>/#device`로 안내함 |
 | `PLATFORM_ENVS_FILE` | 필수. 환경 설정 파일 ([로컬 개발 예시](examples/envs.yaml); 운영 설정은 infra에서 관리) |
 | `PLATFORM_GATEWAY_URL`, `GATEWAY_TOKEN` | 게이트웨이 관리 API 주소와 토큰. 비우면 카나리와 `/v1/traffic`이 꺼지고 `gateway.mode: http` Plan을 거부 |
 | `PLATFORM_CORS_ORIGINS` | 콘솔 주소. 쉼표 구분, `*`는 전부 허용 |
@@ -149,6 +155,21 @@ go run ./cmd/gateway
 | `PLATFORM_RESIDENCY_POLICY_FILE` | 레지던시 정책 파일 ([예시](examples/residency-policy.yaml), [ADR 0013](docs/adr/0013-residency-start-gate.md)). 설정하면 새 run을 시작하기 전에 원본 전체 테이블 목록을 수집해 검사하고, 위반이면 409 `residency_denied`. `files`는 정책의 `buckets`에 등록된 버킷끼리만, 원본 버킷 분류가 대상 버킷 국가를 허용할 때만 통과. 롤백은 면제. 비우면 검사 없음(시작 시 경고) |
 | `PLATFORM_CAPACITY_GATE` | `on`이면 새 run을 시작하기 전에 원본·대상 DB를 몇 초 동안 측정해, 대상 접속 한도가 부족하거나 replica가 `catchupTimeout` 안에 따라잡지 못하면 409 `capacity_insufficient` ([ADR 0014](docs/adr/0014-capacity-preflight.md)). 측정하지 못한 값은 막지 않음. 롤백은 면제. 기본 `off` |
 | `PLATFORM_GITHUB_*`, `PLATFORM_APP_DOMAIN` | 앱을 등록하고 배포하는 GitHub App. [GitHub App 설정](#github-app-설정) 참고 |
+
+### 관리자 비밀번호 해시
+
+`PLATFORM_ADMINS`에 넣을 해시는 API 바이너리로 만듭니다. DB나 토큰 설정 없이 동작하고, 해시 한 줄(bcrypt, cost 12)만 출력합니다.
+
+```bash
+go run ./cmd/api -hash-password          # 터미널이면 비밀번호를 화면에 보이지 않게 입력받음
+printf '%s' "$PW" | go run ./cmd/api -hash-password   # 파이프로 넣으면 첫 줄만 읽음
+
+export PLATFORM_ADMINS='seohyun:$2a$12$...,minji:$2a$12$...'
+```
+
+- 해시에 `$`가 들어 있으므로 셸에서는 작은따옴표로 감쌉니다. infra의 환경 변수 로더는 값을 펼치지 않고 그대로 넘기므로 따로 이스케이프하지 않습니다.
+- 비밀번호는 72바이트까지입니다(bcrypt가 읽는 길이). 빈 비밀번호와 더 긴 비밀번호는 거부합니다.
+- Git Bash(mintty)에서는 표준 입력이 터미널이 아니어서 입력한 비밀번호가 화면에 보입니다. 이때는 `stdin is not a terminal` 안내가 나옵니다. PowerShell에서 실행하거나, Git Bash에서는 `winpty go run ./cmd/api -hash-password`로 실행합니다.
 
 ### Plan의 환경 변수 참조
 
@@ -274,7 +295,17 @@ test/e2e/deploy/run.sh   # KEEP=1이면 끝난 뒤에도 남기고, test/e2e/dep
 ## 알려진 한계
 
 - 게이트웨이는 한 대뿐이라 단일 장애점입니다. 상태 파일 기반이라 두 대로 늘리는 것은 가능하지만 아직 하지 않았습니다.
-- 인증은 정적 토큰입니다. 운영 환경이라면 OIDC로 토큰을 발급해야 합니다.
+- 사람은 `PLATFORM_ADMINS`의 관리자 계정으로 로그인하고, 프로그램은 정적 토큰을 씁니다. 관리자를 바꾸려면 서버를 다시 띄워야 합니다. 관리자를 빼고 다시 띄우면 그 관리자의 콘솔 세션과 그가 승인한 CLI 토큰이 모두 401이 되지만, 비밀번호만 바꾸면 이미 나간 세션과 CLI 토큰은 만료될 때까지 유효합니다. 운영 환경이라면 OIDC 같은 IdP 연동이 필요합니다.
+- CLI 토큰 하나만 끊는 API는 없습니다. 그 토큰으로 `POST /v1/auth/logout`을 부를 수 없으면, 관리 클러스터에서 플랫폼 DB(`charlie-platform` namespace의 `hopcharlie-postgres-0`)의 행을 지웁니다. 저장소에는 토큰이 없고 이름, 역할, `client`, 시각만 있으므로 `client`로 고릅니다.
+
+  ```bash
+  # CLI 토큰 목록
+  kubectl -n charlie-platform exec hopcharlie-postgres-0 -c postgres -- psql -U charlie -d charlie \
+    -c "SELECT name, role, client, created_at, expires_at FROM auth_sessions WHERE kind = 'cli' ORDER BY created_at DESC"
+  # 한 호스트의 토큰을 지운다. Rin의 토큰 전부는 client LIKE '%on rin-sbx-%'
+  kubectl -n charlie-platform exec hopcharlie-postgres-0 -c postgres -- psql -U charlie -d charlie \
+    -c "DELETE FROM auth_sessions WHERE kind = 'cli' AND client = 'charlie v0.5.0 on rin-sbx-7-a1b2c3'"
+  ```
 - 클러스터 안에서 게이트웨이를 거치지 않고 DB에 쓰는 작업은 전환 중에 막을 수 없습니다. 이전하는 동안 멈춰야 합니다.
 - 실제 클러스터에서 끝까지 이전해 본 것은 아직 없습니다. 클러스터 3개가 준비되면 엔진과 함께 리허설합니다.
 

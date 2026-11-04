@@ -34,6 +34,7 @@ type memory struct {
 	tools  memoryPlanTools // written records and plan attachments (memory_written.go)
 	agent  agentMemory     // agent sessions and events (memory_agent.go)
 	deploy deployMemory    // apps, deployments, their events and webhook deliveries (memory_deploy.go)
+	auth   authMemory      // sessions and device logins (memory_auth.go)
 }
 
 // NewMemory returns an empty in-memory store with the same semantics as the

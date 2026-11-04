@@ -233,7 +233,10 @@ type harness struct {
 	newErr  error
 	n       int
 
-	webhookSecret string // Config.GitHubWebhookSecret
+	webhookSecret string           // Config.GitHubWebhookSecret
+	admins        *auth.Admins     // Config.Admins
+	now           func() time.Time // Server.now; nil keeps the real clock
+	api           *Server          // the server behind srv
 }
 
 type option func(*harness, *runs.Config, *Deps)
@@ -287,7 +290,12 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	tokens.Add("op", apiv1.RoleOperator, opToken)
 	tokens.Add("ai", apiv1.RoleAgent, agentToken)
 	tokens.Add("view", apiv1.RoleViewer, viewerToken)
-	h.srv = httptest.NewServer(New(Config{Tokens: tokens, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret}, d))
+	api := New(Config{Tokens: tokens, Admins: h.admins, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret}, d)
+	if h.now != nil {
+		api.now = h.now
+	}
+	h.api = api
+	h.srv = httptest.NewServer(api)
 	t.Cleanup(func() {
 		h.srv.Close()
 		cancel()
