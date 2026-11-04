@@ -21,21 +21,22 @@ concurrency:
 
 jobs:
   go:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, hopcharlie]
     timeout-minutes: 20
     env:
       GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
       GOTOOLCHAIN: auto
-      # The PostgreSQL store tests run only when this is set.
-      PLATFORM_TEST_DATABASE_URL: postgres://charlie:charlie@localhost:5432/charlie?sslmode=disable
+      # Self-hosted runners share one host: one container per run, removed at the end.
+      PG_CONTAINER: platform-ci-pg-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       # Pulled and started in the background while the rest of the job runs;
       # the test step waits for it. A service container would block the job.
+      # A random loopback port, so parallel runs on the host do not collide.
       - name: Start PostgreSQL
         run: |
-          docker run -d --name pg -p 5432:5432 \
+          docker run -d --name "$PG_CONTAINER" -p 127.0.0.1::5432 \
             -e POSTGRES_USER=charlie -e POSTGRES_PASSWORD=charlie -e POSTGRES_DB=charlie \
-            postgres:17.11-alpine >/tmp/pg.log 2>&1 &
+            postgres:17.11-alpine >"$RUNNER_TEMP/pg.log" 2>&1 &
 
       - uses: actions/checkout@v5
 
@@ -49,9 +50,14 @@ jobs:
             echo "::error::Repository secret MODULE_READ_TOKEN is not set (read access to migration-engine)."
             exit 1
           fi
+          # Self-hosted runners keep ~/.gitconfig between jobs: keep the token in this job's temp dir.
+          export GIT_CONFIG_GLOBAL="$RUNNER_TEMP/gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
 
+      # A self-hosted runner keeps ~/go between jobs; restoring over it races with parallel jobs.
       - name: Restore Go cache from main
+        if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -102,13 +108,19 @@ jobs:
 
       # No -count=1: packages whose code, test files and environment did not
       # change since main's run reuse their cached result.
+      # The PostgreSQL store tests run only when PLATFORM_TEST_DATABASE_URL is set.
       - name: Test (race, PostgreSQL)
         run: |
           for _ in $(seq 1 60); do
-            docker exec pg pg_isready -U charlie -q 2>/dev/null && break
+            docker exec "$PG_CONTAINER" pg_isready -U charlie -q 2>/dev/null && break
             sleep 1
           done
-          docker exec pg pg_isready -U charlie || { cat /tmp/pg.log; exit 1; }
+          docker exec "$PG_CONTAINER" pg_isready -U charlie || { cat "$RUNNER_TEMP/pg.log"; exit 1; }
+          port="$(docker port "$PG_CONTAINER" 5432/tcp | head -n 1)"
+          port="${port##*:}"
+          [[ "$port" =~ ^[0-9]+$ ]] || { echo "::error::PostgreSQL has no host port"; exit 1; }
+          export PLATFORM_TEST_DATABASE_URL="postgres://charlie:charlie@127.0.0.1:$port/charlie?sslmode=disable"
+          echo "PLATFORM_TEST_DATABASE_URL=$PLATFORM_TEST_DATABASE_URL" >> "$GITHUB_ENV"
           go test -race ./...
 
       # The minio storage driver links madmin-go (AGPL-3.0), so it is only in
@@ -123,7 +135,7 @@ jobs:
       # Only main saves, so a PR spends no time uploading and always starts
       # from main's latest state.
       - name: Save Go cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: runner.environment == 'github-hosted' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -131,8 +143,12 @@ jobs:
             ~/.cache/go-build
           key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
+      - name: Remove PostgreSQL
+        if: always()
+        run: docker rm -f -v "$PG_CONTAINER" >/dev/null 2>&1 || true
+
   shell:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, hopcharlie]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
