@@ -36,7 +36,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, hopcharlie]
     timeout-minutes: 20
     env:
       # The commit ci checked; github.sha of a workflow_run is main's latest.
@@ -88,7 +88,11 @@ jobs:
       - name: Private modules
         env:
           TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
-        run: git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
+        # Self-hosted runners keep ~/.gitconfig between jobs: keep the token in this job's temp dir.
+        run: |
+          export GIT_CONFIG_GLOBAL="$RUNNER_TEMP/gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
 
       - name: Restore Go cache from main
         uses: actions/cache/restore@v4
@@ -135,6 +139,8 @@ jobs:
           REGISTRY: ${{ steps.config.outputs.registry }}
         run: |
           set -euo pipefail
+          # Self-hosted runners keep ~/.docker between jobs: log in to ECR in this job's temp dir.
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker"
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
           tag="${SOURCE_SHA:0:7}"
           docker buildx build --platform linux/amd64 --provenance=false --sbom=false --push \
