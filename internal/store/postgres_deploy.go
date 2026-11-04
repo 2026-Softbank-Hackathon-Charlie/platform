@@ -96,9 +96,10 @@ func (s *Postgres) UpdateApp(ctx context.Context, a App) error {
 	return tx.Commit(ctx)
 }
 
-// DeleteApp deletes the app row first. Its lock waits for a CreateDeployment
-// or CreateAppBranch that holds the row, so the branches and deployments
-// deleted next include theirs; a later create finds no app. Deleting the
+// DeleteApp deletes the app row first. Its lock waits for a CreateDeployment,
+// CreateAppBranch or ChangeAppSecrets that holds the row, so the branches,
+// secrets and deployments deleted next include theirs; a later create finds
+// no app. Deleting the
 // deployments waits for appends that hold them, so the events deleted last
 // include theirs.
 func (s *Postgres) DeleteApp(ctx context.Context, name string) error {
@@ -119,6 +120,9 @@ func (s *Postgres) DeleteApp(ctx context.Context, name string) error {
 		return fmt.Errorf("%w: app %s", ErrNotFound, name)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM app_branches WHERE app = $1`, name); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM app_secrets WHERE app = $1`, name); err != nil {
 		return err
 	}
 	if err := deleteDeployments(ctx, tx, `app = $1`, name); err != nil {
@@ -249,8 +253,9 @@ func (s *Postgres) UpdateAppBranch(ctx context.Context, b AppBranch) error {
 }
 
 // DeleteAppBranch deletes the branch row first. Its lock waits for a
-// CreateDeployment that holds the row, so the deployments deleted next
-// include that one; a later create finds no branch.
+// CreateDeployment or ChangeAppSecrets that holds the row, so the instance's
+// overrides and deployments deleted next include theirs; a later create
+// finds no branch.
 func (s *Postgres) DeleteAppBranch(ctx context.Context, app, branch string) error {
 	if !Clean(app) || !Clean(branch) {
 		return fmt.Errorf("%w: app %q branch %q", ErrNotFound, app, branch)
@@ -267,6 +272,9 @@ func (s *Postgres) DeleteAppBranch(ctx context.Context, app, branch string) erro
 		return fmt.Errorf("%w: app %s branch %s", ErrNotFound, app, branch)
 	}
 	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM app_secrets WHERE app = $1 AND instance = $2`, app, instance); err != nil {
 		return err
 	}
 	if err := deleteDeployments(ctx, tx, `app = $1 AND instance = $2`, app, instance); err != nil {

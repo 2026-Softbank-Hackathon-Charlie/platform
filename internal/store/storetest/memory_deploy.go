@@ -116,6 +116,7 @@ func (m *memory) DeleteApp(_ context.Context, name string) error {
 	}
 	delete(m.deploy.apps, name)
 	delete(m.deploy.branches, name)
+	m.secrets.deleteSecrets(func(k secretKey) bool { return k.app == name })
 	m.deleteDeployments(func(d store.Deployment) bool { return d.App == name })
 	return nil
 }
@@ -215,6 +216,7 @@ func (m *memory) DeleteAppBranch(_ context.Context, app, branch string) error {
 		return fmt.Errorf("%w: app %s branch %s", store.ErrNotFound, app, branch)
 	}
 	delete(m.deploy.branches[app], branch)
+	m.secrets.deleteSecrets(func(k secretKey) bool { return k.app == app && k.instance == b.Instance })
 	m.deleteDeployments(func(d store.Deployment) bool { return d.App == app && d.Instance == b.Instance })
 	return nil
 }

@@ -214,7 +214,8 @@ type DeployStore interface {
 	// ErrBranchExists when a.Branch is one of the app's added branches.
 	UpdateApp(ctx context.Context, a App) error
 	// DeleteApp removes an app together with its added branches, its
-	// deployments and their events. ErrNotFound if it does not exist.
+	// secrets, its deployments and their events. ErrNotFound if it does not
+	// exist.
 	DeleteApp(ctx context.Context, name string) error
 
 	// CreateAppBranch adds a branch to an existing app that has fewer than
@@ -232,9 +233,9 @@ type DeployStore interface {
 	// UpdateAppBranch replaces AutoDeploy, Spec and SpecCommit of the branch
 	// b.Branch of app b.App. ErrNotFound if the app has no such branch.
 	UpdateAppBranch(ctx context.Context, b AppBranch) error
-	// DeleteAppBranch removes a branch of an app together with the
-	// deployments of its instance and their events, in one transaction.
-	// ErrNotFound if the app has no such branch.
+	// DeleteAppBranch removes a branch of an app together with its
+	// instance's secret overrides and deployments and their events, in one
+	// transaction. ErrNotFound if the app has no such branch.
 	DeleteAppBranch(ctx context.Context, app, branch string) error
 
 	// CreateDeployment inserts a deployment into an instance of an existing
