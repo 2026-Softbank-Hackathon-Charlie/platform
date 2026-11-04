@@ -564,8 +564,10 @@ op_token=$(rand 24)
 hook_secret=$(rand 16)
 secrets_key=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
 # HTTP_PROXY: the minio driver calls MinIO by its in-cluster name through the
-# proxy; everything else the API calls is on 127.0.0.1, which Go does not
-# proxy. The MinIO root key is the driver's admin key (envs.yaml).
+# proxy, and the executor probes an app's public Service there before it
+# registers the app, as the gateway reaches it; everything else the API calls
+# is on 127.0.0.1, which Go does not proxy. The MinIO root key is the
+# driver's admin key (envs.yaml).
 HTTP_PROXY=http://127.0.0.1:$PROXY_PORT NO_PROXY=127.0.0.1,localhost \
   E2E_MINIO_ADMIN_ACCESS_KEY=$s3_user E2E_MINIO_ADMIN_SECRET_KEY=$s3_key PLATFORM_SECRETS_KEY=$secrets_key \
   PLATFORM_DATABASE_URL="postgres://platform:$store_pw@127.0.0.1:$STORE_PORT/platform?sslmode=disable" \

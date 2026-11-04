@@ -7,7 +7,8 @@
 //	syncing     Argo CD applies the commit; the executor waits until every environment is Synced and Healthy (Argo)
 //
 // and ends healthy, failed or superseded. Once every environment is healthy,
-// an instance with a public service is registered with the traffic gateway.
+// an instance with a public service is registered with the traffic gateway,
+// as soon as that service answers at its backend address in every one.
 //
 // Before committing, the executor seals what the instance gets for each
 // environment's cluster (ADR 0016, ADR 0019): the key of the instance's
@@ -112,6 +113,10 @@ type Config struct {
 	Gateway Gateway
 	// Backends resolves the gateway backend URLs. Required with Gateway.
 	Backends Backends
+	// Probe checks once whether the public service answers at a backend
+	// URL, with its healthCheck path or "": the gateway is pointed there
+	// only once it does. Nil uses ProbeBackend.
+	Probe func(ctx context.Context, backendURL, healthCheck string) error
 	// AppDomain names the instance URL https://<instance>.<AppDomain> in
 	// the events.
 	AppDomain string
@@ -201,6 +206,9 @@ func New(cfg Config) (*Executor, error) {
 	}
 	if cfg.CleanupInterval <= 0 {
 		cfg.CleanupInterval = DefaultCleanupInterval
+	}
+	if cfg.Probe == nil {
+		cfg.Probe = ProbeBackend
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()

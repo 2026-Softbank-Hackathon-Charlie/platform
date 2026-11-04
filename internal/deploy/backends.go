@@ -4,10 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -82,6 +87,99 @@ func (s *ServiceBackends) URL(ctx context.Context, app, instance, env string, sv
 		return "http://" + host, nil
 	}
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(int(port))), nil
+}
+
+// probeTimeout bounds one ProbeBackend request; a var for the tests.
+var probeTimeout = 3 * time.Second
+
+// probeClient sends ProbeBackend's requests the way the gateway sends its
+// own (HTTP_PROXY included), on a new connection each time, as a load
+// balancer's addresses change while it comes up, and without following
+// redirects.
+var probeClient = &http.Client{
+	Transport: func() http.RoundTripper {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.DisableKeepAlives = true
+		return t
+	}(),
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// ProbeBackend checks once whether a public service answers at its backend
+// URL, and is Config.Probe's default. With a healthCheck path it GETs that
+// path and wants a 2xx or 3xx. Without one it GETs / and takes any answer
+// but 502, 503 and 504, which a proxy on the way gives when nothing answers
+// behind it; when that request gets no answer in time, a TCP connection to
+// the server is enough (it is up, only slow at /). The error says briefly
+// why, in the same words while the cause stays the same.
+func ProbeBackend(ctx context.Context, backendURL, healthCheck string) error {
+	path := healthCheck
+	if path == "" {
+		path = "/"
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, strings.TrimSuffix(backendURL, "/")+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := probeClient.Do(req)
+	if err != nil {
+		if healthCheck == "" && ctx.Err() == nil && isTimeout(err) && dials(ctx, req.URL) {
+			return nil
+		}
+		return errors.New(probeReason(err))
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	resp.Body.Close()
+	switch c := resp.StatusCode; {
+	case healthCheck != "" && (c < 200 || c > 399):
+		return fmt.Errorf("%s answered %s", healthCheck, resp.Status)
+	case healthCheck == "" && (c == http.StatusBadGateway || c == http.StatusServiceUnavailable || c == http.StatusGatewayTimeout):
+		return fmt.Errorf("/ answered %s", resp.Status)
+	}
+	return nil
+}
+
+// dials reports whether a TCP connection to u's host and port opens.
+func dials(ctx context.Context, u *url.URL) bool {
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// probeReason says why a probe got no answer, leaving out the addresses,
+// which change from one try to the next.
+func probeReason(err error) string {
+	var dns *net.DNSError
+	switch {
+	case errors.As(err, &dns):
+		return "its name does not resolve: " + dns.Err
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "the connection closed without an answer"
+	case isTimeout(err):
+		return fmt.Sprintf("no answer within %s", probeTimeout)
+	}
+	return err.Error()
 }
 
 func (s *ServiceBackends) client(env string) (kubernetes.Interface, error) {

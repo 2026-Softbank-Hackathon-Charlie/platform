@@ -22,7 +22,7 @@ type job struct {
 	logLines int
 	contains map[string]bool // gitops revision -> whether it includes the commit
 
-	syncDeadline  time.Time            // SyncTimeout after the commit, for syncing and the backend addresses
+	syncDeadline  time.Time            // SyncTimeout after the commit, for syncing and the backends (addresses, then an answer)
 	degradedSince map[string]time.Time // by environment: since when Argo CD reports it Synced and Degraded
 	keys          []sealedKey          // the bucket keys this deployment sealed, by environment
 }
@@ -581,7 +581,8 @@ func (j *job) includes(ctx context.Context, rev, commit string) bool {
 
 // register points the gateway app named after the instance at the public
 // service in every environment of the deployment, keeping the gateway's
-// other environments, write backend and read weights as they are.
+// other environments, write backend and read weights as they are. It does
+// so only once the service answers at each of those addresses.
 func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) error {
 	svc, ok := publicService(spec)
 	if !ok || j.e.cfg.Gateway == nil {
@@ -593,6 +594,9 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) er
 		e := &j.d.Environments[i]
 		u, err := j.backendURL(ctx, app.Name, instance, e.Env, svc)
 		if err != nil {
+			return err
+		}
+		if err := j.waitForBackend(ctx, e.Env, u, svc); err != nil {
 			return err
 		}
 		urls[e.Env], e.URL = u, u
@@ -652,10 +656,7 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) er
 // deadline set at the commit (a load balancer can still be getting its
 // address), so syncing and this wait together take at most SyncTimeout.
 func (j *job) backendURL(ctx context.Context, app, instance, env string, svc appspec.Service) (string, error) {
-	deadline := j.syncDeadline
-	if deadline.IsZero() {
-		deadline = j.e.now().Add(j.e.cfg.SyncTimeout)
-	}
+	deadline := j.deadline()
 	for {
 		u, err := j.e.cfg.Backends.URL(ctx, app, instance, env, svc)
 		if err == nil {
@@ -670,6 +671,51 @@ func (j *job) backendURL(ctx context.Context, app, instance, env string, svc app
 		case <-time.After(j.e.cfg.PollInterval):
 		}
 	}
+}
+
+// waitForBackend probes the public service at its backend URL u in env
+// every PollInterval until it answers, within the same sync deadline. Argo
+// CD reports a LoadBalancer Service healthy once it has an address, but AWS
+// can take minutes more to provision the load balancer behind it, and the
+// gateway answers 502 until it does. A line is logged only when the reason
+// it does not answer changes, and once it answers after waiting.
+func (j *job) waitForBackend(ctx context.Context, env, u string, svc appspec.Service) error {
+	target := u + svc.HealthCheck
+	start, deadline := j.e.now(), j.deadline()
+	var last string
+	for {
+		err := j.e.cfg.Probe(ctx, u, svc.HealthCheck)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err == nil {
+			if last != "" {
+				j.note(ctx, fmt.Sprintf("the %s backend %s answered after %s", env, target, j.e.now().Sub(start).Round(time.Second)))
+			}
+			return nil
+		}
+		if err.Error() != last {
+			last = err.Error()
+			j.note(ctx, "waiting for the "+env+" backend "+target+" to answer: "+last)
+		}
+		if !j.e.now().Before(deadline) {
+			return fmt.Errorf("the public service %s did not answer at %s in %s within %s of the commit, so the traffic gateway was not changed: %s", svc.Name, target, env, j.e.cfg.SyncTimeout, last)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(j.e.cfg.PollInterval):
+		}
+	}
+}
+
+// deadline is the sync deadline set at the commit, or SyncTimeout from now
+// when there was none.
+func (j *job) deadline() time.Time {
+	if j.syncDeadline.IsZero() {
+		j.syncDeadline = j.e.now().Add(j.e.cfg.SyncTimeout)
+	}
+	return j.syncDeadline
 }
 
 // gatewaySpec merges the deployment's backend URLs into the app's current
