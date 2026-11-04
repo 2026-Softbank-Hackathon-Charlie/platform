@@ -8,6 +8,25 @@
 #   kubeContext     required, the kubeconfig context of the cluster
 #   kubeconfig      optional path; default loading rules ($KUBECONFIG, ~/.kube/config) otherwise
 #   gatewayBackend  optional, the traffic gateway backend for this environment; defaults to name
+#   sealedSecretsCert  optional path of the PEM certificate of the cluster's
+#                   sealed-secrets controller (kubeseal --fetch-cert). The platform
+#                   seals app secrets and bucket keys with it (ADR 0016, 0019).
+#                   Without it, apps with secrets or an s3 resource cannot be
+#                   deployed here. A missing or unreadable file is logged and read
+#                   again on the next deployment.
+#   storage         optional, the driver that makes each instance's bucket and a
+#                   key for that bucket only (ADR 0016). Without it, apps with an
+#                   s3 resource cannot be registered for this environment.
+#     driver        aws | minio (gcs is not implemented yet)
+#     bucketPrefix  at most 15 characters, lowercase letters, digits and hyphens;
+#                   the bucket of an instance is <bucketPrefix><instance>
+#     region        the buckets' region; required for aws
+#     aws:   iamPath (e.g. /hopcharlie-apps/), permissionsBoundary (policy ARN);
+#            the IAM user of an instance is hopcharlie-app-<instance>. The
+#            platform uses its own AWS credentials (the pod's role).
+#     minio: endpoint (http(s)://host:port the platform calls),
+#            adminAccessKeyEnv, adminSecretKeyEnv (names of the platform's
+#            environment variables that hold the MinIO admin key)
 environments:
   - name: gke
     provider: gcp
@@ -19,8 +38,22 @@ environments:
     displayName: AWS EKS
     region: ap-northeast-2
     kubeContext: eks-hopcharlie
+    sealedSecretsCert: /config/sealed-secrets/eks.pem
+    storage:
+      driver: aws
+      bucketPrefix: hopcharlie-eks-
+      region: ap-northeast-2
+      iamPath: /hopcharlie-apps/
+      permissionsBoundary: arn:aws:iam::123456789012:policy/hopcharlie-app-boundary
   - name: onprem
     provider: onprem
     displayName: On-prem k3s
     region: team server
     kubeContext: onprem-hopcharlie
+    sealedSecretsCert: /config/sealed-secrets/onprem.pem
+    storage:
+      driver: minio
+      bucketPrefix: hopcharlie-op-
+      endpoint: http://minio.onprem.ts.net:9000
+      adminAccessKeyEnv: ONPREM_MINIO_ADMIN_ACCESS_KEY
+      adminSecretKeyEnv: ONPREM_MINIO_ADMIN_SECRET_KEY

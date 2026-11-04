@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"sigs.k8s.io/yaml"
 )
@@ -30,6 +31,14 @@ type EnvConfig struct {
 	Kubeconfig string `json:"kubeconfig,omitempty"`
 	// GatewayBackend is the traffic gateway backend serving this environment. Defaults to Name.
 	GatewayBackend string `json:"gatewayBackend,omitempty"`
+	// SealedSecretsCert is the path of the PEM certificate of the cluster's
+	// sealed-secrets controller (ADR 0016, ADR 0019). Empty: apps with
+	// secrets or an s3 resource cannot be deployed to this environment.
+	SealedSecretsCert string `json:"sealedSecretsCert,omitempty"`
+	// Storage is the driver that makes the buckets and keys of the apps'
+	// instances (ADR 0016). Nil: apps with an s3 resource cannot be
+	// registered for this environment.
+	Storage *storage.Config `json:"storage,omitempty"`
 }
 
 // Config is the environments file.
@@ -78,6 +87,13 @@ func (c Config) normalize() (Config, error) {
 		}
 		if e.GatewayBackend == "" {
 			e.GatewayBackend = e.Name
+		}
+		if e.Storage != nil {
+			if err := e.Storage.Validate(); err != nil {
+				return Config{}, fmt.Errorf("environment %q: %w", e.Name, err)
+			}
+			st := *e.Storage
+			e.Storage = &st
 		}
 		out.Environments[i] = e
 	}

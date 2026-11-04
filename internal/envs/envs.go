@@ -4,14 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
 // ErrNotFound means no environment has the requested name.
 var ErrNotFound = errors.New("environment not found")
+
+// Errors of Sealer and Storage for an environment that lacks the setting.
+var (
+	ErrSealingNotConfigured = errors.New("the environment has no sealedSecretsCert")
+	ErrStorageNotConfigured = errors.New("the environment has no storage driver")
+)
 
 // Defaults for Options.
 const (
@@ -37,6 +47,13 @@ type Options struct {
 	// NewProber builds an environment's prober on its first probe. Nil uses
 	// NewKubeProber (client-go); tests inject fakes.
 	NewProber func(EnvConfig) (Prober, error)
+	// NewStorage builds the storage driver of an environment with a storage
+	// block, in New. Nil uses storage.New with the process environment;
+	// tests inject fakes.
+	NewStorage func(storage.Config) (storage.Driver, error)
+	// LoadCert reads a sealed-secrets certificate file. Nil uses
+	// sealing.LoadCert.
+	LoadCert func(path string) (*sealing.Sealer, error)
 }
 
 // Service is the environment registry. It is safe for concurrent use.
@@ -47,11 +64,16 @@ type Service struct {
 	ttl       time.Duration
 	now       func() time.Time
 	newProber func(EnvConfig) (Prober, error)
+	loadCert  func(string) (*sealing.Sealer, error)
 }
 
 // env is one environment and its cached status.
 type env struct {
-	cfg EnvConfig
+	cfg     EnvConfig
+	storage storage.Driver // nil without a storage block
+
+	sealMu sync.Mutex
+	sealer *sealing.Sealer // read on first use; a failed read is retried
 
 	buildMu sync.Mutex
 	prober  Prober // built on first use; a failed build is retried on the next probe
@@ -70,7 +92,9 @@ type flight struct {
 
 // New validates cfg and returns a Service. It does not contact any cluster:
 // clients are built on the first probe, so the server can start before the
-// clusters exist.
+// clusters exist. It builds the storage drivers, which do not contact the
+// storage either; a driver that cannot be built (e.g. the minio admin key is
+// not set) is an error.
 func New(cfg Config, opt Options) (*Service, error) {
 	cfg, err := cfg.normalize()
 	if err != nil {
@@ -82,6 +106,7 @@ func New(cfg Config, opt Options) (*Service, error) {
 		ttl:       opt.CacheTTL,
 		now:       opt.Now,
 		newProber: opt.NewProber,
+		loadCert:  opt.LoadCert,
 	}
 	if s.timeout <= 0 {
 		s.timeout = DefaultProbeTimeout
@@ -96,12 +121,74 @@ func New(cfg Config, opt Options) (*Service, error) {
 		timeout := s.timeout
 		s.newProber = func(c EnvConfig) (Prober, error) { return NewKubeProber(c, timeout) }
 	}
+	if s.loadCert == nil {
+		s.loadCert = sealing.LoadCert
+	}
+	newStorage := opt.NewStorage
+	if newStorage == nil {
+		newStorage = func(c storage.Config) (storage.Driver, error) { return storage.New(context.Background(), c, os.Getenv) }
+	}
 	for _, c := range cfg.Environments {
 		e := &env{cfg: c}
+		if c.Storage != nil {
+			d, err := newStorage(*c.Storage)
+			if err != nil {
+				return nil, fmt.Errorf("environment %q: %w", c.Name, err)
+			}
+			e.storage = d
+		}
 		s.envs = append(s.envs, e)
 		s.byName[c.Name] = e
 	}
 	return s, nil
+}
+
+// Sealer returns the sealer for an environment's sealed-secrets controller.
+// The certificate is read on the first call and kept. While it cannot be
+// read (missing or not a certificate), every call reads it again, so a
+// certificate added later is used without a restart. ErrNotFound for an
+// unknown environment; ErrSealingNotConfigured when it has no
+// sealedSecretsCert; an error wrapping fs.ErrNotExist when the file is not
+// there.
+func (s *Service) Sealer(name string) (*sealing.Sealer, error) {
+	e, ok := s.byName[name]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrNotFound, name)
+	}
+	if e.cfg.SealedSecretsCert == "" {
+		return nil, fmt.Errorf("environment %s: %w", name, ErrSealingNotConfigured)
+	}
+	e.sealMu.Lock()
+	defer e.sealMu.Unlock()
+	if e.sealer == nil {
+		sl, err := s.loadCert(e.cfg.SealedSecretsCert)
+		// Like the kube clients' errors, these name no file paths.
+		var pathErr *fs.PathError
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return nil, fmt.Errorf("environment %s: sealed-secrets certificate file not found: %w", name, fs.ErrNotExist)
+		case errors.As(err, &pathErr):
+			return nil, fmt.Errorf("environment %s: sealed-secrets certificate file could not be read", name)
+		case err != nil:
+			return nil, fmt.Errorf("environment %s: %w", name, err)
+		}
+		e.sealer = sl
+	}
+	return e.sealer, nil
+}
+
+// Storage returns an environment's storage driver. ErrNotFound for an
+// unknown environment; ErrStorageNotConfigured when it has no storage
+// block.
+func (s *Service) Storage(name string) (storage.Driver, error) {
+	e, ok := s.byName[name]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrNotFound, name)
+	}
+	if e.storage == nil {
+		return nil, fmt.Errorf("environment %s: %w", name, ErrStorageNotConfigured)
+	}
+	return e.storage, nil
 }
 
 // List returns every environment in configuration order. Environments are
