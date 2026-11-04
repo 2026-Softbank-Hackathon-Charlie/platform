@@ -68,6 +68,10 @@ sequenceDiagram
 | 요청 | 역할 | 설명 |
 | --- | --- | --- |
 | `GET /v1/me` | viewer | 토큰 주인 확인 |
+| `POST /v1/auth/login` | 없음 | 관리자(`PLATFORM_ADMINS`) 아이디와 비밀번호로 콘솔 세션(operator, 12시간)을 받음. 이름마다 10분에 10번 실패하면 429 |
+| `POST /v1/auth/logout` | viewer | 요청한 콘솔 세션이나 CLI 토큰을 끝냄. 정적 토큰은 그대로 |
+| `POST /v1/auth/device`, `POST /v1/auth/device/token` | 없음 | CLI의 device code 로그인 시작과 폴링. 승인되면 CLI 토큰(승인한 관리자 이름과 고른 역할, 30일) |
+| `GET /v1/auth/device/{userCode}`, `/approve`, `/deny` | operator, 콘솔 세션 | 기기 로그인 조회, 역할을 골라 승인(10분 더 교환 가능), 거절. CLI 토큰과 정적 토큰은 403 `console_session_required` |
 | `POST /v1/plans` | agent | 엔진 Plan JSON을 그대로 제출. 보안 정책 검사 후 `pending_approval` |
 | `GET /v1/plans`, `GET /v1/plans/{ref}` | viewer | DSN과 토큰은 응답에 넣지 않음 |
 | `POST /v1/plans/{ref}/approve`, `/reject` | operator | 사람의 승인 또는 거절 (거절은 사유 필수, 첨부가 있는 Plan의 승인은 검토한 `revision` 필수) |
