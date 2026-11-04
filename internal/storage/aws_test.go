@@ -474,15 +474,34 @@ func TestAWSEnsure(t *testing.T) {
 	}
 }
 
+// usEast1 is S3 in us-east-1: creating a bucket the account owns succeeds.
+type usEast1 struct{ *fakeAWS }
+
+func (f usEast1) CreateBucket(ctx context.Context, in *s3.CreateBucketInput, o ...func(*s3.Options)) (*s3.CreateBucketOutput, error) {
+	out, err := f.fakeAWS.CreateBucket(ctx, in, o...)
+	if errorCode(err) == "BucketAlreadyOwnedByYou" {
+		return &s3.CreateBucketOutput{}, nil
+	}
+	return out, err
+}
+
 func TestAWSEnsureUSEast1(t *testing.T) {
 	f := newFakeAWS()
 	d := newAWSDriver(f)
-	d.region = "us-east-1"
+	d.region, d.s3 = "us-east-1", usEast1{f}
 	if _, err := d.Ensure(t.Context(), dev, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	if r := f.buckets[devBucket].region; r != "us-east-1" {
 		t.Fatalf("region %s", r)
+	}
+	// Another app's bucket is still refused although the create succeeds.
+	f.buckets[devBucket].tags[TagApp] = "other"
+	if _, err := d.Ensure(t.Context(), dev, false, ""); !errors.Is(err, ErrInUse) {
+		t.Fatalf("err = %v, want ErrInUse", err)
+	}
+	if f.buckets[devBucket].tags[TagApp] != "other" {
+		t.Fatal("the other app's bucket was retagged")
 	}
 }
 

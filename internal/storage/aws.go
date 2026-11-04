@@ -134,12 +134,10 @@ func (d *awsDriver) ensureBucket(ctx context.Context, in Instance, bucket string
 		req.CreateBucketConfiguration = &s3types.CreateBucketConfiguration{LocationConstraint: s3types.BucketLocationConstraint(d.region)}
 	}
 	_, err := d.s3.CreateBucket(ctx, req)
-	switch errorCode(err) {
-	case "":
-		if err != nil {
-			return fmt.Errorf("storage: create bucket %s: %w", bucket, err)
-		}
-	case "BucketAlreadyOwnedByYou":
+	switch code := errorCode(err); {
+	case err == nil || code == "BucketAlreadyOwnedByYou":
+		// Checked after a create too: in us-east-1 creating a bucket the
+		// account already owns succeeds.
 		tags, err := d.bucketTags(ctx, bucket)
 		if err != nil {
 			return err
@@ -147,7 +145,7 @@ func (d *awsDriver) ensureBucket(ctx context.Context, in Instance, bucket string
 		if err := checkApp("bucket "+bucket, tags, in.App); err != nil {
 			return err
 		}
-	case "BucketAlreadyExists":
+	case code == "BucketAlreadyExists":
 		return fmt.Errorf("%w: bucket name %s is taken by another AWS account", ErrInUse, bucket)
 	default:
 		return fmt.Errorf("storage: create bucket %s: %w", bucket, err)

@@ -1417,7 +1417,8 @@ paths:
 
         Names match `^[A-Z_][A-Z0-9_]*$`, at most 64 characters, and are not
         set by the platform (PORT, DATABASE_URL, S3_*). Values are 1 to 4096
-        bytes. At most 50 secrets per app-wide set and per instance.
+        bytes. At most 50 secrets per app-wide set and per instance, so at
+        most 50 names in `set` and in `delete`.
 
         Error codes: invalid_request (400: a bad or reserved name, an empty
         value or one too long, too many secrets, a name both set and deleted,

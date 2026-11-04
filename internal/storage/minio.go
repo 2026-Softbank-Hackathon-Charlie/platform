@@ -199,7 +199,10 @@ func (d *minioDriver) deleteKey(ctx context.Context, id string) error {
 			return fmt.Errorf("storage: delete service account %s: %w", id, err)
 		}
 	case "XMinioAdminServiceAccountNotFound", "XMinioInvalidIAMCredentials":
-		// Gone already.
+		// Gone already. MinIO answers an unknown service account with
+		// XMinioInvalidIAMCredentials ("The specified service account is
+		// not found"); a bad admin key is InvalidAccessKeyId or
+		// SignatureDoesNotMatch.
 	default:
 		return fmt.Errorf("storage: delete service account %s: %w", id, err)
 	}

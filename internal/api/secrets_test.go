@@ -207,9 +207,10 @@ func TestAppSecretsUpdateErrors(t *testing.T) {
 	h := secretsHarness(t)
 	h.putSecrets(map[string]any{"set": map[string]string{"KEEP": "x"}})
 
-	many := map[string]string{}
+	many, manyNames := map[string]string{}, []string{}
 	for i := range maxSecretsPerScope + 1 {
 		many[fmt.Sprintf("S%02d", i)] = "v"
+		manyNames = append(manyNames, fmt.Sprintf("S%02d", i))
 	}
 	cases := []struct {
 		name, app, token string
@@ -238,6 +239,7 @@ func TestAppSecretsUpdateErrors(t *testing.T) {
 		{name: "set and delete", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"A": "b"}, "delete": []string{"A"}}, status: 400, code: "invalid_request"},
 		{name: "deleted twice", app: "shop", token: opToken, body: map[string]any{"delete": []string{"A", "A"}}, status: 400, code: "invalid_request"},
 		{name: "too many in one", app: "shop", token: opToken, body: map[string]any{"set": many}, status: 400, code: "invalid_request"},
+		{name: "too many deleted", app: "shop", token: opToken, body: map[string]any{"delete": manyNames}, status: 400, code: "invalid_request"},
 		{name: "unknown instance", app: "shop", token: opToken, body: map[string]any{"instance": "shop--qa", "set": map[string]string{"A": "b"}}, status: 404, code: "instance_not_found"},
 		{name: "another app's instance", app: "shop", token: opToken, body: map[string]any{"instance": "moimroom", "set": map[string]string{"A": "b"}}, status: 404, code: "instance_not_found"},
 		{name: "unknown app", app: "nope", token: opToken, body: map[string]any{"set": map[string]string{"A": "b"}}, status: 404, code: "app_not_found"},

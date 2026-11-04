@@ -137,8 +137,9 @@ func (s *Server) updateAppSecrets(w http.ResponseWriter, r *http.Request) {
 		bad("nothing to change: set or delete at least one secret")
 		return
 	}
-	if len(names) > maxSecretsPerScope {
-		bad(fmt.Sprintf("too many secrets: at most %d app-wide and %d per instance", maxSecretsPerScope, maxSecretsPerScope))
+	// A scope never holds more, so longer lists are mistakes.
+	if len(names) > maxSecretsPerScope || len(del) > maxSecretsPerScope {
+		bad(fmt.Sprintf("too many secrets: at most %d app-wide and %d per instance, so at most %d names in set and in delete", maxSecretsPerScope, maxSecretsPerScope, maxSecretsPerScope))
 		return
 	}
 	for _, n := range names {
