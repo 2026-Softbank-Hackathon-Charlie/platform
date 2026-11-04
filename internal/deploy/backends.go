@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -166,9 +167,13 @@ func isTimeout(err error) bool {
 }
 
 // probeReason says why a probe got no answer, leaving out the addresses,
-// which change from one try to the next.
+// which change from one try to the next: an error it does not know is
+// given by its innermost system call or network error.
 func probeReason(err error) string {
 	var dns *net.DNSError
+	var sys *os.SyscallError
+	var op *net.OpError
+	var ue *url.Error
 	switch {
 	case errors.As(err, &dns):
 		return "its name does not resolve: " + dns.Err
@@ -178,6 +183,12 @@ func probeReason(err error) string {
 		return "the connection closed without an answer"
 	case isTimeout(err):
 		return fmt.Sprintf("no answer within %s", probeTimeout)
+	case errors.As(err, &sys):
+		return sys.Err.Error()
+	case errors.As(err, &op):
+		return op.Err.Error()
+	case errors.As(err, &ue):
+		return ue.Err.Error()
 	}
 	return err.Error()
 }

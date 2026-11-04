@@ -1380,8 +1380,11 @@ type Deployment struct {
 	// Status queued: waiting for the deployer. A server without a deployer leaves deployments queued.
 	// building: building and pushing one image per service.
 	// committing: writing apps/<instance>/<env>.yaml to the gitops repository.
-	// syncing: Argo CD is applying the commit; waiting for every environment to be healthy.
-	// healthy: every environment is synced and healthy. Final.
+	// syncing: Argo CD is applying the commit; waiting for every environment to be healthy and, for an app
+	//   with a public service, for it to answer in the environments the traffic gateway sends requests to.
+	// healthy: every environment is synced and healthy, and the public service (if any) answered where the
+	//   traffic gateway sends requests. An environment that gets no requests and did not answer is left out
+	//   of the gateway, with a `message`. Final.
 	// failed: the deployment stopped; `error` says why. Final.
 	// superseded: a newer deployment of the same instance to the same environments (or more) was created
 	//   before this one finished. This one stopped, and writes nothing to the gitops repository
@@ -1468,8 +1471,11 @@ type DeploymentEvent struct {
 	// Phase queued: waiting for the deployer. A server without a deployer leaves deployments queued.
 	// building: building and pushing one image per service.
 	// committing: writing apps/<instance>/<env>.yaml to the gitops repository.
-	// syncing: Argo CD is applying the commit; waiting for every environment to be healthy.
-	// healthy: every environment is synced and healthy. Final.
+	// syncing: Argo CD is applying the commit; waiting for every environment to be healthy and, for an app
+	//   with a public service, for it to answer in the environments the traffic gateway sends requests to.
+	// healthy: every environment is synced and healthy, and the public service (if any) answered where the
+	//   traffic gateway sends requests. An environment that gets no requests and did not answer is left out
+	//   of the gateway, with a `message`. Final.
 	// failed: the deployment stopped; `error` says why. Final.
 	// superseded: a newer deployment of the same instance to the same environments (or more) was created
 	//   before this one finished. This one stopped, and writes nothing to the gitops repository
@@ -1500,8 +1506,15 @@ type DeploymentList struct {
 // DeploymentStatus queued: waiting for the deployer. A server without a deployer leaves deployments queued.
 // building: building and pushing one image per service.
 // committing: writing apps/<instance>/<env>.yaml to the gitops repository.
-// syncing: Argo CD is applying the commit; waiting for every environment to be healthy.
-// healthy: every environment is synced and healthy. Final.
+// syncing: Argo CD is applying the commit; waiting for every environment to be healthy and, for an app
+//
+//	with a public service, for it to answer in the environments the traffic gateway sends requests to.
+//
+// healthy: every environment is synced and healthy, and the public service (if any) answered where the
+//
+//	traffic gateway sends requests. An environment that gets no requests and did not answer is left out
+//	of the gateway, with a `message`. Final.
+//
 // failed: the deployment stopped; `error` says why. Final.
 // superseded: a newer deployment of the same instance to the same environments (or more) was created
 //

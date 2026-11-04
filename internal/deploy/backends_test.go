@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 )
 
 // countEvents counts the events of typ whose message contains substr.
@@ -49,19 +50,21 @@ func TestDeployProbesTheBackendBeforeTheGateway(t *testing.T) {
 		t.Errorf("a backend that answered at once was logged:\n%s", te.dump(d.ID))
 	}
 
-	// Already routed: the same deployment again probes again.
+	// Already routed to the same URL (a redeploy): not probed again.
 	d = te.deployment("shop", sha("c1"), "gke")
 	te.enqueue(d.ID)
-	te.wait(d.ID)
-	if n := len(te.probe.called()); n != 2 || !hasEvent(te.events(d.ID), EventLog, "already sends") {
-		t.Errorf("probes %d, events:\n%s", n, te.dump(d.ID))
+	if got := te.wait(d.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("second deployment %s %q", got.Status, got.Error)
+	}
+	if n := len(te.probe.called()); n != 1 || !hasEvent(te.events(d.ID), EventLog, "already sends") {
+		t.Errorf("probes %d, want 1; events:\n%s", n, te.dump(d.ID))
 	}
 }
 
 func TestDeployWaitsForTheBackendToAnswer(t *testing.T) {
 	te := newTestEnv(t)
 	var gatewayEarly atomic.Bool
-	te.probe.answer = func(_ context.Context, n int) error {
+	te.probe.answer = func(_ context.Context, _ string, n int) error {
 		if _, ok := te.gw.app("shop"); ok {
 			gatewayEarly.Store(true)
 		}
@@ -102,15 +105,18 @@ func TestDeployWaitsForTheBackendToAnswer(t *testing.T) {
 func TestDeployFailsWhenTheBackendNeverAnswers(t *testing.T) {
 	te := newTestEnv(t)
 	te.cfg.SyncTimeout = 150 * time.Millisecond
-	te.probe.answer = func(context.Context, int) error { return errors.New("connection refused") }
+	te.probe.answer = func(context.Context, string, int) error { return errors.New("connection refused") }
 	te.register("shop", "gke")
 	te.start()
 	d := te.deployment("shop", sha("c1"), "gke")
 	te.enqueue(d.ID)
 	got := te.wait(d.ID)
-	want := "the public service web did not answer at http://shop-web.shop.gke.test:8080/healthz in gke within 150ms of the commit, so the traffic gateway was not changed: connection refused"
+	want := "the public service web did not answer within 150ms of the commit at http://shop-web.shop.gke.test:8080/healthz in gke (connection refused), so the traffic gateway was not changed"
 	if got.Status != store.DeployFailed || got.Error != want {
 		t.Fatalf("deployment %s %q, want error %q", got.Status, got.Error, want)
+	}
+	if e := got.Environments[0]; e.Status != EnvFailed || !strings.Contains(e.Message, "did not answer") || e.URL != "" {
+		t.Errorf("environment %+v", e)
 	}
 	if _, ok := te.gw.app("shop"); ok || len(te.gw.puts) != 0 {
 		t.Error("the gateway was changed for a backend that never answered")
@@ -141,7 +147,7 @@ func TestDeployProbesWithoutAHealthCheck(t *testing.T) {
 func TestDeploySupersededWhileWaitingForTheBackend(t *testing.T) {
 	te := newTestEnv(t)
 	waiting := make(chan struct{})
-	te.probe.answer = func(ctx context.Context, n int) error {
+	te.probe.answer = func(ctx context.Context, _ string, n int) error {
 		if n > 1 {
 			return nil
 		}
@@ -249,8 +255,8 @@ func TestProbeBackend(t *testing.T) {
 	}
 	addr := closed.Addr().String()
 	closed.Close()
-	if err := ProbeBackend(context.Background(), "http://"+addr, ""); err == nil {
-		t.Error("an address nothing listens on answered")
+	if err := ProbeBackend(context.Background(), "http://"+addr, ""); err == nil || err.Error() == "" || strings.Contains(err.Error(), addr) {
+		t.Errorf("an address nothing listens on: %v, want a reason without the address", err)
 	}
 
 	// Cancelled: no answer, even where a TCP connection would do.
@@ -274,9 +280,133 @@ func TestProbeReason(t *testing.T) {
 		{get(os.NewSyscallError("read", syscall.ECONNRESET)), "the connection closed without an answer"},
 		{&url.Error{Op: "Get", URL: "http://x", Err: io.EOF}, "the connection closed without an answer"},
 		{&url.Error{Op: "Get", URL: "http://x", Err: context.DeadlineExceeded}, "no answer within " + probeTimeout.String()},
+		// Unknown: the innermost error, without the addresses.
+		{get(os.NewSyscallError("connect", syscall.EHOSTUNREACH)), syscall.EHOSTUNREACH.Error()},
+		{&url.Error{Op: "Get", URL: "http://x", Err: errors.New("malformed HTTP response")}, "malformed HTTP response"},
 	} {
 		if got := probeReason(tc.err); got != tc.want {
 			t.Errorf("probeReason(%v) = %q, want %q", tc.err, got, tc.want)
 		}
+	}
+}
+
+func TestDeployLeavesOutABackendWithoutTraffic(t *testing.T) {
+	te := newTestEnv(t)
+	te.cfg.SyncTimeout = 150 * time.Millisecond
+	var eksUp atomic.Bool
+	te.probe.answer = func(_ context.Context, u string, _ int) error {
+		if strings.Contains(u, ".eks.") && !eksUp.Load() {
+			return errors.New("connection refused")
+		}
+		return nil
+	}
+	te.register("shop", "gke", "eks") // a new app writes to gke, its first environment
+	te.start()
+
+	// eks never answers: gke is routed, eks is left out, and the deployment
+	// is healthy.
+	d := te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(d.ID)
+	got := te.wait(d.ID)
+	if got.Status != store.DeployHealthy {
+		t.Fatalf("deployment %s %q\n%s", got.Status, got.Error, te.dump(d.ID))
+	}
+	if app, ok := te.gw.app("shop"); !ok || app.WriteBackend != "gke" || len(app.Backends) != 1 || app.Backends["gke"] == "" {
+		t.Errorf("gateway app %+v", app)
+	}
+	for _, e := range got.Environments {
+		switch {
+		case e.Env == "gke" && (e.Status != EnvHealthy || e.URL == ""),
+			e.Env == "eks" && (e.Status != EnvHealthy || e.URL != "" || !strings.Contains(e.Message, "did not answer at http://shop-web.shop.eks.test:8080/healthz") || !strings.Contains(e.Message, "was not pointed at it")):
+			t.Errorf("environment %+v", e)
+		}
+	}
+	evs := te.events(d.ID)
+	if !hasEvent(evs, EventLog, "left out of the traffic gateway, as the public service did not answer there: eks") || !hasEvent(evs, EventDone, "leaves out eks") {
+		t.Errorf("events:\n%s", te.dump(d.ID))
+	}
+
+	// eks answers now: only eks is probed (gke already has its URL), and
+	// added next to gke.
+	eksUp.Store(true)
+	before := len(te.probe.called())
+	d = te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(d.ID)
+	if got := te.wait(d.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("second deployment %s %q", got.Status, got.Error)
+	}
+	if calls := te.probe.called()[before:]; len(calls) != 1 || calls[0].url != "http://shop-web.shop.eks.test:8080" {
+		t.Errorf("probes %+v, want eks only", calls)
+	}
+	if app, _ := te.gw.app("shop"); app.WriteBackend != "gke" || len(app.Backends) != 2 {
+		t.Errorf("gateway app %+v", app)
+	}
+}
+
+func TestDeployFailsWhenTheTrafficBackendDoesNotAnswer(t *testing.T) {
+	te := newTestEnv(t)
+	te.cfg.SyncTimeout = 150 * time.Millisecond
+	te.probe.answer = func(_ context.Context, u string, _ int) error {
+		if strings.Contains(u, ".gke.") {
+			return errors.New("connection refused")
+		}
+		return nil
+	}
+	te.register("shop", "gke", "eks")
+	te.start()
+	d := te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(d.ID)
+	got := te.wait(d.ID)
+	want := "the public service web did not answer within 150ms of the commit at http://shop-web.shop.gke.test:8080/healthz in gke (connection refused), so the traffic gateway was not changed"
+	if got.Status != store.DeployFailed || got.Error != want {
+		t.Fatalf("deployment %s %q, want error %q", got.Status, got.Error, want)
+	}
+	if _, ok := te.gw.app("shop"); ok || len(te.gw.puts) != 0 {
+		t.Error("the gateway was changed though gke, which takes the writes, never answered")
+	}
+	for _, e := range got.Environments {
+		if e.Env == "gke" && e.Status != EnvFailed || e.Env == "eks" && e.Status != EnvHealthy {
+			t.Errorf("environment %+v", e)
+		}
+	}
+}
+
+func TestWaitForBackendsStopsAtTheDeadline(t *testing.T) {
+	te := newTestEnv(t)
+	te.cfg.PollInterval = time.Hour
+	te.probe.answer = func(context.Context, string, int) error { return errors.New("connection refused") }
+	te.register("shop", "gke")
+	ex, err := New(te.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := te.deployment("shop", sha("c1"), "gke")
+	svc := appspec.Service{Name: "web", Port: 8080, HealthCheck: "/healthz"}
+	urls := map[string]string{"gke": "http://shop-web.shop.gke.test:8080"}
+	wait := func(ctx context.Context, deadline time.Time) (map[string]string, error) {
+		j := &job{e: ex, d: d, syncDeadline: deadline}
+		return j.waitForBackends(ctx, []string{"gke"}, urls, svc)
+	}
+
+	// Syncing used up the deadline: probed once all the same.
+	silent, err := wait(context.Background(), time.Now().Add(-time.Second))
+	if err != nil || silent["gke"] != "connection refused" || len(te.probe.called()) != 1 {
+		t.Errorf("silent %v, err %v, probes %d; want gke silent after one probe", silent, err, len(te.probe.called()))
+	}
+
+	// A little time left: the wait between probes ends at the deadline,
+	// not after PollInterval.
+	start := time.Now()
+	silent, err = wait(context.Background(), start.Add(100*time.Millisecond))
+	if err != nil || len(silent) != 1 || len(te.probe.called()) != 3 || time.Since(start) > 5*time.Second {
+		t.Errorf("silent %v, err %v, probes %d after %s; want 2 more probes, ending at the deadline", silent, err, len(te.probe.called()), time.Since(start))
+	}
+
+	// Cancelled while waiting between probes.
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start = time.Now()
+	if _, err := wait(ctx, start.Add(time.Hour)); !errors.Is(err, context.Canceled) || time.Since(start) > 5*time.Second {
+		t.Errorf("err %v after %s, want context.Canceled at once", err, time.Since(start))
 	}
 }

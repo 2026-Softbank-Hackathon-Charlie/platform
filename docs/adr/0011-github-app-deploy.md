@@ -72,7 +72,7 @@
 ### 상태, 저장소, 실행기
 
 - 배포 상태는 `queued`, `building`, `committing`, `syncing`을 거쳐 `healthy`, `failed`, `superseded` 중 하나로 끝난다. 환경마다 `pending`, `syncing`, `healthy`, `degraded`, `failed`를 따로 둔다.
-- `healthy`는 모든 환경의 Application이 `Synced`, `Healthy`이고, 공개 서비스가 있으면 환경마다 그 백엔드 주소에서 서비스가 실제로 답한다는 뜻이다. 실행기는 `healthCheck`(없으면 `/`)를 불러 답을 받은 뒤에만 게이트웨이를 바꾼다. Argo CD는 LoadBalancer Service에 주소가 생기면 바로 `Healthy`로 보지만 AWS NLB는 그 뒤에도 몇 분 동안 만들어지는 중이라, 2026-11-04 moimroom의 첫 배포는 `healthy`로 끝난 뒤 2분쯤 게이트웨이가 502를 답했다. 답을 기다리는 시간도 커밋 때 시작한 같은 제한 시간 안이고, 그 안에 답하지 않으면 게이트웨이를 바꾸지 않고 `failed`로 끝난다.
+- `healthy`는 모든 환경의 Application이 `Synced`, `Healthy`라는 뜻이고, 게이트웨이가 설정되어 있고 공개 서비스가 있으면 게이트웨이가 요청을 보내는 환경(쓰기 백엔드와 읽기 가중치가 있는 백엔드)의 백엔드 주소에서 서비스가 실제로 답한다는 뜻이기도 하다. 실행기는 `healthCheck`(없으면 `/`)를 불러 답을 받은 환경만 게이트웨이에 넣거나 바꾸고, 같은 주소로 이미 들어 있는 환경은 다시 부르지 않는다. Argo CD는 LoadBalancer Service에 주소가 생기면 바로 `Healthy`로 보지만 AWS NLB는 그 뒤에도 몇 분 동안 만들어지는 중이라, 2026-11-04 moimroom의 첫 배포는 `healthy`로 끝난 뒤 2분쯤 게이트웨이가 502를 답했다. 답을 기다리는 시간도 커밋 때 시작한 같은 제한 시간 안이다. 그 안에 요청을 받는 환경이 답하지 않으면 게이트웨이를 바꾸지 않고 `failed`로 끝나고, 그 밖의 환경이 답하지 않으면 그 환경만 게이트웨이 갱신에서 빠지고 환경 `message`에 이유가 남는다. 알려진 한계: 게이트웨이 쪽 DNS가 답을 받기 전의 '이름 없음'을 잠시 캐시하면 등록 직후에도 짧게 502가 날 수 있고, 기다리는 동안 배포 worker 하나를 차지한다.
 - 새 배포가 생기면, 대상 환경이 모두 새 배포에 들어가는 끝나지 않은 이전 배포는 `superseded`가 된다. `UpdateDeployment`는 끝난 배포를 바꾸지 않고 `ErrConflict`를 돌려주므로, superseded 된 배포의 작업자는 다음 쓰기에서 멈추고 새 배포보다 늦게 gitops에 커밋하지 않는다.
 - 저장소는 `apps`, `deployments`, `deployment_events`, `webhook_deliveries` 네 테이블이다(마이그레이션 `0005_app_deploy.sql`). 메서드는 `store.DeployStore`에 있고 `store.Store`에 들어 있다.
 - 배포 이벤트는 run 이벤트와 같은 SSE 규칙(처음과 끝의 `snapshot`, seq가 SSE id, `Last-Event-ID`로 재접속)을 따른다.

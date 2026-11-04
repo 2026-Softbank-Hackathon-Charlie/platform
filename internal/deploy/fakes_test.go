@@ -354,8 +354,8 @@ type probeCall struct{ url, healthCheck string }
 type fakeProbe struct {
 	mu    sync.Mutex
 	calls []probeCall
-	// answer, when set, decides the n-th call (from 1).
-	answer func(ctx context.Context, n int) error
+	// answer, when set, decides the n-th call (from 1), to backend URL u.
+	answer func(ctx context.Context, u string, n int) error
 }
 
 func (f *fakeProbe) probe(ctx context.Context, u, healthCheck string) error {
@@ -366,7 +366,7 @@ func (f *fakeProbe) probe(ctx context.Context, u, healthCheck string) error {
 	if answer == nil {
 		return nil
 	}
-	return answer(ctx, n)
+	return answer(ctx, u, n)
 }
 
 func (f *fakeProbe) called() []probeCall {
