@@ -65,6 +65,16 @@ func TestPlanToolsOperations(t *testing.T) {
 				r := v.(*apiv1.PlanDraftResult)
 				return fmt.Sprintf("%s %d", r.Plan.Id, r.SourceStats.MaxWorkerProcesses)
 			}, want: "moimroom-gke-to-eks 8"},
+		{name: "InspectBucket", call: func(c *Client) (any, error) {
+			return c.InspectBucket(ctx, "minio:photos", "hosts/")
+		},
+			method: "POST", path: "/v1/residency/buckets/inspect", contentType: "application/json",
+			body: `{"bucket":"minio:photos","prefix":"hosts/"}`,
+			resp: `{"bucket":"minio:photos","policyDigest":"d","environment":"onprem","label":"apac","observation":{"hosting":"self","location":"","locationType":"","endpointIPs":["100.64.0.7"],"prefixes":["hosts/"],"replicas":[],"tiered":false},"prefixes":[{"prefix":"hosts/","status":"unclassified"}],"sample":{"prefix":"hosts/","objects":3,"truncated":false,"contentTypes":{"image/jpeg":3},"extensions":{".jpg":3},"metadataKeys":{},"keyPatterns":{"kr_resident_number":2},"minSize":1,"maxSize":9,"maxDepth":1}}`,
+			got: func(v any) string {
+				r := v.(*apiv1.BucketInspection)
+				return fmt.Sprintf("%s %s %d", r.Prefixes[0].Status, r.Observation.Hosting, r.Sample.KeyPatterns["kr_resident_number"])
+			}, want: "unclassified self 2"},
 		{name: "RollbackMigration", call: func(c *Client) (any, error) {
 			reason, auto := "demo", false
 			return c.RollbackMigration(ctx, "run 1", apiv1.RollbackRequest{Reason: &reason, AutoSwitch: &auto})

@@ -220,12 +220,14 @@ func main() {
 
 	// Optional: the residency policy. With it every new run (not a rollback)
 	// starts only if the source's live inventory may be copied to the target.
+	var bucketInspector api.BucketInspector
 	if path := os.Getenv("PLATFORM_RESIDENCY_POLICY_FILE"); path != "" {
 		g, err := residencyGate(ctx, path, envSvc.Names())
 		if err != nil {
 			fatal("PLATFORM_RESIDENCY_POLICY_FILE", "err", err)
 		}
 		planSvc.SetResidencyGate(g)
+		bucketInspector = g
 		log.Info("residency gate enabled", "policyDigest", g.PolicyDigest())
 	} else {
 		log.Warn("PLATFORM_RESIDENCY_POLICY_FILE is not set: residency gate disabled; migrations start without a data residency check")
@@ -270,6 +272,7 @@ func main() {
 
 	deps := api.Deps{Plans: planSvc, Runs: runner, Store: st, Envs: envSvc, EnvNotFound: envs.ErrNotFound}
 	deps.Apps = appCat
+	deps.Buckets = bucketInspector
 	// Draft plans can carry the source's numbers (POST /v1/plans/draft with
 	// sourceStats), measured like the capacity gate does, on request only.
 	deps.SourceStats = capacity.Prober{}

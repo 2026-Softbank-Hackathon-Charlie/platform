@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/netip"
+	"regexp"
 	"slices"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight"
@@ -125,7 +127,8 @@ func validRequest(r preflight.Request) bool {
 			return false
 		}
 		ids[m.ID] = true
-		if f := m.Files; f != nil && (!ValidBucket(f.Source) || !ValidBucket(f.Target) || f.Source == f.Target) {
+		if f := m.Files; f != nil && (!ValidBucket(f.Source) || !ValidBucket(f.Target) || f.Source == f.Target ||
+			!validObservation(f.SourceObserved) || !validObservation(f.TargetObserved)) {
 			return false
 		}
 		datasets := map[preflight.Dataset]bool{}
@@ -135,6 +138,52 @@ func validRequest(r preflight.Request) bool {
 			}
 			datasets[d] = true
 		}
+	}
+	return true
+}
+
+// Bounds on an observation, far above what a real bucket shows; the probe
+// reports a larger listing as incomplete instead of truncating it.
+const (
+	MaxPrefixes    = 1000
+	maxEndpointIPs = 32
+	maxReplicas    = 64
+)
+
+// replicaID is a bucket name as a replication rule names it.
+var replicaID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,221}$`)
+
+// ValidReplica reports whether s is a replica bucket name the policy can name.
+func ValidReplica(s string) bool { return replicaID.MatchString(s) }
+
+func validObservation(o *preflight.BucketObservation) bool {
+	if o == nil || len(o.Prefixes) > MaxPrefixes || len(o.EndpointIPs) > maxEndpointIPs || len(o.Replicas) > maxReplicas {
+		return false
+	}
+	switch o.Hosting {
+	case preflight.HostingProvider:
+		if !locationID.MatchString(o.Location) || !slices.Contains([]string{"region", "dual-region", "multi-region"}, o.LocationType) {
+			return false
+		}
+	case preflight.HostingSelf:
+		if (o.Location != "" && !locationID.MatchString(o.Location)) || (o.LocationType != "" && o.LocationType != "region") {
+			return false
+		}
+	default:
+		return false
+	}
+	return distinct(o.EndpointIPs, func(s string) bool { a, err := netip.ParseAddr(s); return err == nil && a.String() == s }) &&
+		distinct(o.Prefixes, func(s string) bool { return s == "" || prefixID.MatchString(s) }) &&
+		distinct(o.Replicas, replicaID.MatchString)
+}
+
+func distinct(xs []string, valid func(string) bool) bool {
+	seen := map[string]bool{}
+	for _, x := range xs {
+		if !valid(x) || seen[x] {
+			return false
+		}
+		seen[x] = true
 	}
 	return true
 }
@@ -162,20 +211,21 @@ func decodeDecision(rs rego.ResultSet) (bool, []preflight.Reason, error) {
 		if !resourceID.MatchString(r.MovementID) {
 			return false, nil, ErrEvaluation
 		}
+		ok := false
 		switch r.Code {
 		case "unknown_source", "unknown_destination", "unclassified_cluster":
-			if r.Dataset != nil || r.Bucket != "" {
-				return false, nil, ErrEvaluation
-			}
+			ok = r.Dataset == nil && r.Bucket == "" && r.Prefix == "" && r.Replica == ""
 		case "unclassified_dataset", "inventory_catalog_mismatch", "country_not_allowed":
-			if r.Dataset == nil || !validDataset(*r.Dataset) || r.Bucket != "" {
-				return false, nil, ErrEvaluation
-			}
-		case "unregistered_bucket", "bucket_country_not_allowed":
-			if r.Dataset != nil || !ValidBucket(r.Bucket) {
-				return false, nil, ErrEvaluation
-			}
-		default:
+			ok = r.Dataset != nil && validDataset(*r.Dataset) && r.Bucket == "" && r.Prefix == "" && r.Replica == ""
+		case "unregistered_bucket", "bucket_country_not_allowed", "bucket_location_unverified", "bucket_location_mismatch",
+			"bucket_multi_region", "bucket_endpoint_outside_network", "bucket_tiering_not_allowed":
+			ok = r.Dataset == nil && ValidBucket(r.Bucket) && r.Prefix == "" && r.Replica == ""
+		case "unclassified_prefix", "prefix_catalog_mismatch", "prefix_country_not_allowed":
+			ok = r.Dataset == nil && ValidBucket(r.Bucket) && prefixID.MatchString(r.Prefix) && r.Replica == ""
+		case "bucket_replication_unregistered", "bucket_replica_country_not_allowed":
+			ok = r.Dataset == nil && ValidBucket(r.Bucket) && r.Prefix == "" && replicaID.MatchString(r.Replica)
+		}
+		if !ok {
 			return false, nil, ErrEvaluation
 		}
 	}
@@ -187,7 +237,8 @@ func decodeDecision(rs rego.ResultSet) (bool, []preflight.Reason, error) {
 		if b.Dataset != nil {
 			bd = *b.Dataset
 		}
-		return cmp.Or(cmp.Compare(a.MovementID, b.MovementID), cmp.Compare(a.Code, b.Code), compareDataset(ad, bd), cmp.Compare(a.Bucket, b.Bucket))
+		return cmp.Or(cmp.Compare(a.MovementID, b.MovementID), cmp.Compare(a.Code, b.Code), compareDataset(ad, bd), cmp.Compare(a.Bucket, b.Bucket),
+			cmp.Compare(a.Prefix, b.Prefix), cmp.Compare(a.Replica, b.Replica))
 	})
 	return *d.Allowed, d.Reasons, nil
 }

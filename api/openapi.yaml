@@ -1195,6 +1195,51 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/residency/buckets/inspect:
+    post:
+      tags: [plans]
+      operationId: inspectBucket
+      description: |
+        Measure a bucket the residency policy registers, the way the gate
+        does before a files copy, and compare its first-level prefixes with
+        the policy's prefix catalog. With `prefix` (one listed prefix), the
+        objects under it are also described for classification: counts of
+        content types, extensions, user metadata names and of keys matching
+        fixed personal-data patterns (`email`, `kr_resident_number`,
+        `kr_phone`, `card_number`, `date`, `uuid`, `non_ascii`). Object keys,
+        metadata values and contents are never returned.
+
+        This helps a person or the AI agent propose labels for unclassified
+        prefixes. It is not a verdict: only the policy file, reviewed and
+        loaded at startup, decides whether a run may start.
+
+        Roles: agent, operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BucketInspectRequest" }
+      responses:
+        "200":
+          description: The bucket's policy entry next to its measurement.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BucketInspection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502":
+          description: "bucket_probe_failed: the bucket could not be measured; the message holds the probe's fixed code"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "residency_not_configured: the server has no residency policy"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/migrations/{runId}/rollback:
     parameters:
       - $ref: "#/components/parameters/RunId"
@@ -1789,7 +1834,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
-      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found"
+      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found, bucket_not_registered, prefix_not_listed"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2898,6 +2943,70 @@ components:
         dbHost: { type: string, description: "host:port of the cluster's -rw service", example: "shop-db-gke-rw.shop.gke.ts.net:5432" }
         bucket: { type: string, description: the rclone remote and bucket of the app's files, example: "gcs:shop-uploads-gke" }
 
+    BucketInspectRequest:
+      type: object
+      additionalProperties: false
+      required: [bucket]
+      properties:
+        bucket:
+          type: string
+          description: A bucket the residency policy registers, as plans name it (`remote:bucket[/path]`).
+          example: "minio:moimroom-photos-onprem"
+        prefix:
+          type: string
+          description: One listed first-level prefix (ending in `/`) to describe the objects of.
+          example: "hosts/"
+    BucketObservation:
+      type: object
+      description: What the server measured through the rclone remote a copy would use.
+      required: [hosting, location, locationType, endpointIPs, prefixes, replicas, tiered]
+      properties:
+        hosting:
+          type: string
+          enum: [provider, self]
+          description: "`provider`: AWS S3 or GCS at the provider's endpoint, whose location the provider reports. `self`: a store the operator runs (MinIO), whose region is only its own setting."
+        location: { type: string, description: "Lowercase location code; empty when a self-hosted store reports none." }
+        locationType: { type: string, description: "region, dual-region or multi-region; empty when unknown." }
+        endpointIPs: { type: array, items: { type: string }, description: "Addresses the endpoint host resolved to." }
+        prefixes: { type: array, items: { type: string }, description: "First-level prefixes; \"\" stands for objects directly under the bucket path." }
+        replicas: { type: array, items: { type: string }, description: "Buckets the bucket replicates into (not read by inspect)." }
+        tiered: { type: boolean, description: "A self-hosted store's lifecycle moves objects to another tier." }
+    BucketPrefixStatus:
+      type: object
+      required: [prefix, status]
+      properties:
+        prefix: { type: string }
+        status:
+          type: string
+          enum: [classified, unclassified, missing]
+          description: "`unclassified`: listed but not in the policy (a run would be denied); `missing`: in the policy but not listed."
+        label: { type: string, enum: [kr-only, apac, global], description: "The policy's label, when it has one." }
+    BucketSample:
+      type: object
+      description: Counts describing the first objects under one prefix. No key, value or content.
+      required: [prefix, objects, truncated, contentTypes, extensions, metadataKeys, keyPatterns, minSize, maxSize, maxDepth]
+      properties:
+        prefix: { type: string }
+        objects: { type: integer, description: "Objects read (at most 50)." }
+        truncated: { type: boolean, description: "More objects exist than were read." }
+        contentTypes: { type: object, additionalProperties: { type: integer } }
+        extensions: { type: object, additionalProperties: { type: integer } }
+        metadataKeys: { type: object, additionalProperties: { type: integer }, description: "User metadata names (never values)." }
+        keyPatterns: { type: object, additionalProperties: { type: integer }, description: "Keys matching each personal-data pattern." }
+        minSize: { type: integer, format: int64 }
+        maxSize: { type: integer, format: int64 }
+        maxDepth: { type: integer, description: "Deepest key below the prefix, in path segments." }
+    BucketInspection:
+      type: object
+      required: [bucket, policyDigest, environment, label, observation, prefixes]
+      properties:
+        bucket: { type: string }
+        policyDigest: { type: string }
+        environment: { type: string, description: "Where the policy says the bucket is." }
+        label: { type: string, enum: [kr-only, apac, global], description: "The bucket label (objects directly under its path)." }
+        observation: { $ref: "#/components/schemas/BucketObservation" }
+        prefixes: { type: array, items: { $ref: "#/components/schemas/BucketPrefixStatus" } }
+        sample: { $ref: "#/components/schemas/BucketSample" }
     PlanDraftRequest:
       type: object
       additionalProperties: false

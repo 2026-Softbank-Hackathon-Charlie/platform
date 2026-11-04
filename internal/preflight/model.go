@@ -58,10 +58,47 @@ type Movement struct {
 }
 
 // BucketCopy copies every object of Source to Target. Buckets are written as
-// the plan writes them ("remote:bucket[/path]") and matched exactly.
+// the plan writes them ("remote:bucket[/path]") and matched exactly. The
+// observations are what the server measured through the same rclone remotes
+// the copy uses; both are required whenever Files is set.
 type BucketCopy struct {
-	Source string `json:"source"`
-	Target string `json:"target"`
+	Source         string             `json:"source"`
+	Target         string             `json:"target"`
+	SourceObserved *BucketObservation `json:"sourceObserved"`
+	TargetObserved *BucketObservation `json:"targetObserved"`
+}
+
+// Hosting of an observed bucket.
+const (
+	// HostingProvider: a cloud store (AWS S3, Google Cloud Storage) reached at
+	// the provider's own endpoint. Its reported location is the provider's.
+	HostingProvider = "provider"
+	// HostingSelf: a store the operator runs (MinIO or any other S3-compatible
+	// endpoint). Its "region" is whatever the operator configured and proves
+	// nothing about where the disks are; only its network address does.
+	HostingSelf = "self"
+)
+
+// BucketObservation is a measurement, never a declaration: the gate fills it
+// from the store itself (bucketprobe package), not from a plan or an agent.
+type BucketObservation struct {
+	Hosting string `json:"hosting"`
+	// Location is the store's lowercase location code (ap-northeast-2,
+	// asia-northeast1, asia) and LocationType region, dual-region or
+	// multi-region. A self-hosted store reports its configured region.
+	Location     string `json:"location"`
+	LocationType string `json:"locationType"`
+	// EndpointIPs are the addresses the endpoint host resolved to, sorted.
+	EndpointIPs []string `json:"endpointIPs"`
+	// Prefixes are the first-level prefixes ("photos/") under the bucket path,
+	// and "" when objects sit directly under it. Listed for the copy source.
+	Prefixes []string `json:"prefixes"`
+	// Replicas are the destination bucket names of the bucket's enabled
+	// replication rules. Read for the copy target, where copied objects land.
+	Replicas []string `json:"replicas"`
+	// Tiered is true when a self-hosted store's lifecycle moves objects to
+	// another tier (MinIO ILM transition), which can be another provider.
+	Tiered bool `json:"tiered"`
 }
 
 // Request must be constructed server-side from resolved, trusted resources.
@@ -79,6 +116,10 @@ type Reason struct {
 	MovementID string   `json:"movementId,omitempty"`
 	Dataset    *Dataset `json:"dataset,omitempty"`
 	Bucket     string   `json:"bucket,omitempty"`
+	// Prefix is a first-level prefix of Bucket ("" is never reported).
+	Prefix string `json:"prefix,omitempty"`
+	// Replica is a bucket that Bucket replicates into.
+	Replica string `json:"replica,omitempty"`
 }
 
 // ResidencyVerdict applies only to residency under the given policy snapshot.
@@ -88,4 +129,13 @@ type ResidencyVerdict struct {
 	Allowed      bool     `json:"allowed"`
 	PolicyDigest string   `json:"policyDigest"`
 	Reasons      []Reason `json:"reasons"`
+	// Buckets is what the gate measured about a files copy's buckets, as
+	// evidence for the audit log. It never holds host names or credentials.
+	Buckets []ObservedBucket `json:"buckets,omitempty"`
+}
+
+// ObservedBucket pairs a registered bucket name with its observation.
+type ObservedBucket struct {
+	Bucket      string            `json:"bucket"`
+	Observation BucketObservation `json:"observation"`
 }
