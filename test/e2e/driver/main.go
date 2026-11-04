@@ -43,14 +43,22 @@ func main() {
 	stream := flag.String("stream", "e2e", "written-records stream the plan verifies")
 	writers := flag.Int("writers", 4, "concurrent writers")
 	readers := flag.Int("readers", 4, "concurrent readers")
-	canaryFlag := flag.String("canary", "10,50", "canary read weights to the target")
-	canaryStep := flag.Duration("canary-step", 10*time.Second, "duration of each canary step")
+	canaryFlag := flag.String("canary", "1,10,25,50,75,90,100", "canary read weights to the target")
+	canaryStep := flag.Duration("canary-step", 5*time.Second, "duration of each canary step")
+	scenarioFlag := flag.String("scenario", scenarioMigrate, "migrate | canary-fault | observe-rollback (see scenarios.go)")
+	targetApp := flag.String("target-app", "", "the target test app's own URL, for fault injection")
+	gwAdmin := flag.String("gateway-admin", "", "gateway admin URL, to check where traffic ended")
 	timeout := flag.Duration("timeout", 20*time.Minute, "give up after this long")
 	flag.Parse()
 	log.SetFlags(log.Ltime)
 	agentTok, opTok, targetDSN := os.Getenv("E2E_AGENT_TOKEN"), os.Getenv("E2E_OPERATOR_TOKEN"), os.Getenv("E2E_TARGET_DSN")
 	if *apiURL == "" || *gwURL == "" || agentTok == "" || opTok == "" || targetDSN == "" {
 		log.Fatal("need -api, -gateway, E2E_AGENT_TOKEN, E2E_OPERATOR_TOKEN and E2E_TARGET_DSN")
+	}
+	sc, err := newScenario(*scenarioFlag, *targetApp, *gwAdmin, os.Getenv("E2E_GATEWAY_TOKEN"), os.Getenv("E2E_SOURCE_DSN"))
+	must(err, "scenario")
+	if *scenarioFlag != scenarioMigrate {
+		*stream = "e2e-" + *scenarioFlag
 	}
 	var weights []int
 	for _, s := range strings.Split(*canaryFlag, ",") {
@@ -62,6 +70,10 @@ func main() {
 	}
 	raw, err := os.ReadFile(*planPath)
 	must(err, "read plan")
+	// One plan id and written-records stream per scenario, so scenarios can
+	// run one after another against the same platform.
+	raw = []byte(strings.NewReplacer(`"stream:e2e"`, `"stream:`+*stream+`"`,
+		`"id": "e2e-src-to-dst"`, `"id": "e2e-`+*scenarioFlag+`"`).Replace(string(raw)))
 	manifest, err := os.ReadFile(*manifestPath)
 	must(err, "read manifest")
 
@@ -95,12 +107,16 @@ func main() {
 	_, err = op.ApprovePlan(ctx, pr.Ref, "e2e: reviewed target.yaml", pr.Revision)
 	must(err, "approve plan")
 	step := canaryStep.String()
-	started, err := op.StartMigration(ctx, apiv1.StartMigrationRequest{
+	req := apiv1.StartMigrationRequest{
 		PlanRef: pr.Ref,
 		Canary:  &apiv1.CanaryOptions{Weights: weights, StepDuration: &step},
-	}, "")
+	}
+	sc.request(&req)
+	started, err := op.StartMigration(ctx, req, "")
 	must(err, "start migration")
-	log.Printf("plan approved (operator); run %s started with canary %v every %s", started.RunId, weights, step)
+	log.Printf("plan approved (operator); run %s started (scenario %s) with canary %v every %s",
+		started.RunId, *scenarioFlag, req.Canary.Weights, *req.Canary.StepDuration)
+	defer sc.clearFault()
 
 	progress := time.NewTicker(15 * time.Second)
 	defer progress.Stop()
@@ -121,6 +137,9 @@ func main() {
 			if e.Kind == "status_changed" && e.Data != nil {
 				status, _ = (*e.Data)["status"].(string)
 			}
+			if err := sc.onEvent(e); err != nil {
+				return err
+			}
 		}
 		if status == string(apiv1.RunStatusAwaitingSwitch) && !switched {
 			switched = true
@@ -132,6 +151,16 @@ func main() {
 		return nil
 	})
 	must(err, "watch run")
+	if *scenarioFlag != scenarioMigrate {
+		ok := sc.finish(ctx, op, started.RunId, l, stopLoad)
+		fmt.Printf("driver wall    %s (load start to end)\n", time.Since(began).Round(time.Second))
+		if !ok {
+			fmt.Println("== E2E FAILED")
+			os.Exit(1)
+		}
+		fmt.Println("== E2E passed")
+		return
+	}
 
 	// Writes keep landing on the new primary for a moment; then stop the users.
 	time.Sleep(5 * time.Second)
@@ -163,7 +192,11 @@ func report(ctx context.Context, run *apiv1.Run, l *load, streamCount int64, tar
 	if run.Canary != nil {
 		for _, s := range run.Canary.Steps {
 			if s.Gate != nil {
-				fmt.Printf("canary %3d%%    passed=%t %s\n", s.Weight, s.Gate.Passed, s.Gate.Reason)
+				v := "-"
+				if s.Verdict != nil {
+					v = string(*s.Verdict)
+				}
+				fmt.Printf("canary %3d%%    %-12s %s\n", s.Weight, v, s.Gate.Reason)
 			}
 		}
 	}

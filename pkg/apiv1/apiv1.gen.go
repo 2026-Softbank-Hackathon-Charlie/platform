@@ -88,6 +88,27 @@ func (e AgentSessionStatus) Valid() bool {
 	}
 }
 
+// Defines values for CanaryStepVerdict.
+const (
+	CanaryStepVerdictFailed       CanaryStepVerdict = "failed"
+	CanaryStepVerdictInconclusive CanaryStepVerdict = "inconclusive"
+	CanaryStepVerdictOk           CanaryStepVerdict = "ok"
+)
+
+// Valid indicates whether the value is a known member of the CanaryStepVerdict enum.
+func (e CanaryStepVerdict) Valid() bool {
+	switch e {
+	case CanaryStepVerdictFailed:
+		return true
+	case CanaryStepVerdictInconclusive:
+		return true
+	case CanaryStepVerdictOk:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeploymentEnvironmentStatus.
 const (
 	DeploymentEnvironmentStatusDegraded DeploymentEnvironmentStatus = "degraded"
@@ -1241,13 +1262,16 @@ type BackendTotals struct {
 // CanaryOptions Before cutover, send this share of read requests (GET, HEAD, OPTIONS) to
 // the target while writes keep going to the source. After each step the
 // gate checks the target's requests over the step. A failed gate puts all
-// reads back on the source and ends the run as `rolled_back`. Needs
-// gateway mode http.
+// reads back on the source and ends the run as `rolled_back`. A step with
+// fewer than `gate.minRequests` requests and no other breach is
+// `inconclusive` and the canary moves on, except at the last step, which
+// must pass with enough requests. Gradual steps such as
+// 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 type CanaryOptions struct {
 	Gate         *GateThresholds `json:"gate,omitempty"`
 	StepDuration *string         `json:"stepDuration,omitempty"`
 
-	// Weights Example: [10,50]
+	// Weights Example: [1,10,25,50,75,90,100]
 	Weights []int `json:"weights"`
 }
 
@@ -1256,8 +1280,11 @@ type CanaryResult struct {
 	// Options Before cutover, send this share of read requests (GET, HEAD, OPTIONS) to
 	// the target while writes keep going to the source. After each step the
 	// gate checks the target's requests over the step. A failed gate puts all
-	// reads back on the source and ends the run as `rolled_back`. Needs
-	// gateway mode http.
+	// reads back on the source and ends the run as `rolled_back`. A step with
+	// fewer than `gate.minRequests` requests and no other breach is
+	// `inconclusive` and the canary moves on, except at the last step, which
+	// must pass with enough requests. Gradual steps such as
+	// 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 	Options CanaryOptions `json:"options"`
 	Passed  *bool         `json:"passed,omitempty"`
 	Steps   []CanaryStep  `json:"steps"`
@@ -1268,8 +1295,14 @@ type CanaryStep struct {
 	EndedAt   *time.Time  `json:"endedAt,omitempty"`
 	Gate      *GateResult `json:"gate,omitempty"`
 	StartedAt time.Time   `json:"startedAt"`
-	Weight    int         `json:"weight"`
+
+	// Verdict ok: passed. inconclusive: too few requests at a step that is not the last; the canary went on. failed: the run rolled back.
+	Verdict *CanaryStepVerdict `json:"verdict,omitempty"`
+	Weight  int                `json:"weight"`
 }
+
+// CanaryStepVerdict ok: passed. inconclusive: too few requests at a step that is not the last; the canary went on. failed: the run rolled back.
+type CanaryStepVerdict string
 
 // CreateAgentSessionRequest defines model for CreateAgentSessionRequest.
 type CreateAgentSessionRequest struct {
@@ -1708,7 +1741,7 @@ type GateThresholds struct {
 	MaxErrorRate *float32 `json:"maxErrorRate,omitempty"`
 	MaxP95Millis *int     `json:"maxP95Millis,omitempty"`
 
-	// MinRequests fewer requests than this fails the gate
+	// MinRequests fewer requests than this cannot pass the gate: a canary step other than the last is inconclusive, the last canary step fails, an observe step is inconclusive
 	MinRequests *int `json:"minRequests,omitempty"`
 }
 
@@ -2317,8 +2350,11 @@ type StartMigrationRequest struct {
 	// Canary Before cutover, send this share of read requests (GET, HEAD, OPTIONS) to
 	// the target while writes keep going to the source. After each step the
 	// gate checks the target's requests over the step. A failed gate puts all
-	// reads back on the source and ends the run as `rolled_back`. Needs
-	// gateway mode http.
+	// reads back on the source and ends the run as `rolled_back`. A step with
+	// fewer than `gate.minRequests` requests and no other breach is
+	// `inconclusive` and the canary moves on, except at the last step, which
+	// must pass with enough requests. Gradual steps such as
+	// 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 	Canary *CanaryOptions `json:"canary,omitempty"`
 
 	// Observe After a successful cutover, keep watching the target at the gateway

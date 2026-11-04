@@ -43,7 +43,7 @@ sequenceDiagram
     Op->>API: POST /v1/plans/{ref}/approve
     Op->>API: POST /v1/migrations {planRef, canary}
     API->>Eng: precheck, prepare, presync, delta
-    API->>GW: 읽기 10%, 50%를 대상으로 (게이트 판정)
+    API->>GW: 읽기 1%→10%→25%→50%→75%→90%→100%를 대상으로 (단계마다 게이트 판정)
     API-->>Op: status awaiting_switch
     Op->>API: POST /v1/migrations/{id}/switch
     API->>Eng: fence ... finalize
