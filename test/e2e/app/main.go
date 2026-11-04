@@ -4,8 +4,14 @@
 //	POST /items {"id":"..."}  insert a row; 201
 //	GET  /items/{id}          200 when the row exists, 404 when it does not
 //	GET  /healthz             200 when the database answers (the gateway's health check)
+//	PUT  /_fault?status=500&delayMs=1200&method=GET   inject a fault (failure scenarios)
+//	DELETE /_fault            clear it
 //
 // Database errors are 500, so the gateway counts them as failed requests.
+// A fault applies to /items requests of the given method (all methods when
+// empty): wait delayMs, then answer status when it is not 0. /healthz is never
+// faulted, so the gateway keeps the backend in rotation and the gate sees the
+// fault. The driver calls /_fault on the app's own port, not through the gateway.
 package main
 
 import (
@@ -15,6 +21,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,7 +45,48 @@ func main() {
 		log.Fatal(err)
 	}
 
+	var fmu sync.Mutex
+	var fault struct {
+		status int
+		delay  time.Duration
+		method string
+	}
+	faulted := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			fmu.Lock()
+			f := fault
+			fmu.Unlock()
+			if f.method == "" || f.method == r.Method {
+				if f.delay > 0 {
+					time.Sleep(f.delay)
+				}
+				if f.status != 0 {
+					http.Error(w, "injected fault", f.status)
+					return
+				}
+			}
+			next(w, r)
+		}
+	}
+
 	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /_fault", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		status, _ := strconv.Atoi(q.Get("status"))
+		delay, _ := strconv.Atoi(q.Get("delayMs"))
+		fmu.Lock()
+		fault.status, fault.delay, fault.method = status, time.Duration(delay)*time.Millisecond, q.Get("method")
+		fmu.Unlock()
+		log.Printf("fault set: status=%d delay=%dms method=%q", status, delay, q.Get("method"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("DELETE /_fault", func(w http.ResponseWriter, r *http.Request) {
+		fmu.Lock()
+		fault.status, fault.delay, fault.method = 0, 0, ""
+		fmu.Unlock()
+		log.Printf("fault cleared")
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 		defer cancel()
@@ -47,7 +96,7 @@ func main() {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("POST /items", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /items", faulted(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			ID string `json:"id"`
 		}
@@ -63,8 +112,8 @@ func main() {
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
-	})
-	mux.HandleFunc("GET /items/{id}", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("GET /items/{id}", faulted(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		var one int
@@ -78,7 +127,7 @@ func main() {
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
-	})
+	}))
 	log.Printf("listening on %s", listen)
 	log.Fatal(http.ListenAndServe(listen, mux))
 }

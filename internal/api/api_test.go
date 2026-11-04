@@ -652,10 +652,19 @@ func TestCanaryGateFailureRollsReadsBack(t *testing.T) {
 	ref := h.approved(planJSON("p1", "a", "b", true))
 	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, Canary: &apiv1.CanaryOptions{Weights: []int{10, 50}, StepDuration: ptr("20ms")}})
 
+	// Too few requests is inconclusive at 10% and moves on; at the last step
+	// (50%) it fails, because the target was never judged.
 	run := h.waitRun(id, ended(apiv1.RunStatusRolledBack))
 	c := run.Canary
-	if c == nil || c.Passed == nil || *c.Passed || len(c.Steps) != 1 || c.Steps[0].Gate.Passed || !strings.Contains(c.Steps[0].Gate.Reason, "only 3 requests") {
+	if c == nil || c.Passed == nil || *c.Passed || len(c.Steps) != 2 {
 		t.Fatalf("canary: %+v", c)
+	}
+	if v := c.Steps[0].Verdict; v == nil || *v != apiv1.CanaryStepVerdictInconclusive || !strings.Contains(c.Steps[0].Gate.Reason, "continuing") {
+		t.Fatalf("step 1: %v %+v", v, c.Steps[0].Gate)
+	}
+	if v := c.Steps[1].Verdict; v == nil || *v != apiv1.CanaryStepVerdictFailed || !strings.Contains(c.Steps[1].Gate.Reason, "only 3 requests") ||
+		!strings.Contains(c.Steps[1].Gate.Reason, "last step") {
+		t.Fatalf("step 2: %v %+v", v, c.Steps[1].Gate)
 	}
 	if run.Engine.Steps["fence"].Status != apiv1.StepStatusPending {
 		t.Fatal("a failed canary must stop before fence")
@@ -663,8 +672,65 @@ func TestCanaryGateFailureRollsReadsBack(t *testing.T) {
 	h.traffic.mu.Lock()
 	w := fmt.Sprint(h.traffic.weights)
 	h.traffic.mu.Unlock()
-	if w != "[map[eks:10 gke:90] map[gke:100]]" {
+	if w != "[map[eks:10 gke:90] map[eks:50 gke:50] map[gke:100]]" {
 		t.Fatalf("read weights = %s", w)
+	}
+}
+
+// The recommended gradual canary passes every step and switches.
+func TestCanaryGradualStepsPass(t *testing.T) {
+	h := newHarness(t)
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 500, ErrorRate: 0, P95Millis: 120}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	weights := []int{1, 10, 25, 50, 75, 90, 100}
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true), Canary: &apiv1.CanaryOptions{Weights: weights, StepDuration: ptr("20ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+	if run.Canary.Passed == nil || !*run.Canary.Passed || len(run.Canary.Steps) != len(weights) {
+		t.Fatalf("canary: %+v", run.Canary)
+	}
+	h.traffic.mu.Lock()
+	w := fmt.Sprint(h.traffic.weights[:len(weights)])
+	h.traffic.mu.Unlock()
+	if w != "[map[eks:1 gke:99] map[eks:10 gke:90] map[eks:25 gke:75] map[eks:50 gke:50] map[eks:75 gke:25] map[eks:90 gke:10] map[eks:100]]" {
+		t.Fatalf("read weights = %s", w)
+	}
+}
+
+// Errors over the limit fail a step even with few requests: at 1% a broken
+// target is caught before more reads go to it.
+func TestCanaryErrorsFailASmallStep(t *testing.T) {
+	h := newHarness(t)
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 4, ErrorRate: 0.5, P95Millis: 40}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, Canary: &apiv1.CanaryOptions{Weights: []int{1, 10, 100}, StepDuration: ptr("20ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusRolledBack))
+	c := run.Canary
+	if len(c.Steps) != 1 || c.Steps[0].Verdict == nil || *c.Steps[0].Verdict != apiv1.CanaryStepVerdictFailed ||
+		!strings.Contains(c.Steps[0].Gate.Reason, "error rate 50.00% over only 4 requests") {
+		t.Fatalf("canary: %+v", c.Steps)
+	}
+	h.traffic.mu.Lock()
+	w := fmt.Sprint(h.traffic.weights)
+	h.traffic.mu.Unlock()
+	if w != "[map[eks:1 gke:99] map[gke:100]]" {
+		t.Fatalf("read weights = %s", w)
+	}
+}
+
+// A slow target (p95 over the limit with enough requests) fails the step and
+// all reads go back to the source.
+func TestCanarySlowTargetRollsReadsBack(t *testing.T) {
+	h := newHarness(t)
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 200, ErrorRate: 0, P95Millis: 1500}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, Canary: &apiv1.CanaryOptions{Weights: []int{1, 10, 100}, StepDuration: ptr("20ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusRolledBack))
+	c := run.Canary
+	if len(c.Steps) != 1 || !strings.Contains(c.Steps[0].Gate.Reason, "p95 1500ms is above 800ms") {
+		t.Fatalf("canary: %+v", c.Steps)
+	}
+	if run.Engine.Steps["fence"].Status != apiv1.StepStatusPending || run.Engine.TrafficOnTarget {
+		t.Fatalf("a failed canary must not touch writes: %+v", run.Engine)
 	}
 }
 

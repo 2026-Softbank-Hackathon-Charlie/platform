@@ -2137,8 +2137,11 @@ components:
         Before cutover, send this share of read requests (GET, HEAD, OPTIONS) to
         the target while writes keep going to the source. After each step the
         gate checks the target's requests over the step. A failed gate puts all
-        reads back on the source and ends the run as `rolled_back`. Needs
-        gateway mode http.
+        reads back on the source and ends the run as `rolled_back`. A step with
+        fewer than `gate.minRequests` requests and no other breach is
+        `inconclusive` and the canary moves on, except at the last step, which
+        must pass with enough requests. Gradual steps such as
+        1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
       type: object
       additionalProperties: false
       required: [weights]
@@ -2147,7 +2150,7 @@ components:
           type: array
           minItems: 1
           items: { type: integer, minimum: 1, maximum: 100 }
-          example: [10, 50]
+          example: [1, 10, 25, 50, 75, 90, 100]
         stepDuration: { type: string, default: "20s" }
         gate: { $ref: "#/components/schemas/GateThresholds" }
 
@@ -2157,7 +2160,7 @@ components:
       properties:
         maxErrorRate: { type: number, default: 0.01, description: 5xx and proxy errors over requests }
         maxP95Millis: { type: integer, default: 800 }
-        minRequests: { type: integer, default: 20, description: fewer requests than this fails the gate }
+        minRequests: { type: integer, default: 20, description: "fewer requests than this cannot pass the gate: a canary step other than the last is inconclusive, the last canary step fails, an observe step is inconclusive" }
 
     StartMigrationResponse:
       type: object
@@ -2260,6 +2263,10 @@ components:
         weight: { type: integer }
         startedAt: { type: string, format: date-time }
         endedAt: { type: string, format: date-time }
+        verdict:
+          description: "ok: passed. inconclusive: too few requests at a step that is not the last; the canary went on. failed: the run rolled back."
+          type: string
+          enum: [ok, failed, inconclusive]
         gate: { $ref: "#/components/schemas/GateResult" }
 
     GateResult:

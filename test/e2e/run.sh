@@ -137,10 +137,16 @@ wait_http "http://127.0.0.1:$DST_APP_PORT/healthz" # 503 until the engine create
 wait_http "http://127.0.0.1:$GW_ADMIN_PORT/healthz"
 wait_http "http://127.0.0.1:$API_PORT/healthz"
 
-echo "== migrate under load"
-E2E_AGENT_TOKEN=$agent_token E2E_OPERATOR_TOKEN=$op_token E2E_TARGET_DSN=$(dsn "$DST_DB_PORT") \
-  "$bin/driver$exe" -api "http://127.0.0.1:$API_PORT" -gateway "http://127.0.0.1:$GW_PORT" \
-  -plan "$here/plan.json" -manifest "$here/target.yaml"
+# Failure scenarios first: each ends with the source as primary again, so the
+# normal migration runs last on the same clusters (see driver/scenarios.go).
+for scenario in ${SCENARIOS:-canary-fault observe-rollback migrate}; do
+  echo "== scenario $scenario (under load)"
+  E2E_AGENT_TOKEN=$agent_token E2E_OPERATOR_TOKEN=$op_token E2E_GATEWAY_TOKEN=$gw_token \
+    E2E_TARGET_DSN=$(dsn "$DST_DB_PORT") E2E_SOURCE_DSN=$(dsn "$SRC_DB_PORT") \
+    "$bin/driver$exe" -api "http://127.0.0.1:$API_PORT" -gateway "http://127.0.0.1:$GW_PORT" \
+    -gateway-admin "http://127.0.0.1:$GW_ADMIN_PORT" -target-app "http://127.0.0.1:$DST_APP_PORT" \
+    -scenario "$scenario" -plan "$here/plan.json" -manifest "$here/target.yaml"
+done
 
 echo "== second app by host name"
 # The load above went to 127.0.0.1, outside the app domain, so the default app

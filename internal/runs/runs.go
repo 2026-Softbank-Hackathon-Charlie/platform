@@ -552,7 +552,8 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 
 	src, dst := l.plan.Gateway.SourceBackend, l.plan.Gateway.TargetBackend
 	stepDur, _ := time.ParseDuration(*opts.StepDuration)
-	for _, w := range opts.Weights {
+	for i, w := range opts.Weights {
+		last := i == len(opts.Weights)-1
 		weights := map[string]int{dst: w}
 		if w < 100 {
 			weights[src] = 100 - w
@@ -582,19 +583,40 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 			return err
 		})
 		var gate apiv1.GateResult
+		verdict := apiv1.CanaryStepVerdictFailed
 		if err != nil {
 			// No data is a stop, not a pass.
 			gate = apiv1.GateResult{Passed: false, Reason: "gateway unreachable: " + err.Error()}
 		} else {
-			gate = evaluateGate(ts.Stats[dst], *opts.Gate)
+			s := ts.Stats[dst]
+			gate = evaluateGate(s, *opts.Gate)
+			few := s.Requests < int64(*opts.Gate.MinRequests)
+			switch {
+			case gate.Passed:
+				verdict = apiv1.CanaryStepVerdictOk
+			case few && s.ErrorRate > *opts.Gate.MaxErrorRate:
+				// Errors already over the limit fail even a small sample: going
+				// back costs nothing before cutover. p95 of a few requests is
+				// too noisy to fail on.
+				gate.Reason = fmt.Sprintf("error rate %.2f%% over only %d requests is above %.2f%%",
+					s.ErrorRate*100, s.Requests, *opts.Gate.MaxErrorRate*100)
+			case few && !last:
+				// Small first steps (1%) of a quiet app see few requests. Too few
+				// to judge is not a failure; the next, larger step decides. The
+				// last step must judge with enough requests.
+				verdict = apiv1.CanaryStepVerdictInconclusive
+				gate.Reason += "; continuing to the next step"
+			case few:
+				gate.Reason += " at the last step; the target was never judged with enough requests"
+			}
 		}
 		end := r.now()
-		step.EndedAt, step.Gate = &end, &gate
+		step.EndedAt, step.Gate, step.Verdict = &end, &gate, &verdict
 		l.mu.Lock()
 		l.doc.Canary.Steps = append(l.doc.Canary.Steps, step)
 		l.mu.Unlock()
-		l.emitPlatform(EventGateResult, "", gateMessage(w, gate), map[string]any{"weight": w, "gate": gate})
-		if !gate.Passed {
+		l.emitPlatform(EventGateResult, "", gateMessage(w, verdict, gate), map[string]any{"weight": w, "verdict": verdict, "gate": gate})
+		if verdict == apiv1.CanaryStepVerdictFailed {
 			l.setCanaryPassed(false)
 			return false, gate.Reason
 		}
@@ -606,12 +628,13 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 func (r *Runner) canaryFail(l *live, step apiv1.CanaryStep, reason string) (bool, string) {
 	end := r.now()
 	gate := apiv1.GateResult{Passed: false, Reason: reason}
-	step.EndedAt, step.Gate = &end, &gate
+	verdict := apiv1.CanaryStepVerdictFailed
+	step.EndedAt, step.Gate, step.Verdict = &end, &gate, &verdict
 	l.mu.Lock()
 	l.doc.Canary.Steps = append(l.doc.Canary.Steps, step)
 	l.mu.Unlock()
 	l.setCanaryPassed(false)
-	l.emitPlatform(EventGateResult, "", gateMessage(step.Weight, gate), map[string]any{"weight": step.Weight, "gate": gate})
+	l.emitPlatform(EventGateResult, "", gateMessage(step.Weight, verdict, gate), map[string]any{"weight": step.Weight, "verdict": verdict, "gate": gate})
 	return false, reason
 }
 
@@ -638,12 +661,11 @@ func evaluateGate(s apiv1.BackendStats, g apiv1.GateThresholds) apiv1.GateResult
 	return res
 }
 
-func gateMessage(w int, g apiv1.GateResult) string {
-	verdict := "passed"
-	if !g.Passed {
-		verdict = "failed"
-	}
-	return fmt.Sprintf("gate at %d%% %s: %s", w, verdict, g.Reason)
+func gateMessage(w int, v apiv1.CanaryStepVerdict, g apiv1.GateResult) string {
+	word := map[apiv1.CanaryStepVerdict]string{
+		apiv1.CanaryStepVerdictOk: "passed", apiv1.CanaryStepVerdictFailed: "failed", apiv1.CanaryStepVerdictInconclusive: "inconclusive",
+	}[v]
+	return fmt.Sprintf("gate at %d%% %s: %s", w, word, g.Reason)
 }
 
 // resetReads sends every read back to the source after a canary that did not
