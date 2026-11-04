@@ -31,6 +31,9 @@ func TestRenderRepoContract(t *testing.T) {
 	if strings.Contains(page, "{{") {
 		t.Error("page still has a placeholder")
 	}
+	if strings.Contains(page, "``,") {
+		t.Error("an error response has no status code (add its components.responses name to errName)")
+	}
 	for _, id := range []string{"submitPlan", "startMigration", "getSecurity"} {
 		if !strings.Contains(page, "operationId: `"+id+"`") {
 			t.Errorf("page has no details for %s", id)

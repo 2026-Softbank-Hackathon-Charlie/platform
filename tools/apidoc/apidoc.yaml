@@ -6,7 +6,7 @@
 
 notionPage: 40a8bee9ada480b49399d443ce528230
 repo: https://github.com/2026-Softbank-Hackathon-Charlie/platform
-server: https://api.3-36-23-54.sslip.io
+server: https://api.hopcharlie.dev
 
 # Section order and headings of the endpoint details.
 tags:
@@ -32,6 +32,8 @@ tags:
   title: 앱 (apps)
 - name: deployments
   title: 배포 (deployments)
+- name: github
+  title: GitHub 연동 (github)
 
 # Per operationId. summary: one line for the endpoint table. role: who may call it.
 # notes: Notion markdown shown in the endpoint's toggle. Order here is the order on the page.
@@ -104,9 +106,12 @@ operations:
     role: operator, 콘솔 세션
     notes: 승인 대기 중인 기기 로그인을 거절한다. CLI의 다음 폴링은 access_denied를 받는다. 콘솔 세션만 거절할 수 있고, CLI 토큰과 정적 토큰은 403 console_session_required다. 이미 승인하거나 거절한 것은 409 device_login_state_conflict, 모르거나 만료된 코드는 404 device_login_not_found다.
   listApps:
-    summary: 등록된 앱과 실행 환경 목록
+    summary: 설정 파일의 앱과 GitHub 등록 앱 목록
     role: 모든 역할
-    notes: 서버의 PLATFORM_APPS_FILE에 등록된 앱과 각 앱이 실행되는 환경을 설정 순서대로 돌려준다. 파일이 설정되지 않았으면 빈 목록이다.
+    notes: |-
+      플랫폼이 아는 모든 앱을 돌려준다. 먼저 서버의 `PLATFORM_APPS_FILE`에 있는 앱(마이그레이션이 쓰는 앱)을 설정 순서대로, 그다음 파일에 없는 GitHub 등록 앱(`POST /v1/apps`)을 이름순으로 돌려준다. 둘 다에 있는 앱은 파일에 있는 대로 한 번만 나오고 deploy가 채워진다.
+
+      파일에 없는 등록 앱은 namespace가 앱 이름, database가 `{name: app, user: app, schemas: []}`(앱 차트가 쓰는 CNPG 기본값), environments가 빈 목록이다. 배포된 곳은 deploy에 있다.
   draftPlan:
     summary: 앱과 경로로 계획 초안 생성
     role: agent, operator
@@ -117,6 +122,18 @@ operations:
       - DSN은 환경의 passwordEnv를 `${VAR}`로 참조해서 비밀번호를 읽는다.
       - 두 환경 모두 버킷이 있으면 files를 채운다. 요청에서 files를 false로 주면 뺀다.
       - 서버에 게이트웨이가 있으면 gateway mode는 http, 없으면 none이다.
+      - `sourceStats: true`면 source 데이터베이스도 측정하고 응답은 PlanDraftResult가 된다. 계획은 plan에, 숫자는 sourceStats에 들어간다. WAL 속도 측정 구간 때문에 5초쯤 걸린다. 용량 게이트와 같은 쿼리를 쓰므로 이 숫자로 크기를 정한 target은 시작할 때 같은 검사를 통과한다.
+      - 숫자만 돌려주고 주소, 비밀번호, 서버 메시지는 돌려주지 않는다. source를 측정하지 못하면 sourceStats가 없고 sourceStatsReason이 not_measured다. 플래그가 없으면 이전처럼 계획 자체를 돌려준다.
+  inspectBucket:
+    summary: 레지던시 정책 버킷 측정과 프리픽스 비교
+    role: agent, operator
+    notes: |-
+      레지던시 정책에 등록된 버킷을 게이트가 파일 복사 전에 하는 방식으로 측정하고, 첫 단계 프리픽스를 정책의 프리픽스 카탈로그와 비교한다.
+
+      - `prefix`(목록에 나온 프리픽스 하나)를 주면 분류를 돕도록 그 아래 객체도 설명한다. 콘텐츠 유형, 확장자, 사용자 메타데이터 이름의 개수와 고정된 개인정보 패턴(`email`, `kr_resident_number`, `kr_phone`, `card_number`, `date`, `uuid`, `non_ascii`)에 맞는 키의 개수를 센다.
+      - 객체 키, 메타데이터 값, 객체 내용은 돌려주지 않는다.
+      - 사람이나 AI 에이전트가 분류되지 않은 프리픽스에 붙일 레이블을 제안하는 데 쓴다. 판정이 아니다. run을 시작할 수 있는지는 검토를 거쳐 서버 시작 때 읽은 정책 파일만 정한다.
+      - 오류 코드: bucket_not_registered(404, 정책에 등록되지 않은 버킷), prefix_not_listed(404, 버킷의 첫 단계 프리픽스가 아닌 prefix), bucket_probe_failed(502, 버킷을 측정하지 못함. message에 측정의 고정 코드가 있다), residency_not_configured(503, 서버에 레지던시 정책이 없음).
   submitPlan:
     summary: 엔진 계획 제출 (승인 대기로 저장)
     role: agent, operator
@@ -172,6 +189,9 @@ operations:
       - 재시도할 때 같은 Idempotency-Key를 보내면 처음 만든 run을 돌려받는다.
       - verify.writtenRecords가 `stream:<name>`인 계획은 그 스트림에 레코드가 쌓여야 시작된다. 그 전에는 400 invalid_request다.
       - rollbackOf가 있는 계획으로 시작한 run에는 같은 rollbackOf가 붙는다.
+      - 서버에 레지던시 정책이 있으면 run을 만들기 전에 source의 데이터베이스 목록을 읽고 물리 복사 전체를 정책으로 검사한다. 거부되면 409 residency_denied이고(message에 사유 코드와 `db.schema.table`) 계획은 approved로 남는다. 계획의 files 복사는 정책에 등록된 버킷 사이에서만, source 버킷의 분류가 target 버킷의 국가를 허용할 때만 할 수 있다. 롤백 계획(rollbackOf)은 이 검사를 받지 않는다.
+      - 서버가 검사를 끄지 않았으면 source와 target의 PostgreSQL 메이저 버전을 비교한다. target 버전은 데이터베이스에서 읽고, 읽지 못하면 매니페스트의 `spec.imageCatalogRef.major`나 `spec.imageName` 태그에서 읽는다. 물리 복제는 메이저 버전을 넘을 수 없으므로 다르면 409 version_mismatch(message에 버전)다. 버전을 읽지 못하면 막지 않는다.
+      - 서버가 용량을 측정하면 먼저 source와 target을 몇 초 동안 읽는다. target이 받는 연결 수가 source 클라이언트 세션의 1.2배보다 적거나, `max_connections`나 `max_worker_processes`가 source보다 작거나(그러면 hot standby가 시작하지 않는다), 복제본이 `thresholds.catchupTimeout` 안에 따라잡지 못하면 409 capacity_insufficient(message에 측정값)다. 측정하지 못한 값으로는 거부하지 않는다. 롤백 계획은 여기서도 검사를 받지 않는다.
   listMigrations:
     summary: run 목록 (최신순)
     role: 모든 역할
@@ -263,6 +283,16 @@ operations:
       - 결과는 60초 동안 캐시한다. refresh=true면 다시 수집하지만 10초에 한 번까지만 수집하고, 그 안의 refresh는 최신 결과를 받는다.
       - 필터는 findings와 sources의 개수, summary에 모두 적용된다.
       - 오류 코드: invalid_request(400), security_not_configured(503).
+  getSecurityOCSF:
+    summary: 보안 finding을 OCSF 이벤트로 내보내기
+    role: 모든 역할
+    notes: |-
+      `GET /v1/security`의 finding을 같은 수집, 캐시, 필터로 OCSF(Open Cybersecurity Schema Framework) 이벤트로 바꿔 심각한 것부터 돌려준다. OCSF를 읽는 도구에 넘기는 용도다.
+
+      - 위협 탐지는 Detection Finding(class 2004)이다. 설정 점검은 Compliance Finding(class 2003)이고 `compliance.status_id`는 Fail, 정보성 점검이면 Warning이다.
+      - 모든 이벤트는 `metadata.version`과 `cloud` 프로필을 선언하고 그 버전의 공식 클래스 스키마를 따른다. 플랫폼 테스트가 이 매핑을 그 스키마로 검증한다.
+      - 새로 읽는 것은 없다. 모든 값은 대응하는 SecurityFinding에서 가져온다.
+      - 오류 코드는 `/v1/security`와 같은 invalid_request(400), security_not_configured(503)이다.
   createAgentSession:
     summary: 에이전트 작업 세션 시작
     role: agent, operator
@@ -301,6 +331,15 @@ operations:
     summary: 에이전트 세션 종료
     role: 세션 actor, operator
     notes: '실행 중인 세션을 끝낸다. 세션의 actor나 operator만 끝낼 수 있다. PLATFORM_AGENT_IDLE(기본 30분) 동안 이벤트가 없는 세션은 플랫폼이 cancelled로 끝내고 summary에 "no activity for 30m; closed by the platform"을 남긴다. 오류 코드: agent_session_not_found(404), agent_session_finished(409).'
+  validateAppSpec:
+    summary: platform.yaml 검사 (등록하지 않음)
+    role: 모든 역할
+    notes: |-
+      아무것도 등록하지 않고 `platform.yaml`을 검사한다. `repo`(와 `branch`)를 보내면 그 브랜치 head의 파일을 GitHub App으로 읽어 검사하고, `spec`을 보내면 보낸 내용을 검사한다. 어느 쪽이든 200으로 답하고, `valid`가 통과 여부를, `errors`가 실패한 항목을 알려 준다.
+
+      - `repo`로 검사하면 저장소와 브랜치가 GitHub App 설치에서 보여야 하고, `platform.yaml`이 저장소 루트에 있어야 하며, 모든 서비스의 Dockerfile(`<path>/<dockerfile>`)이 그 커밋에 있어야 한다.
+      - 등록과 수동 배포도 같은 검사를 한다.
+      - 오류 코드: invalid_request(400, repo와 spec을 둘 다 보내거나 둘 다 보내지 않음), github_unreachable(502), github_not_configured(503, repo일 때만).
   createApp:
     summary: GitHub 저장소에서 앱 등록과 첫 배포
     role: operator
@@ -311,6 +350,18 @@ operations:
       - `platform.yaml`에 s3 리소스가 있으면 모든 대상 환경에 저장소 드라이버가 있어야 한다. 플랫폼이 인스턴스마다 버킷과 그 버킷 전용 키를 만들어 봉인한다(ADR 0016).
       - 앱 이름 `api`, `console`, `app`, `headlamp`는 플랫폼과 infra가 쓴다.
       - 오류 코드: invalid_request(400), app_exists(409, 같은 이름의 앱이 있거나 예약된 이름), storage_cleanup_pending(409, 지운 같은 이름 앱의 버킷과 키를 아직 지우는 중), invalid_app_spec(422), github_unreachable(502), github_not_configured(503), storage_not_configured(503, s3 리소스가 있는데 저장소 드라이버가 없는 환경).
+  getApp:
+    summary: 앱 하나 조회
+    role: 모든 역할
+    notes: '`GET /v1/apps`가 보여 주는 것과 같은 형태로 앱 하나를 돌려준다.'
+  deleteApp:
+    summary: 앱 등록 해제 (워크로드와 데이터 삭제)
+    role: operator
+    notes: |-
+      등록한 앱을 해제한다. 플랫폼은 앱의 끝나지 않은 배포를 superseded로 끝내고, gitops 저장소에서 `apps/<name>/`과 추가한 인스턴스마다 `apps/<instance>/`를 지우는 커밋을 하고, 앱과 그 인스턴스, 배포를 잊는다. 그러면 Argo CD가 Application과 그것이 만든 리소스를 지우므로 앱의 데이터도 함께 지워진다. 202는 그 작업이 진행 중이라는 뜻이다.
+
+      - 등록한 앱만 지울 수 있다. 파일과 등록 양쪽에 있는 앱은 지운 뒤에도 파일에 있는 앱으로 목록에 남는다.
+      - 오류 코드: app_not_found(404), app_not_registered(409, 앱이 PLATFORM_APPS_FILE에만 있음), github_unreachable(502), github_not_configured(503).
   createAppInstance:
     summary: 브랜치를 인스턴스로 추가하고 첫 배포
     role: operator
@@ -320,6 +371,13 @@ operations:
       - 인스턴스 이름은 48자까지이고, 길면 슬러그를 자르고 해시 6자를 붙인다.
       - s3 리소스가 있으면 인스턴스마다 버킷과 키를 따로 받는다.
       - 오류 코드: invalid_request(400), app_not_found(404), app_not_registered(409), branch_exists(409), instance_exists(409), instance_limit(409, 기본 인스턴스를 포함해 3개), storage_cleanup_pending(409), invalid_app_spec(422), github_unreachable(502), github_not_configured(503), storage_not_configured(503).
+  deleteAppInstance:
+    summary: 추가한 인스턴스 삭제
+    role: operator
+    notes: |-
+      추가한 인스턴스를 지운다. 플랫폼은 인스턴스의 끝나지 않은 배포를 superseded로 끝내고, gitops 저장소에서 `apps/<instance>/`를 지우는 커밋을 하고, 트래픽 게이트웨이에서 인스턴스를 빼고, 브랜치와 그 배포를 잊는다. 그러면 Argo CD가 네임스페이스와 그 데이터를 지운다. 202는 그 작업이 진행 중이라는 뜻이다.
+
+      - 오류 코드: app_not_found와 instance_not_found(404), app_not_registered(409, 앱이 PLATFORM_APPS_FILE에만 있음), default_instance(409, 기본 인스턴스는 앱과 함께 `DELETE /v1/apps/{name}`으로만 지운다), cluster_busy(409, 트래픽 게이트웨이가 인스턴스의 쓰기를 붙잡고 있음), github_unreachable(502, gitops 저장소), gateway_unreachable(502), github_not_configured(503).
   createDeployment:
     summary: 지금 배포하거나 빌드 없이 재배포
     role: operator
@@ -330,6 +388,25 @@ operations:
       - 재배포는 그 healthy 배포가 간 환경에만 간다. `environments`를 빼면 그 배포의 환경 중 앱이 아직 배포하는 환경 모두이고, 그 배포가 가지 않은 환경을 `environments`에 넣으면 409 nothing_to_redeploy다.
       - 그 인스턴스에 끝나지 않은 배포가 있으면 재배포는 409 deployment_in_progress다. 진행 중인 배포는 gitops 커밋 때의 시크릿을 쓰므로 끝난 뒤에 다시 보낸다. 그 사이에 들어온 배포는 재배포를 superseded로 끝내고, 끝나지 않은 배포 옆에서 큐에 들어간 재배포는 스스로 superseded로 끝난다.
       - 오류 코드: invalid_request(400, 앱이 배포하지 않는 브랜치, 등록하지 않은 환경, 없는 ref, ref와 redeploy를 함께 보냄), app_not_found(404), app_not_registered(409), nothing_to_redeploy(409, healthy 배포가 없거나 그 배포가 요청한 환경 또는 앱이 아직 배포하는 환경에 가지 않음), deployment_in_progress(409), invalid_app_spec(422), github_unreachable(502), github_not_configured(503).
+  listDeployments:
+    summary: 앱의 배포 목록 (최신순)
+    role: 모든 역할
+    notes: '앱의 모든 인스턴스로 간 배포를 최신순으로 돌려준다. `branch`를 주면 그 브랜치의 배포만 돌려주고 `limit`도 그 배포만 센다. PLATFORM_APPS_FILE에만 있는 앱은 빈 목록이다. 오류 코드: invalid_request(400, 범위를 벗어난 limit이나 앱이 배포하지 않는 `branch`), app_not_found(404).'
+  getDeployment:
+    summary: 배포 하나 조회
+    role: 모든 역할
+    notes: '배포 하나를 돌려준다. 오류 코드: deployment_not_found(404).'
+  streamDeploymentEvents:
+    summary: 배포 이벤트 스트림 (SSE)
+    role: 모든 역할
+    notes: |-
+      run 이벤트 스트림과 같은 규약의 Server-Sent Events다.
+
+      - 첫 메시지는 현재 상태인 `snapshot`(data는 Deployment)이며 SSE id가 없다.
+      - 이후 DeploymentEvent마다 type을 SSE event 이름으로, seq를 SSE id로 보낸다.
+      - 배포가 끝나면(healthy, failed, superseded) 마지막 snapshot을 보내고 스트림을 닫는다. 끝나지 않은 동안(queued 포함)은 `: keep-alive` 주석으로 연결을 유지한다.
+      - `Last-Event-ID`나 `?after=`로 다시 연결하면 놓친 이벤트를 재생한다. 이벤트는 저장되므로 유실되지 않는다.
+      - 오류 코드: deployment_not_found(404).
   listAppSecrets:
     summary: 앱 시크릿 이름 목록
     role: 모든 역할
@@ -363,6 +440,20 @@ operations:
       - 감사 로그를 값보다 먼저 쓴다. 쓰지 못하면 값을 주지 않고 503 audit_unavailable로 답한다.
       - viewer와 agent 토큰은 403이다.
       - 오류 코드: app_not_found(404), instance_not_found(404), secret_not_found(404), app_not_registered(409), secrets_not_configured(503), audit_unavailable(503).
+  listGitHubRepos:
+    summary: GitHub App이 볼 수 있는 저장소 목록
+    role: 모든 역할
+    notes: '등록할 저장소를 고를 수 있도록 GitHub App 설치가 볼 수 있는 저장소를 전체 이름순으로 돌려준다. 오류 코드: github_unreachable(502), github_not_configured(503).'
+  receiveGitHubWebhook:
+    summary: GitHub App 웹훅 (push 자동 배포)
+    role: 인증 없음
+    notes: |-
+      GitHub App의 웹훅이다(content type `application/json`). bearer 토큰을 받지 않는다. 대신 `X-Hub-Signature-256`이 App의 웹훅 시크릿으로 원본 본문을 HMAC-SHA256한 값이어야 하고, 이것을 다른 무엇보다 먼저 확인한다.
+
+      - `push` 이벤트만 처리한다. 등록한 앱이 배포하는 브랜치(앱의 `branch` 또는 인스턴스로 추가한 브랜치)에 push가 오고 그 브랜치의 `autoDeploy`가 켜져 있으면, push된 head 커밋(`after`)을 그 브랜치의 인스턴스에 앱의 모든 환경으로 배포하도록 큐에 넣는다. trigger는 `push`, triggeredBy는 `github:<sender login>`이다. 응답은 202와 큐에 넣은 배포(그런 인스턴스마다 하나)다.
+      - 배포할 때 그 커밋의 platform.yaml을 읽는다. 규칙에 맞지 않으면 배포가 실패하고 `error`에 이유가 남는다.
+      - 그 밖에는 모두 204이고 아무것도 바꾸지 않는다. `ping`과 다른 이벤트, 다른 브랜치로의 push, 태그, 삭제된 브랜치, 등록한 앱이 없는 저장소, `autoDeploy`가 꺼진 브랜치, 이미 처리한 전달(`X-GitHub-Delivery`)이 그렇다.
+      - 오류 코드: invalid_signature(401), invalid_request(400, 서명은 맞지만 push 페이로드가 아닌 본문), github_not_configured(503, 서버에 웹훅 시크릿이 없음).
 
 # Parameter descriptions.
 params:
@@ -393,6 +484,20 @@ params:
   name@getAppSecret: 앱 이름
   secret@getAppSecret: '시크릿 이름 (예: HOST_CODE)'
   instance@getAppSecret: 이 인스턴스의 덮어쓰기를 읽는다. 없으면 앱 단위 값
+  name@getApp: 앱 이름
+  name@deleteApp: 앱 이름
+  name@createAppInstance: 앱 이름
+  name@deleteAppInstance: 앱 이름
+  instance@deleteAppInstance: 지울 인스턴스 이름
+  name@createDeployment: 앱 이름
+  name@listDeployments: 앱 이름
+  limit@listDeployments: 돌려받을 배포 수
+  branch@listDeployments: 이 브랜치 인스턴스의 배포만. 앱이 배포하는 브랜치여야 한다
+  id@getDeployment: '배포 id (예: dep_3f9c1a0b2d4e)'
+  id@streamDeploymentEvents: '배포 id (예: dep_3f9c1a0b2d4e)'
+  X-GitHub-Event@receiveGitHubWebhook: GitHub 이벤트 이름. push만 처리한다
+  X-GitHub-Delivery@receiveGitHubWebhook: GitHub의 전달 id. 이미 처리한 전달이면 204다
+  X-Hub-Signature-256@receiveGitHubWebhook: App의 웹훅 시크릿으로 원본 본문을 HMAC-SHA256한 값
 
 # Schema toggles under the 스키마 section, in this order. Enum-only schemas are listed in 열거형 instead.
 schemaGroups:
@@ -423,10 +528,15 @@ schemaGroups:
   - ReviewRequest
   - PlanAttachment
   - PlanDraftRequest
-  - AppList
-  - App
-  - AppDatabase
-  - AppEnvironment
+  - PlanDraftResult
+  - SourceStats
+- title: 버킷 레지던시
+  schemas:
+  - BucketInspectRequest
+  - BucketInspection
+  - BucketObservation
+  - BucketPrefixStatus
+  - BucketSample
 - title: 마이그레이션 실행
   schemas:
   - StartMigrationRequest
@@ -472,6 +582,7 @@ schemaGroups:
   - AuditEntry
   - AuditList
   - SecurityReport
+  - SecurityOCSFExport
   - SecuritySummary
   - SeverityCounts
   - SecuritySource
@@ -487,6 +598,26 @@ schemaGroups:
   - AgentEventList
   - TokenUsage
   - FinishAgentSessionRequest
+- title: 앱
+  schemas:
+  - AppList
+  - App
+  - AppDatabase
+  - AppEnvironment
+  - AppCreateRequest
+  - AppCreated
+  - AppDeploy
+  - AppInstance
+  - AppInstanceCreateRequest
+  - AppInstanceCreated
+  - AppEnvironmentStatus
+  - AppSpec
+  - AppSpecService
+  - AppSpecResource
+  - AppSpecValidateRequest
+  - AppSpecValidation
+  - AppSpecFieldError
+  - AppSpecInvalid
 - title: 앱 시크릿
   schemas:
   - AppSecrets
@@ -494,6 +625,18 @@ schemaGroups:
   - InstanceSecrets
   - AppSecretsUpdate
   - AppSecretValue
+- title: 배포
+  schemas:
+  - Deployment
+  - DeploymentImage
+  - DeploymentEnvironment
+  - DeploymentList
+  - DeploymentCreateRequest
+  - DeploymentEvent
+- title: GitHub 연동
+  schemas:
+  - GitHubRepo
+  - GitHubRepoList
 
 # One paragraph above a schema's field table.
 schemas:
@@ -501,7 +644,7 @@ schemas:
   EnginePlan: migration-engine의 계획(migration-engine/pkg/plan)이다. `${VAR}` 참조는 서버에서 펼친다. 정의되지 않은 필드는 거부한다.
   PlanEndpoint: 계획 엔드포인트에서 비밀이 아닌 값만 보여 주는 형태다.
   PlanRecord: 서버에 저장된 계획이다. 계획 원문(DSN, 토큰)은 돌려주지 않고 summary만 돌려준다.
-  CanaryOptions: 전환 전에 읽기 요청(GET, HEAD, OPTIONS) 중 weights 비율만큼 target으로 보내고, 쓰기는 계속 source로 보낸다. step마다 게이트가 그 step 동안의 target 요청을 검사한다. 게이트가 실패하면 읽기를 모두 source로 되돌리고 run은 rolled_back으로 끝난다. gateway mode http가 필요하다.
+  CanaryOptions: 전환 전에 읽기 요청(GET, HEAD, OPTIONS) 중 weights 비율만큼 target으로 보내고, 쓰기는 계속 source로 보낸다. step마다 게이트가 그 step 동안의 target 요청을 검사한다. 게이트가 실패하면 읽기를 모두 source로 되돌리고 run은 rolled_back으로 끝난다. 요청이 gate.minRequests보다 적고 다른 위반이 없는 step은 inconclusive이고 canary는 다음 step으로 넘어간다. 마지막 step만은 요청이 충분한 채로 통과해야 한다. 1, 10, 25, 50, 75, 90, 100처럼 조금씩 늘리는 step을 권장한다. gateway mode http가 필요하다.
   ObserveOptions: 전환이 성공한 뒤 run이 끝나기 전에 게이트웨이에서 target을 계속 관찰한다. step마다 그 step 동안 target으로 간 요청에 게이트를 평가한다. 요청이 gate.minRequests보다 적거나 게이트웨이 데이터가 없는 step은 inconclusive로 기록만 하고 위반으로 보지 않는다. 롤백은 전체를 다시 이전하는 작업이므로 측정된 위반에서만 시작하기 때문이다. 첫 위반 step에서 관찰을 끝낸다. 데이터는 이미 옮겨졌으므로 run은 succeeded로 끝나고, 위반 내용은 observe와 statusReason에 남는다. autoRollback이면 서버가 actor slo-guard로 이 run의 롤백을 시작하고, 아니면 운영자가 판단한다. gateway mode http가 필요하다.
   RunResult: 콘솔이 보여 주는 숫자다. 값이 없으면 아직 측정하지 않은 것이다.
   EngineState: 엔진이 저장하는 run 상태(migration-engine/pkg/engine.State)다.
@@ -513,13 +656,42 @@ schemas:
   WeightsRequest: 게이트웨이 관리 API에서 읽기 비율을 바꾸는 요청이다.
   SecurityFinding: 공급자별 보안, 거버넌스 신호 하나를 공통 형식으로 정규화한 것이다.
   WrittenRecord: 부하 생성기가 성공을 확인한 쓰기 하나다(엔진의 written-records 형식).
-  App: PLATFORM_APPS_FILE에 등록된 애플리케이션이다.
+  App: 'PLATFORM_APPS_FILE에 있는 애플리케이션, GitHub에서 등록한 애플리케이션, 또는 같은 이름으로 둘 다인 애플리케이션이다. namespace, database, environments는 마이그레이션이 쓰고, deploy는 등록한 앱에만 있다. 파일에 없는 등록 앱은 namespace가 앱 이름, database가 `{name: app, user: app, schemas: []}`이고 environments가 없다.'
   Session: '콘솔 세션이나 CLI 토큰이다. token을 `Authorization: Bearer <token>`으로 보낸다.'
   DeviceLogin: 관리자가 콘솔에서 보는 기기 로그인이다. deviceCode는 들어 있지 않다.
   AppSecrets: 앱의 시크릿 이름이다. 값은 들어 있지 않다.
   AppSecretInfo: 값을 뺀 시크릿 하나다.
   AppSecretsUpdate: 한 범위(앱 단위 또는 인스턴스 하나)의 시크릿을 한 번에 바꾸는 요청이다. set과 delete 중 하나는 있어야 한다.
   AppSecretValue: 값을 포함한 시크릿 하나다. operator만 받는다.
+  BucketObservation: 파일 복사가 쓸 rclone remote로 서버가 측정한 값이다.
+  BucketSample: 프리픽스 하나 아래 처음 객체들을 설명하는 개수다. 키, 값, 내용은 들어 있지 않다.
+  SourceStats: 용량 게이트가 측정하는 source 데이터베이스다. hot standby target은 max_connections와 max_worker_processes가 source 이상이어야 시작하고, 게이트는 max_connections가 sessions의 1.2배 이상이기를 요구한다.
+  AppCreated: 등록한 앱과 큐에 넣은 첫 배포(trigger register)다.
+  AppDeploy: 플랫폼이 GitHub에서 등록한 앱을 배포하는 방식이다. 앱은 자기 `branch`를 앱 이름의 기본 인스턴스로, `POST /v1/apps/{name}/instances`로 추가한 브랜치를 각각 다른 인스턴스로 배포하고, instances에 모두 나온다. repo, environments, createdAt, createdBy를 뺀 나머지 필드는 기본 인스턴스를 설명한다. spec은 `branch`에서 검사를 통과한 가장 최신 platform.yaml이고 specCommit에서 읽은 것이다. 등록할 때와 배포할 때마다 다시 읽는다. lastDeployment는 끝났든 아니든 기본 인스턴스의 가장 최근 배포다.
+  AppInstance: 등록한 앱이 배포하는 브랜치 하나다(ADR 0015). 기본 인스턴스는 앱의 `branch`를 배포하고 이름이 앱 이름이다. 다른 인스턴스는 운영자가 추가한 브랜치를 배포하고 이름이 `<app>--<slug>`다. 이 이름이 네임스페이스, gitops 디렉터리 `apps/<instance>/`, Argo CD Application `<instance>-<env>`, 호스트 `<instance>.<app domain>`에 쓰인다. spec은 그 브랜치에서 검사를 통과한 가장 최신 platform.yaml이고 specCommit에서 읽은 것이다.
+  AppInstanceCreated: 추가한 인스턴스와 큐에 넣은 첫 배포(trigger register)다.
+  AppEnvironmentStatus: 인스턴스의 한 환경에서의 실시간 상태로, Argo CD Application `<instance>-<env>`에서 읽는다. 배포가 그 환경에 닿기 전까지는 pending이다.
+  AppSpec: |-
+    앱 저장소 루트의 `platform.yaml`에 기본값을 채운 것이다. pkg/appspec이 엄격하게 파싱하고(모르는 키는 오류) 다음 규칙을 검사한다.
+
+    - `name`은 `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`(3자에서 32자)에 맞고 `--`가 없어야 한다. `--`는 인스턴스 이름(`<name>--<branch slug>`)에서 앱과 브랜치를 나누기 때문이다. name은 기본 인스턴스(네임스페이스, Argo CD Application `<name>-<env>`, 공개 URL `https://<name>.hopcharlie.dev`)와 모든 인스턴스가 함께 쓰는 이미지 `<registry>/hopcharlie/apps/<name>/<service>`의 이름이 된다.
+    - 서비스는 1개에서 5개, 리소스는 종류마다 1개까지다. 서비스 이름과 리소스 이름은 `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$`에 맞고 겹치지 않아야 한다.
+    - `port`는 1에서 65535, `replicas`는 1에서 5이고, `public`인 서비스는 1개까지이며, `healthCheck`를 쓰면 `/`로 시작해야 한다.
+    - `path`와 `dockerfile`은 상대 경로이고 `..`이 없어야 한다.
+    - `env` 키는 `^[A-Z_][A-Z0-9_]*$`에 맞고 플랫폼이 넣는 변수(`PORT`, `DATABASE_URL`, `S3_*`)가 아니어야 한다.
+
+    AppSpecValidation은 규칙을 어긴 파일의 spec도 돌려주므로 규칙을 스키마 키워드로 다시 적지 않는다.
+  AppSpecValidation: platform.yaml을 검사한 결과다. spec은 파일을 디코딩할 수 있으면 규칙을 어겨도 기본값을 채워 들어 있다. commit은 저장소를 검사할 때 브랜치를 찾은 뒤 파일을 읽은 커밋이다.
+  AppSpecValidateRequest: '`repo`(와 `branch`)나 `spec` 중 하나를 보낸다.'
+  AppSpecInvalid: 422 invalid_app_spec의 본문이다. error는 보통의 Error 본문이고, validation에 실패한 항목이 나온다.
+  Deployment: 앱의 커밋 하나를 인스턴스 하나에, 하나 이상의 환경으로 배포한 것이다.
+  DeploymentEvent: |-
+    배포의 단계 하나다.
+
+    - phase: 배포가 `phase`에 들어갔다. `message`에 설명이 더 있을 수 있다.
+    - log: `phase`에서 나온 빌드나 배포 출력 한 줄이 `message`에 있다.
+    - environment: `env`의 상태가 바뀌었다. `message`에 어떻게 바뀌었는지 나온다(예: "Synced, Healthy").
+    - done: 배포가 `phase`(healthy, failed, superseded)로 끝났다. 실패했으면 `message`가 오류다. 배포의 마지막 이벤트다.
 
 # Field descriptions in the schema tables.
 fields:
@@ -569,7 +741,7 @@ fields:
   ObserveResult.rollbackError: 자동 롤백을 시작하지 못한 이유
   CanaryOptions.weights: step별로 target에 보낼 읽기 비율(%)
   GateThresholds.maxErrorRate: 요청 대비 5xx와 프록시 오류의 비율
-  GateThresholds.minRequests: 요청이 이보다 적으면 canary 게이트는 실패한다 (observe에서는 inconclusive)
+  GateThresholds.minRequests: 요청이 이보다 적으면 게이트를 통과할 수 없다. 마지막이 아닌 canary step은 inconclusive, 마지막 canary step은 실패, observe step은 inconclusive다
   AbortRequest.reason: 중단 사유
   RollbackRequest.reason: 롤백 사유
   RollbackRequest.autoSwitch: 데이터가 동기화되면 바로 전환한다. false면 awaiting_switch에서 /switch를 기다린다
@@ -585,6 +757,7 @@ fields:
   RunResult.missingFiles: target에 없는 객체 수
   RunResult.verified: verify 보고서에 문제가 없다
   CanaryStep.weight: 이 step의 target 읽기 비율(%)
+  CanaryStep.verdict: 'ok: 통과했다. inconclusive: 마지막이 아닌 step에서 요청이 너무 적었고 canary는 계속됐다. failed: run이 롤백됐다'
   EngineState.steps: '단계 이름이 키다: precheck, prepare, presync, delta, fence, switchover, cutover, verify, finalize'
   EngineState.writesHeld: 게이트웨이가 쓰기를 붙잡고 있다
   EngineState.fenceLsn: 쓰기를 붙잡은 시점의 LSN
@@ -645,12 +818,89 @@ fields:
   WrittenRecordStats.latestAt: 가장 최근 레코드의 시각. 스트림이 비어 있으면 없다
   PlanAttachment.size: 바이트 수
   PlanAttachment.sha256: 내용의 SHA-256 (hex)
-  App.environments: 앱이 실행되는 환경, PLATFORM_ENVS_FILE 순서
+  App.environments: PLATFORM_APPS_FILE에 따라 앱이 실행되는 환경, PLATFORM_ENVS_FILE 순서. GitHub에서만 등록한 앱은 비어 있다 (deploy.environments 참고)
   AppDatabase.schemas: 검증에서 비교할 스키마. 비어 있으면 엔진 기본값(public)
   AppEnvironment.dbHost: 클러스터 -rw 서비스의 host:port
   AppEnvironment.bucket: 앱 파일이 있는 rclone remote와 버킷
   PlanDraftRequest.files: false면 두 환경에 버킷이 있어도 오브젝트 스토리지를 뺀다
   PlanDraftRequest.writtenRecordsStream: verify.writtenRecords를 `stream:<name>`으로 채운다
+  PlanDraftRequest.sourceStats: source 데이터베이스도 측정한다. 응답이 PlanDraftResult가 된다
+  PlanDraftResult.sourceStatsReason: sourceStats가 없는 이유. not_measured는 비밀번호 변수가 없거나, 데이터베이스에 접속하지 못했거나, 쿼리가 실패한 경우다
+  SourceStats.sessions: 지금의 클라이언트 세션 수 (pg_stat_activity의 client backend)
+  SourceStats.bytes: 접속을 받는 데이터베이스의 전체 크기. 측정하지 못했으면 없다
+  SourceStats.walBytesPerSecond: 측정 구간 동안 초당 쓴 WAL 바이트. 측정하지 못했으면 없다
+  SourceStats.windowSeconds: WAL 측정 구간의 길이
+  BucketInspectRequest.bucket: 레지던시 정책에 등록된 버킷, 계획에서 쓰는 형식(`remote:bucket[/path]`)
+  BucketInspectRequest.prefix: 객체를 설명할, 목록에 나온 첫 단계 프리픽스 하나 (`/`로 끝난다)
+  BucketObservation.hosting: '`provider`: 공급자 엔드포인트의 AWS S3나 GCS이고, 위치는 공급자가 알려 준다. `self`: 운영자가 운영하는 저장소(MinIO)이고, 리전은 자체 설정일 뿐이다'
+  BucketObservation.location: 소문자 위치 코드. 자체 호스팅 저장소가 알려 주지 않으면 비어 있다
+  BucketObservation.locationType: region, dual-region, multi-region 중 하나. 모르면 비어 있다
+  BucketObservation.endpointIPs: 엔드포인트 호스트를 해석한 주소
+  BucketObservation.prefixes: 첫 단계 프리픽스. ""는 버킷 경로 바로 아래의 객체를 뜻한다
+  BucketObservation.replicas: 이 버킷이 복제하는 대상 버킷 (inspect가 읽지 않는다)
+  BucketObservation.tiered: 자체 호스팅 저장소의 수명 주기 규칙이 객체를 다른 계층으로 옮긴다
+  BucketPrefixStatus.status: '`unclassified`: 목록에는 있지만 정책에 없다(run이 거부된다). `missing`: 정책에는 있지만 목록에 없다'
+  BucketPrefixStatus.label: 정책에 레이블이 있으면 그 레이블
+  BucketSample.objects: 읽은 객체 수 (최대 50)
+  BucketSample.truncated: 읽은 것보다 객체가 더 있다
+  BucketSample.metadataKeys: 사용자 메타데이터 이름 (값은 넣지 않는다)
+  BucketSample.keyPatterns: 개인정보 패턴마다 그 패턴에 맞는 키의 수
+  BucketSample.maxDepth: 프리픽스 아래 가장 깊은 키의 깊이 (경로 세그먼트 수)
+  BucketInspection.environment: 정책상 버킷이 있는 환경
+  BucketInspection.label: 버킷의 레이블. 버킷 경로 바로 아래의 객체에 적용된다
+  SecurityOCSFExport.ocsfVersion: 이벤트가 따르는 OCSF 버전
+  SecurityOCSFExport.generatedAt: 소스를 읽은 시각 (SecurityReport.generatedAt과 같다)
+  SecurityOCSFExport.findings: OCSF 스키마가 정의한 Detection Finding(2004)과 Compliance Finding(2003) 이벤트 (snake_case 키, `time`은 epoch 밀리초). 형태는 이 API가 아니라 OCSF 표준을 따르므로 여기서 다시 적지 않는다
+  AppCreateRequest.repo: GitHub App 설치가 볼 수 있는 저장소의 owner/name
+  AppCreateRequest.branch: platform.yaml을 읽고 push를 배포하는 브랜치
+  AppCreateRequest.environments: 배포할 환경, PLATFORM_ENVS_FILE의 이름
+  AppCreateRequest.autoDeploy: branch에 push할 때마다 배포한다
+  AppDeploy.environments: 앱을 배포하는 환경, PLATFORM_ENVS_FILE 순서
+  AppDeploy.autoDeploy: branch에 push할 때마다 배포한다
+  AppDeploy.url: 트래픽 게이트웨이를 거쳐 공개 서비스가 답하는 주소. 공개 서비스가 없으면 없다
+  AppDeploy.createdBy: 앱을 등록한 토큰 이름
+  AppDeploy.status: environments의 환경마다 하나, 같은 순서
+  AppDeploy.instances: 앱의 모든 인스턴스. 기본 인스턴스가 먼저이고 나머지는 브랜치 이름순
+  AppInstance.default: 앱 자신의 브랜치다. 이 인스턴스는 앱과 함께만 지워진다
+  AppInstance.autoDeploy: branch에 push할 때마다 이 인스턴스를 배포한다
+  AppInstance.url: '`https://<instance>.<domain>`, 트래픽 게이트웨이를 거쳐 공개 서비스가 답하는 주소. 공개 서비스가 없으면 없다'
+  AppInstance.createdBy: 앱을 등록한(기본 인스턴스) 또는 브랜치를 추가한 토큰 이름
+  AppInstance.status: 앱의 환경마다 하나, 앱의 순서
+  AppInstanceCreateRequest.branch: 앱 저장소의 브랜치. 앱 자신의 브랜치는 안 된다
+  AppInstanceCreateRequest.autoDeploy: branch에 push할 때마다 배포한다
+  AppEnvironmentStatus.syncStatus: 'Argo CD sync 상태: Synced, OutOfSync, Unknown'
+  AppEnvironmentStatus.healthStatus: 'Argo CD health 상태: Healthy, Progressing, Degraded, Suspended, Missing, Unknown'
+  AppEnvironmentStatus.commit: 그 환경에서 실행 중인 앱 커밋
+  AppEnvironmentStatus.url: 이 환경에서 공개 서비스가 답하는 주소 (알 때만)
+  AppSpecService.path: docker 빌드 컨텍스트, 저장소 루트 기준 상대 경로
+  AppSpecService.dockerfile: path 기준 상대 경로
+  AppSpecService.port: 서비스가 듣는 포트. 서비스는 이 값을 PORT로 받는다
+  AppSpecService.healthCheck: 서비스가 준비되면 2xx로 답하는 HTTP 경로
+  AppSpecService.public: '트래픽 게이트웨이를 거쳐 `https://<app>.hopcharlie.dev`로 서비스한다'
+  AppSpecService.env: 플랫폼이 넣는 변수 외의 환경 변수. 값은 문자열이다. YAML이 숫자, 불리언, null로 읽는 값(`4`, `yes`, `0755`, `~`)은 오류이므로 따옴표로 감싼다. platform.yaml은 git에 있으므로 비밀을 넣지 않는다
+  AppSpecResource.type: 'postgres: CNPG Cluster `<app>-<name>`. 모든 서비스가 시크릿 `<app>-<name>-app`의 `uri` 키에서 DATABASE_URL을 받는다. s3: 버킷. 모든 서비스가 S3_ENDPOINT, S3_BUCKET, S3_REGION, S3_PATH_STYLE, S3_ACCESS_KEY, S3_SECRET_KEY를 받는다'
+  AppSpecFieldError.path: platform.yaml 안의 위치. 파일 전체의 오류(없음, YAML이 아님, 모르는 키)면 비어 있다
+  AppSpecValidation.errors: 통과하면 비어 있다
+  AppSpecValidateRequest.repo: owner/name. branch의 head에서 GitHub App으로 platform.yaml을 읽는다
+  AppSpecValidateRequest.spec: 대신 검사할 platform.yaml 내용, 64 KiB까지
+  Deployment.branch: 이 배포가 배포하는 인스턴스의 브랜치. 앱의 브랜치이거나 추가한 브랜치다
+  Deployment.instance: 배포하는 인스턴스 (AppInstance 이름)
+  Deployment.ref: 요청한 것. 브랜치, 태그, 커밋 sha 중 하나
+  Deployment.commit: ref를 푼 전체 커밋 sha
+  Deployment.triggeredBy: '토큰 이름(register, manual) 또는 push한 사람의 `github:<login>`(push)'
+  Deployment.images: '이미지를 빌드한 서비스마다 하나, digest로 고정한다: `<registry>/hopcharlie/apps/<app>/<service>@sha256:<digest>`. 이미지에는 커밋 태그도 붙는다'
+  Deployment.environments: 대상 환경마다 하나, 앱의 순서
+  Deployment.error: 배포가 실패한 이유
+  Deployment.buildId: AWS CodeBuild 빌드 id, 또는 로컬 docker 빌드의 id (E2E)
+  Deployment.startedAt: 배포 작업자(deployer)가 큐에서 가져간 시각
+  Deployment.finishedAt: 최종 상태에 도달한 시각
+  DeploymentEnvironment.syncStatus: 'Application `<instance>-<env>`의 Argo CD sync 상태'
+  DeploymentEnvironment.healthStatus: 'Application `<instance>-<env>`의 Argo CD health 상태'
+  DeploymentEnvironment.url: 이 환경에서 공개 서비스가 답하는 주소 (알 때만)
+  DeploymentEnvironment.message: Argo CD의 sync 메시지나 환경이 실패한 이유 같은 최신 설명
+  DeploymentCreateRequest.branch: '앱이 배포하는 브랜치. 앱 자신의 브랜치나 `POST /v1/apps/{name}/instances`로 추가한 브랜치다. 인스턴스를 고르며, 기본값은 앱의 브랜치'
+  DeploymentCreateRequest.ref: 그 인스턴스에 배포할 앱 저장소의 브랜치, 태그, 커밋 sha. 기본값은 branch
+  DeploymentCreateRequest.environments: 앱 환경의 일부. 기본값은 전부
   Principal.name: 토큰 이름
   Session.token: 이 응답에서만 보인다. 서버는 해시만 저장한다
   DeviceLoginStartRequest.client: 무엇이 요청하는지. 관리자가 승인하기 전에 본다
@@ -678,7 +928,7 @@ enums:
   Role:
     viewer: 모든 것을 읽는다
     agent: 읽기와 계획 제출 (AI 플래너)
-    operator: 승인, 시작, 전환, 중단을 포함한 모든 작업
+    operator: 승인, 시작, 전환, 중단, 앱 등록과 배포를 포함한 모든 작업
   PlanStatus:
     pending_approval: 사람의 승인을 기다린다
     approved: 승인됨. 시작할 수 있다
