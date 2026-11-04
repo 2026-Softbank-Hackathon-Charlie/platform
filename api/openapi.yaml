@@ -1373,6 +1373,112 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/apps/{name}/secrets:
+    parameters:
+      - $ref: "#/components/parameters/AppName"
+    get:
+      tags: [apps]
+      operationId: listAppSecrets
+      description: |
+        The names of a registered app's secrets, without values: the
+        app-wide ones, which every instance gets, and each instance's
+        overrides. An instance gets the app-wide secrets with its overrides
+        on top. Secrets reach the app as environment variables at its next
+        deployment (ADR 0019); a secret with the same name as a
+        `platform.yaml` env entry wins over it.
+
+        Error codes: app_not_found (404), app_not_registered (409),
+        secrets_not_configured (503: the server has no secrets key). Role
+        viewer.
+      responses:
+        "200":
+          description: The secret names.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppSecrets" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+    put:
+      tags: [apps]
+      operationId: updateAppSecrets
+      description: |
+        Sets and deletes secrets of a registered app in one change: app-wide
+        ones without `instance`, or one instance's overrides with it
+        (deleting an override makes the instance use the app-wide value
+        again). Running instances keep their old values until they are
+        deployed again; `POST /v1/apps/{name}/deployments` with `redeploy`
+        applies them without a build. Values are stored encrypted with the
+        server's secrets key and never logged; the audit entry has only the
+        names.
+
+        Names match `^[A-Z_][A-Z0-9_]*$`, at most 64 characters, and are not
+        set by the platform (PORT, DATABASE_URL, S3_*). Values are at most
+        4096 bytes. At most 50 secrets per app-wide set and per instance.
+
+        Error codes: invalid_request (400: a bad or reserved name, a value
+        too long, too many secrets, a name both set and deleted, or nothing
+        to change), app_not_found (404), instance_not_found (404: `instance`
+        is not one of the app's instances), app_not_registered (409),
+        secrets_not_configured (503). Role operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppSecretsUpdate" }
+      responses:
+        "200":
+          description: The secret names after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppSecrets" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/apps/{name}/secrets/{secret}:
+    parameters:
+      - $ref: "#/components/parameters/AppName"
+      - name: secret
+        in: path
+        required: true
+        schema: { type: string, example: HOST_CODE }
+      - name: instance
+        in: query
+        required: false
+        description: Read this instance's override instead of the app-wide value.
+        schema: { type: string }
+    get:
+      tags: [apps]
+      operationId: getAppSecret
+      description: |
+        One secret's value, for the console's show button. Every call is
+        written to the audit log (with the name, never the value), and the
+        answer is not cached (`Cache-Control: no-store`).
+
+        Error codes: app_not_found (404), instance_not_found (404),
+        secret_not_found (404), app_not_registered (409),
+        secrets_not_configured (503). Role operator.
+      responses:
+        "200":
+          description: The secret with its value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppSecretValue" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
   /v1/apps/{name}/deployments:
     parameters:
       - $ref: "#/components/parameters/AppName"
@@ -1388,10 +1494,18 @@ paths:
         name. The deployment is queued and 202 returns at once; follow it
         with `GET /v1/deployments/{id}/events`.
 
+        With `redeploy: true` (trigger `redeploy`) nothing is built and
+        GitHub is not read: the instance's last healthy deployment is
+        deployed again, same commit and same images, with the secrets as
+        they are now (`PUT /v1/apps/{name}/secrets`). Use it after changing
+        secrets. `ref` is not allowed with it.
+
         Error codes: invalid_request (400: a `branch` the app does not
-        deploy, an environment the app is not registered for, or a ref the
-        repository does not have), app_not_found (404), app_not_registered
-        (409: the app is only in PLATFORM_APPS_FILE), invalid_app_spec (422),
+        deploy, an environment the app is not registered for, a ref the
+        repository does not have, or `ref` with `redeploy`), app_not_found
+        (404), app_not_registered (409: the app is only in
+        PLATFORM_APPS_FILE), nothing_to_redeploy (409: `redeploy` but the
+        instance has no healthy deployment), invalid_app_spec (422),
         github_unreachable (502), github_not_configured (503). Role operator.
       requestBody:
         required: false
@@ -1643,12 +1757,12 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
-      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found"
+      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, device_login_state_conflict"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, device_login_state_conflict, nothing_to_redeploy"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1673,7 +1787,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unavailable:
-      description: "gateway_not_configured, github_not_configured, login_not_configured"
+      description: "gateway_not_configured, github_not_configured, login_not_configured, secrets_not_configured, storage_not_configured"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -3062,7 +3176,8 @@ components:
         register: the first deployment of an app (POST /v1/apps) or of an added instance (POST /v1/apps/{name}/instances).
         push: a push to a branch the app deploys (the GitHub webhook).
         manual: POST /v1/apps/{name}/deployments.
-      enum: [push, manual, register]
+        redeploy: POST /v1/apps/{name}/deployments with `redeploy`: the last healthy deployment's commit and images again, without a build, to apply changed secrets.
+      enum: [push, manual, register, redeploy]
 
     DeploymentStatus:
       type: string
@@ -3161,6 +3276,70 @@ components:
           minItems: 1
           uniqueItems: true
           items: { type: string }
+        redeploy:
+          type: boolean
+          description: "Deploy the instance's last healthy deployment again (same commit and images, no build) with the current secrets. Not with ref."
+
+    AppSecretInfo:
+      description: A secret without its value.
+      type: object
+      required: [name, updatedAt, updatedBy]
+      properties:
+        name: { type: string, example: HOST_CODE }
+        updatedAt: { type: string, format: date-time }
+        updatedBy: { type: string, description: The principal who last set it. }
+
+    InstanceSecrets:
+      type: object
+      required: [instance, secrets]
+      properties:
+        instance: { type: string, example: moimroom--dev }
+        secrets:
+          description: This instance's overrides, by name.
+          type: array
+          items: { $ref: "#/components/schemas/AppSecretInfo" }
+
+    AppSecrets:
+      type: object
+      required: [app, instances]
+      properties:
+        app:
+          description: App-wide secrets, by name. Every instance gets them unless it overrides one.
+          type: array
+          items: { $ref: "#/components/schemas/AppSecretInfo" }
+        instances:
+          description: The instances that override at least one secret, by instance name.
+          type: array
+          items: { $ref: "#/components/schemas/InstanceSecrets" }
+
+    AppSecretsUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        instance:
+          type: string
+          description: Change this instance's overrides; without it the app-wide secrets change.
+          example: moimroom--dev
+        set:
+          description: Secrets to create or replace, name to value.
+          type: object
+          additionalProperties: { type: string, maxLength: 4096 }
+          example: { HOST_CODE: "4821" }
+        delete:
+          description: Names to remove. A name not present is ignored.
+          type: array
+          uniqueItems: true
+          items: { type: string }
+
+    AppSecretValue:
+      type: object
+      required: [name, value, updatedAt, updatedBy]
+      properties:
+        name: { type: string }
+        instance: { type: string, description: "The instance whose override this is; absent for an app-wide secret." }
+        value: { type: string }
+        updatedAt: { type: string, format: date-time }
+        updatedBy: { type: string }
 
     DeploymentEventType:
       type: string
