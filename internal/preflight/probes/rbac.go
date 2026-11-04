@@ -1,6 +1,7 @@
-// Package probes contains opt-in, read-only target checks. No probe is wired to
-// production handlers. Clients, endpoints and requirements must be server-owned
-// and bound to the intended environment by the caller, never supplied by AI.
+// Package probes contains opt-in, read-only target checks. paritygate runs them
+// on a run's start for the audit log only; nothing here stops a run. Clients,
+// endpoints and requirements must be server-owned and bound to the intended
+// environment by the caller, never supplied by AI.
 package probes
 
 import (

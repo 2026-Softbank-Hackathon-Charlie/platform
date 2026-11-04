@@ -23,6 +23,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -532,6 +533,17 @@ func noteVersion(r *http.Request, c plans.VersionCheck) {
 		noteAudit(r, "pgVersion", *c.Result)
 	case c.Outcome != "":
 		noteAudit(r, "pgVersion", map[string]any{"status": c.Outcome})
+	}
+}
+
+// noteParity records what the parity probes found for a started plan. It is
+// a record only (audit mode): passed=false here never stopped the run.
+func noteParity(r *http.Request, c plans.ParityCheck) {
+	switch {
+	case c.Report != nil:
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "passed": c.Report.Passed, "results": paritygate.Lines(*c.Report)})
+	case c.Outcome != "":
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit"})
 	}
 }
 
