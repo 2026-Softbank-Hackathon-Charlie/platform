@@ -123,6 +123,9 @@ type Config struct {
 	// AppDomain names the instance URL https://<instance>.<AppDomain> in
 	// the events.
 	AppDomain string
+	// GKEImageRegistry is the Artifact Registry prefix for gke images. Empty
+	// keeps the builder's image addresses in every environment.
+	GKEImageRegistry string
 	// Workers is how many deployments run at once (default 2).
 	Workers int
 	// SyncTimeout bounds the wait from the commit until every environment

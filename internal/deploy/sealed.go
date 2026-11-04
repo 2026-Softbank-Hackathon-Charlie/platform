@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing"
@@ -102,7 +103,18 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 				sealed.AppChecksum = j.e.cfg.Secrets.Checksum(app.Name, j.d.Instance, in)
 			}
 		}
-		b, err := Render(File{App: app.Name, Instance: j.d.Instance, Env: env.Env, Commit: j.d.Commit, Deployment: j.d.ID, Spec: spec, Images: images, Sealed: sealed})
+		envImages := images
+		if env.Env == "gke" && j.e.cfg.GKEImageRegistry != "" {
+			envImages = make(map[string]string, len(images))
+			for service, image := range images {
+				_, digest, ok := strings.Cut(image, "@")
+				if !ok || !digestPattern.MatchString(digest) {
+					return nil, fmt.Errorf("gke image for %s has no valid digest", service)
+				}
+				envImages[service] = j.e.cfg.GKEImageRegistry + "/" + app.Name + "/" + service + "@" + digest
+			}
+		}
+		b, err := Render(File{App: app.Name, Instance: j.d.Instance, Env: env.Env, Commit: j.d.Commit, Deployment: j.d.ID, Spec: spec, Images: envImages, Sealed: sealed})
 		if err != nil {
 			return nil, err
 		}
