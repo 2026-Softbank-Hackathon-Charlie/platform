@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
@@ -37,6 +38,33 @@ type Bucket struct {
 	Bucket      string `json:"bucket"`
 	Environment string `json:"environment"`
 	Label       string `json:"label"`
+	// Expect is how the gate confirms that the bucket is where Environment
+	// says. Without it every copy that uses the bucket is denied
+	// (bucket_location_unverified): a declaration alone is not evidence.
+	Expect *BucketExpect `json:"expect,omitempty"`
+	// Prefixes classifies the bucket's first-level prefixes, as Catalog does
+	// a cluster's tables. When set, the source's listed prefixes must match
+	// it exactly, each prefix's label applies to its objects, and Label
+	// covers only objects directly under the bucket path.
+	Prefixes []ClassifiedPrefix `json:"prefixes,omitempty"`
+}
+
+// BucketExpect is what the measured bucket must show. A provider-hosted
+// bucket (AWS S3, GCS) needs Locations; a self-hosted one (MinIO) needs
+// EndpointCIDRs, since its reported region is only its own configuration.
+type BucketExpect struct {
+	// Locations are lowercase provider location codes the bucket may report,
+	// e.g. ap-northeast-2 (S3) or asia-northeast3 (GCS).
+	Locations []string `json:"locations,omitempty"`
+	// EndpointCIDRs are the networks every address of the endpoint must be
+	// in, e.g. the on-prem LAN or its Tailscale range.
+	EndpointCIDRs []string `json:"endpointCIDRs,omitempty"`
+}
+
+// ClassifiedPrefix labels the objects under one first-level prefix.
+type ClassifiedPrefix struct {
+	Prefix string `json:"prefix"`
+	Label  string `json:"label"`
 }
 
 type Environment struct {
@@ -66,6 +94,10 @@ func ParseConfig(raw []byte) (Config, error) {
 }
 
 var (
+	// locationID is a provider location code (lowercase).
+	locationID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
+	// prefixID is one first-level prefix, always ending in "/".
+	prefixID   = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._=-]{0,127}/$`)
 	resourceID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	// bucketID is "remote:bucket[/path]", the form plans accept for files.
 	bucketID = regexp.MustCompile(`^[A-Za-z0-9_-]+:[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*$`)
@@ -73,6 +105,12 @@ var (
 
 // ValidBucket reports whether s is a bucket the policy can name.
 func ValidBucket(s string) bool { return len(s) <= 512 && bucketID.MatchString(s) }
+
+// ValidPrefix reports whether s is a first-level prefix the policy can name.
+func ValidPrefix(s string) bool { return prefixID.MatchString(s) }
+
+// ValidLocation reports whether s is a location code the policy can name.
+func ValidLocation(s string) bool { return locationID.MatchString(s) }
 
 func validLabel(s string) bool { return s == "kr-only" || s == "apac" || s == "global" }
 
@@ -166,11 +204,61 @@ func (c Config) normalized() (Config, error) {
 			return bad(fmt.Sprintf("buckets[%d]: invalid, duplicate or unregistered environment, or unsupported label", i))
 		}
 		seenBuckets[b.Bucket] = true
-		out.Buckets = append(out.Buckets, b)
+		nb, err := normalizedBucket(b)
+		if err != nil {
+			return bad(fmt.Sprintf("buckets[%d]: %v", i, err))
+		}
+		out.Buckets = append(out.Buckets, nb)
 	}
 	slices.SortFunc(out.Buckets, func(a, b Bucket) int { return cmp.Compare(a.Bucket, b.Bucket) })
 	slices.SortFunc(out.Environments, func(a, b Environment) int { return cmp.Compare(a.ID, b.ID) })
 	slices.Sort(out.APACCountries)
 	slices.SortFunc(out.Catalog, func(a, b ClusterCatalog) int { return compareScope(a.Scope, b.Scope) })
+	return out, nil
+}
+
+// normalizedBucket validates and canonicalizes expect and prefixes. CIDRs are
+// rewritten to their masked form so equal networks give equal digests.
+func normalizedBucket(b Bucket) (Bucket, error) {
+	out := Bucket{Bucket: b.Bucket, Environment: b.Environment, Label: b.Label}
+	if e := b.Expect; e != nil {
+		if len(e.Locations) == 0 && len(e.EndpointCIDRs) == 0 {
+			return Bucket{}, errors.New("expect needs locations or endpointCIDRs")
+		}
+		ne := &BucketExpect{}
+		for _, l := range e.Locations {
+			if !locationID.MatchString(l) || slices.Contains(ne.Locations, l) {
+				return Bucket{}, errors.New("expect.locations: invalid (lowercase location codes) or duplicate entry")
+			}
+			ne.Locations = append(ne.Locations, l)
+		}
+		for _, c := range e.EndpointCIDRs {
+			p, err := netip.ParsePrefix(c)
+			if err != nil {
+				return Bucket{}, errors.New("expect.endpointCIDRs: invalid CIDR")
+			}
+			// A network that holds every address verifies nothing.
+			if p.Bits() == 0 {
+				return Bucket{}, errors.New("expect.endpointCIDRs: a /0 network is not a location")
+			}
+			c = p.Masked().String()
+			if slices.Contains(ne.EndpointCIDRs, c) {
+				return Bucket{}, errors.New("expect.endpointCIDRs: duplicate entry")
+			}
+			ne.EndpointCIDRs = append(ne.EndpointCIDRs, c)
+		}
+		slices.Sort(ne.Locations)
+		slices.Sort(ne.EndpointCIDRs)
+		out.Expect = ne
+	}
+	seen := map[string]bool{}
+	for _, p := range b.Prefixes {
+		if !prefixID.MatchString(p.Prefix) || seen[p.Prefix] || !validLabel(p.Label) {
+			return Bucket{}, errors.New("prefixes: invalid (one level ending in /), duplicate entry or unsupported label")
+		}
+		seen[p.Prefix] = true
+		out.Prefixes = append(out.Prefixes, p)
+	}
+	slices.SortFunc(out.Prefixes, func(a, b ClassifiedPrefix) int { return cmp.Compare(a.Prefix, b.Prefix) })
 	return out, nil
 }

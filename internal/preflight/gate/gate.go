@@ -11,12 +11,13 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/bucketprobe"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/inventory"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 )
 
 // Reason codes the gate adds to the policy's own. A plan's files copy is
-// checked by the policy (registered buckets, unregistered_bucket otherwise).
+// measured here (bucketprobe) and checked by the policy.
 const (
 	// CodeInventoryIncomplete: the source could not be listed entirely. The
 	// collector's code follows as a second reason, e.g. "inventory:connect_failed".
@@ -26,7 +27,16 @@ const (
 	CodeInvalidInput = "invalid_input"
 	// CodeEvaluationFailed: the policy could not be evaluated.
 	CodeEvaluationFailed = "evaluation_failed"
+	// CodeBucketProbeIncomplete: a files copy's bucket could not be measured.
+	// The probe's code follows as a second reason, e.g.
+	// "bucket_probe:remote_not_configured"; both name the bucket.
+	CodeBucketProbeIncomplete = "bucket_probe_incomplete"
 )
+
+// Prober measures a bucket through the rclone remote the copy will use.
+type Prober interface {
+	Probe(ctx context.Context, bucket string, opt bucketprobe.Options) (preflight.BucketObservation, bucketprobe.Result)
+}
 
 // Collector lists the relations the physical copy of a source would carry.
 type Collector interface {
@@ -37,10 +47,15 @@ type Collector interface {
 type Gate struct {
 	evaluator *residency.Evaluator
 	collector Collector
-	digest    string
+	prober    Prober
+	// registered buckets are the only ones the gate connects to.
+	registered map[string]bool
+	buckets    map[string]residency.Bucket
+	digest     string
 }
 
-// New prepares the policy. collector nil uses inventory.Collector{}.
+// New prepares the policy. collector nil uses inventory.Collector{}; the
+// buckets of a files copy are measured with bucketprobe.Prober{}.
 func New(ctx context.Context, cfg residency.Config, collector Collector) (*Gate, error) {
 	e, err := residency.New(ctx, cfg)
 	if err != nil {
@@ -49,7 +64,17 @@ func New(ctx context.Context, cfg residency.Config, collector Collector) (*Gate,
 	if collector == nil {
 		collector = inventory.Collector{}
 	}
-	return &Gate{evaluator: e, collector: collector, digest: e.PolicyDigest()}, nil
+	registered, buckets := map[string]bool{}, map[string]residency.Bucket{}
+	for _, b := range cfg.Buckets {
+		registered[b.Bucket], buckets[b.Bucket] = true, b
+	}
+	return &Gate{evaluator: e, collector: collector, prober: bucketprobe.Prober{}, registered: registered, buckets: buckets, digest: e.PolicyDigest()}, nil
+}
+
+// WithProber replaces the bucket prober (tests). It returns g.
+func (g *Gate) WithProber(p Prober) *Gate {
+	g.prober = p
+	return g
 }
 
 // PolicyDigest identifies the embedded policy and its configuration.
@@ -73,10 +98,6 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (preflight.ResidencyVerd
 	if p == nil {
 		return deny(CodeInvalidInput), residency.ErrInvalidInput
 	}
-	var files *preflight.BucketCopy
-	if p.Files != nil {
-		files = &preflight.BucketCopy{Source: p.Files.Source, Target: p.Files.Target}
-	}
 	scope := preflight.ClusterScope{Environment: p.Source.Env, Namespace: p.Source.Namespace, Cluster: p.Source.Cluster}
 	inv, res := g.collector.Collect(ctx, p.Source.DSN, scope)
 	if !inv.Complete || res.Code != "" {
@@ -85,6 +106,48 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (preflight.ResidencyVerd
 			code = "unknown"
 		}
 		return deny(CodeInventoryIncomplete, "inventory:"+code), nil
+	}
+	// The source's prefixes decide what the copy carries; the target's
+	// replication decides where it goes next.
+	var files *preflight.BucketCopy
+	var evidence []preflight.ObservedBucket
+	if p.Files != nil {
+		files = &preflight.BucketCopy{Source: p.Files.Source, Target: p.Files.Target}
+		// A store the policy does not know is never contacted.
+		var unregistered []preflight.Reason
+		for _, name := range []string{p.Files.Source, p.Files.Target} {
+			if !g.registered[name] && residency.ValidBucket(name) {
+				unregistered = append(unregistered, preflight.Reason{Code: "unregistered_bucket", MovementID: movementID(p), Bucket: name})
+			}
+		}
+		if len(unregistered) > 0 {
+			v := deny()
+			v.Reasons = unregistered
+			return v, nil
+		}
+		for _, b := range []struct {
+			name string
+			opt  bucketprobe.Options
+			obs  **preflight.BucketObservation
+		}{
+			{p.Files.Source, bucketprobe.Options{Prefixes: true}, &files.SourceObserved},
+			{p.Files.Target, bucketprobe.Options{Replication: true}, &files.TargetObserved},
+		} {
+			obs, res := g.prober.Probe(ctx, b.name, b.opt)
+			if res.Code != "" {
+				bucket := ""
+				if residency.ValidBucket(b.name) {
+					bucket = b.name
+				}
+				v := deny()
+				for _, c := range []string{CodeBucketProbeIncomplete, "bucket_probe:" + res.Code} {
+					v.Reasons = append(v.Reasons, preflight.Reason{Code: c, MovementID: movementID(p), Bucket: bucket})
+				}
+				return v, nil
+			}
+			*b.obs = &obs
+			evidence = append(evidence, preflight.ObservedBucket{Bucket: b.name, Observation: obs})
+		}
 	}
 	v, err := g.evaluator.Evaluate(ctx, preflight.Request{Movements: []preflight.Movement{{
 		ID:          p.ID,
@@ -100,6 +163,7 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (preflight.ResidencyVerd
 	case err != nil:
 		return deny(CodeEvaluationFailed), err
 	}
+	v.Buckets = evidence
 	return v, nil
 }
 

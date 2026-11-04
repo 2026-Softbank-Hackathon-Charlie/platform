@@ -22,6 +22,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -126,6 +127,14 @@ type Deps struct {
 	// resource for an environment without one answers 503
 	// storage_not_configured.
 	StorageConfigured func(env string) bool
+	// Buckets inspects the residency policy's buckets (gate.Gate); nil
+	// answers POST /v1/residency/buckets/inspect 503 residency_not_configured.
+	Buckets BucketInspector
+}
+
+// BucketInspector measures a registered bucket next to its policy entry.
+type BucketInspector interface {
+	Inspect(ctx context.Context, bucket, prefix string) (gate.Inspection, error)
 }
 
 // SourceMeasurer reads a source database's numbers (capacity.Prober). ok is
@@ -215,6 +224,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/plans/{ref}/attachments/{name}", viewer, s.getPlanAttachment)
 	s.route("GET /v1/apps", viewer, s.listApps)
 	s.route("POST /v1/plans/draft", agent, s.draftPlan)
+	s.route("POST /v1/residency/buckets/inspect", agent, s.inspectBucket)
 	s.route("POST /v1/migrations/{runId}/rollback", operator, s.rollbackMigration)
 	s.route("GET /{$}", "", s.root)
 	s.route("GET /v1/security", viewer, s.security)
@@ -480,6 +490,9 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 		if errors.As(err, &denied) {
 			noteAudit(r, "residencyDigest", denied.Verdict.PolicyDigest)
 			noteAudit(r, "residencyReasons", plans.ReasonTexts(denied.Verdict.Reasons))
+			if len(denied.Verdict.Buckets) > 0 {
+				noteAudit(r, "residencyBuckets", plans.BucketEvidence(denied.Verdict.Buckets))
+			}
 		}
 		s.fail(w, r, http.StatusConflict, "residency_denied", err.Error())
 	case errors.Is(err, plans.ErrCapacityInsufficient):
@@ -540,6 +553,9 @@ func noteResidency(r *http.Request, c plans.ResidencyCheck) {
 	noteAudit(r, "residency", c.Outcome)
 	if c.PolicyDigest != "" {
 		noteAudit(r, "residencyDigest", c.PolicyDigest)
+	}
+	if len(c.Buckets) > 0 {
+		noteAudit(r, "residencyBuckets", plans.BucketEvidence(c.Buckets))
 	}
 }
 

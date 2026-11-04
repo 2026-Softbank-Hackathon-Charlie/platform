@@ -20,9 +20,37 @@ catalog:
       - {dataset: {database: app, schema: public, table: page_views}, label: apac}
       - {dataset: {database: app, schema: public, table: customers}, label: kr-only}
 # Buckets a plan's files may copy between (optional; without an entry a plan
-# with files is denied). environment says where the bucket is stored, as you
-# declare it: nothing is looked up from the cloud. label classifies everything
-# in the bucket and applies when it is the source of a copy.
+# with files is denied). environment says where the bucket is stored, and
+# expect says how the gate confirms it before every run, through the same
+# rclone remote the copy uses (RCLONE_CONFIG_<REMOTE>_*):
+#   - locations: what AWS S3 or GCS must report for the bucket. A dual- or
+#     multi-region GCS bucket is always denied.
+#   - endpointCIDRs: networks every address of the endpoint must be in. Needed
+#     for a store you run (MinIO): its "region" is only its own setting.
+# A bucket without expect is denied (bucket_location_unverified).
+#
+# label classifies the bucket's contents when it is the source of a copy. With
+# prefixes, the source's first-level prefixes are listed like a cluster's
+# tables: a new prefix or a missing one denies, each prefix's label applies to
+# it, and label covers only objects directly under the bucket path.
+#
+# The target's enabled replication rules are read too: every bucket it
+# replicates into must be registered here, in a country the data may go to.
+# A MinIO bucket whose lifecycle tiers objects to another store is denied.
 buckets:
-  - {bucket: "s3:moimroom-photos-eks", environment: eks, label: apac}
-  - {bucket: "gcs:moimroom-photos-gke", environment: gke, label: apac}
+  - bucket: "s3:moimroom-photos-eks"
+    environment: eks
+    label: apac
+    expect: {locations: [ap-northeast-2]}
+  - bucket: "gcs:moimroom-photos-gke"
+    environment: gke
+    label: apac
+    expect: {locations: [asia-northeast1]}
+  - bucket: "minio:moimroom-photos-onprem"
+    environment: onprem
+    label: apac
+    expect: {endpointCIDRs: [100.64.0.0/10]}   # the on-prem MinIO on the tailnet
+    prefixes:
+      - {prefix: "rooms/", label: apac}
+      - {prefix: "reviews/", label: apac}
+      - {prefix: "hosts/", label: kr-only}       # host ID documents stay in Korea

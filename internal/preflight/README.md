@@ -9,7 +9,7 @@
 1. 운영자가 `POST /v1/migrations` 또는 롤백을 요청한다.
 2. `Reserve`가 Plan을 다시 해석하고 비밀번호를 확장한다.
 3. 롤백 Plan이면 검사하지 않고 넘어간다(`rollback_exempt`).
-4. `files`가 있으면 원본·대상 버킷을 함께 판정 요청에 넣는다. 정책의 `buckets`에 등록되지 않은 버킷은 `unregistered_bucket`, 원본 버킷 분류가 대상 버킷 국가를 허용하지 않으면 `bucket_country_not_allowed`다. 버킷 위치는 운영자가 선언한 값이고 클라우드에서 조회하지 않는다.
+4. `files`가 있으면 원본·대상 버킷을 `bucketprobe`로 측정한다(복사에 쓸 rclone 원격 그대로). 위치·엔드포인트 IP·원본 1단계 프리픽스·대상 복제 대상·tier를 Rego가 정책의 `expect`, `prefixes`와 대조한다. 정책에 없는 버킷은 접속하지 않고 `unregistered_bucket`, 측정 실패는 `bucket_probe_incomplete`다. 규칙 전체는 [ADR 0021](../../docs/adr/0021-bucket-residency-measured.md).
 5. `inventory.Collector`가 확장된 `source.dsn`으로 모든 DB를 순회해 테이블·파티션·구체화 뷰 목록을 만든다. 목록이 불완전하면 거부한다(`inventory_incomplete`, `inventory:<code>`).
 6. 내장 Rego가 catalog와 대조한다.
 7. 거부되면 Plan은 `approved`로 돌아가고 409 `residency_denied`를 반환한다. 사유와 policy digest는 감사 로그에 남는다.
@@ -24,7 +24,8 @@
 | `inventory` | 실제 PostgreSQL 카탈로그 조회로 모든 DB의 테이블·파티션·구체화 뷰 수집, 접속 불가 DB·대용량 객체·미지원 식별자·timeout은 불완전 | DSN이 그 CNPG 클러스터를 가리키는지의 독립 검증, 이미 존재하는 replica 감지 |
 | `capacity` | `PLATFORM_CAPACITY_GATE=on`일 때 시작 전 실측. 대상 접속 한도 부족, replica가 `catchupTimeout` 안에 따라잡지 못함을 차단. 측정 못 한 값은 unknown이며 차단 안 함 ([ADR 0014](../../docs/adr/0014-capacity-preflight.md)) | 7일 피크 접속 수, 대상이 없을 때 회선 처리량, 승인 화면 미리보기 |
 | `pgversion` | 시작 전 원본·대상 PostgreSQL 메이저 버전 비교. 다르면 차단, 읽지 못하면 unknown이며 차단 안 함 ([ADR 0020](../../docs/adr/0020-pg-major-version-gate.md)) | 대상 manifest에 이미지가 없을 때 CNPG operator 기본 이미지 조회, 확장 버전 비교 |
-| `gate` | Plan → 물리 복제 + 버킷 복사 요청 변환, 시작 경로 연결 | 버킷 실제 리전 조회, 경로별 버킷 분류, parity 연결 |
+| `gate` | Plan → 물리 복제 + 버킷 복사 요청 변환, 시작 경로 연결, 버킷 측정 결과 첨부 | parity 연결 |
+| `bucketprobe` | rclone 원격 설정으로 S3·MinIO·GCS 버킷 위치, 엔드포인트 IP, 1단계 프리픽스, 복제 대상, MinIO tier 측정. 프리픽스 객체 요약(키·값 없이 개수만) | MinIO site replication, GCS Storage Transfer 작업, 2단계 이하 프리픽스 |
 | `parity` | 원본 요구 + 조직 필수 capability의 합집합, 5종 결과와 필수 검사 fail-closed | 실제 원본 dependency 자동 발견, 운영 API/UI 연결 |
 | `probes.RBAC` | 실제 Kubernetes client로 앱 SA의 허용/금지 SubjectAccessReview | 클라우드 IAM 권한, 리소스 동작 자체의 성공 |
 | `probes.Prometheus` | 실제 HTTP 조회로 앱 job의 모든 반환 타깃 `up==1`, `timestamp(up)` 기반 최근 scrape 확인 | 알림 규칙 발화·Alertmanager 도착 검증 |
@@ -56,7 +57,7 @@ Prometheus의 scrape 검사가 성공해도 **`metrics-alerting` capability는 `
 - `apac`은 구성한 국가 집합만 허용한다.
 - `global`은 등록된 국가를 허용한다.
 
-테이블 선택형 logical 이전, 백업/restore 목적지 해석, 오브젝트 버킷 위치 확인은 지원하지 않는다. 그 요청을 물리 복제라고 바꿔서 검사에 통과시키면 안 된다. 제한된 v1 dataset 이름은 영문/숫자/underscore/dollar/hyphen의 단순 PostgreSQL 식별자만 지원한다. 따옴표 안의 점·공백 등 복잡한 식별자는 지원하지 않고 거부한다.
+테이블 선택형 logical 이전, 백업/restore 목적지 해석은 지원하지 않는다. 그 요청을 물리 복제라고 바꿔서 검사에 통과시키면 안 된다. 제한된 v1 dataset 이름은 영문/숫자/underscore/dollar/hyphen의 단순 PostgreSQL 식별자만 지원한다. 따옴표 안의 점·공백 등 복잡한 식별자는 지원하지 않고 거부한다.
 
 ### 호출
 

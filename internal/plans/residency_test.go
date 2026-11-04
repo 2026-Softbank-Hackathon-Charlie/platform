@@ -3,6 +3,7 @@ package plans
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -52,7 +53,7 @@ func TestReserveAllowedByGate(t *testing.T) {
 	g := &fakeGate{verdict: preflight.ResidencyVerdict{Allowed: true, PolicyDigest: "d1", Reasons: []preflight.Reason{}}}
 	s.SetResidencyGate(g)
 	res, err := s.Reserve(ctx, approved(t, s))
-	if err != nil || res.Residency != (ResidencyCheck{Outcome: ResidencyAllowed, PolicyDigest: "d1"}) {
+	if err != nil || !reflect.DeepEqual(res.Residency, ResidencyCheck{Outcome: ResidencyAllowed, PolicyDigest: "d1"}) {
 		t.Fatalf("%+v %v", res.Residency, err)
 	}
 	// The gate sees the expanded plan: the collector needs the real DSN.

@@ -88,6 +88,87 @@ func (e AgentSessionStatus) Valid() bool {
 	}
 }
 
+// Defines values for BucketInspectionLabel.
+const (
+	BucketInspectionLabelApac   BucketInspectionLabel = "apac"
+	BucketInspectionLabelGlobal BucketInspectionLabel = "global"
+	BucketInspectionLabelKrOnly BucketInspectionLabel = "kr-only"
+)
+
+// Valid indicates whether the value is a known member of the BucketInspectionLabel enum.
+func (e BucketInspectionLabel) Valid() bool {
+	switch e {
+	case BucketInspectionLabelApac:
+		return true
+	case BucketInspectionLabelGlobal:
+		return true
+	case BucketInspectionLabelKrOnly:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BucketObservationHosting.
+const (
+	BucketObservationHostingProvider BucketObservationHosting = "provider"
+	BucketObservationHostingSelf     BucketObservationHosting = "self"
+)
+
+// Valid indicates whether the value is a known member of the BucketObservationHosting enum.
+func (e BucketObservationHosting) Valid() bool {
+	switch e {
+	case BucketObservationHostingProvider:
+		return true
+	case BucketObservationHostingSelf:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BucketPrefixStatusLabel.
+const (
+	BucketPrefixStatusLabelApac   BucketPrefixStatusLabel = "apac"
+	BucketPrefixStatusLabelGlobal BucketPrefixStatusLabel = "global"
+	BucketPrefixStatusLabelKrOnly BucketPrefixStatusLabel = "kr-only"
+)
+
+// Valid indicates whether the value is a known member of the BucketPrefixStatusLabel enum.
+func (e BucketPrefixStatusLabel) Valid() bool {
+	switch e {
+	case BucketPrefixStatusLabelApac:
+		return true
+	case BucketPrefixStatusLabelGlobal:
+		return true
+	case BucketPrefixStatusLabelKrOnly:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BucketPrefixStatusStatus.
+const (
+	BucketPrefixStatusStatusClassified   BucketPrefixStatusStatus = "classified"
+	BucketPrefixStatusStatusMissing      BucketPrefixStatusStatus = "missing"
+	BucketPrefixStatusStatusUnclassified BucketPrefixStatusStatus = "unclassified"
+)
+
+// Valid indicates whether the value is a known member of the BucketPrefixStatusStatus enum.
+func (e BucketPrefixStatusStatus) Valid() bool {
+	switch e {
+	case BucketPrefixStatusStatusClassified:
+		return true
+	case BucketPrefixStatusStatusMissing:
+		return true
+	case BucketPrefixStatusStatusUnclassified:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CanaryStepVerdict.
 const (
 	CanaryStepVerdictFailed       CanaryStepVerdict = "failed"
@@ -1257,6 +1338,108 @@ type BackendTotals struct {
 
 	// Retried failed reads sent once more to another backend
 	Retried *int64 `json:"retried,omitempty"`
+}
+
+// BucketInspectRequest defines model for BucketInspectRequest.
+type BucketInspectRequest struct {
+	// Bucket A bucket the residency policy registers, as plans name it (`remote:bucket[/path]`).
+	//
+	// Example: minio:moimroom-photos-onprem
+	Bucket string `json:"bucket"`
+
+	// Prefix One listed first-level prefix (ending in `/`) to describe the objects of.
+	//
+	// Example: hosts/
+	Prefix *string `json:"prefix,omitempty"`
+}
+
+// BucketInspection defines model for BucketInspection.
+type BucketInspection struct {
+	Bucket string `json:"bucket"`
+
+	// Environment Where the policy says the bucket is.
+	Environment string `json:"environment"`
+
+	// Label The bucket label (objects directly under its path).
+	Label BucketInspectionLabel `json:"label"`
+
+	// Observation What the server measured through the rclone remote a copy would use.
+	Observation  BucketObservation    `json:"observation"`
+	PolicyDigest string               `json:"policyDigest"`
+	Prefixes     []BucketPrefixStatus `json:"prefixes"`
+
+	// Sample Counts describing the first objects under one prefix. No key, value or content.
+	Sample *BucketSample `json:"sample,omitempty"`
+}
+
+// BucketInspectionLabel The bucket label (objects directly under its path).
+type BucketInspectionLabel string
+
+// BucketObservation What the server measured through the rclone remote a copy would use.
+type BucketObservation struct {
+	// EndpointIPs Addresses the endpoint host resolved to.
+	EndpointIPs []string `json:"endpointIPs"`
+
+	// Hosting `provider`: AWS S3 or GCS at the provider's endpoint, whose location the provider reports. `self`: a store the operator runs (MinIO), whose region is only its own setting.
+	Hosting BucketObservationHosting `json:"hosting"`
+
+	// Location Lowercase location code; empty when a self-hosted store reports none.
+	Location string `json:"location"`
+
+	// LocationType region, dual-region or multi-region; empty when unknown.
+	LocationType string `json:"locationType"`
+
+	// Prefixes First-level prefixes; "" stands for objects directly under the bucket path.
+	Prefixes []string `json:"prefixes"`
+
+	// Replicas Buckets the bucket replicates into (not read by inspect).
+	Replicas []string `json:"replicas"`
+
+	// Tiered A self-hosted store's lifecycle moves objects to another tier.
+	Tiered bool `json:"tiered"`
+}
+
+// BucketObservationHosting `provider`: AWS S3 or GCS at the provider's endpoint, whose location the provider reports. `self`: a store the operator runs (MinIO), whose region is only its own setting.
+type BucketObservationHosting string
+
+// BucketPrefixStatus defines model for BucketPrefixStatus.
+type BucketPrefixStatus struct {
+	// Label The policy's label, when it has one.
+	Label  *BucketPrefixStatusLabel `json:"label,omitempty"`
+	Prefix string                   `json:"prefix"`
+
+	// Status `unclassified`: listed but not in the policy (a run would be denied); `missing`: in the policy but not listed.
+	Status BucketPrefixStatusStatus `json:"status"`
+}
+
+// BucketPrefixStatusLabel The policy's label, when it has one.
+type BucketPrefixStatusLabel string
+
+// BucketPrefixStatusStatus `unclassified`: listed but not in the policy (a run would be denied); `missing`: in the policy but not listed.
+type BucketPrefixStatusStatus string
+
+// BucketSample Counts describing the first objects under one prefix. No key, value or content.
+type BucketSample struct {
+	ContentTypes map[string]int `json:"contentTypes"`
+	Extensions   map[string]int `json:"extensions"`
+
+	// KeyPatterns Keys matching each personal-data pattern.
+	KeyPatterns map[string]int `json:"keyPatterns"`
+
+	// MaxDepth Deepest key below the prefix, in path segments.
+	MaxDepth int   `json:"maxDepth"`
+	MaxSize  int64 `json:"maxSize"`
+
+	// MetadataKeys User metadata names (never values).
+	MetadataKeys map[string]int `json:"metadataKeys"`
+	MinSize      int64          `json:"minSize"`
+
+	// Objects Objects read (at most 50).
+	Objects int    `json:"objects"`
+	Prefix  string `json:"prefix"`
+
+	// Truncated More objects exist than were read.
+	Truncated bool `json:"truncated"`
 }
 
 // CanaryOptions Before cutover, send this share of read requests (GET, HEAD, OPTIONS) to
@@ -2672,6 +2855,9 @@ type ApprovePlanJSONRequestBody = ReviewRequest
 
 // RejectPlanJSONRequestBody defines body for RejectPlan for application/json ContentType.
 type RejectPlanJSONRequestBody = ReviewRequest
+
+// InspectBucketJSONRequestBody defines body for InspectBucket for application/json ContentType.
+type InspectBucketJSONRequestBody = BucketInspectRequest
 
 // ReceiveGitHubWebhookJSONRequestBody defines body for ReceiveGitHubWebhook for application/json ContentType.
 type ReceiveGitHubWebhookJSONRequestBody ReceiveGitHubWebhookJSONBody

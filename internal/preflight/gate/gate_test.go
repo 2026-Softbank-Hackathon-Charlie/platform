@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/bucketprobe"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/inventory"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 )
@@ -28,9 +30,42 @@ catalog:
       - {dataset: {database: app, schema: public, table: products}, label: global}
       - {dataset: {database: app, schema: public, table: customers}, label: LABEL}
 buckets:
-  - {bucket: "s3:photos", environment: onprem-kr, label: kr-only}
-  - {bucket: "gcs:photos-tokyo", environment: eks-jp, label: global}
+  - {bucket: "s3:photos", environment: onprem-kr, label: kr-only, expect: {endpointCIDRs: [192.168.0.0/16]}}
+  - {bucket: "gcs:photos-tokyo", environment: eks-jp, label: global, expect: {locations: [asia-northeast1]}}
 `
+
+// fakeProber shows the on-prem MinIO and the Tokyo bucket as the policy
+// declares them, unless a test changes an observation or fails a probe.
+type fakeProber struct {
+	obs   map[string]preflight.BucketObservation
+	fail  map[string]string
+	calls map[string]bucketprobe.Options
+}
+
+func newProber() *fakeProber {
+	return &fakeProber{
+		obs: map[string]preflight.BucketObservation{
+			"s3:photos": {Hosting: preflight.HostingSelf, Location: "us-east-1", LocationType: "region",
+				EndpointIPs: []string{"192.168.10.5"}, Prefixes: []string{"", "rooms/"}, Replicas: []string{}},
+			"gcs:photos-tokyo": {Hosting: preflight.HostingProvider, Location: "asia-northeast1", LocationType: "region",
+				EndpointIPs: []string{"142.250.1.1"}, Prefixes: []string{}, Replicas: []string{}},
+		},
+		fail:  map[string]string{},
+		calls: map[string]bucketprobe.Options{},
+	}
+}
+
+func (f *fakeProber) Probe(_ context.Context, bucket string, opt bucketprobe.Options) (preflight.BucketObservation, bucketprobe.Result) {
+	f.calls[bucket] = opt
+	if code := f.fail[bucket]; code != "" {
+		return preflight.BucketObservation{}, bucketprobe.Result{Code: code}
+	}
+	o, ok := f.obs[bucket]
+	if !ok {
+		return preflight.BucketObservation{}, bucketprobe.Result{Code: bucketprobe.CodeRemoteNotConfigured}
+	}
+	return o, bucketprobe.Result{}
+}
 
 const secretDSN = "postgres://app:TOPSECRET@db.internal.example:5432/app"
 
@@ -65,6 +100,7 @@ func newGate(t *testing.T, label string, c Collector) *Gate {
 	if err != nil {
 		t.Fatal(err)
 	}
+	g.WithProber(newProber())
 	if len(g.PolicyDigest()) != 64 {
 		t.Fatalf("digest %q", g.PolicyDigest())
 	}
@@ -197,6 +233,50 @@ func TestCheckPassesFilesToThePolicy(t *testing.T) {
 	}
 }
 
+func TestCheckMeasuresBuckets(t *testing.T) {
+	p := shopPlan("eks-kr")
+	p.Files = &plan.FilesSpec{Source: "s3:photos", Target: "gcs:photos-tokyo"}
+	// Photos are global here, so only the measurement decides.
+	cfg, err := residency.ParseConfig([]byte(strings.Replace(strings.Replace(policy, "LABEL", "global", 1), "label: kr-only", "label: global", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(context.Background(), cfg, complete())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := newProber()
+	g.WithProber(pr)
+	o := pr.obs["s3:photos"]
+
+	v, err := g.Check(context.Background(), p)
+	if err != nil || !v.Allowed {
+		t.Fatalf("declared and measured agree: %+v %v", v, err)
+	}
+	if pr.calls["s3:photos"] != (bucketprobe.Options{Prefixes: true}) || pr.calls["gcs:photos-tokyo"] != (bucketprobe.Options{Replication: true}) {
+		t.Fatalf("probe options %+v", pr.calls)
+	}
+	if len(v.Buckets) != 2 || v.Buckets[0].Bucket != "s3:photos" || v.Buckets[0].Observation.EndpointIPs[0] != "192.168.10.5" {
+		t.Fatalf("evidence %+v", v.Buckets)
+	}
+
+	// The MinIO remote now points at a cloud address.
+	o.EndpointIPs = []string{"13.124.0.10"}
+	pr.obs["s3:photos"] = o
+	v, err = g.Check(context.Background(), p)
+	if err != nil || v.Allowed || !slices.Contains(codes(v), "bucket_endpoint_outside_network") || len(v.Buckets) != 2 {
+		t.Fatalf("moved endpoint: %+v %v", v, err)
+	}
+
+	// A bucket that cannot be measured denies, naming the bucket.
+	pr.fail["gcs:photos-tokyo"] = bucketprobe.CodeCredentials
+	v, err = g.Check(context.Background(), p)
+	if err != nil || v.Allowed || !slices.Equal(codes(v), []string{CodeBucketProbeIncomplete, "bucket_probe:credentials_unavailable"}) ||
+		v.Reasons[0].Bucket != "gcs:photos-tokyo" {
+		t.Fatalf("probe failure: %+v %v", v, err)
+	}
+}
+
 func TestCheckNotReady(t *testing.T) {
 	var g *Gate
 	if v, err := g.Check(context.Background(), shopPlan("eks-kr")); err == nil || v.Allowed {
@@ -204,5 +284,57 @@ func TestCheckNotReady(t *testing.T) {
 	}
 	if v, err := newGate(t, "global", complete()).Check(context.Background(), nil); err == nil || v.Allowed {
 		t.Fatalf("nil plan: %+v %v", v, err)
+	}
+}
+
+func (f *fakeProber) Sample(_ context.Context, bucket, prefix string, _ int) (bucketprobe.Sample, bucketprobe.Result) {
+	if code := f.fail[bucket]; code != "" {
+		return bucketprobe.Sample{}, bucketprobe.Result{Code: code}
+	}
+	return bucketprobe.Sample{Prefix: prefix, Objects: 1, KeyPatterns: map[string]int{"kr_resident_number": 1}}, bucketprobe.Result{}
+}
+
+func TestInspect(t *testing.T) {
+	cfg, err := residency.ParseConfig([]byte(strings.Replace(strings.Replace(policy, "LABEL", "global", 1),
+		"expect: {endpointCIDRs: [192.168.0.0/16]}", "expect: {endpointCIDRs: [192.168.0.0/16]}, prefixes: [{prefix: rooms/, label: apac}, {prefix: old/, label: global}]", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(context.Background(), cfg, complete())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := newProber()
+	o := pr.obs["s3:photos"]
+	o.Prefixes = []string{"", "kyc/", "rooms/"}
+	pr.obs["s3:photos"] = o
+	g.WithProber(pr)
+
+	in, err := g.Inspect(context.Background(), "s3:photos", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PrefixStatus{
+		{Prefix: "", Status: PrefixClassified, Label: "kr-only"},
+		{Prefix: "kyc/", Status: PrefixUnclassified},
+		{Prefix: "old/", Status: PrefixMissing, Label: "global"},
+		{Prefix: "rooms/", Status: PrefixClassified, Label: "apac"},
+	}
+	if !slices.Equal(in.Prefixes, want) || in.Sample != nil || in.Environment != "onprem-kr" || in.PolicyDigest != g.PolicyDigest() {
+		t.Fatalf("%+v", in)
+	}
+	if in, err = g.Inspect(context.Background(), "s3:photos", "kyc/"); err != nil || in.Sample == nil || in.Sample.KeyPatterns["kr_resident_number"] != 1 {
+		t.Fatalf("sample: %+v %v", in.Sample, err)
+	}
+	if _, err := g.Inspect(context.Background(), "s3:other", ""); !errors.Is(err, ErrUnknownBucket) {
+		t.Fatalf("unregistered: %v", err)
+	}
+	if _, err := g.Inspect(context.Background(), "s3:photos", "old/"); !errors.Is(err, ErrUnknownPrefix) {
+		t.Fatalf("unlisted prefix: %v", err)
+	}
+	pr.fail["s3:photos"] = bucketprobe.CodeTimeout
+	var pe *ProbeError
+	if _, err := g.Inspect(context.Background(), "s3:photos", ""); !errors.As(err, &pe) || pe.Code != bucketprobe.CodeTimeout {
+		t.Fatalf("probe failure: %v", err)
 	}
 }

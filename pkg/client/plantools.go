@@ -72,3 +72,14 @@ func (c *Client) DraftPlanWithSourceStats(ctx context.Context, req apiv1.PlanDra
 func (c *Client) RollbackMigration(ctx context.Context, runID string, req apiv1.RollbackRequest) (*apiv1.StartMigrationResponse, error) {
 	return call[apiv1.StartMigrationResponse](ctx, c, request{method: http.MethodPost, path: "/v1/migrations/%s/rollback", params: []string{runID}, body: req})
 }
+
+// InspectBucket measures a bucket the residency policy registers and
+// compares its first-level prefixes with the policy. With prefix it also
+// describes the objects under that prefix (counts only, never keys).
+func (c *Client) InspectBucket(ctx context.Context, bucket, prefix string) (*apiv1.BucketInspection, error) {
+	req := apiv1.BucketInspectRequest{Bucket: bucket}
+	if prefix != "" {
+		req.Prefix = &prefix
+	}
+	return call[apiv1.BucketInspection](ctx, c, request{method: http.MethodPost, path: "/v1/residency/buckets/inspect", body: req})
+}

@@ -31,6 +31,8 @@ const (
 type ResidencyCheck struct {
 	Outcome      string
 	PolicyDigest string
+	// Buckets is what the gate measured about the files copy's buckets.
+	Buckets []preflight.ObservedBucket
 }
 
 // ResidencyDenied is the error Reserve returns when the policy refuses a plan.
@@ -61,6 +63,12 @@ func ReasonTexts(rs []preflight.Reason) []string {
 		if r.Bucket != "" {
 			t += " " + r.Bucket
 		}
+		if r.Prefix != "" {
+			t += " " + r.Prefix
+		}
+		if r.Replica != "" {
+			t += " -> " + r.Replica
+		}
 		out = append(out, t)
 	}
 	return out
@@ -83,7 +91,40 @@ func (s *Service) checkResidency(ctx context.Context, rollbackOf string, p *plan
 		if len(v.Reasons) == 0 {
 			v.Reasons = []preflight.Reason{{Code: "evaluation_failed"}}
 		}
-		return ResidencyCheck{PolicyDigest: v.PolicyDigest}, &ResidencyDenied{Verdict: v}
+		return ResidencyCheck{PolicyDigest: v.PolicyDigest, Buckets: v.Buckets}, &ResidencyDenied{Verdict: v}
 	}
-	return ResidencyCheck{Outcome: ResidencyAllowed, PolicyDigest: v.PolicyDigest}, nil
+	return ResidencyCheck{Outcome: ResidencyAllowed, PolicyDigest: v.PolicyDigest, Buckets: v.Buckets}, nil
+}
+
+// BucketEvidence renders what the gate measured, one line per bucket, e.g.
+// "minio:photos hosting=self location=us-east-1 endpoint=100.64.0.7
+// prefixes=(root),rooms/ replicas=- tiered=false". No credentials or hosts.
+func BucketEvidence(bs []preflight.ObservedBucket) []string {
+	list := func(xs []string) string {
+		if len(xs) == 0 {
+			return "-"
+		}
+		return strings.Join(xs, ",")
+	}
+	out := make([]string, 0, len(bs))
+	for _, b := range bs {
+		o := b.Observation
+		loc := o.Location
+		if loc == "" {
+			loc = "-"
+		}
+		if o.LocationType != "" && o.LocationType != "region" {
+			loc += "(" + o.LocationType + ")"
+		}
+		prefixes := make([]string, len(o.Prefixes))
+		for i, p := range o.Prefixes {
+			if p == "" {
+				p = "(root)"
+			}
+			prefixes[i] = p
+		}
+		out = append(out, fmt.Sprintf("%s hosting=%s location=%s endpoint=%s prefixes=%s replicas=%s tiered=%t",
+			b.Bucket, o.Hosting, loc, list(o.EndpointIPs), list(prefixes), list(o.Replicas), o.Tiered))
+	}
+	return out
 }
