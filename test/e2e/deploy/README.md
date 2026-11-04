@@ -56,7 +56,7 @@ test/e2e/deploy/down.sh                 # 남긴 것을 지운다
 10번부터 13번까지는 `ONLY=instances`이면 건너뛴다.
 
 10. `POST /v1/apps`로 `e2e/demo`를 등록하고 배포 SSE를 `healthy`까지 따라간다. gitops 파일에 그 배포 id, 앱 커밋, digest 이미지가 있어야 하고, `Host: demo.e2e.test`가 v1을 답해야 한다.
-11. `DEMO_HEALTHY: "false"`로 바꾼 커밋을 push webhook으로 보낸다. 배포는 `failed`로 끝나야 한다. Deployment의 progress deadline(60초) 뒤 Application이 `Degraded`가 되고, 1분 이어지면 `PLATFORM_ARGOCD_TIMEOUT`(100초)을 기다리지 않고 끝난다. 그동안 게이트웨이 요청이 하나도 실패하지 않고, 모두 v1이 답해야 한다.
+11. `DEMO_HEALTHY: "false"`로 바꾼 커밋을 push webhook으로 보낸다. 배포는 `failed`로 끝나야 한다. Deployment의 progress deadline(60초) 뒤 Application이 `Degraded`가 되고, `PLATFORM_ARGOCD_TIMEOUT`(100초)과 `Degraded`가 1분 이어지는 것 가운데 먼저 오는 쪽에서 끝난다. 여기서는 제한 시간이 먼저 온다. 그동안 게이트웨이 요청이 하나도 실패하지 않고, 모두 v1이 답해야 한다.
 12. v2와 v3 커밋을 잇달아 push한다. v2 배포는 `superseded`, v3 배포는 `healthy`로 끝나야 하고, 요청 실패 없이 마지막 응답이 v3여야 한다.
 13. `DELETE /v1/apps/demo`. Application, 네임스페이스, gitops 파일이 사라져야 한다.
 S1부터 S6까지는 버킷, 키, 시크릿(ADR 0016, ADR 0019)이고, `ONLY=instances`이면 건너뛴다. 앱 `store`는 demo에 s3 리소스를 더하고 `DEMO_MESSAGE: plain`을 둔 저장소 `e2e/store`다.
