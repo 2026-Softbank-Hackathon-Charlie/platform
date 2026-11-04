@@ -809,13 +809,16 @@ func (r *Runner) Resume(ctx context.Context, id, actor string, p *plan.Plan) (ap
 
 // InterruptWaiting makes every run stop waiting, now and later: runs in
 // awaiting_switch or in a canary step end as interrupted (nothing is in
-// flight there) and can be resumed after the restart. Runs executing an
+// flight there) and can be resumed after the restart; runs in observe stop
+// observing and end as succeeded, since the data already moved. Runs executing an
 // engine step are not touched; Wait lets them finish. Call it when the server
 // shuts down. It returns how many runs were waiting at the time of the call.
 func (r *Runner) InterruptWaiting() int {
-	r.stopOnce.Do(func() { close(r.stopCh) })
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Count before closing stopCh: a run that sees it closed ends at once,
+	// its phase becomes done and finish removes it from r.live, so counting
+	// afterwards could miss it.
 	n := 0
 	for _, l := range r.live {
 		l.mu.Lock()
@@ -824,6 +827,7 @@ func (r *Runner) InterruptWaiting() int {
 		}
 		l.mu.Unlock()
 	}
+	r.stopOnce.Do(func() { close(r.stopCh) })
 	return n
 }
 
