@@ -36,6 +36,7 @@ type Service struct {
 
 	residency ResidencyGate // nil: no residency policy (residency.go)
 	capacity  CapacityGate  // nil: no capacity measurement (capacity.go)
+	version   VersionGate   // nil: no PostgreSQL major version check (version.go)
 }
 
 // New returns a Service enforcing policy.
@@ -192,6 +193,8 @@ type Reserved struct {
 	Residency ResidencyCheck
 	// Capacity is what the capacity gate measured and decided.
 	Capacity CapacityCheck
+	// Version is what the PostgreSQL major version gate decided.
+	Version VersionCheck
 }
 
 // Reserve moves an approved plan to starting and parses it. With a residency
@@ -206,6 +209,7 @@ func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 	}
 	var check ResidencyCheck
 	var capCheck CapacityCheck
+	var verCheck VersionCheck
 	p, sum, err := s.parse(row.Raw) // re-parse: secrets come from the environment at start time
 	if err == nil {
 		check, err = s.checkResidency(ctx, row.RollbackOf, p)
@@ -214,13 +218,16 @@ func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 		err = s.materialize(ctx, ref, p)
 	}
 	if err == nil { // after materialize: a new target's manifest is a local file now
+		verCheck, err = s.checkVersion(ctx, row.RollbackOf, p)
+	}
+	if err == nil {
 		capCheck, err = s.checkCapacity(ctx, row.RollbackOf, p)
 	}
 	if err != nil {
 		s.Release(ctx, ref)
 		return Reserved{}, err
 	}
-	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf, Residency: check, Capacity: capCheck}, nil
+	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf, Residency: check, Capacity: capCheck, Version: verCheck}, nil
 }
 
 // Load re-parses a started plan, for resuming its run.
