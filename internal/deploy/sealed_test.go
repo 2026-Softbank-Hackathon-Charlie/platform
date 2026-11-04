@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"slices"
 	"strings"
@@ -66,8 +67,8 @@ func (c controller) open(t *testing.T, namespace, name, sealed string) string {
 	return string(out)
 }
 
-// fakeDriver is a storage driver in memory: one user per instance with its
-// keys.
+// fakeDriver is a storage driver in memory: one user per instance with at
+// most two keys.
 type fakeDriver struct {
 	mu      sync.Mutex
 	keys    map[string][]string // instance -> key ids
@@ -84,18 +85,18 @@ func newFakeDriver() *fakeDriver {
 func (f *fakeDriver) Name() string                  { return "aws" }
 func (f *fakeDriver) Bucket(instance string) string { return "hc-" + instance }
 
-func (f *fakeDriver) Ensure(_ context.Context, in storage.Instance, newKey bool, keep string) (storage.Result, error) {
+func (f *fakeDriver) Ensure(_ context.Context, in storage.Instance, newKey bool, current, old string) (storage.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	res := storage.Result{Bucket: "hc-" + in.Name}
-	_, existed := f.keys[in.Name]
+	keys, existed := f.keys[in.Name]
 	f.buckets[in.Name] = true
-	if existed && !newKey && (keep == "" || slices.Contains(f.keys[in.Name], keep)) {
+	if existed && !newKey && (current == "" || slices.Contains(keys, current)) {
 		return res, nil
 	}
-	var kept []string
-	if slices.Contains(f.keys[in.Name], keep) {
-		kept = []string{keep}
+	kept := slices.DeleteFunc(slices.Clone(keys), func(k string) bool { return k != current && k != old })
+	if len(kept) >= 2 {
+		return storage.Result{}, storage.ErrKeyLimit
 	}
 	f.n++
 	id := fmt.Sprintf("AKIA%04d", f.n)
@@ -171,7 +172,13 @@ func newStorageEnv(t *testing.T) *storageEnv {
 		}
 		return ct.sealer, nil
 	}
-	te.cfg.Storage = func(env string) (storage.Driver, error) { return se.drvs[env], nil }
+	te.cfg.Storage = func(env string) (storage.Driver, error) {
+		drv, ok := se.drvs[env]
+		if !ok {
+			return nil, errors.New("environment " + env + " has no storage")
+		}
+		return drv, nil
+	}
 	te.cfg.CleanupInterval = time.Hour
 	return se
 }
@@ -309,56 +316,114 @@ func TestDeployBucketKeyRotation(t *testing.T) {
 	se.register("shop", "gke")
 	se.start()
 	ctx := context.Background()
+	row := func() store.InstanceStorage {
+		t.Helper()
+		r, err := se.store.GetInstanceStorage(ctx, "shop", "gke")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	shop := storage.Instance{App: "shop", Name: "shop"}
 
 	se.deploy(sha("s1"), "gke")
-	row1, _ := se.store.GetInstanceStorage(ctx, "shop", "gke")
+	row1 := row()
 	if f := se.file("shop", "gke"); f.Values.SealedSecrets.App != nil || f.Values.SealedSecrets.AppChecksum != "" {
 		t.Fatalf("no secrets, but sealedSecrets %+v", f.Values.SealedSecrets)
 	}
 
 	// The key is deleted outside the platform: the next deployment makes a
 	// new one.
-	if err := se.drv.DeleteKey(ctx, storage.Instance{App: "shop", Name: "shop"}, row1.KeyID); err != nil {
+	if err := se.drv.DeleteKey(ctx, shop, row1.KeyID); err != nil {
 		t.Fatal(err)
 	}
 	d := se.deploy(sha("s1"), "gke")
-	row2, _ := se.store.GetInstanceStorage(ctx, "shop", "gke")
-	if d.Status != store.DeployHealthy || row2.KeyID == row1.KeyID || !hasEvent(se.events(d.ID), EventLog, "was gone") {
-		t.Fatalf("after the key was deleted: %s, key %s -> %s\n%s", d.Status, row1.KeyID, row2.KeyID, se.dump(d.ID))
+	row2 := row()
+	if d.Status != store.DeployHealthy || row2.KeyID == row1.KeyID || row2.OldKeyID != "" || !hasEvent(se.events(d.ID), EventLog, "was gone") {
+		t.Fatalf("after the key was deleted: %s, %+v\n%s", d.Status, row2, se.dump(d.ID))
 	}
 	if !row2.CreatedAt.Equal(row1.CreatedAt) {
 		t.Errorf("the row's created time moved: %s -> %s", row1.CreatedAt, row2.CreatedAt)
 	}
 
-	// A new controller certificate: a new key, the old one kept while the
-	// pods may use it (no secrets, so they do not restart).
+	// A new controller certificate: a new key; the old one is recorded and
+	// kept while the pods may use it (no secrets, so they do not restart).
 	se.ctrl["gke"] = newController(t)
 	d = se.deploy(sha("s1"), "gke")
-	row3, _ := se.store.GetInstanceStorage(ctx, "shop", "gke")
-	if d.Status != store.DeployHealthy || row3.KeyID == row2.KeyID || row3.CertFingerprint != se.ctrl["gke"].sealer.Fingerprint() {
+	row3 := row()
+	if d.Status != store.DeployHealthy || row3.KeyID == row2.KeyID || row3.OldKeyID != row2.KeyID || row3.CertFingerprint != se.ctrl["gke"].sealer.Fingerprint() {
 		t.Fatalf("after a new certificate: %s %+v", d.Status, row3)
 	}
-	if k := se.drv.keysOf("shop"); !slices.Equal(k, []string{row2.KeyID, row3.KeyID}) || !hasEvent(se.events(d.ID), EventLog, "kept the old bucket key") {
+	if k := se.drv.keysOf("shop"); !slices.Equal(k, []string{row2.KeyID, row3.KeyID}) || !hasEvent(se.events(d.ID), EventLog, "kept the old bucket key ..."+row2.KeyID[4:]) {
 		t.Fatalf("keys %v\n%s", k, se.dump(d.ID))
+	}
+	if dump := se.dump(d.ID); strings.Contains(dump, row2.KeyID) || strings.Contains(dump, row3.KeyID) {
+		t.Fatalf("events show whole key ids:\n%s", dump)
 	}
 	got := se.ctrl["gke"].open(t, "shop", "app-s3", se.file("shop", "gke").Values.SealedSecrets.S3.AccessKey)
 	if got != row3.KeyID {
 		t.Fatalf("the new certificate opens %q", got)
 	}
 
-	// With secrets the pods restart (the key id is in the checksum), so the
-	// old key goes once the deployment is healthy.
-	se.setSecrets("", map[string]string{"A": "1"})
-	se.deploy(sha("s1"), "gke")
-	sum1 := se.file("shop", "gke").Values.SealedSecrets.AppChecksum
+	// Another certificate while the old key may be in use: refused, as
+	// that key must stay; nothing changes.
 	se.ctrl["gke"] = newController(t)
 	d = se.deploy(sha("s1"), "gke")
-	row4, _ := se.store.GetInstanceStorage(ctx, "shop", "gke")
-	if k := se.drv.keysOf("shop"); !slices.Equal(k, []string{row4.KeyID}) || !hasEvent(se.events(d.ID), EventLog, "deleted the old bucket key") {
-		t.Fatalf("keys %v after a rotation with secrets\n%s", k, se.dump(d.ID))
+	if d.Status != store.DeployFailed || !strings.Contains(d.Error, "may still be used by pods that did not restart") {
+		t.Fatalf("a second new certificate: %s %q", d.Status, d.Error)
+	}
+	if k := se.drv.keysOf("shop"); !slices.Equal(k, []string{row2.KeyID, row3.KeyID}) || row() != row3 {
+		t.Fatalf("a refused new key changed the keys %v or the row %+v", k, row())
+	}
+	// An operator restarted the pods and deleted the old key: it goes on.
+	if err := se.drv.DeleteKey(ctx, shop, row3.OldKeyID); err != nil {
+		t.Fatal(err)
+	}
+	d = se.deploy(sha("s1"), "gke")
+	row4 := row()
+	if d.Status != store.DeployHealthy || row4.OldKeyID != row3.KeyID || !slices.Equal(se.drv.keysOf("shop"), []string{row3.KeyID, row4.KeyID}) {
+		t.Fatalf("after the old key was deleted: %s %+v, keys %v\n%s", d.Status, row4, se.drv.keysOf("shop"), se.dump(d.ID))
+	}
+
+	// With secrets the pods restart (the key id is in the checksum), so any
+	// healthy deployment deletes the old key, though it made no new one.
+	se.setSecrets("", map[string]string{"A": "1"})
+	d = se.deploy(sha("s1"), "gke")
+	if k := se.drv.keysOf("shop"); !slices.Equal(k, []string{row4.KeyID}) || row().OldKeyID != "" || !hasEvent(se.events(d.ID), EventLog, "deleted the old bucket key") {
+		t.Fatalf("keys %v, row %+v after a deployment with secrets\n%s", k, row(), se.dump(d.ID))
+	}
+	sum1 := se.file("shop", "gke").Values.SealedSecrets.AppChecksum
+
+	// A new certificate with secrets: the old key goes once healthy.
+	se.ctrl["gke"] = newController(t)
+	d = se.deploy(sha("s1"), "gke")
+	row5 := row()
+	if k := se.drv.keysOf("shop"); !slices.Equal(k, []string{row5.KeyID}) || row5.OldKeyID != "" || !hasEvent(se.events(d.ID), EventLog, "deleted the old bucket key") {
+		t.Fatalf("keys %v, row %+v after a rotation with secrets\n%s", k, row5, se.dump(d.ID))
 	}
 	if se.file("shop", "gke").Values.SealedSecrets.AppChecksum == sum1 {
 		t.Fatal("a new bucket key did not change the checksum")
+	}
+}
+
+func TestDeployRefusesAnotherDriversBucket(t *testing.T) {
+	se := newStorageEnv(t)
+	se.register("shop", "gke")
+	se.start()
+	ctx := context.Background()
+	// gke had the minio driver when the bucket was made.
+	before := store.InstanceStorage{Instance: "shop", Env: "gke", App: "shop", Driver: "minio", Bucket: "hc-shop", KeyID: "SVC0001",
+		SealedAccessKey: "AgBhaw==", SealedSecretKey: "AgBzaw==", CertFingerprint: se.ctrl["gke"].sealer.Fingerprint(), CreatedAt: time.Now().UTC()}
+	if err := se.store.PutInstanceStorage(ctx, before); err != nil {
+		t.Fatal(err)
+	}
+	d := se.deploy(sha("s1"), "gke")
+	if d.Status != store.DeployFailed || !strings.Contains(d.Error, "made by the minio driver, but gke now has the aws driver") {
+		t.Fatalf("deployment %s %q", d.Status, d.Error)
+	}
+	after, err := se.store.GetInstanceStorage(ctx, "shop", "gke")
+	if err != nil || after.KeyID != before.KeyID || after.Driver != "minio" || len(se.drv.keysOf("shop")) != 0 {
+		t.Fatalf("the row %+v (%v) or the aws keys %v changed", after, err, se.drv.keysOf("shop"))
 	}
 }
 
@@ -435,19 +500,10 @@ func TestRedeploySkipsBuildAndGitHub(t *testing.T) {
 	}
 }
 
-// redeploy stores and runs a redeploy of d, as the API makes it.
+// redeploy stores and runs a redeploy of d to gke, as the API makes it.
 func (se *storageEnv) redeploy(d store.Deployment) store.Deployment {
 	se.t.Helper()
-	se.n++
-	r := store.Deployment{
-		ID: fmt.Sprintf("dep_r%011d", se.n), App: d.App, Branch: d.Branch, Instance: d.Instance, Ref: d.Ref, Commit: d.Commit,
-		Trigger: TriggerRedeploy, TriggeredBy: "op", Status: store.DeployQueued, Images: d.Images, Spec: d.Spec,
-		Environments: []store.DeploymentEnvironment{{Env: "gke", Status: EnvPending}},
-		CreatedAt:    time.Date(2026, 11, 3, 0, 0, se.n, 0, time.UTC),
-	}
-	if err := se.store.CreateDeployment(context.Background(), r); err != nil {
-		se.t.Fatal(err)
-	}
+	r := se.redeployment(d, "gke")
 	se.enqueue(r.ID)
 	return se.wait(r.ID)
 }
@@ -563,6 +619,56 @@ func TestCleanupStorage(t *testing.T) {
 	se.drv.mu.Unlock()
 	if n, err := ex.CleanupStorage(ctx); err != nil || n != 1 {
 		t.Fatalf("retried cleanup: %d, %v", n, err)
+	}
+}
+
+// logBuffer collects log lines from several goroutines.
+type logBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func TestCleanupStorageStuckRows(t *testing.T) {
+	se := newStorageEnv(t)
+	logs := &logBuffer{}
+	se.cfg.Log = slog.New(slog.NewTextHandler(logs, nil))
+	ex := se.start()
+	ctx := context.Background()
+	// Rows of a deleted instance that the platform cannot delete: its
+	// environment is gone, or has another driver now.
+	for _, r := range []store.InstanceStorage{
+		{Instance: "gone", Env: "onprem", App: "gone", Driver: "minio", Bucket: "hc-gone", KeyID: "SVC0001", CreatedAt: time.Now().UTC()},
+		{Instance: "gone", Env: "gke", App: "gone", Driver: "minio", Bucket: "hc-gone", KeyID: "SVC0002", CreatedAt: time.Now().UTC()},
+	} {
+		if err := se.store.PutInstanceStorage(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := ex.CleanupStorage(ctx); err != nil || n != 0 {
+		t.Fatalf("cleanup: %d, %v", n, err)
+	}
+	if rows, _ := se.store.ListInstanceStorage(ctx, "gone", ""); len(rows) != 2 || len(se.drv.deleted) != 0 {
+		t.Fatalf("rows %+v, deleted %v", rows, se.drv.deleted)
+	}
+	for _, env := range []string{"onprem", "gke"} {
+		found := slices.ContainsFunc(strings.Split(logs.String(), "\n"), func(l string) bool {
+			return strings.Contains(l, "level=ERROR") && strings.Contains(l, "instance=gone") && strings.Contains(l, "env="+env) && strings.Contains(l, "an operator deletes them")
+		})
+		if !found {
+			t.Fatalf("no error log for gone in %s:\n%s", env, logs)
+		}
 	}
 }
 

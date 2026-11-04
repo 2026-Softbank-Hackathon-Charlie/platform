@@ -24,7 +24,7 @@ type job struct {
 
 	syncDeadline  time.Time            // SyncTimeout after the commit, for syncing and the backend addresses
 	degradedSince map[string]time.Time // by environment: since when Argo CD reports it Synced and Degraded
-	oldKeys       []oldKey             // bucket keys this deployment replaced
+	keys          []sealedKey          // the bucket keys this deployment sealed, by environment
 }
 
 func (j *job) deploy(ctx context.Context) error {

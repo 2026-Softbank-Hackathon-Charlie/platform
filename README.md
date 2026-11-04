@@ -423,7 +423,7 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 | `DELETE /v1/apps/{name}` | operator | 등록 해제. 추가한 인스턴스도 함께 지움. gitops 파일을 지우면 Argo CD가 워크로드를 지움. 202. 파일에만 있는 앱은 409 |
 | `POST /v1/apps/{name}/instances` | operator | `{branch, autoDeploy?}`. 브랜치를 인스턴스 `<app>--<slug>`로 더함. 브랜치 head의 `platform.yaml`을 등록과 같은 규칙으로 검사하고 첫 배포를 큐에 넣음. 201 + `{instance, deployment}`. 이미 있는 브랜치는 409 `branch_exists`, 인스턴스 이름이 겹치면 409 `instance_exists`, 3개를 넘으면 409 `instance_limit` |
 | `DELETE /v1/apps/{name}/instances/{instance}` | operator | 추가한 인스턴스를 지움. gitops 파일, 게이트웨이 등록, 브랜치와 배포 기록을 지움. 202. 기본 인스턴스는 409 `default_instance` |
-| `POST /v1/apps/{name}/deployments` | operator | `{branch?, ref?, environments?, redeploy?}`로 지금 배포. `branch`가 인스턴스를 고름(기본은 앱의 브랜치). `redeploy: true`이면 그 인스턴스의 마지막 healthy 배포를 같은 커밋, 이미지, `platform.yaml`로 빌드 없이 지금의 시크릿으로 다시 배포(trigger `redeploy`). 202 + Deployment |
+| `POST /v1/apps/{name}/deployments` | operator | `{branch?, ref?, environments?, redeploy?}`로 지금 배포. `branch`가 인스턴스를 고름(기본은 앱의 브랜치). `redeploy: true`이면 그 인스턴스의 마지막 healthy 배포를 같은 커밋, 이미지, `platform.yaml`로 빌드 없이 지금의 시크릿으로 그 배포가 간 환경에만 다시 배포(trigger `redeploy`). 202 + Deployment |
 | `GET /v1/apps/{name}/deployments` | viewer | 최신순, `?limit=` (기본 20), `?branch=`로 그 브랜치의 배포만 |
 | `GET /v1/deployments/{id}` | viewer | 배포 하나 (상태, 이미지 digest, 환경별 상태) |
 | `GET /v1/deployments/{id}/events` | viewer | SSE. run 이벤트와 같은 규칙(처음과 끝에 `snapshot`, `Last-Event-ID`로 재접속) |
@@ -451,6 +451,8 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 - 배포할 때마다 실행기가 그 인스턴스가 받는 시크릿을 환경 클러스터의 Sealed Secrets 인증서로 봉인해 gitops 파일의 `values.sealedSecrets.app`에 넣고(SealedSecret `app-secrets`, 범위 strict), `platform.yaml`의 서비스 env에서 같은 이름을 뺍니다. 시크릿이 이깁니다. 차트가 모든 서비스 컨테이너에 `envFrom`으로 넣습니다.
 - 봉인은 할 때마다 결과가 달라서, 앱, 인스턴스, 시크릿 이름과 값, 버킷 키 id로 만든 HMAC-SHA256(`appChecksum`)을 함께 씁니다. 차트가 파드 annotation에 쓰므로, 시크릿이나 버킷 키가 바뀔 때만 파드가 다시 뜹니다.
 - 시크릿을 바꾼 뒤에는 `POST /v1/apps/{name}/deployments`에 `redeploy: true`를 보냅니다. 마지막 healthy 배포를 같은 커밋, 이미지, `platform.yaml`로 다시 배포하므로 빌드와 GitHub 읽기가 없습니다. healthy 배포가 없으면 409 `nothing_to_redeploy`, 그 인스턴스에 끝나지 않은 배포(queued, building, committing, syncing)가 있으면 409 `deployment_in_progress`입니다. 진행 중인 배포는 gitops 커밋 때의 시크릿을 쓰므로 끝난 뒤에 다시 보냅니다. `ref`와 함께 쓰면 400입니다.
+- 재배포는 그 healthy 배포가 간 환경에만 갑니다. `environments`를 빼면 그 배포의 환경 중 앱이 아직 배포하는 환경 모두이고, `environments`에 그 배포가 가지 않은 환경이 있으면 409 `nothing_to_redeploy`입니다. 그 환경은 다른 버전을 돌리고 있을 수 있으므로 브랜치를 배포합니다.
+- 확인과 저장 사이에 다른 배포가 들어와도 실행기가 둘을 함께 돌리지 않습니다. 재배포가 아닌 배포는 끝나지 않은 재배포를 모두 superseded로 끝내고, 재배포는 큐에 들어갈 때 재배포가 아닌 끝나지 않은 배포가 있으면 스스로 superseded로 끝납니다(그 배포가 지금의 시크릿을 씁니다).
 - 시크릿이 있는 앱인데 서버에 `PLATFORM_SECRETS_KEY`가 없거나, 그 환경에 쓸 수 있는 인증서가 없으면 배포가 `failed`로 끝나고 이유가 `error`에 남습니다.
 
 ### 버킷과 키 드라이버
@@ -463,12 +465,14 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 - `aws`: 그 리전에 S3 버킷을 만들고 공개 접근 차단 네 가지를 모두 켭니다. IAM 사용자 `hopcharlie-app-<인스턴스>`를 `iamPath` 아래에 `permissionsBoundary`를 붙여 만들고, 인라인 정책 `hopcharlie-bucket`으로 그 버킷의 목록, 객체 읽기, 쓰기, 지우기만 허용한 뒤 액세스 키를 만듭니다. 플랫폼의 AWS 자격 증명(pod 역할)을 씁니다.
 - `minio`: MinIO 관리 API(admin API v3)로 버킷, 사용자 `hopcharlie-app-<인스턴스>`, 같은 이름의 canned policy(그 버킷만 허용)를 만들고, 키는 그 사용자의 서비스 계정으로 만듭니다. 키를 지울 때는 그 서비스 계정의 상위 사용자가 그 인스턴스의 사용자인지 먼저 확인합니다. 관리 키는 `adminAccessKeyEnv`, `adminSecretKeyEnv`가 가리키는 플랫폼 환경 변수에서 읽고, 비어 있으면 서버가 시작하지 않습니다.
 - `minio` 드라이버는 AGPL-3.0인 MinIO 관리 클라이언트(madmin-go)를 링크하므로 `-tags minio`로 빌드한 API에만 들어갑니다(kind E2E, 온프렘). 기본 빌드와 게시하는 이미지에는 없고, `minio` 저장소 설정이 있으면 "built with -tags minio" 오류로 서버가 시작하지 않습니다. CI는 태그를 붙인 빌드도 vet과 테스트합니다.
-- 모든 작업은 다시 불러도 됩니다. 이미 있는 버킷과 사용자는 그대로 쓰고, 새 키는 사용자를 새로 만들었거나 요청했을 때만 만듭니다. 새 키를 만들기 전에 남길 키 하나를 빼고 나머지 키를 지워서, 중간에 끊긴 뒤 다시 해도 아무도 모르는 키가 쌓이지 않습니다. 삭제는 사용자(키와 정책 포함)를 먼저 지우고, 버킷을 비운 뒤 지웁니다. 이미 없는 것은 건너뜁니다.
+- 사용자 이름은 인스턴스 이름만으로 정하므로 `aws` 드라이버는 한 환경만 쓸 수 있고, `minio` 드라이버는 환경마다 엔드포인트가 달라야 합니다. 어기면 서버가 시작하지 않습니다.
+- 모든 작업은 다시 불러도 됩니다. 이미 있는 버킷과 사용자는 그대로 쓰고, 새 키는 사용자를 새로 만들었거나 요청했을 때만 만듭니다. 새 키를 만들기 전에 지금 키와 옛 키(`old_key_id`)를 빼고 나머지 키를 지워서, 중간에 끊긴 뒤 다시 해도 아무도 모르는 키가 쌓이지 않습니다. 사용자당 키는 둘까지라서, 지금 키와 옛 키가 모두 있으면 새 키를 만들지 않고 실패합니다. 삭제는 사용자(키와 정책 포함)를 먼저 지우고, 버킷을 비운 뒤 지웁니다. 이미 없는 것은 건너뜁니다.
 - `gcs`는 아직 구현하지 않았고, 설정하면 서버가 시작하지 않습니다.
 - 인증서 파일이 없거나 읽히지 않으면 시작할 때 경고만 남깁니다. 봉인할 때마다 파일의 수정 시각과 크기를 보고, 바뀌었으면 다시 읽어 내용이 바뀐 경우에만 새 인증서를 씁니다. 인증서를 나중에 넣거나 바꿔도 서버를 다시 띄울 필요가 없습니다. 만료된 인증서와 2048비트보다 짧은 RSA 키는 거절합니다.
-- 배포 실행기가 커밋하기 전에, 인스턴스 잠금 안에서 환경마다 이렇게 합니다. 저장한 키가 없으면 드라이버로 버킷과 새 키를 만들고, 키를 그 환경의 인증서로 봉인(네임스페이스는 인스턴스, Secret `app-s3`)해 저장합니다. 저장한 키가 있고 인증서 지문이 같으면, 드라이버가 그 키가 아직 있는지 확인한 뒤 저장한 암호문을 그대로 씁니다. 키가 사라졌으면 새 키를 만듭니다. 지문이 다르면(평문 키는 남기지 않으므로) 새 키를 만들어 다시 봉인하고, 배포가 healthy가 된 뒤 옛 키를 지웁니다. 이때 시크릿이 없는 앱은 파드가 다시 뜨지 않아 옛 키를 계속 쓸 수 있으므로 옛 키를 남기고, 다음 키 교체 때 지웁니다. 봉인한 키는 `values.sealedSecrets.s3`에 들어갑니다.
+- 배포 실행기가 커밋하기 전에, 인스턴스 잠금 안에서 환경마다 이렇게 합니다. 저장한 키가 없으면 드라이버로 버킷과 새 키를 만들고, 키를 그 환경의 인증서로 봉인(네임스페이스는 인스턴스, Secret `app-s3`)해 저장합니다. 저장한 키가 있고 인증서 지문이 같으면, 드라이버가 그 키가 아직 있는지 확인한 뒤 저장한 암호문을 그대로 씁니다. 키가 사라졌으면 새 키를 만듭니다. 지문이 다르면(평문 키는 남기지 않으므로) 새 키를 만들어 다시 봉인하고, 옛 키를 행의 `old_key_id`에 적습니다. 시크릿이 있는 앱은 키 id가 `appChecksum`에 들어가 파드가 다시 뜨므로, 그 뒤 healthy가 된 배포가 옛 키를 지우고 `old_key_id`를 비웁니다. 시크릿이 없는 앱은 파드가 다시 뜨지 않아 옛 키를 계속 쓸 수 있으므로 옛 키를 남깁니다. 시크릿을 넣고 다시 배포하면 지워지고, 그 전에 인증서가 또 바뀌면 배포가 실패합니다(운영자 처리는 [ADR 0016](docs/adr/0016-app-object-storage.md)의 알려진 한계). 저장한 행을 만든 드라이버가 그 환경의 지금 드라이버와 다르면 새 키를 만들지 않고 배포가 실패합니다. 배포 이벤트에는 키 id의 마지막 4자만 나옵니다. 봉인한 키는 `values.sealedSecrets.s3`에 들어갑니다.
 - 플랫폼 DB에는 인스턴스와 환경마다 봉인한 키, 키 식별자, 인증서 지문만 저장합니다(`instance_storage`). 평문 키는 Git, DB, 로그에 남기지 않습니다.
 - 인스턴스나 앱을 지우면 gitops 삭제 커밋 뒤에 실행기가 드라이버로 사용자(키와 정책 포함)를 지우고 버킷을 비운 뒤 지우고, 그다음 행을 지웁니다. 실패하면 행을 남기고 로그를 쓴 뒤, 서버가 시작할 때와 5분마다 다시 합니다. 행이 남아 있는 동안 같은 이름의 등록은 409 `storage_cleanup_pending`입니다.
+- 환경을 설정에서 뺐거나 환경의 드라이버를 바꾸면 그 행은 플랫폼이 지울 수 없어서, 시도할 때마다 error 로그 `cannot delete the bucket and key of a deleted instance`(instance, env, driver, bucket 포함)를 남깁니다. 운영자는 옛 드라이버의 도구로 버킷, 사용자, 키를 지운 뒤 `DELETE FROM instance_storage WHERE instance = '<인스턴스>' AND env = '<환경>';`로 행을 지웁니다. 명령은 [ADR 0016](docs/adr/0016-app-object-storage.md)의 구현 절에 있습니다.
 - `platform.yaml`에 s3 리소스가 있는데 대상 환경에 저장소 드라이버가 없으면 등록과 인스턴스 추가가 503 `storage_not_configured`입니다. 나중의 push로 s3 리소스가 생겼는데 드라이버나 인증서가 없으면 그 배포가 `failed`로 끝납니다.
 - 앱 차트의 버킷 이름은 프로필의 `profile.s3.bucketPrefix`로 만들므로, 각 환경의 프로필과 `storage.bucketPrefix`를 같게 둡니다. 프로필의 `credentialsSecret`은 `app-s3`여야 합니다.
 

@@ -42,6 +42,10 @@ type InstanceStorage struct {
 	Driver   string // aws, minio
 	Bucket   string
 	KeyID    string
+	// OldKeyID is a key a new key replaced that the pods may still use, to
+	// delete once a healthy deployment restarted them with KeyID; "" when
+	// there is none.
+	OldKeyID string
 	// SealedAccessKey and SealedSecretKey are the key sealed (strict scope,
 	// namespace Instance, Secret app-s3) with the cluster's sealed-secrets
 	// certificate, base64 as values.sealedSecrets.s3 holds them.
@@ -66,7 +70,7 @@ func (s AppSecret) Clean() AppSecret {
 // Clean returns s with every string passed through CleanText. Stores apply
 // it on every write.
 func (s InstanceStorage) Clean() InstanceStorage {
-	for _, f := range []*string{&s.Instance, &s.Env, &s.App, &s.Driver, &s.Bucket, &s.KeyID, &s.SealedAccessKey, &s.SealedSecretKey, &s.CertFingerprint} {
+	for _, f := range []*string{&s.Instance, &s.Env, &s.App, &s.Driver, &s.Bucket, &s.KeyID, &s.OldKeyID, &s.SealedAccessKey, &s.SealedSecretKey, &s.CertFingerprint} {
 		*f = CleanText(*f)
 	}
 	return s

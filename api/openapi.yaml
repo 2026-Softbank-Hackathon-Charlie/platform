@@ -1512,17 +1512,24 @@ paths:
         GitHub is not read: the instance's last healthy deployment is
         deployed again, same commit, same images and same platform.yaml,
         with the secrets as they are now (`PUT /v1/apps/{name}/secrets`).
-        Use it after changing secrets. `ref` is not allowed with it. While
-        the instance has an unfinished deployment, a redeploy is refused:
-        that deployment already uses the secrets as they were at its gitops
-        commit, so deploy again once it is done.
+        Use it after changing secrets. `ref` is not allowed with it. It goes
+        only to environments that deployment went to, as another
+        environment may run another version: by default all of them the
+        app still deploys to; `environments` must name only such
+        environments. While the instance has an unfinished deployment, a
+        redeploy is refused: that deployment already uses the secrets as
+        they were at its gitops commit, so deploy again once it is done. A
+        deployment that comes in meanwhile supersedes a redeploy, and a
+        redeploy queued beside an unfinished deployment ends superseded.
 
         Error codes: invalid_request (400: a `branch` the app does not
         deploy, an environment the app is not registered for, a ref the
         repository does not have, or `ref` with `redeploy`), app_not_found
         (404), app_not_registered (409: the app is only in
         PLATFORM_APPS_FILE), nothing_to_redeploy (409: `redeploy` but the
-        instance has no healthy deployment), deployment_in_progress (409:
+        instance has no healthy deployment, or it did not go to an
+        environment asked for or to any the app still deploys to),
+        deployment_in_progress (409:
         `redeploy` while the instance has a queued, building, committing or
         syncing deployment), invalid_app_spec (422), github_unreachable
         (502), github_not_configured (503). Role operator.
@@ -3297,7 +3304,7 @@ components:
           items: { type: string }
         redeploy:
           type: boolean
-          description: "Deploy the instance's last healthy deployment again (same commit and images, no build) with the current secrets. Not with ref."
+          description: "Deploy the instance's last healthy deployment again (same commit and images, no build) with the current secrets, only to environments it went to. Not with ref."
 
     AppSecretInfo:
       description: A secret without its value.

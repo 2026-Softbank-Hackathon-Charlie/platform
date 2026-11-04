@@ -148,6 +148,19 @@ func (c Config) Validate() error {
 var errMinIONotBuilt = errors.New("storage driver minio is not in this build: build the platform API with -tags minio (the MinIO admin client is AGPL-3.0, so the default build and the published image leave it out)")
 
 // minioEndpoint returns the host:port of Endpoint and whether it is https.
+// Users names where the driver makes its users: the AWS account of the
+// server's credentials for every aws environment, the MinIO server for
+// minio. A user's name depends only on the instance, so two environments
+// with the same Users would share their instances' users. Call it on a
+// valid Config.
+func (c Config) Users() string {
+	if c.Driver == DriverMinIO {
+		host, _, _ := c.minioEndpoint()
+		return "the MinIO server " + strings.ToLower(host)
+	}
+	return "the AWS account"
+}
+
 func (c Config) minioEndpoint() (host string, secure bool, err error) {
 	u, err := url.Parse(c.Endpoint)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.User != nil {
@@ -187,13 +200,15 @@ type Driver interface {
 	// Ensure makes the instance's bucket (private, tagged with the app and
 	// the instance) and its user with access to that bucket only, keeping
 	// what already exists. It makes a new key when newKey is set, when the
-	// user is new, or when keep is set but the user has no such key (it was
-	// deleted outside the platform); it first deletes the user's other keys
-	// except keep (all of them when keep is empty), so a retry after a crash
-	// leaves no key nobody knows of. Without a new key it leaves the keys as
-	// they are. ErrInUse when the bucket or the user belongs to another
-	// app.
-	Ensure(ctx context.Context, in Instance, newKey bool, keep string) (Result, error)
+	// user is new, or when current, the key in use, is set but the user has
+	// no such key (it was deleted outside the platform). Before that it
+	// deletes the user's keys other than current and old, a key the pods
+	// may still use (all of them when both are empty), so a retry after a
+	// crash leaves no key nobody knows of. A user has at most two keys:
+	// ErrKeyLimit, with nothing changed, when current and old both exist.
+	// Without a new key it leaves the keys as they are. ErrInUse when the
+	// bucket or the user belongs to another app.
+	Ensure(ctx context.Context, in Instance, newKey bool, current, old string) (Result, error)
 	// DeleteKey deletes one key of the instance's user, e.g. the old one
 	// after a new key is in use. A key that is gone is not an error.
 	DeleteKey(ctx context.Context, in Instance, keyID string) error
@@ -207,6 +222,39 @@ type Driver interface {
 // ErrInUse means a bucket or user with the instance's name belongs to
 // another app.
 var ErrInUse = errors.New("storage: belongs to another app")
+
+// ErrKeyLimit means a new key is needed while the user has two keys that
+// may be in use, the current one and an old one. AWS allows two access
+// keys per user, and both drivers keep to that.
+var ErrKeyLimit = errors.New("storage: the user already has two keys that may be in use")
+
+// keysToDelete returns the ids among ids to delete before a new key is
+// made: all but current and old. ErrKeyLimit when current and old both
+// exist.
+func keysToDelete(user string, ids []string, current, old string) ([]string, error) {
+	var del []string
+	kept := 0
+	for _, id := range ids {
+		if id != "" && (id == current || id == old) {
+			kept++
+			continue
+		}
+		del = append(del, id)
+	}
+	if kept >= 2 {
+		return nil, fmt.Errorf("%w: user %s has the key in use %s and the old key %s", ErrKeyLimit, user, MaskKey(current), MaskKey(old))
+	}
+	return del, nil
+}
+
+// MaskKey shows only the last four characters of a key id, for messages
+// users see.
+func MaskKey(id string) string {
+	if len(id) <= 4 {
+		return id
+	}
+	return "..." + id[len(id)-4:]
+}
 
 // New returns the driver c configures. It reads the minio admin key from
 // the variables c names with getenv. It does not contact the storage.

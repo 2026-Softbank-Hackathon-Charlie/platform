@@ -478,6 +478,25 @@ func (te *testEnv) deploymentTo(app, branch, instance, commit string, envs ...st
 	return d
 }
 
+// redeployment stores a queued redeploy of d (its commit, images and
+// spec) to envs, as the API makes it.
+func (te *testEnv) redeployment(d store.Deployment, envs ...string) store.Deployment {
+	te.t.Helper()
+	te.n++
+	r := store.Deployment{
+		ID: fmt.Sprintf("dep_r%011d", te.n), App: d.App, Branch: d.Branch, Instance: d.Instance, Ref: d.Ref, Commit: d.Commit,
+		Trigger: TriggerRedeploy, TriggeredBy: "op", Status: store.DeployQueued, Images: d.Images, Spec: d.Spec,
+		CreatedAt: time.Date(2026, 11, 3, 0, 0, te.n, 0, time.UTC),
+	}
+	for _, e := range envs {
+		r.Environments = append(r.Environments, store.DeploymentEnvironment{Env: e, Status: EnvPending})
+	}
+	if err := te.store.CreateDeployment(context.Background(), r); err != nil {
+		te.t.Fatal(err)
+	}
+	return r
+}
+
 func (te *testEnv) enqueue(id string) {
 	te.t.Helper()
 	if err := te.ex.Enqueue(context.Background(), id); err != nil {

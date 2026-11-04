@@ -12,6 +12,8 @@
 -- instance_storage holds, per instance and environment, the bucket and the
 -- key the environment's storage driver made. Only the key sealed with the
 -- cluster's sealed-secrets certificate is kept, and the key id to delete it.
+-- old_key_id is a key a new key replaced that the pods may still use; it is
+-- deleted once a healthy deployment restarted them.
 -- Rows outlive the app and the instance until the driver has deleted the
 -- bucket and the key.
 --
@@ -39,6 +41,7 @@ CREATE TABLE instance_storage (
     driver            text NOT NULL,
     bucket            text NOT NULL,
     key_id            text NOT NULL DEFAULT '',
+    old_key_id        text NOT NULL DEFAULT '',
     sealed_access_key text NOT NULL DEFAULT '',
     sealed_secret_key text NOT NULL DEFAULT '',
     cert_fingerprint  text NOT NULL DEFAULT '',

@@ -342,7 +342,7 @@ func TestMinIOEnsure(t *testing.T) {
 	d := newMinIODriver(f)
 	ctx := t.Context()
 
-	res, err := d.Ensure(ctx, dev, false, "")
+	res, err := d.Ensure(ctx, dev, false, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,22 +357,29 @@ func TestMinIOEnsure(t *testing.T) {
 		t.Fatalf("user policy %q, policy %s", f.users[devUser], f.policies[devUser])
 	}
 
-	res, err = d.Ensure(ctx, dev, false, "")
+	res, err = d.Ensure(ctx, dev, false, "", "")
 	if err != nil || res.Key != nil {
 		t.Fatalf("second ensure %+v, %v", res, err)
 	}
-	res, err = d.Ensure(ctx, dev, true, "SVC0001")
+	res, err = d.Ensure(ctx, dev, true, "SVC0001", "")
 	if err != nil || res.Key == nil || res.Key.ID != "SVC0002" {
 		t.Fatalf("rotate %+v, %v", res, err)
 	}
 	if k := f.keys(devUser); !slices.Equal(k, []string{"SVC0001", "SVC0002"}) {
 		t.Fatalf("keys after rotating %v", k)
 	}
+	// Two keys at most, like AWS: refused while both may be in use.
+	if _, err := d.Ensure(ctx, dev, true, "SVC0002", "SVC0001"); !errors.Is(err, ErrKeyLimit) {
+		t.Fatalf("a third key: %v", err)
+	}
+	if k := f.keys(devUser); !slices.Equal(k, []string{"SVC0001", "SVC0002"}) {
+		t.Fatalf("keys after a refused third key %v", k)
+	}
 	must(t, d.DeleteKey(ctx, dev, "SVC0001"))
 	must(t, d.DeleteKey(ctx, dev, "SVC0001"))
 	// Another instance's key is not deleted through this one.
 	other := Instance{App: "moimroom", Name: "moimroom"}
-	resOther, err := d.Ensure(ctx, other, false, "")
+	resOther, err := d.Ensure(ctx, other, false, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,14 +390,14 @@ func TestMinIOEnsure(t *testing.T) {
 		t.Fatalf("the other instance's keys %v", k)
 	}
 	// The key in use still exists: nothing changes. Gone: a new one.
-	if res, err := d.Ensure(ctx, dev, false, "SVC0002"); err != nil || res.Key != nil {
+	if res, err := d.Ensure(ctx, dev, false, "SVC0002", ""); err != nil || res.Key != nil {
 		t.Fatalf("keep an existing key: %+v, %v", res, err)
 	}
 	must(t, d.DeleteKey(ctx, dev, "SVC0002"))
-	if res, err := d.Ensure(ctx, dev, false, "SVC0002"); err != nil || res.Key == nil {
+	if res, err := d.Ensure(ctx, dev, false, "SVC0002", ""); err != nil || res.Key == nil {
 		t.Fatalf("keep a key that is gone: %+v, %v", res, err)
 	}
-	res, err = d.Ensure(ctx, dev, true, "")
+	res, err = d.Ensure(ctx, dev, true, "", "")
 	if err != nil || res.Key == nil {
 		t.Fatalf("retry %+v, %v", res, err)
 	}
@@ -402,7 +409,7 @@ func TestMinIOEnsure(t *testing.T) {
 func TestMinIOEnsureRefusesAnotherApp(t *testing.T) {
 	f := newFakeMinIO()
 	f.buckets[devMinIOBucket] = &fakeMinIOBucket{tags: map[string]string{TagApp: "other"}}
-	if _, err := newMinIODriver(f).Ensure(t.Context(), dev, true, ""); !errors.Is(err, ErrInUse) {
+	if _, err := newMinIODriver(f).Ensure(t.Context(), dev, true, "", ""); !errors.Is(err, ErrInUse) {
 		t.Fatalf("err = %v, want ErrInUse", err)
 	}
 	if len(f.users) != 0 {
@@ -410,7 +417,7 @@ func TestMinIOEnsureRefusesAnotherApp(t *testing.T) {
 	}
 	// An untagged one (a crash between making and tagging) is taken over.
 	f.buckets[devMinIOBucket] = &fakeMinIOBucket{}
-	if _, err := newMinIODriver(f).Ensure(t.Context(), dev, true, ""); err != nil {
+	if _, err := newMinIODriver(f).Ensure(t.Context(), dev, true, "", ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -419,11 +426,11 @@ func TestMinIOEnsureFailures(t *testing.T) {
 	for _, op := range []string{"MakeBucket", "AddUser", "AddServiceAccount"} {
 		f := newFakeMinIO()
 		f.fail[op] = errors.New("boom")
-		if _, err := newMinIODriver(f).Ensure(t.Context(), dev, true, ""); err == nil || !strings.Contains(err.Error(), "boom") {
+		if _, err := newMinIODriver(f).Ensure(t.Context(), dev, true, "", ""); err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Errorf("%s fails: err = %v", op, err)
 		}
 		delete(f.fail, op)
-		if res, err := newMinIODriver(f).Ensure(t.Context(), dev, true, ""); err != nil || res.Key == nil {
+		if res, err := newMinIODriver(f).Ensure(t.Context(), dev, true, "", ""); err != nil || res.Key == nil {
 			t.Errorf("retry after %s: %+v, %v", op, res, err)
 		}
 	}
@@ -433,7 +440,7 @@ func TestMinIODelete(t *testing.T) {
 	f := newFakeMinIO()
 	d := newMinIODriver(f)
 	ctx := t.Context()
-	if _, err := d.Ensure(ctx, dev, false, ""); err != nil {
+	if _, err := d.Ensure(ctx, dev, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 250 {
@@ -447,7 +454,7 @@ func TestMinIODelete(t *testing.T) {
 	must(t, d.Delete(ctx, dev))
 
 	// A failed removal is reported, and a retry finishes.
-	if _, err := d.Ensure(ctx, dev, false, ""); err != nil {
+	if _, err := d.Ensure(ctx, dev, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	f.buckets[devMinIOBucket].objects = []string{"a@1", "b@1"}
@@ -498,15 +505,15 @@ func TestMinIOLive(t *testing.T) {
 		_ = d.Delete(context.Background(), b)
 	})
 
-	resA, err := d.Ensure(ctx, a, false, "")
+	resA, err := d.Ensure(ctx, a, false, "", "")
 	if err != nil || resA.Key == nil {
 		t.Fatalf("ensure a: %+v, %v", resA, err)
 	}
-	resB, err := d.Ensure(ctx, b, false, "")
+	resB, err := d.Ensure(ctx, b, false, "", "")
 	if err != nil || resB.Key == nil {
 		t.Fatalf("ensure b: %+v, %v", resB, err)
 	}
-	again, err := d.Ensure(ctx, a, false, "")
+	again, err := d.Ensure(ctx, a, false, "", "")
 	if err != nil || again.Key != nil {
 		t.Fatalf("ensure a again: %+v, %v", again, err)
 	}
@@ -553,12 +560,15 @@ func TestMinIOLive(t *testing.T) {
 	}
 
 	// Rotation: the new key works, then the old one is deleted.
-	rot, err := d.Ensure(ctx, a, true, resA.Key.ID)
+	rot, err := d.Ensure(ctx, a, true, resA.Key.ID, "")
 	if err != nil || rot.Key == nil {
 		t.Fatalf("rotate: %+v, %v", rot, err)
 	}
 	if _, err := asApp(rot.Key).StatObject(ctx, rot.Bucket, "hello.txt", minio.StatObjectOptions{}); err != nil {
 		t.Fatalf("the new key: %v", err)
+	}
+	if _, err := d.Ensure(ctx, a, true, rot.Key.ID, resA.Key.ID); !errors.Is(err, ErrKeyLimit) {
+		t.Fatalf("a third key while two may be in use: %v", err)
 	}
 	must(t, d.DeleteKey(ctx, a, resA.Key.ID))
 	must(t, d.DeleteKey(ctx, a, resA.Key.ID))

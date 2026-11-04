@@ -327,8 +327,9 @@ operations:
       등록한 앱을 지금 배포한다(trigger `manual`). `branch`가 인스턴스를 고르고(기본은 앱의 브랜치), `ref`를 커밋으로 풀어 그 커밋의 `platform.yaml`을 등록과 같이 검사한 뒤 배포를 큐에 넣는다. 202가 바로 오고, 진행은 `GET /v1/deployments/{id}/events`로 본다.
 
       - `redeploy: true`(trigger `redeploy`)이면 빌드도 GitHub 읽기도 없이 그 인스턴스의 마지막 healthy 배포를 같은 커밋, 이미지, `platform.yaml`로 지금의 시크릿과 함께 다시 배포한다. 시크릿을 바꾼 뒤에 쓴다. `ref`와 함께 쓸 수 없다.
-      - 그 인스턴스에 끝나지 않은 배포가 있으면 재배포는 409 deployment_in_progress다. 진행 중인 배포는 gitops 커밋 때의 시크릿을 쓰므로 끝난 뒤에 다시 보낸다.
-      - 오류 코드: invalid_request(400, 앱이 배포하지 않는 브랜치, 등록하지 않은 환경, 없는 ref, ref와 redeploy를 함께 보냄), app_not_found(404), app_not_registered(409), nothing_to_redeploy(409, healthy 배포가 없음), deployment_in_progress(409), invalid_app_spec(422), github_unreachable(502), github_not_configured(503).
+      - 재배포는 그 healthy 배포가 간 환경에만 간다. `environments`를 빼면 그 배포의 환경 중 앱이 아직 배포하는 환경 모두이고, 그 배포가 가지 않은 환경을 `environments`에 넣으면 409 nothing_to_redeploy다.
+      - 그 인스턴스에 끝나지 않은 배포가 있으면 재배포는 409 deployment_in_progress다. 진행 중인 배포는 gitops 커밋 때의 시크릿을 쓰므로 끝난 뒤에 다시 보낸다. 그 사이에 들어온 배포는 재배포를 superseded로 끝내고, 끝나지 않은 배포 옆에서 큐에 들어간 재배포는 스스로 superseded로 끝난다.
+      - 오류 코드: invalid_request(400, 앱이 배포하지 않는 브랜치, 등록하지 않은 환경, 없는 ref, ref와 redeploy를 함께 보냄), app_not_found(404), app_not_registered(409), nothing_to_redeploy(409, healthy 배포가 없거나 그 배포가 요청한 환경 또는 앱이 아직 배포하는 환경에 가지 않음), deployment_in_progress(409), invalid_app_spec(422), github_unreachable(502), github_not_configured(503).
   listAppSecrets:
     summary: 앱 시크릿 이름 목록
     role: 모든 역할
@@ -670,7 +671,7 @@ fields:
   AppSecretsUpdate.set: 넣거나 바꿀 시크릿, 이름과 값, 50개까지. 값은 UTF-8로 1바이트에서 4096바이트
   AppSecretsUpdate.delete: 지울 이름, 50개까지. 없는 이름은 무시한다
   AppSecretValue.instance: 이 값이 덮어쓰기인 인스턴스. 앱 단위 값이면 없다
-  DeploymentCreateRequest.redeploy: 인스턴스의 마지막 healthy 배포를 같은 커밋과 이미지로 빌드 없이 지금의 시크릿으로 다시 배포한다. ref와 함께 쓸 수 없다
+  DeploymentCreateRequest.redeploy: 인스턴스의 마지막 healthy 배포를 같은 커밋과 이미지로 빌드 없이 지금의 시크릿으로 그 배포가 간 환경에만 다시 배포한다. ref와 함께 쓸 수 없다
 
 # Meaning of enum values, used by {{enum:Name:...}} in template.md.
 enums:

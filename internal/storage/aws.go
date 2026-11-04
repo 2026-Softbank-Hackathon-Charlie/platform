@@ -95,7 +95,7 @@ func (d *awsDriver) tags(in Instance) map[string]string {
 	return map[string]string{TagApp: in.App, TagInstance: in.Name}
 }
 
-func (d *awsDriver) Ensure(ctx context.Context, in Instance, newKey bool, keep string) (Result, error) {
+func (d *awsDriver) Ensure(ctx context.Context, in Instance, newKey bool, current, old string) (Result, error) {
 	n, err := instanceNames(d.prefix, in)
 	if err != nil {
 		return Result{}, err
@@ -113,19 +113,19 @@ func (d *awsDriver) Ensure(ctx context.Context, in Instance, newKey bool, keep s
 	}
 	out := Result{Bucket: n.bucket}
 	if !newKey && !created {
-		if keep == "" {
+		if current == "" {
 			return out, nil
 		}
 		ids, err := d.keyIDs(ctx, n.user)
 		if err != nil {
 			return Result{}, err
 		}
-		if slices.Contains(ids, keep) {
+		if slices.Contains(ids, current) {
 			return out, nil
 		}
 		// The key in use is gone: a new one replaces it.
 	}
-	if err := d.deleteKeys(ctx, n.user, keep); err != nil {
+	if err := d.deleteKeys(ctx, n.user, current, old); err != nil {
 		return Result{}, err
 	}
 	k, err := d.iam.CreateAccessKey(ctx, &iam.CreateAccessKeyInput{UserName: &n.user})
@@ -263,15 +263,16 @@ func (d *awsDriver) keyIDs(ctx context.Context, user string) ([]string, error) {
 }
 
 // deleteKeys deletes the user's access keys except keep.
-func (d *awsDriver) deleteKeys(ctx context.Context, user, keep string) error {
+func (d *awsDriver) deleteKeys(ctx context.Context, user, current, old string) error {
 	ids, err := d.keyIDs(ctx, user)
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		if id == keep {
-			continue
-		}
+	del, err := keysToDelete(user, ids, current, old)
+	if err != nil {
+		return err
+	}
+	for _, id := range del {
 		if err := d.deleteKey(ctx, user, id); err != nil {
 			return err
 		}
@@ -282,7 +283,7 @@ func (d *awsDriver) deleteKeys(ctx context.Context, user, keep string) error {
 func (d *awsDriver) deleteKey(ctx context.Context, user, id string) error {
 	_, err := d.iam.DeleteAccessKey(ctx, &iam.DeleteAccessKeyInput{UserName: &user, AccessKeyId: &id})
 	if err != nil && errorCode(err) != "NoSuchEntity" {
-		return fmt.Errorf("storage: delete access key %s of user %s: %w", id, user, err)
+		return fmt.Errorf("storage: delete access key %s of user %s: %w", MaskKey(id), user, err)
 	}
 	return nil
 }
@@ -317,7 +318,7 @@ func (d *awsDriver) Delete(ctx context.Context, in Instance) error {
 
 	// The user first: the app loses access before its objects go.
 	if userErr == nil {
-		if err := d.deleteKeys(ctx, n.user, ""); err != nil {
+		if err := d.deleteKeys(ctx, n.user, "", ""); err != nil {
 			return err
 		}
 		if _, err := d.iam.DeleteUserPolicy(ctx, &iam.DeleteUserPolicyInput{UserName: &n.user, PolicyName: aws.String(policyName)}); err != nil && errorCode(err) != "NoSuchEntity" {

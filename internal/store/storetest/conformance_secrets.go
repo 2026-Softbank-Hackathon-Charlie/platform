@@ -411,7 +411,7 @@ func testInstanceStorage(t *testing.T, s store.Store) {
 	// Put replaces the row, a new key sealed with a new certificate, and
 	// keeps when it was first made.
 	r := newInstanceStorage("moimroom", "eks", "moimroom", 5)
-	r.KeyID, r.SealedAccessKey, r.SealedSecretKey, r.CertFingerprint = "AKIANEW", "AgBuZXc=", "AgBuZXcy", "SHA256:def"
+	r.KeyID, r.OldKeyID, r.SealedAccessKey, r.SealedSecretKey, r.CertFingerprint = "AKIANEW", r.KeyID, "AgBuZXc=", "AgBuZXcy", "SHA256:def"
 	must(t, s.PutInstanceStorage(ctx, r))
 	got, err = s.GetInstanceStorage(ctx, "moimroom", "eks")
 	must(t, err)

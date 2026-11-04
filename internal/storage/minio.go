@@ -90,7 +90,7 @@ func minioCode(err error) string {
 	return madmin.ToErrorResponse(err).Code
 }
 
-func (d *minioDriver) Ensure(ctx context.Context, in Instance, newKey bool, keep string) (Result, error) {
+func (d *minioDriver) Ensure(ctx context.Context, in Instance, newKey bool, current, old string) (Result, error) {
 	n, err := instanceNames(d.prefix, in)
 	if err != nil {
 		return Result{}, err
@@ -122,19 +122,19 @@ func (d *minioDriver) Ensure(ctx context.Context, in Instance, newKey bool, keep
 	}
 	out := Result{Bucket: n.bucket}
 	if !newKey && !created {
-		if keep == "" {
+		if current == "" {
 			return out, nil
 		}
 		list, err := d.admin.ListServiceAccounts(ctx, n.user)
 		if err != nil {
 			return Result{}, fmt.Errorf("storage: list service accounts of user %s: %w", n.user, err)
 		}
-		if slices.ContainsFunc(list.Accounts, func(a madmin.ServiceAccountInfo) bool { return a.AccessKey == keep }) {
+		if slices.ContainsFunc(list.Accounts, func(a madmin.ServiceAccountInfo) bool { return a.AccessKey == current }) {
 			return out, nil
 		}
 		// The key in use is gone: a new one replaces it.
 	}
-	if err := d.deleteKeys(ctx, n.user, keep); err != nil {
+	if err := d.deleteKeys(ctx, n.user, current, old); err != nil {
 		return Result{}, err
 	}
 	cred, err := d.admin.AddServiceAccount(ctx, madmin.AddServiceAccountReq{TargetUser: n.user, Description: "HopCharlie key of instance " + in.Name})
@@ -195,17 +195,22 @@ func (d *minioDriver) bucketTags(ctx context.Context, bucket string) (map[string
 	}
 }
 
-// deleteKeys deletes the user's service accounts except keep.
-func (d *minioDriver) deleteKeys(ctx context.Context, user, keep string) error {
+// deleteKeys deletes the user's service accounts except current and old.
+func (d *minioDriver) deleteKeys(ctx context.Context, user, current, old string) error {
 	list, err := d.admin.ListServiceAccounts(ctx, user)
 	if err != nil {
 		return fmt.Errorf("storage: list service accounts of user %s: %w", user, err)
 	}
-	for _, a := range list.Accounts {
-		if a.AccessKey == keep {
-			continue
-		}
-		if err := d.deleteKey(ctx, a.AccessKey); err != nil {
+	ids := make([]string, len(list.Accounts))
+	for i, a := range list.Accounts {
+		ids[i] = a.AccessKey
+	}
+	del, err := keysToDelete(user, ids, current, old)
+	if err != nil {
+		return err
+	}
+	for _, id := range del {
+		if err := d.deleteKey(ctx, id); err != nil {
 			return err
 		}
 	}
@@ -223,7 +228,7 @@ func serviceAccountGone(err error) bool {
 
 func (d *minioDriver) deleteKey(ctx context.Context, id string) error {
 	if err := d.admin.DeleteServiceAccount(ctx, id); err != nil && !serviceAccountGone(err) {
-		return fmt.Errorf("storage: delete service account %s: %w", id, err)
+		return fmt.Errorf("storage: delete service account %s: %w", MaskKey(id), err)
 	}
 	return nil
 }
@@ -240,9 +245,9 @@ func (d *minioDriver) DeleteKey(ctx context.Context, in Instance, keyID string) 
 	case serviceAccountGone(err):
 		return nil
 	case err != nil:
-		return fmt.Errorf("storage: read service account %s: %w", keyID, err)
+		return fmt.Errorf("storage: read service account %s: %w", MaskKey(keyID), err)
 	case info.ParentUser != n.user:
-		return fmt.Errorf("%w: service account %s belongs to %s, not %s", ErrInUse, keyID, info.ParentUser, n.user)
+		return fmt.Errorf("%w: service account %s belongs to %s, not %s", ErrInUse, MaskKey(keyID), info.ParentUser, n.user)
 	}
 	return d.deleteKey(ctx, keyID)
 }

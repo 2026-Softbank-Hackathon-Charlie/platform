@@ -412,7 +412,7 @@ func TestAWSEnsure(t *testing.T) {
 	d := newAWSDriver(f)
 	ctx := t.Context()
 
-	res, err := d.Ensure(ctx, dev, false, "")
+	res, err := d.Ensure(ctx, dev, false, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +439,7 @@ func TestAWSEnsure(t *testing.T) {
 	}
 
 	// Again: everything exists; no new key unless asked.
-	res, err = d.Ensure(ctx, dev, false, "")
+	res, err = d.Ensure(ctx, dev, false, "", "")
 	if err != nil || res.Key != nil || res.Bucket != devBucket {
 		t.Fatalf("second ensure %+v, %v", res, err)
 	}
@@ -448,12 +448,20 @@ func TestAWSEnsure(t *testing.T) {
 	}
 
 	// A new key keeping the old one: rotation.
-	res, err = d.Ensure(ctx, dev, true, "AKIA0001")
+	res, err = d.Ensure(ctx, dev, true, "AKIA0001", "")
 	if err != nil || res.Key == nil || res.Key.ID != "AKIA0002" {
 		t.Fatalf("rotate %+v, %v", res, err)
 	}
 	if !slices.Equal(f.users[devUser].keys, []string{"AKIA0001", "AKIA0002"}) {
 		t.Fatalf("keys after rotating %v", f.users[devUser].keys)
+	}
+	// Another new key while both may be in use: refused, nothing changes.
+	_, err = d.Ensure(ctx, dev, true, "AKIA0002", "AKIA0001")
+	if !errors.Is(err, ErrKeyLimit) || strings.Contains(err.Error(), "AKIA0001") || !strings.Contains(err.Error(), "...0001") {
+		t.Fatalf("a third key: %v", err)
+	}
+	if !slices.Equal(f.users[devUser].keys, []string{"AKIA0001", "AKIA0002"}) {
+		t.Fatalf("keys after a refused third key %v", f.users[devUser].keys)
 	}
 	must(t, d.DeleteKey(ctx, dev, "AKIA0001"))
 	must(t, d.DeleteKey(ctx, dev, "AKIA0001")) // gone already
@@ -462,12 +470,12 @@ func TestAWSEnsure(t *testing.T) {
 	}
 
 	// The key in use still exists: nothing changes. Gone: a new one.
-	res, err = d.Ensure(ctx, dev, false, "AKIA0002")
+	res, err = d.Ensure(ctx, dev, false, "AKIA0002", "")
 	if err != nil || res.Key != nil {
 		t.Fatalf("keep an existing key: %+v, %v", res, err)
 	}
 	must(t, d.DeleteKey(ctx, dev, "AKIA0002"))
-	res, err = d.Ensure(ctx, dev, false, "AKIA0002")
+	res, err = d.Ensure(ctx, dev, false, "AKIA0002", "")
 	if err != nil || res.Key == nil || res.Key.ID == "AKIA0002" {
 		t.Fatalf("keep a key that is gone: %+v, %v", res, err)
 	}
@@ -478,13 +486,21 @@ func TestAWSEnsure(t *testing.T) {
 	// A new key keeping none: a retry after a crash deletes keys nobody
 	// knows, so the two-key limit is never hit.
 	for i := range 3 {
-		res, err = d.Ensure(ctx, dev, true, "")
+		res, err = d.Ensure(ctx, dev, true, "", "")
 		if err != nil || res.Key == nil {
 			t.Fatalf("retry %d: %+v, %v", i, res, err)
 		}
 		if !slices.Equal(f.users[devUser].keys, []string{res.Key.ID}) {
 			t.Fatalf("retry %d: keys %v", i, f.users[devUser].keys)
 		}
+	}
+
+	// The key in use is gone and the old one may still be in use: a new
+	// key beside the old one.
+	old := res.Key.ID
+	res, err = d.Ensure(ctx, dev, false, "AKIAGONE", old)
+	if err != nil || res.Key == nil || !slices.Equal(f.users[devUser].keys, []string{old, res.Key.ID}) {
+		t.Fatalf("a gone key with an old one: %+v, %v, keys %v", res, err, f.users[devUser].keys)
 	}
 }
 
@@ -503,7 +519,7 @@ func TestAWSEnsureUSEast1(t *testing.T) {
 	f := newFakeAWS()
 	d := newAWSDriver(f)
 	d.region, d.s3 = "us-east-1", usEast1{f}
-	if _, err := d.Ensure(t.Context(), dev, false, ""); err != nil {
+	if _, err := d.Ensure(t.Context(), dev, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if r := f.buckets[devBucket].region; r != "us-east-1" {
@@ -511,7 +527,7 @@ func TestAWSEnsureUSEast1(t *testing.T) {
 	}
 	// Another app's bucket is still refused although the create succeeds.
 	f.buckets[devBucket].tags[TagApp] = "other"
-	if _, err := d.Ensure(t.Context(), dev, false, ""); !errors.Is(err, ErrInUse) {
+	if _, err := d.Ensure(t.Context(), dev, false, "", ""); !errors.Is(err, ErrInUse) {
 		t.Fatalf("err = %v, want ErrInUse", err)
 	}
 	if f.buckets[devBucket].tags[TagApp] != "other" {
@@ -526,7 +542,7 @@ func TestAWSEnsureTakesOverLeftovers(t *testing.T) {
 	// without a policy or key.
 	f.buckets[devBucket] = &fakeBucket{region: "ap-northeast-2"}
 	f.users[devUser] = &fakeUser{path: "/hopcharlie-apps/", tags: map[string]string{TagApp: "moimroom", TagInstance: "moimroom--dev"}, policies: map[string]string{}}
-	res, err := d.Ensure(t.Context(), dev, true, "")
+	res, err := d.Ensure(t.Context(), dev, true, "", "")
 	if err != nil || res.Key == nil {
 		t.Fatalf("%+v, %v", res, err)
 	}
@@ -556,7 +572,7 @@ func TestAWSEnsureRefusesOthers(t *testing.T) {
 	for name, setup := range cases {
 		f := newFakeAWS()
 		setup(f)
-		_, err := newAWSDriver(f).Ensure(ctx, dev, true, "")
+		_, err := newAWSDriver(f).Ensure(ctx, dev, true, "", "")
 		if !errors.Is(err, ErrInUse) {
 			t.Errorf("%s: err = %v, want ErrInUse", name, err)
 		}
@@ -570,12 +586,12 @@ func TestAWSEnsureFailures(t *testing.T) {
 	for _, op := range []string{"CreateBucket", "PutPublicAccessBlock", "PutBucketTagging", "CreateUser", "PutUserPolicy", "ListAccessKeys", "CreateAccessKey"} {
 		f := newFakeAWS()
 		f.fail[op] = errors.New("boom")
-		if _, err := newAWSDriver(f).Ensure(t.Context(), dev, true, ""); err == nil || !strings.Contains(err.Error(), "boom") {
+		if _, err := newAWSDriver(f).Ensure(t.Context(), dev, true, "", ""); err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Errorf("%s fails: err = %v", op, err)
 		}
 		// The retry succeeds.
 		delete(f.fail, op)
-		if res, err := newAWSDriver(f).Ensure(t.Context(), dev, true, ""); err != nil || res.Key == nil {
+		if res, err := newAWSDriver(f).Ensure(t.Context(), dev, true, "", ""); err != nil || res.Key == nil {
 			t.Errorf("retry after %s: %+v, %v", op, res, err)
 		}
 	}
@@ -585,10 +601,10 @@ func TestAWSDelete(t *testing.T) {
 	f := newFakeAWS()
 	d := newAWSDriver(f)
 	ctx := t.Context()
-	if _, err := d.Ensure(ctx, dev, false, ""); err != nil {
+	if _, err := d.Ensure(ctx, dev, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Ensure(ctx, dev, true, "AKIA0001"); err != nil {
+	if _, err := d.Ensure(ctx, dev, true, "AKIA0001", ""); err != nil {
 		t.Fatal(err)
 	}
 	b := f.buckets[devBucket]
@@ -598,7 +614,7 @@ func TestAWSDelete(t *testing.T) {
 	b.markers = []string{"photos/9.jpg@m1"}
 	b.uploads = []string{"big.bin@u1"}
 	other := Instance{App: "moimroom", Name: "moimroom"}
-	if _, err := d.Ensure(ctx, other, false, ""); err != nil {
+	if _, err := d.Ensure(ctx, other, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -624,7 +640,7 @@ func TestAWSDeleteResumes(t *testing.T) {
 	f := newFakeAWS()
 	d := newAWSDriver(f)
 	ctx := t.Context()
-	if _, err := d.Ensure(ctx, dev, false, ""); err != nil {
+	if _, err := d.Ensure(ctx, dev, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	f.buckets[devBucket].versions = []string{"a@1"}
@@ -646,7 +662,7 @@ func TestAWSDeleteRefusesOthers(t *testing.T) {
 	f := newFakeAWS()
 	d := newAWSDriver(f)
 	ctx := t.Context()
-	if _, err := d.Ensure(ctx, dev, false, ""); err != nil {
+	if _, err := d.Ensure(ctx, dev, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	f.buckets[devBucket].tags[TagApp] = "other"

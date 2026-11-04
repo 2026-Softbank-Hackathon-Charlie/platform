@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -87,6 +88,58 @@ func TestRedeploy(t *testing.T) {
 	}
 	if code, b := h.do("POST", "/v1/apps/shop/deployments", opToken, map[string]any{"redeploy": true, "branch": "nope"}); code != 400 {
 		t.Fatalf("unknown branch: %d %s", code, b)
+	}
+}
+
+func TestRedeployEnvironments(t *testing.T) {
+	gh, dep := shopGitHub(), &fakeDeployer{}
+	h := newHarness(t, withApps(""), withGitHub(gh, dep))
+	first := h.registerShop() // to gke and eks
+	h.finishDeployment(first.Id, store.DeployHealthy)
+	code, b := h.do("POST", "/v1/apps/shop/deployments", opToken, map[string]any{"environments": []string{"gke"}})
+	if code != 202 {
+		t.Fatalf("deploy to gke: %d %s", code, b)
+	}
+	gkeOnly := h.finishDeployment(decode[apiv1.Deployment](t, b).Id, store.DeployHealthy)
+
+	// By default only the environments the last healthy deployment went
+	// to: eks may run another version.
+	code, b = h.do("POST", "/v1/apps/shop/deployments", opToken, map[string]any{"redeploy": true})
+	if code != 202 {
+		t.Fatalf("redeploy: %d %s", code, b)
+	}
+	d := decode[apiv1.Deployment](t, b)
+	if len(d.Environments) != 1 || d.Environments[0].Env != "gke" || d.Commit != gkeOnly.Commit {
+		t.Fatalf("redeploy went to %+v", d.Environments)
+	}
+	if a := h.lastAudit(); !strings.Contains(string(a.Detail), `"environments":["gke"]`) {
+		t.Fatalf("audit %s", a.Detail)
+	}
+	h.finishDeployment(d.Id, store.DeployHealthy)
+
+	// Asking for an environment it did not go to is refused.
+	for _, envs := range [][]string{{"eks"}, {"gke", "eks"}} {
+		code, b = h.do("POST", "/v1/apps/shop/deployments", opToken, map[string]any{"redeploy": true, "environments": envs})
+		if code != 409 || errCode(t, b) != "nothing_to_redeploy" || !strings.Contains(string(b), "did not go to eks") {
+			t.Fatalf("redeploy to %v: %d %s", envs, code, b)
+		}
+	}
+
+	// The last healthy deployment went only to an environment the app no
+	// longer deploys to.
+	old, err := h.store.GetDeployment(context.Background(), d.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.ID, old.Status, old.FinishedAt, old.CreatedAt = "dep_onprem", store.DeployQueued, nil, storeTime().Add(time.Second)
+	old.Environments = []store.DeploymentEnvironment{{Env: "onprem", Status: "pending"}}
+	if err := h.store.CreateDeployment(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	h.finishDeployment(old.ID, store.DeployHealthy)
+	code, b = h.do("POST", "/v1/apps/shop/deployments", opToken, map[string]any{"redeploy": true})
+	if code != 409 || errCode(t, b) != "nothing_to_redeploy" || !strings.Contains(string(b), "no longer deploys to") {
+		t.Fatalf("redeploy of a dropped environment: %d %s", code, b)
 	}
 }
 

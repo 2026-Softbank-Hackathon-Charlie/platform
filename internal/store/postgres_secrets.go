@@ -113,11 +113,11 @@ func (s *Postgres) ChangeAppSecrets(ctx context.Context, app, instance string, s
 	return tx.Commit(ctx)
 }
 
-const instanceStorageColumns = `instance, env, app, driver, bucket, key_id, sealed_access_key, sealed_secret_key, cert_fingerprint, created_at`
+const instanceStorageColumns = `instance, env, app, driver, bucket, key_id, old_key_id, sealed_access_key, sealed_secret_key, cert_fingerprint, created_at`
 
 func scanInstanceStorage(row pgx.Row) (InstanceStorage, error) {
 	var s InstanceStorage
-	if err := row.Scan(&s.Instance, &s.Env, &s.App, &s.Driver, &s.Bucket, &s.KeyID, &s.SealedAccessKey, &s.SealedSecretKey, &s.CertFingerprint, &s.CreatedAt); err != nil {
+	if err := row.Scan(&s.Instance, &s.Env, &s.App, &s.Driver, &s.Bucket, &s.KeyID, &s.OldKeyID, &s.SealedAccessKey, &s.SealedSecretKey, &s.CertFingerprint, &s.CreatedAt); err != nil {
 		return InstanceStorage{}, err
 	}
 	s.CreatedAt = s.CreatedAt.UTC()
@@ -126,11 +126,11 @@ func scanInstanceStorage(row pgx.Row) (InstanceStorage, error) {
 
 func (s *Postgres) PutInstanceStorage(ctx context.Context, is InstanceStorage) error {
 	is = is.Clean()
-	_, err := s.pool.Exec(ctx, `INSERT INTO instance_storage (`+instanceStorageColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	_, err := s.pool.Exec(ctx, `INSERT INTO instance_storage (`+instanceStorageColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (instance, env) DO UPDATE SET app = EXCLUDED.app, driver = EXCLUDED.driver, bucket = EXCLUDED.bucket,
-			key_id = EXCLUDED.key_id, sealed_access_key = EXCLUDED.sealed_access_key, sealed_secret_key = EXCLUDED.sealed_secret_key,
+			key_id = EXCLUDED.key_id, old_key_id = EXCLUDED.old_key_id, sealed_access_key = EXCLUDED.sealed_access_key, sealed_secret_key = EXCLUDED.sealed_secret_key,
 			cert_fingerprint = EXCLUDED.cert_fingerprint`,
-		is.Instance, is.Env, is.App, is.Driver, is.Bucket, is.KeyID, is.SealedAccessKey, is.SealedSecretKey, is.CertFingerprint, is.CreatedAt)
+		is.Instance, is.Env, is.App, is.Driver, is.Bucket, is.KeyID, is.OldKeyID, is.SealedAccessKey, is.SealedSecretKey, is.CertFingerprint, is.CreatedAt)
 	return err
 }
 

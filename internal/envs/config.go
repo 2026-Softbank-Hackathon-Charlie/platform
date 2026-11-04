@@ -68,6 +68,7 @@ func (c Config) normalize() (Config, error) {
 	}
 	out := Config{Environments: make([]EnvConfig, len(c.Environments))}
 	seen := map[string]bool{}
+	users := map[string]string{} // storage.Config.Users -> environment
 	for i, e := range c.Environments {
 		switch {
 		case !namePattern.MatchString(e.Name):
@@ -92,6 +93,11 @@ func (c Config) normalize() (Config, error) {
 			if err := e.Storage.Validate(); err != nil {
 				return Config{}, fmt.Errorf("environment %q: %w", e.Name, err)
 			}
+			// Users are named after the instance only (ADR 0016).
+			if other, ok := users[e.Storage.Users()]; ok {
+				return Config{}, fmt.Errorf("environments %q and %q both keep their storage users in %s, where the users of instances with the same name would be one; only one environment may use it", other, e.Name, e.Storage.Users())
+			}
+			users[e.Storage.Users()] = e.Name
 			st := *e.Storage
 			e.Storage = &st
 		}

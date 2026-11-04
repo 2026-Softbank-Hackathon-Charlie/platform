@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
@@ -119,7 +120,7 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, http.StatusBadRequest, "invalid_request", "ref is not allowed with redeploy: a redeploy repeats the instance's last healthy deployment")
 			return
 		}
-		s.redeploy(w, r, app, in, targets)
+		s.redeploy(w, r, app, in, targets, req.Environments != nil)
 		return
 	}
 	ref := branch
@@ -178,10 +179,13 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 }
 
 // redeploy queues a redeploy of the instance in: its last healthy
-// deployment's commit, images and platform.yaml again, to targets, with the
-// secrets as they are now (ADR 0019). Nothing is built and GitHub is not
-// read. It is refused while the instance has an unfinished deployment.
-func (s *Server) redeploy(w http.ResponseWriter, r *http.Request, app store.App, in store.AppBranch, targets []string) {
+// deployment's commit, images and platform.yaml again, with the secrets as
+// they are now (ADR 0019). Nothing is built and GitHub is not read. It goes
+// only to environments that deployment went to: by default all of them the
+// app still deploys to, or targets when they were asked for (asked), all of
+// which it must have gone to; another environment may run another version.
+// It is refused while the instance has an unfinished deployment.
+func (s *Server) redeploy(w http.ResponseWriter, r *http.Request, app store.App, in store.AppBranch, targets []string, asked bool) {
 	noteAudit(r, "redeploy", true)
 	ctx := context.WithoutCancel(r.Context())
 	list, err := s.d.Store.ListInstanceDeployments(ctx, in.Instance, 0)
@@ -206,6 +210,19 @@ func (s *Server) redeploy(w http.ResponseWriter, r *http.Request, app store.App,
 	}
 	noteAudit(r, "of", last.ID)
 	noteAudit(r, "commit", last.Commit)
+	went := func(e string) bool {
+		return slices.ContainsFunc(last.Environments, func(le store.DeploymentEnvironment) bool { return le.Env == e })
+	}
+	if missing := slices.DeleteFunc(slices.Clone(targets), went); asked && len(missing) > 0 {
+		s.fail(w, r, http.StatusConflict, "nothing_to_redeploy", fmt.Sprintf("the last healthy deployment %s of %s did not go to %s, so there is nothing to redeploy there; deploy the branch there instead", last.ID, in.Instance, strings.Join(missing, ", ")))
+		return
+	}
+	targets = slices.DeleteFunc(slices.Clone(targets), func(e string) bool { return !went(e) })
+	if len(targets) == 0 {
+		s.fail(w, r, http.StatusConflict, "nothing_to_redeploy", fmt.Sprintf("the last healthy deployment %s of %s went only to environments app %s no longer deploys to; deploy the branch instead", last.ID, in.Instance, app.Name))
+		return
+	}
+	noteAudit(r, "environments", targets)
 	spec := last.Spec
 	if len(spec) == 0 && in.SpecCommit == last.Commit {
 		// Deployed before deployments recorded their spec.

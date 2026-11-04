@@ -22,7 +22,11 @@
 // namespace, the Argo CD Applications <instance>-<env> and the gateway app;
 // the app name stays the chart's app and the image repository. Instances are
 // independent: a deployment supersedes only older deployments of its own
-// instance.
+// instance. A redeploy never runs beside another deployment of its
+// instance: a deployment that is not a redeploy supersedes every unfinished
+// redeploy, older or newer, and a redeploy taken while such a deployment is
+// unfinished supersedes itself, as that deployment uses the current secrets
+// too.
 //
 // Everything is recorded in the store: the deployment through
 // UpdateDeployment, every step as a DeploymentEvent. UpdateDeployment refuses
@@ -277,7 +281,7 @@ func (e *Executor) take(ctx context.Context, id string) error {
 	if store.DeploymentFinished(d.Status) {
 		return nil
 	}
-	if err := e.supersede(ctx, d); err != nil {
+	if superseded, err := e.supersede(ctx, d); err != nil || superseded {
 		return err
 	}
 	e.mu.Lock()
@@ -290,24 +294,48 @@ func (e *Executor) take(ctx context.Context, id string) error {
 	return nil
 }
 
-// supersede finishes, as superseded, every unfinished deployment of d's
-// instance that was created before d and whose environments d all deploys
-// to. The deployments of the app's other instances go on.
-func (e *Executor) supersede(ctx context.Context, d store.Deployment) error {
+// supersede finishes, as superseded, the unfinished deployments of d's
+// instance that d replaces, and reports whether d itself was superseded
+// instead. The deployments of the app's other instances go on.
+//
+//   - d is a redeploy and the instance has an unfinished deployment that is
+//     not: d supersedes itself. That deployment seals the current secrets
+//     too, and a redeploy beside it could commit the older version after it.
+//   - d is not a redeploy: it supersedes every unfinished redeploy, created
+//     before or after it, for the same reason.
+//   - Otherwise d supersedes the deployments created before it whose
+//     environments it all deploys to.
+//
+// Deployments are stored before they are taken, so of a redeploy and
+// another deployment taken at the same time at least one sees the other.
+func (e *Executor) supersede(ctx context.Context, d store.Deployment) (bool, error) {
 	list, err := e.cfg.Store.ListInstanceDeployments(ctx, d.Instance, 0)
 	if err != nil {
-		return fmt.Errorf("list deployments of %s: %w", d.Instance, err)
+		return false, fmt.Errorf("list deployments of %s: %w", d.Instance, err)
+	}
+	list = slices.DeleteFunc(list, func(o store.Deployment) bool { return o.ID == d.ID || store.DeploymentFinished(o.Status) })
+	redeploy := func(o store.Deployment) bool { return o.Trigger == TriggerRedeploy }
+	if redeploy(d) {
+		if i := slices.IndexFunc(list, func(o store.Deployment) bool { return !redeploy(o) }); i >= 0 {
+			msg := fmt.Sprintf("superseded by deployment %s, which started meanwhile; it uses the current secrets", list[i].ID)
+			if err := e.finish(ctx, &d, store.DeploySuperseded, "", msg); err != nil && !errors.Is(err, errStopped) {
+				return false, err
+			}
+			e.stop(d.ID)
+			return true, nil
+		}
 	}
 	for _, o := range list {
-		if o.ID == d.ID || store.DeploymentFinished(o.Status) || !createdBefore(o, d) || !covers(d, o) {
+		replaces := redeploy(o) && !redeploy(d) || createdBefore(o, d) && covers(d, o)
+		if !replaces {
 			continue
 		}
 		if err := e.finish(ctx, &o, store.DeploySuperseded, "", "superseded by deployment "+d.ID); err != nil && !errors.Is(err, errStopped) {
-			return err
+			return false, err
 		}
 		e.stop(o.ID)
 	}
-	return nil
+	return false, nil
 }
 
 func createdBefore(a, b store.Deployment) bool {

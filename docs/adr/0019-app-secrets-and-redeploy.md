@@ -73,7 +73,9 @@ environments:
 
 - `POST /v1/apps/{name}/deployments`에 `redeploy: true`를 주면 그 인스턴스의 마지막 healthy 배포를 같은 커밋과 같은 이미지로 다시 배포한다. 빌드와 GitHub 읽기는 하지 않고, 지금의 시크릿으로 gitops 파일만 다시 쓴다. trigger는 `redeploy`다.
 - healthy 배포가 없으면 409 `nothing_to_redeploy`다. `ref`와 함께 쓸 수 없다.
+- 재배포는 그 healthy 배포가 간 환경에만 간다. 다른 환경은 다른 버전을 돌리고 있을 수 있기 때문이다. `environments`를 생략하면 그 배포의 환경 중 앱이 아직 배포하는 환경 모두에 가고, 그런 환경이 없으면 409 `nothing_to_redeploy`다. `environments`에 그 배포가 가지 않은 환경이 있으면 409 `nothing_to_redeploy`이고, 그 환경에는 브랜치를 배포한다.
 - 그 인스턴스에 끝나지 않은 배포(queued, building, committing, syncing)가 있으면 409 `deployment_in_progress`다. 진행 중인 배포는 gitops 커밋 때의 시크릿을 이미 쓰므로, 끝난 뒤에 다시 재배포한다.
+- 이 확인과 저장 사이에 다른 배포가 들어올 수 있으므로 실행기도 재배포를 다른 배포와 함께 돌리지 않는다. 재배포가 아닌 배포는 끝나지 않은 재배포를 만든 시각과 환경에 관계없이 모두 superseded로 끝낸다. 재배포는 큐에 넣을 때(서버 재시작 때 이어 받을 때도) 재배포가 아닌 끝나지 않은 배포가 있으면 스스로 superseded로 끝나고, 그 배포가 지금의 시크릿을 쓴다는 메시지를 남긴다. 두 배포 모두 저장한 뒤에 큐에 넣으므로 동시에 들어와도 적어도 한쪽은 다른 쪽을 본다. 그 배포가 가지 않는 환경은 그 배포가 끝난 뒤 다시 재배포한다.
 - 배포는 읽은 `platform.yaml`을 기록하고, 재배포는 그 기록과 이미지를 복사한다. 그래서 GitHub을 읽지 않는다.
 - 콘솔은 시크릿을 저장한 뒤 "재배포" 버튼으로 이 요청을 보낸다. CLI는 `charlie app secret list|get|set|rm`과 `charlie deploy APP --redeploy`를 쓴다.
 

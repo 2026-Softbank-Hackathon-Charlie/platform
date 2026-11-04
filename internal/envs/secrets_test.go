@@ -81,6 +81,37 @@ func TestLoadConfigStorageInvalid(t *testing.T) {
 	}
 }
 
+// storageEnvs is an envs.yaml with environments a and b and their storage
+// blocks.
+func storageEnvs(a, b string) string {
+	env := func(name, storage string) string {
+		return "  - name: " + name + "\n    provider: onprem\n    kubeContext: " + name + "\n    storage:\n" + storage
+	}
+	return "environments:\n" + env("a", a) + env("b", b)
+}
+
+func awsStorage(prefix string) string {
+	return "      driver: aws\n      bucketPrefix: " + prefix + "\n      region: ap-northeast-2\n      iamPath: /hc/\n      permissionsBoundary: arn:aws:iam::123456789012:policy/b\n"
+}
+
+// checkStorageUsers loads each case's envs.yaml; want is what the error
+// mentions, or "" for none.
+func checkStorageUsers(t *testing.T, cases map[string]struct{ yaml, want string }) {
+	t.Helper()
+	for name, tc := range cases {
+		_, err := LoadConfig(writeFile(t, "envs.yaml", tc.yaml))
+		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("%s: err = %v, want it to mention %q", name, err, tc.want)
+		}
+	}
+}
+
+func TestLoadConfigStorageSharedUsers(t *testing.T) {
+	checkStorageUsers(t, map[string]struct{ yaml, want string }{
+		"two aws": {storageEnvs(awsStorage("hc-a-"), awsStorage("hc-b-")), `environments "a" and "b" both keep their storage users in the AWS account`},
+	})
+}
+
 func TestLoadExampleConfigStorage(t *testing.T) {
 	cfg, err := LoadConfig(filepath.Join("..", "..", "examples", "envs.yaml"))
 	if err != nil {

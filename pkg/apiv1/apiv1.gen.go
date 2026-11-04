@@ -1377,7 +1377,7 @@ type DeploymentCreateRequest struct {
 	// Environments A subset of the app's environments; defaults to all of them.
 	Environments *[]string `json:"environments,omitempty"`
 
-	// Redeploy Deploy the instance's last healthy deployment again (same commit and images, no build) with the current secrets. Not with ref.
+	// Redeploy Deploy the instance's last healthy deployment again (same commit and images, no build) with the current secrets, only to environments it went to. Not with ref.
 	Redeploy *bool `json:"redeploy,omitempty"`
 
 	// Ref a branch, tag or commit sha of the app's repository to deploy into that instance; defaults to branch
