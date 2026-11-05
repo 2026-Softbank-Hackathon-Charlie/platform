@@ -23,7 +23,12 @@ func TestLoadConfigMinIOSharedUsers(t *testing.T) {
 func TestServiceStorageMinIO(t *testing.T) {
 	cfg := Config{Environments: []EnvConfig{{Name: "onprem", Provider: "onprem", KubeContext: "k3s", Storage: &storage.Config{
 		Driver: "minio", BucketPrefix: "hc-", Endpoint: "http://127.0.0.1:9", AdminAccessKeyEnv: "HC_TEST_MINIO_AK", AdminSecretKeyEnv: "HC_TEST_MINIO_SK"}}}}
-	if _, err := New(cfg, Options{}); err == nil || !strings.Contains(err.Error(), "HC_TEST_MINIO_AK") {
+	// Without the admin key the API still starts; only this environment's storage is unavailable.
+	s0, err := New(cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s0.Storage("onprem"); err == nil || !strings.Contains(err.Error(), "HC_TEST_MINIO_AK") {
 		t.Fatalf("without the admin key: %v", err)
 	}
 	t.Setenv("HC_TEST_MINIO_AK", "admin")
