@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Drivers.
@@ -244,6 +245,38 @@ type Driver interface {
 	Delete(ctx context.Context, in Instance) error
 }
 
+// KeyInfo is one key of an instance's user as the provider records it.
+type KeyInfo struct {
+	ID string
+	// CreatedAt is when the provider made the key; zero when the provider
+	// does not record it (minio).
+	CreatedAt time.Time
+	// Active is whether the key can be used: IAM status Active, GCS state
+	// ACTIVE, MinIO status on. Ensure counts an inactive key as present.
+	Active bool
+}
+
+// Scope is what an instance's key may do on the instance's bucket: the S3
+// actions (aws, minio) or the GCS roles (gcs) the driver grants. Ensure
+// writes this grant on every deployment.
+type Scope struct {
+	Actions []string
+	// Boundary is the permissions boundary every user is made with (aws),
+	// which caps whatever the user's policy says; "" for the other drivers.
+	Boundary string
+}
+
+// KeyReader reads an instance's keys back for the security view (ADR
+// 0027). Every driver implements it; it is not part of Driver so that a
+// driver used only for deployments does not need it.
+type KeyReader interface {
+	// Keys lists the keys of the instance's user, reading only. None when
+	// the user does not exist.
+	Keys(ctx context.Context, in Instance) ([]KeyInfo, error)
+	// Scope is what the driver lets the instance's key do.
+	Scope() Scope
+}
+
 // ErrInUse means a bucket or user with the instance's name belongs to
 // another app.
 var ErrInUse = errors.New("storage: belongs to another app")
@@ -325,6 +358,12 @@ func instanceNames(prefix string, in Instance) (names, error) {
 	return n, nil
 }
 
+// The actions bucketPolicy allows on the bucket and on its objects.
+var (
+	bucketActions = []string{"s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads"}
+	objectActions = []string{"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"}
+)
+
 // bucketPolicy is the policy of an instance's user: list the bucket, and
 // read, write and delete its objects, nothing else. arn is the bucket's
 // ARN, e.g. arn:aws:s3:::hopcharlie-eks-moimroom.
@@ -341,8 +380,8 @@ func bucketPolicy(arn string) string {
 	}{
 		Version: "2012-10-17",
 		Statement: []statement{
-			{Sid: "Bucket", Effect: "Allow", Action: []string{"s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads"}, Resource: arn},
-			{Sid: "Objects", Effect: "Allow", Action: []string{"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"}, Resource: arn + "/*"},
+			{Sid: "Bucket", Effect: "Allow", Action: bucketActions, Resource: arn},
+			{Sid: "Objects", Effect: "Allow", Action: objectActions, Resource: arn + "/*"},
 		},
 	}
 	b, _ := json.Marshal(doc)

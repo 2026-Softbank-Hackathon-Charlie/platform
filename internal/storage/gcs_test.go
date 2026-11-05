@@ -256,7 +256,7 @@ func (f *fakeGCS) serve(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
 			f.keyN++
 			id := fmt.Sprintf("access-%d", f.keyN)
-			k := gcsKey{AccessID: id, State: "ACTIVE", ServiceAccountEmail: r.URL.Query().Get("serviceAccountEmail"), Etag: "key-etag"}
+			k := gcsKey{AccessID: id, State: "ACTIVE", ServiceAccountEmail: r.URL.Query().Get("serviceAccountEmail"), Etag: "key-etag", TimeCreated: fmt.Sprintf("2026-11-05T01:02:%02dZ", f.keyN)}
 			f.keys[id] = k
 			secret := "one-time-secret"
 			if f.missingSecretOnce {
@@ -435,6 +435,52 @@ func TestGCSCreateKeepAndRotate(t *testing.T) {
 	}
 	if err = d.DeleteKey(ctx, in, got.Key.ID); err != nil {
 		t.Fatalf("repeat key deletion: %v", err)
+	}
+}
+
+// TestGCSKeys: Keys reads the service account's HMAC keys with their
+// timeCreated without changing anything, and Scope is the roles Ensure binds.
+func TestGCSKeys(t *testing.T) {
+	d, f := newFakeGCS(t)
+	ctx := context.Background()
+	in := Instance{App: "shop", Name: "shop-preview"}
+	keys, err := d.Keys(ctx, in)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("keys of a missing account = %v, %v", keys, err)
+	}
+	got, err := d.Ensure(ctx, in, true, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(f.calls)
+	keys, err = d.Keys(ctx, in)
+	if err != nil || len(keys) != 1 || keys[0].ID != got.Key.ID || !keys[0].CreatedAt.Equal(time.Date(2026, 11, 5, 1, 2, 1, 0, time.UTC)) || !keys[0].Active {
+		t.Fatalf("keys = %+v, %v", keys, err)
+	}
+	k := f.keys[got.Key.ID]
+	k.State = "INACTIVE"
+	f.keys[got.Key.ID] = k
+	if keys, err := d.Keys(ctx, in); err != nil || len(keys) != 1 || keys[0].Active {
+		t.Fatalf("an inactive key = %+v, %v", keys, err)
+	}
+	for _, call := range f.calls[before:] {
+		if !strings.HasPrefix(call, "GET ") {
+			t.Fatalf("Keys changed something: %s", call)
+		}
+	}
+	_, email := d.account(in)
+	var bound []string
+	for _, b := range f.policies[got.Bucket].Bindings {
+		if slices.Contains(b.Members, "serviceAccount:"+email) {
+			bound = append(bound, b.Role)
+		}
+	}
+	if s := d.Scope(); !slices.Equal(s.Actions, bound) || s.Boundary != "" {
+		t.Fatalf("scope %+v, the bucket binds %v", s, bound)
+	}
+	f.fail["GET /storage/v1/projects/project-demo/hmacKeys"] = 403
+	if _, err := d.Keys(ctx, in); gcsStatus(err) != 403 || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("keys with the list denied: %v", err)
 	}
 }
 

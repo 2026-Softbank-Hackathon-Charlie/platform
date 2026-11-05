@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
@@ -50,6 +51,8 @@ type Report struct {
 	Message   string
 	CheckedAt time.Time // zero: when the collector returned
 	Findings  []apiv1.SecurityFinding
+	// StorageKeys are the bucket keys the source lists (StorageKeyCollector).
+	StorageKeys []apiv1.StorageKey
 }
 
 // Collector reads one or more sources.
@@ -226,8 +229,9 @@ func failed(srcs []Source, status apiv1.SecuritySourceStatus, msg string) []Repo
 // assemble fills in the finding fields that come from the source and builds
 // the unfiltered report. Sources keep collector order; findings are sorted.
 func assemble(generated time.Time, reps []Report) apiv1.SecurityReport {
-	out := apiv1.SecurityReport{GeneratedAt: generated, Sources: []apiv1.SecuritySource{}, Findings: []apiv1.SecurityFinding{}}
+	out := apiv1.SecurityReport{GeneratedAt: generated, Sources: []apiv1.SecuritySource{}, Findings: []apiv1.SecurityFinding{}, StorageKeys: []apiv1.StorageKey{}}
 	for _, r := range reps {
+		out.StorageKeys = append(out.StorageKeys, r.StorageKeys...)
 		src := apiv1.SecuritySource{Name: r.Name, Provider: r.Provider, Environment: r.Environment, Status: r.Status, CheckedAt: r.CheckedAt}
 		if r.Message != "" {
 			msg := r.Message
@@ -289,14 +293,21 @@ func Environments(rep apiv1.SecurityReport) []string {
 }
 
 // Filter keeps the findings of environment (all when empty) with at least
-// severity atLeast (all when empty), keeps the sources of environment, and
-// recomputes the source counts and the summary. It does not modify rep.
+// severity atLeast (all when empty), keeps the sources and storage keys of
+// environment, and recomputes the source counts and the summary. It does
+// not modify rep.
 func Filter(rep apiv1.SecurityReport, environment string, atLeast apiv1.SecuritySeverity) apiv1.SecurityReport {
 	out := apiv1.SecurityReport{
 		GeneratedAt: rep.GeneratedAt,
 		Sources:     []apiv1.SecuritySource{},
 		Findings:    []apiv1.SecurityFinding{},
+		StorageKeys: []apiv1.StorageKey{},
 		Summary:     apiv1.SecuritySummary{ByEnvironment: map[string]apiv1.SeverityCounts{}},
+	}
+	for _, k := range rep.StorageKeys {
+		if environment == "" || k.Environment == environment {
+			out.StorageKeys = append(out.StorageKeys, k)
+		}
 	}
 	type key struct{ env, source string }
 	perSource := map[key]int{}
@@ -351,6 +362,13 @@ type Config struct {
 	// DSNHostSuffixes and GatewayConfigured describe the server's own policy.
 	DSNHostSuffixes   []string
 	GatewayConfigured bool
+	// StorageRows and Storage are the platform's records of the app
+	// instances' bucket keys and each environment's storage driver; with
+	// both, every environment with a storage block lists its keys.
+	StorageRows StorageRows
+	Storage     func(env string) (storage.Driver, error)
+	// Log gets what a collector cannot show without provider text.
+	Log *slog.Logger
 }
 
 // Collectors returns the collectors for cfg: every environment's cluster, the
@@ -368,6 +386,9 @@ func Collectors(cfg Config) []Collector {
 			"Cloudflare is not connected: this server has no Cloudflare API token with Account Settings:Read and Zone WAF:Read, so the tunnel and zone settings are not checked."),
 		NewPlatformCollector(cfg.Audit, cfg.DSNHostSuffixes, cfg.GatewayConfigured),
 	)
+	if cfg.StorageRows != nil && cfg.Storage != nil {
+		out = append(out, NewStorageKeyCollectors(cfg.Environments, cfg.StorageRows, cfg.Storage, cfg.Log)...)
+	}
 	return out
 }
 

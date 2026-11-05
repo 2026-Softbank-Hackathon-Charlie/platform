@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
@@ -49,6 +50,7 @@ type fakeUser struct {
 	tags           map[string]string
 	policies       map[string]string
 	keys           []string
+	inactive       map[string]bool // deactivated keys
 }
 
 func newFakeAWS() *fakeAWS {
@@ -336,10 +338,17 @@ func (f *fakeAWS) ListAccessKeys(_ context.Context, in *iam.ListAccessKeysInput,
 	}
 	out := &iam.ListAccessKeysOutput{}
 	for _, k := range u.keys {
-		out.AccessKeyMetadata = append(out.AccessKeyMetadata, iamtypes.AccessKeyMetadata{AccessKeyId: aws.String(k)})
+		status := iamtypes.StatusTypeActive
+		if u.inactive[k] {
+			status = iamtypes.StatusTypeInactive
+		}
+		out.AccessKeyMetadata = append(out.AccessKeyMetadata, iamtypes.AccessKeyMetadata{AccessKeyId: aws.String(k), CreateDate: aws.Time(fakeKeyMade), Status: status})
 	}
 	return out, nil
 }
+
+// fakeKeyMade is the CreateDate of every fake access key.
+var fakeKeyMade = time.Date(2026, 11, 4, 8, 21, 52, 0, time.UTC)
 
 func (f *fakeAWS) CreateAccessKey(_ context.Context, in *iam.CreateAccessKeyInput, _ ...func(*iam.Options)) (*iam.CreateAccessKeyOutput, error) {
 	f.mu.Lock()
@@ -513,6 +522,51 @@ func (f usEast1) CreateBucket(ctx context.Context, in *s3.CreateBucketInput, o .
 		return &s3.CreateBucketOutput{}, nil
 	}
 	return out, err
+}
+
+// TestAWSKeys: Keys reads the user's keys with their CreateDate and changes
+// nothing, and Scope is the policy Ensure writes.
+func TestAWSKeys(t *testing.T) {
+	f := newFakeAWS()
+	d := newAWSDriver(f)
+	ctx := t.Context()
+
+	keys, err := d.Keys(ctx, dev)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("keys of a missing user = %v, %v", keys, err)
+	}
+	if _, err := d.Ensure(ctx, dev, false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	f.calls = nil
+	keys, err = d.Keys(ctx, dev)
+	if err != nil || len(keys) != 1 || keys[0].ID != "AKIA0001" || !keys[0].CreatedAt.Equal(fakeKeyMade) || !keys[0].Active {
+		t.Fatalf("keys = %+v, %v", keys, err)
+	}
+	if !slices.Equal(f.calls, []string{"ListAccessKeys"}) {
+		t.Fatalf("calls %v, want only ListAccessKeys", f.calls)
+	}
+	f.users[devUser].inactive = map[string]bool{"AKIA0001": true}
+	if keys, err := d.Keys(ctx, dev); err != nil || keys[0].Active {
+		t.Fatalf("a deactivated key = %+v, %v", keys, err)
+	}
+
+	var doc struct{ Statement []struct{ Action []string } }
+	if err := json.Unmarshal([]byte(f.users[devUser].policies[policyName]), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var written []string
+	for _, st := range doc.Statement {
+		written = append(written, st.Action...)
+	}
+	if s := d.Scope(); !slices.Equal(s.Actions, written) || s.Boundary != validAWS().PermissionsBoundary {
+		t.Fatalf("scope %+v, the policy allows %v", s, written)
+	}
+
+	f.fail["ListAccessKeys"] = apiErr("AccessDenied")
+	if _, err := d.Keys(ctx, dev); errorCode(err) != "AccessDenied" {
+		t.Fatalf("keys with ListAccessKeys denied: %v", err)
+	}
 }
 
 func TestAWSEnsureUSEast1(t *testing.T) {

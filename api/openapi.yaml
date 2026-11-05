@@ -720,8 +720,16 @@ paths:
         seconds; `refresh=true` collects again, at most once every 10 seconds
         (a refresh within that window gets the latest result).
 
+        `storageKeys` lists the bucket keys the platform made for app
+        instances, with when the provider made each, whether it is active and
+        what it may do (ADR 0027). Every environment with a storage driver is
+        the source `storage-keys`; a key of an instance's user that the
+        platform has no record of is also a finding
+        (`storage.unrecorded-key`).
+
         The filters apply to `findings`, to the counts in `sources` and to
-        `summary`. Error codes: invalid_request (400), security_not_configured (503).
+        `summary`; `environment` also applies to `storageKeys`. Error codes:
+        invalid_request (400), security_not_configured (503).
       parameters:
         - name: environment
           in: query
@@ -2738,7 +2746,7 @@ components:
         id: { type: string, description: "stable across collections: a hash of environment, source, check, resource and, where it has one, the vendor's own finding id (GuardDuty finding id, Security Hub finding ARN) or the rule's protocol, ports and CIDRs" }
         environment: { type: string, description: "an environment name, or aws-account, or platform", example: gke }
         provider: { $ref: "#/components/schemas/SecurityProvider" }
-        source: { type: string, example: aws-guardduty, description: "kubernetes, aws-iam, aws-ec2, aws-cloudtrail, aws-guardduty, aws-securityhub, aws-s3, platform-audit, platform-config" }
+        source: { type: string, example: aws-guardduty, description: "kubernetes, aws-iam, aws-ec2, aws-cloudtrail, aws-guardduty, aws-securityhub, aws-s3, platform-audit, platform-config, storage-keys" }
         check: { type: string, example: k8s.privileged, description: the rule that produced the finding }
         category: { $ref: "#/components/schemas/SecurityCategory" }
         severity: { $ref: "#/components/schemas/SecuritySeverity" }
@@ -2805,7 +2813,7 @@ components:
             additionalProperties: true
     SecurityReport:
       type: object
-      required: [generatedAt, summary, sources, findings]
+      required: [generatedAt, summary, sources, findings, storageKeys]
       properties:
         generatedAt: { type: string, format: date-time, description: when the sources were read }
         summary: { $ref: "#/components/schemas/SecuritySummary" }
@@ -2816,6 +2824,77 @@ components:
           description: Most severe first.
           type: array
           items: { $ref: "#/components/schemas/SecurityFinding" }
+        storageKeys:
+          description: |
+            The bucket keys of app instances (ADR 0016), by environment (in
+            the order of `sources`) and then instance; for each instance, the
+            key in use first, then the old one, then keys the platform has no
+            record of. Empty when no instance has a bucket or the server has
+            no storage drivers. An environment's keys are also left out when
+            its `storage-keys` source could not read the platform's records
+            or did not answer in time, so an empty list means "no keys" only
+            when every `storage-keys` source is `ok`.
+          type: array
+          items: { $ref: "#/components/schemas/StorageKey" }
+
+    StorageKeyUse:
+      description: |
+        - current: the key the instance's pods are given.
+        - old: the key a new key replaced; pods that did not restart may still use it. It is deleted after a healthy deployment restarted them (ADR 0016).
+        - unrecorded: a key of the instance's user the platform has no record of, e.g. made by hand. The driver deletes it before it makes the next new key.
+      type: string
+      enum: [current, old, unrecorded]
+
+    StorageKeyState:
+      description: |
+        - ok: the provider has the key, and it is active.
+        - inactive: the provider has the key, but it is deactivated. The platform still counts it as present, so a deactivated key in use breaks the app until someone activates or deletes it.
+        - missing: the platform's record names a key the provider does not have (deleted outside the platform). The next deployment makes a new key.
+        - unread: the key could not be read back from the provider; `message` says why.
+      type: string
+      enum: [ok, inactive, missing, unread]
+
+    StorageKey:
+      description: One key of an app instance's bucket in one environment (ADR 0027).
+      type: object
+      required: [app, instance, environment, driver, bucket, keyId, use, state]
+      properties:
+        app: { type: string, example: moimroom }
+        instance: { type: string, example: moimroom }
+        environment: { type: string, example: eks }
+        driver: { type: string, example: aws, description: "the storage driver that made the key: aws, gcs or minio" }
+        bucket: { type: string, example: hopcharlie-eks-moimroom, description: the only bucket the key may use }
+        keyId: { type: string, example: "...WXYZ", description: the last four characters of the key id only }
+        use: { $ref: "#/components/schemas/StorageKeyUse" }
+        state: { $ref: "#/components/schemas/StorageKeyState" }
+        createdAt:
+          type: string
+          format: date-time
+          description: |
+            When the provider made the key: the IAM access key's CreateDate
+            (aws) or the HMAC key's timeCreated (gcs). Absent when the
+            provider does not record it (minio) or the key was not read.
+        scope: { $ref: "#/components/schemas/StorageKeyScope" }
+        message: { type: string, description: "why the state is not ok, or what to do about the key" }
+
+    StorageKeyScope:
+      description: |
+        What the key may do on `bucket`: the grant the driver writes on every
+        deployment (aws: the user's inline policy `hopcharlie-bucket`; minio:
+        the user's canned policy; gcs: the service account's roles on the
+        bucket). It is the platform's grant, not read back from the provider.
+        Absent when the key's driver could not be used (the environment has no
+        usable storage driver, or its driver now is not the one that made the
+        key).
+      type: object
+      required: [actions]
+      properties:
+        actions:
+          description: S3 actions (aws, minio) or GCS roles (gcs).
+          type: array
+          items: { type: string }
+          example: [s3:ListBucket, s3:GetObject, s3:PutObject]
+        boundary: { type: string, description: "aws: the permissions boundary every app user is made with, which caps any policy the user has" }
 
     # ---------- agent activity ----------
 

@@ -63,6 +63,8 @@ func newAWS(ctx context.Context, c Config) (*awsDriver, error) {
 	}, nil
 }
 
+var _ KeyReader = (*awsDriver)(nil)
+
 func (d *awsDriver) Name() string                  { return DriverAWS }
 func (d *awsDriver) Bucket(instance string) string { return d.prefix + instance }
 
@@ -286,6 +288,34 @@ func (d *awsDriver) deleteKey(ctx context.Context, user, id string) error {
 		return fmt.Errorf("storage: delete access key %s of user %s: %w", MaskKey(id), user, err)
 	}
 	return nil
+}
+
+// Keys lists the user's access keys with their CreateDate.
+func (d *awsDriver) Keys(ctx context.Context, in Instance) ([]KeyInfo, error) {
+	n, err := instanceNames(d.prefix, in)
+	if err != nil {
+		return nil, err
+	}
+	pages := iam.NewListAccessKeysPaginator(d.iam, &iam.ListAccessKeysInput{UserName: &n.user})
+	var keys []KeyInfo
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if errorCode(err) == "NoSuchEntity" {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("storage: list access keys of user %s: %w", n.user, err)
+		}
+		for _, k := range page.AccessKeyMetadata {
+			keys = append(keys, KeyInfo{ID: aws.ToString(k.AccessKeyId), CreatedAt: aws.ToTime(k.CreateDate).UTC(), Active: k.Status == iamtypes.StatusTypeActive})
+		}
+	}
+	return keys, nil
+}
+
+// Scope is the user's inline policy and its permissions boundary.
+func (d *awsDriver) Scope() Scope {
+	return Scope{Actions: slices.Concat(bucketActions, objectActions), Boundary: d.boundary}
 }
 
 func (d *awsDriver) DeleteKey(ctx context.Context, in Instance, keyID string) error {

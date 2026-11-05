@@ -266,7 +266,7 @@ func (f *fakeMinIO) ListServiceAccounts(_ context.Context, user string) (madmin.
 	defer f.mu.Unlock()
 	var out madmin.ListServiceAccountsResp
 	for id := range f.accounts[user] {
-		out.Accounts = append(out.Accounts, madmin.ServiceAccountInfo{AccessKey: id, ParentUser: user})
+		out.Accounts = append(out.Accounts, madmin.ServiceAccountInfo{AccessKey: id, ParentUser: user, AccountStatus: "on"})
 	}
 	return out, nil
 }
@@ -403,6 +403,28 @@ func TestMinIOEnsure(t *testing.T) {
 	}
 	if k := f.keys(devUser); !slices.Equal(k, []string{res.Key.ID}) {
 		t.Fatalf("keys after a retry %v", k)
+	}
+}
+
+// TestMinIOKeys: Keys lists the user's service accounts without a creation
+// time, which MinIO does not record.
+func TestMinIOKeys(t *testing.T) {
+	f := newFakeMinIO()
+	d := newMinIODriver(f)
+	ctx := t.Context()
+	keys, err := d.Keys(ctx, dev)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("keys of a missing user = %v, %v", keys, err)
+	}
+	if _, err := d.Ensure(ctx, dev, false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	keys, err = d.Keys(ctx, dev)
+	if err != nil || len(keys) != 1 || keys[0].ID != "SVC0001" || !keys[0].CreatedAt.IsZero() || !keys[0].Active {
+		t.Fatalf("keys = %+v, %v", keys, err)
+	}
+	if s := d.Scope(); !slices.Equal(s.Actions, slices.Concat(bucketActions, objectActions)) || s.Boundary != "" {
+		t.Fatalf("scope %+v", s)
 	}
 }
 

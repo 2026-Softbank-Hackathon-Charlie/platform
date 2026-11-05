@@ -45,6 +45,39 @@ func withSecurity() option {
 	}
 }
 
+// keysCollector reports fixed storage keys for one environment (tests only).
+type keysCollector struct {
+	src  security.Source
+	keys []apiv1.StorageKey
+}
+
+func (c keysCollector) Sources() []security.Source { return []security.Source{c.src} }
+
+func (c keysCollector) Collect(context.Context) []security.Report {
+	return []security.Report{{Source: c.src, Status: apiv1.SecuritySourceStatusOk, StorageKeys: c.keys}}
+}
+
+func TestSecurityStorageKeys(t *testing.T) {
+	key := func(env string) apiv1.StorageKey {
+		return apiv1.StorageKey{App: "moimroom", Instance: "moimroom", Environment: env, Driver: "aws", Bucket: "hopcharlie-" + env + "-moimroom",
+			KeyId: "...ABCD", Use: apiv1.StorageKeyUseCurrent, State: apiv1.StorageKeyStateOk}
+	}
+	h := newHarness(t, func(_ *harness, _ *runs.Config, d *Deps) {
+		d.Security = security.New([]security.Collector{
+			keysCollector{security.Source{Name: security.SourceStorageKeys, Provider: apiv1.SecurityProviderAws, Environment: "eks"}, []apiv1.StorageKey{key("eks")}},
+			keysCollector{security.Source{Name: security.SourceStorageKeys, Provider: apiv1.SecurityProviderGcp, Environment: "gke"}, []apiv1.StorageKey{key("gke")}},
+		}, security.Options{})
+	})
+	_, b := h.do("GET", "/v1/security", viewerToken, nil)
+	if r := decode[apiv1.SecurityReport](t, b); len(r.StorageKeys) != 2 {
+		t.Fatalf("all keys: %s", b)
+	}
+	_, b = h.do("GET", "/v1/security?environment=gke&severity=critical", viewerToken, nil)
+	if r := decode[apiv1.SecurityReport](t, b); len(r.StorageKeys) != 1 || r.StorageKeys[0].Environment != "gke" {
+		t.Fatalf("environment=gke: %s", b)
+	}
+}
+
 func withAgents() option {
 	return func(h *harness, _ *runs.Config, d *Deps) { d.Agents = agentlog.New(h.store) }
 }
@@ -86,6 +119,10 @@ func TestSecurityView(t *testing.T) {
 	code, b := h.do("GET", "/v1/security", viewerToken, nil)
 	if code != 200 {
 		t.Fatalf("security: %d %s", code, b)
+	}
+	// No storage key collector: an empty list, never null.
+	if !strings.Contains(string(b), `"storageKeys":[]`) {
+		t.Fatalf("storageKeys is not an empty list: %s", b)
 	}
 	rep := decode[apiv1.SecurityReport](t, b)
 	var titles []string
