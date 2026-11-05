@@ -361,6 +361,7 @@ func main() {
 		Secrets: secretsKey,
 		Sealer:  envSvc.Sealer,
 		Storage: envSvc.Storage,
+		Envs:    envSvc.Names(),
 	}
 	if gh != nil {
 		deployOpts.GitHub = gh

@@ -301,6 +301,8 @@ func TestCreateAppErrors(t *testing.T) {
 	gh.repo("acme/nodocker", "main", pushSHA, shopSpec, "Dockerfile")
 	gh.repo("acme/api", "main", pushSHA, "name: api\nservices:\n  - {name: web, port: 80}\n", "Dockerfile")
 	gh.repo("acme/console", "main", pushSHA, "name: console\nservices:\n  - {name: web, port: 80}\n", "Dockerfile")
+	gh.repo("acme/traefik", "main", pushSHA, "name: traefik\nservices:\n  - {name: web, port: 80}\n", "Dockerfile")
+	gh.repo("acme/kube-system", "main", pushSHA, "name: kube-system\nservices:\n  - {name: web, port: 80}\n", "Dockerfile")
 	h := newHarness(t, withGitHub(gh, nil))
 	ok := map[string]any{"repo": shopRepo, "environments": []string{"gke"}}
 	with := func(k string, v any) map[string]any {
@@ -340,6 +342,8 @@ func TestCreateAppErrors(t *testing.T) {
 		{name: "no Dockerfile", token: opToken, body: with("repo", "acme/nodocker"), status: 422, code: "invalid_app_spec", fieldPath: "services[1].dockerfile"},
 		{name: "reserved api", token: opToken, body: with("repo", "acme/api"), status: 409, code: "app_exists"},
 		{name: "reserved console", token: opToken, body: with("repo", "acme/console"), status: 409, code: "app_exists"},
+		{name: "reserved namespace traefik", token: opToken, body: with("repo", "acme/traefik"), status: 409, code: "app_exists"},
+		{name: "reserved namespace kube-system", token: opToken, body: with("repo", "acme/kube-system"), status: 409, code: "app_exists"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

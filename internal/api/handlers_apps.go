@@ -30,6 +30,16 @@ import (
 // Headlamp ingress of infra), so no registered app may take them.
 var reservedAppNames = []string{"api", "console", "app", "headlamp"}
 
+// reservedNamespaces are the namespaces of the app clusters that the app
+// ApplicationSet refuses (infra helm/charts/hopcharlie-apps deniedNamespaces,
+// with traefik, the shared app entry of infra ADR 0058). An app named after
+// one would be committed and then never sync, so it is refused here. Keep
+// the two lists the same.
+var reservedNamespaces = []string{
+	"argocd", "cert-manager", "charlie-apps", "charlie-db", "charlie-platform", "charlie-system", "cnpg-system",
+	"default", "headlamp", "hopcharlie-db-network", "kube-node-lease", "kube-public", "kube-system", "observability", "traefik",
+}
+
 // appStatusDeployments is how many newest deployments an instance's
 // per-environment status is read from. Each instance is read on its own, so
 // a busy instance never pushes another's deployments out.
@@ -110,6 +120,10 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	noteAudit(r, "app", spec.Name)
 	if slices.Contains(reservedAppNames, spec.Name) {
 		s.fail(w, r, http.StatusConflict, "app_exists", fmt.Sprintf("the platform serves %s.%s itself; rename the app in %s", spec.Name, s.cfg.AppDomain, appspec.FileName))
+		return
+	}
+	if slices.Contains(reservedNamespaces, spec.Name) {
+		s.fail(w, r, http.StatusConflict, "app_exists", fmt.Sprintf("%s is a namespace the app clusters keep for the platform and infra; rename the app in %s", spec.Name, appspec.FileName))
 		return
 	}
 	if !s.storageCleaned(ctx, w, r, spec.Name) || !s.storageReady(w, r, *spec, targets) {
