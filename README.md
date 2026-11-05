@@ -433,6 +433,7 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 | `PUT /v1/apps/{name}/secrets` | operator | `{instance?, set?, delete?}`로 한 범위(앱 단위, 또는 `instance`의 덮어쓰기)를 한 번에 바꿈. 200 + 바꾼 뒤의 이름 목록 |
 | `GET /v1/apps/{name}/secrets/{secret}` | operator | 값 하나. `?instance=`이면 그 인스턴스의 덮어쓰기. 부를 때마다 감사 로그에 남고 `Cache-Control: no-store` |
 | `GET /v1/github/repos` | viewer | GitHub App 설치가 볼 수 있는 저장소 |
+| `POST /v1/github/push-tokens` | agent | `{repo}`. `scripts/import-repo.sh`로 들여온 저장소(조직 안, 토픽 `hopcharlie-imported`) 하나의 id에만 묶인 `contents: write` 1시간짜리 GitHub App 설치 토큰. 201 + `{repo, token, expiresAt}`, `Cache-Control: no-store`. 감사 로그에는 저장소와 만료 시각만 남고, 감사 로그를 쓰지 못하면 토큰을 폐기하고 503 `audit_unavailable`. 토픽이 없거나 gitops 저장소이면 403 `repo_not_imported` ([ADR 0023](docs/adr/0023-push-token-for-imported-repos.md)) |
 | `POST /v1/webhooks/github` | 없음 | GitHub App webhook. `X-Hub-Signature-256`으로 확인. 앱의 브랜치나 추가한 브랜치 가운데 `autoDeploy`가 켜진 브랜치의 push만 그 인스턴스에 배포(202), 나머지는 204 |
 
 - 배포 상태는 `queued`, `building`, `committing`, `syncing`을 거쳐 `healthy`, `failed`, `superseded`로 끝납니다. 같은 환경으로 새 배포가 생기면 끝나지 않은 이전 배포는 `superseded`가 됩니다.
@@ -532,7 +533,7 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 | `PLATFORM_DOCKER_CLONE_URL` | `docker`일 때 저장소 주소의 틀. `{repo}`와 `{token}`을 바꿈 (기본 `https://x-access-token:{token}@github.com/{repo}.git`). 로컬 경로도 됨 |
 | `PLATFORM_DEPLOY_WORKERS` | 동시에 실행하는 배포 수 (기본 2, 최대 32) |
 | `PLATFORM_GITOPS_MODE` | `github`(기본, GitHub Git Data API) 또는 `git`(git CLI) |
-| `PLATFORM_GITOPS_REPO` | `github` 모드의 gitops 저장소 (기본 `2026-Softbank-Hackathon-Charlie/gitops`). App 설치 토큰으로 쓰고, API 주소는 `PLATFORM_GITHUB_API_URL` |
+| `PLATFORM_GITOPS_REPO` | `github` 모드의 gitops 저장소 (기본 `2026-Softbank-Hackathon-Charlie/gitops`). App 설치 토큰으로 쓰고, API 주소는 `PLATFORM_GITHUB_API_URL`. 이 저장소에는 push 토큰을 발급하지 않음(ADR 0023) |
 | `PLATFORM_GITOPS_BRANCH` | gitops 브랜치 (기본 `main`, 두 모드 모두) |
 | `PLATFORM_GITOPS_URL` | `git` 모드이면 필수. clone하고 push할 주소 (E2E의 로컬 git 서버) |
 | `PLATFORM_ARGOCD_KUBECONTEXT` | Argo CD가 있는 클러스터의 kubeconfig 컨텍스트. 비우면 in-cluster 설정 |

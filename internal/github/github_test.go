@@ -11,9 +11,12 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,27 +52,42 @@ type fakeGitHub struct {
 	t   *testing.T
 	now func() time.Time
 
-	mu        sync.Mutex
-	tokens    int // access tokens issued
-	lookups   int // installation lookups
-	tokenTTL  time.Duration
-	installID int64
-	refs      map[string]string // "owner/name@ref" -> sha
-	files     map[string]string // "owner/name@ref:path" -> content
-	dirs      map[string]bool   // "owner/name@ref:path"
-	repos     []string
-	fail      int // answer every request with this status
+	mu         sync.Mutex
+	tokens     int // unscoped access tokens issued
+	pushTokens int // access tokens issued with a body (repository_ids, permissions)
+	pushBodies []string
+	revoked    []string // tokens revoked with DELETE /installation/token
+	lookups    int      // installation lookups
+	tokenTTL   time.Duration
+	installID  int64
+	refs       map[string]string   // "owner/name@ref" -> sha
+	files      map[string]string   // "owner/name@ref:path" -> content
+	dirs       map[string]bool     // "owner/name@ref:path"
+	meta       map[string]fakeRepo // "owner/name" as asked -> GET /repos answer; absent is 404
+	repos      []string
+	fail       int // answer every request with this status
+	// scoped, when set, changes the answer to a scoped token request.
+	scoped func(answer map[string]any)
+}
+
+// fakeRepo is GET /repos/{owner}/{name}: a renamed repository answers
+// with its new full name.
+type fakeRepo struct {
+	id       int64
+	fullName string
+	topics   []string
 }
 
 func newFake(t *testing.T, now func() time.Time) (*fakeGitHub, *httptest.Server) {
 	f := &fakeGitHub{t: t, now: now, tokenTTL: time.Hour, installID: 42,
-		refs: map[string]string{}, files: map[string]string{}, dirs: map[string]bool{}}
+		refs: map[string]string{}, files: map[string]string{}, dirs: map[string]bool{}, meta: map[string]fakeRepo{}}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return f, srv
 }
 
-func (f *fakeGitHub) token(n int) string { return "ghs_test_" + strconv.Itoa(n) }
+func (f *fakeGitHub) token(n int) string     { return "ghs_test_" + strconv.Itoa(n) }
+func (f *fakeGitHub) pushToken(n int) string { return "ghs_push_" + strconv.Itoa(n) }
 
 func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
@@ -91,8 +109,26 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case r.Method == "POST" && path == fmt.Sprintf("/app/installations/%d/access_tokens", f.installID):
 		f.checkJWT(bearer)
-		f.tokens++
-		writeJSON(w, map[string]any{"token": f.token(f.tokens), "expires_at": f.now().Add(f.tokenTTL).UTC().Format(time.RFC3339)})
+		body, _ := io.ReadAll(r.Body)
+		tok := ""
+		if len(body) == 0 {
+			f.tokens++
+			tok = f.token(f.tokens)
+		} else {
+			f.scopedToken(w, r, body)
+			return
+		}
+		writeJSON(w, map[string]any{"token": tok, "expires_at": f.now().Add(f.tokenTTL).UTC().Format(time.RFC3339)})
+		return
+	case r.Method == "DELETE" && path == "/installation/token":
+		for n := 1; n <= f.pushTokens; n++ {
+			if bearer == f.pushToken(n) && !slices.Contains(f.revoked, bearer) {
+				f.revoked = append(f.revoked, bearer)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 		return
 	}
 	if bearer != f.token(f.tokens) || f.tokens == 0 {
@@ -100,6 +136,14 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case strings.HasPrefix(path, "/repos/") && strings.Count(path, "/") == 3:
+		m, ok := f.meta[strings.TrimPrefix(r.URL.Path, "/repos/")]
+		if !ok {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		owner, _, _ := strings.Cut(m.fullName, "/")
+		writeJSON(w, map[string]any{"id": m.id, "full_name": m.fullName, "owner": map[string]any{"login": owner}, "private": true, "topics": m.topics})
 	case strings.HasPrefix(path, "/repos/") && strings.Contains(path, "/commits/"):
 		repo, ref, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/repos/"), "/commits/")
 		if r.Header.Get("Accept") != "application/vnd.github.sha" {
@@ -139,6 +183,49 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 	}
+}
+
+// scopedToken answers a token request with repository_ids and permissions
+// the way GitHub does: 422 for a repository the installation does not have,
+// else the token with the repositories and the permissions plus metadata
+// read. f.mu is held.
+func (f *fakeGitHub) scopedToken(w http.ResponseWriter, r *http.Request, body []byte) {
+	if r.Header.Get("Content-Type") != "application/json" {
+		f.t.Errorf("access token body sent as %q", r.Header.Get("Content-Type"))
+	}
+	f.pushBodies = append(f.pushBodies, string(body))
+	var req struct {
+		RepositoryIDs []int64           `json:"repository_ids"`
+		Permissions   map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		f.t.Errorf("access token body %s: %v", body, err)
+	}
+	var repos []map[string]any
+	for _, id := range req.RepositoryIDs {
+		found := false
+		for _, m := range f.meta {
+			if m.id == id && !found {
+				repos = append(repos, map[string]any{"id": id, "full_name": m.fullName})
+				found = true
+			}
+		}
+		if !found {
+			http.Error(w, `{"message":"There is at least one repository that does not exist or is not accessible to the parent installation."}`, http.StatusUnprocessableEntity)
+			return
+		}
+	}
+	perms := map[string]any{"metadata": "read"}
+	for k, v := range req.Permissions {
+		perms[k] = v
+	}
+	f.pushTokens++
+	answer := map[string]any{"token": f.pushToken(f.pushTokens), "expires_at": f.now().Add(f.tokenTTL).UTC().Format(time.RFC3339),
+		"repository_selection": "selected", "repositories": repos, "permissions": perms}
+	if f.scoped != nil {
+		f.scoped(answer)
+	}
+	writeJSON(w, answer)
 }
 
 // checkJWT verifies the App JWT: RS256 with the App key, iss the App id,
@@ -378,6 +465,209 @@ func TestListReposPaginates(t *testing.T) {
 	f.repos = nil
 	if got, err := c.ListRepos(t.Context()); err != nil || len(got) != 0 {
 		t.Fatalf("no repos: %v, %v", got, err)
+	}
+}
+
+func TestPushToken(t *testing.T) {
+	const scope = `{"permissions":{"contents":"write"},"repository_ids":[7]}`
+	shop := RepoInfo{ID: 7, FullName: "acme/shop", Owner: "acme"}
+	cases := []struct {
+		name         string
+		installation int64
+		repo         RepoInfo
+		warm         bool // Token was called first, so a token is cached
+		wantErr      error
+		wantAnyErr   bool
+	}{
+		{name: "cached token kept", installation: 42, repo: shop, warm: true},
+		{name: "nothing cached", installation: 42, repo: shop},
+		{name: "installation found from the org", repo: shop},
+		{name: "owner in another case", installation: 42, repo: RepoInfo{ID: 7, FullName: "ACME/shop", Owner: "Acme"}},
+		{name: "another org", installation: 42, repo: RepoInfo{ID: 7, FullName: "other/shop", Owner: "other"}, wantErr: ErrNotInOrg},
+		{name: "org name as a suffix", installation: 42, repo: RepoInfo{ID: 7, FullName: "notacme/shop", Owner: "notacme"}, wantErr: ErrNotInOrg},
+		{name: "owner login elsewhere", installation: 42, repo: RepoInfo{ID: 7, FullName: "acme/shop", Owner: "other"}, wantErr: ErrNotInOrg},
+		{name: "no id", installation: 42, repo: RepoInfo{FullName: "acme/shop", Owner: "acme"}, wantAnyErr: true},
+		{name: "not owner/name", installation: 42, repo: RepoInfo{ID: 7, FullName: "shop", Owner: "acme"}, wantAnyErr: true},
+		{name: "dot dot", installation: 42, repo: RepoInfo{ID: 7, FullName: "acme/..", Owner: "acme"}, wantAnyErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, f, clk := newClient(t, tc.installation)
+			f.meta["acme/shop"] = fakeRepo{id: 7, fullName: "acme/shop"}
+			ctx := t.Context()
+			var cached string
+			if tc.warm {
+				var err error
+				if cached, err = c.Token(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := c.PushToken(ctx, tc.repo)
+			wantErr := tc.wantErr != nil || tc.wantAnyErr
+			if (err != nil) != wantErr || (tc.wantErr != nil && !errors.Is(err, tc.wantErr)) || errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("got %+v, %v", got, err)
+			}
+			if wantErr {
+				if len(f.pushBodies) != 0 || f.lookups != 0 {
+					t.Fatalf("refused, but asked GitHub: %d token requests, %d lookups", len(f.pushBodies), f.lookups)
+				}
+				return
+			}
+			if got.Token != "ghs_push_1" || !got.ExpiresAt.Equal(clk.now().Add(time.Hour)) {
+				t.Fatalf("got %+v", got)
+			}
+			if len(f.pushBodies) != 1 {
+				t.Fatalf("%d scoped token requests", len(f.pushBodies))
+			}
+			var body, want any
+			_ = json.Unmarshal([]byte(f.pushBodies[0]), &body)
+			_ = json.Unmarshal([]byte(scope), &want)
+			if !reflect.DeepEqual(body, want) {
+				t.Fatalf("access token body %s, want %s", f.pushBodies[0], scope)
+			}
+			if len(f.revoked) != 0 {
+				t.Fatalf("revoked %v", f.revoked)
+			}
+			// The cached, unscoped token is neither handed out nor replaced.
+			now, err := c.Token(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.warm && now != cached {
+				t.Fatalf("cached token %q became %q", cached, now)
+			}
+			if now != "ghs_test_1" || f.tokens != 1 {
+				t.Fatalf("Token = %q after %d unscoped tokens, want ghs_test_1 after 1", now, f.tokens)
+			}
+			if f.lookups > 1 {
+				t.Fatalf("installation looked up %d times", f.lookups)
+			}
+		})
+	}
+}
+
+func TestPushTokenChecksTheAnswer(t *testing.T) {
+	cases := []struct {
+		name    string
+		scoped  func(map[string]any)
+		wantErr error // nil: accepted
+	}{
+		{name: "as asked", scoped: nil},
+		{name: "no metadata permission", scoped: func(a map[string]any) { a["permissions"] = map[string]any{"contents": "write"} }},
+		{name: "contents read only", scoped: func(a map[string]any) { a["permissions"] = map[string]any{"contents": "read", "metadata": "read"} }, wantErr: ErrUnexpectedScope},
+		{name: "unscoped token", scoped: func(a map[string]any) {
+			a["repository_selection"] = "all"
+			a["permissions"] = map[string]any{"contents": "write", "metadata": "read", "administration": "write", "workflows": "write"}
+			delete(a, "repositories")
+		}, wantErr: ErrUnexpectedScope},
+		{name: "extra permission", scoped: func(a map[string]any) {
+			a["permissions"] = map[string]any{"contents": "write", "metadata": "read", "workflows": "write"}
+		}, wantErr: ErrUnexpectedScope},
+		{name: "wrong repository", scoped: func(a map[string]any) {
+			a["repositories"] = []any{map[string]any{"id": 8, "full_name": "acme/gitops"}}
+		}, wantErr: ErrUnexpectedScope},
+		{name: "two repositories", scoped: func(a map[string]any) {
+			a["repositories"] = []any{map[string]any{"id": 7, "full_name": "acme/shop"}, map[string]any{"id": 8, "full_name": "acme/gitops"}}
+		}, wantErr: ErrUnexpectedScope},
+		{name: "no repositories", scoped: func(a map[string]any) { a["repositories"] = []any{} }, wantErr: ErrUnexpectedScope},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, f, _ := newClient(t, 42)
+			f.meta["acme/shop"] = fakeRepo{id: 7, fullName: "acme/shop"}
+			f.scoped = tc.scoped
+			got, err := c.PushToken(t.Context(), RepoInfo{ID: 7, FullName: "acme/shop", Owner: "acme"})
+			if tc.wantErr == nil {
+				if err != nil || got.Token != "ghs_push_1" || len(f.revoked) != 0 {
+					t.Fatalf("got %+v, %v; revoked %v", got, err, f.revoked)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) || got.Token != "" || strings.Contains(err.Error(), "ghs_") {
+				t.Fatalf("got %+v, %v", got, err)
+			}
+			if !slices.Equal(f.revoked, []string{"ghs_push_1"}) {
+				t.Fatalf("revoked %v, want the token GitHub created", f.revoked)
+			}
+		})
+	}
+}
+
+func TestPushTokenErrors(t *testing.T) {
+	shop := RepoInfo{ID: 7, FullName: "acme/shop", Owner: "acme"}
+	c, f, _ := newClient(t, 42)
+	// Not in the installation: GitHub refuses the scope with 422.
+	if _, err := c.PushToken(t.Context(), shop); !errors.Is(err, ErrNotInInstallation) || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a repository the installation lacks: %v", err)
+	}
+	f.meta["acme/shop"] = fakeRepo{id: 7, fullName: "acme/shop"}
+	for _, status := range []int{http.StatusInternalServerError, http.StatusForbidden, http.StatusNotFound} {
+		f.fail = status
+		_, err := c.PushToken(t.Context(), shop)
+		if err == nil || errors.Is(err, ErrNotInInstallation) || errors.Is(err, fs.ErrNotExist) || strings.Contains(err.Error(), "ghs_") {
+			t.Fatalf("a %d is %v, want an error that is neither not-found nor not-in-installation", status, err)
+		}
+	}
+}
+
+func TestRevokeToken(t *testing.T) {
+	c, f, _ := newClient(t, 42)
+	f.meta["acme/shop"] = fakeRepo{id: 7, fullName: "acme/shop"}
+	tok, err := c.PushToken(t.Context(), RepoInfo{ID: 7, FullName: "acme/shop", Owner: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RevokeToken(t.Context(), tok.Token); err != nil || !slices.Equal(f.revoked, []string{tok.Token}) {
+		t.Fatalf("revoke: %v, revoked %v", err, f.revoked)
+	}
+	if err := c.RevokeToken(t.Context(), tok.Token); err == nil || strings.Contains(err.Error(), tok.Token) {
+		t.Fatalf("revoking twice: %v", err)
+	}
+	if err := c.RevokeToken(t.Context(), ""); err == nil {
+		t.Fatal("revoked an empty token")
+	}
+	if f.tokens != 0 {
+		t.Fatalf("RevokeToken created %d platform tokens", f.tokens)
+	}
+}
+
+func TestReadRepo(t *testing.T) {
+	c, f, _ := newClient(t, 42)
+	f.meta["acme/shop"] = fakeRepo{id: 7, fullName: "acme/shop", topics: []string{"go", ImportedTopic}}
+	f.meta["acme/plain"] = fakeRepo{id: 8, fullName: "acme/plain", topics: []string{}}
+	f.meta["acme/old-name"] = fakeRepo{id: 9, fullName: "acme/new-name", topics: []string{ImportedTopic}}
+	f.meta["acme/moved"] = fakeRepo{id: 10, fullName: "other/moved"}
+	f.meta["acme/bad"] = fakeRepo{id: 0, fullName: "acme/bad"}
+	cases := []struct {
+		repo     string
+		want     RepoInfo
+		notFound bool
+		wantErr  bool
+	}{
+		{repo: "acme/shop", want: RepoInfo{ID: 7, FullName: "acme/shop", Owner: "acme", Topics: []string{"go", ImportedTopic}}},
+		{repo: "acme/plain", want: RepoInfo{ID: 8, FullName: "acme/plain", Owner: "acme", Topics: []string{}}},
+		{repo: "acme/old-name", want: RepoInfo{ID: 9, FullName: "acme/new-name", Owner: "acme", Topics: []string{ImportedTopic}}},
+		{repo: "acme/moved", want: RepoInfo{ID: 10, FullName: "other/moved", Owner: "other"}},
+		{repo: "acme/bad", wantErr: true},
+		{repo: "acme/none", notFound: true, wantErr: true},
+		{repo: "../shop", wantErr: true},
+		{repo: "acme/..", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.repo, func(t *testing.T) {
+			got, err := c.ReadRepo(t.Context(), tc.repo)
+			if (err != nil) != tc.wantErr || errors.Is(err, ErrNotFound) != tc.notFound || errors.Is(err, fs.ErrNotExist) != tc.notFound {
+				t.Fatalf("got %+v, %v", got, err)
+			}
+			if !tc.wantErr && !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+
+	f.fail = http.StatusBadGateway
+	if _, err := c.ReadRepo(t.Context(), "acme/shop"); err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a 502 is %v, want an error that is not not-found", err)
 	}
 }
 

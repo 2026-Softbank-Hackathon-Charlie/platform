@@ -15,6 +15,13 @@
 #   4. push the clone
 #   5. add the repository to the GitHub App installation, unless the
 #      installation already sees all repositories
+#   6. add the topic hopcharlie-imported, last, so a repository that has it
+#      was imported completely
+#
+# The platform issues push tokens (POST /v1/github/push-tokens, an hour,
+# contents write on this repository only) only for repositories with the
+# topic hopcharlie-imported, so the AI agent can push its hopcharlie branch
+# here and nowhere else (ADR 0023).
 #
 # It stops if <org>/<name> already exists, so it never touches a team repo.
 #
@@ -85,9 +92,13 @@ else
 	if ! GH_TOKEN=$INSTALL_TOKEN gh api -X PUT "user/installations/$installation/repositories/$id" >/dev/null; then
 		echo "$repo is imported, but could not be added to the installation." >&2
 		echo "Add it at https://github.com/organizations/$org/settings/installations/$installation" >&2
+		echo "then mark it imported: gh repo edit $repo --add-topic hopcharlie-imported" >&2
 		exit 1
 	fi
 fi
+
+echo "==> marking $repo with the topic hopcharlie-imported"
+gh repo edit "$repo" --add-topic hopcharlie-imported >/dev/null
 
 cat <<EOF
 

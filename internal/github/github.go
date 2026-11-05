@@ -1,8 +1,10 @@
 // Package github is the platform's GitHub App client. It signs a JWT with the
 // App's private key, exchanges it for an installation access token (cached
 // until about five minutes before it expires) and reads the app repositories
-// the installation can see: refs, files and the repository list. The token
-// also authenticates git clone and the gitops commits.
+// the installation can see: refs, files, repository details and the
+// repository list. The token also authenticates git clone and the gitops
+// commits. PushToken mints a separate, uncached token limited to one imported
+// repository (ADR 0023).
 package github
 
 import (
@@ -20,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -37,11 +40,28 @@ import (
 // errors.Is(err, fs.ErrNotExist) without importing this package.
 var ErrNotFound = fmt.Errorf("github: not found: %w", fs.ErrNotExist)
 
+// Errors of PushToken.
+var (
+	// ErrNotInOrg: the repository is outside the client's organization.
+	ErrNotInOrg = errors.New("github: the repository is not in the App's organization")
+	// ErrNotInInstallation: GitHub refused to scope a token to the
+	// repository (422), because the installation does not include it.
+	ErrNotInInstallation = errors.New("github: the App's installation cannot grant a token for the repository")
+	// ErrUnexpectedScope: GitHub answered with a token that is not limited
+	// to the repository and contents write. PushToken revoked it.
+	ErrUnexpectedScope = errors.New("github: the token GitHub created has a wider scope than asked for")
+)
+
 // Defaults.
 const (
 	DefaultAPIURL = "https://api.github.com"
 	DefaultOrg    = "2026-Softbank-Hackathon-Charlie"
 )
+
+// ImportedTopic marks a repository scripts/import-repo.sh copied into the
+// organization. The platform issues push tokens only for repositories that
+// have it (ADR 0023).
+const ImportedTopic = "hopcharlie-imported"
 
 // refreshBefore is how long before expiry a cached installation token is
 // replaced. GitHub issues tokens for an hour.
@@ -73,6 +93,34 @@ type Repo struct {
 	Private       bool
 	DefaultBranch string
 	HTMLURL       string
+}
+
+// RepoInfo is a repository as GitHub names it now: a renamed or transferred
+// repository answers with its new name and owner, and keeps its ID.
+type RepoInfo struct {
+	ID       int64
+	FullName string // owner/name
+	Owner    string
+	Topics   []string
+}
+
+// PushToken is an installation token that may only write the contents of
+// one repository, until ExpiresAt.
+type PushToken struct {
+	Token     string
+	ExpiresAt time.Time
+}
+
+// tokenAnswer is GitHub's answer to creating an installation access token.
+type tokenAnswer struct {
+	Token               string            `json:"token"`
+	ExpiresAt           time.Time         `json:"expires_at"`
+	RepositorySelection string            `json:"repository_selection"`
+	Permissions         map[string]string `json:"permissions"`
+	Repositories        []struct {
+		ID       int64  `json:"id"`
+		FullName string `json:"full_name"`
+	} `json:"repositories"`
 }
 
 // Client is a GitHub App client. It is safe for concurrent use.
@@ -212,30 +260,143 @@ func (c *Client) Token(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if c.installation == 0 {
-		var inst struct {
-			ID int64 `json:"id"`
-		}
-		if err := c.call(ctx, http.MethodGet, "/orgs/"+url.PathEscape(c.org)+"/installation", jwt, &inst); err != nil {
-			return "", fmt.Errorf("github: find the App's installation on %s: %v", c.org, err)
-		}
-		if inst.ID <= 0 {
-			return "", fmt.Errorf("github: no installation of the App on %s", c.org)
-		}
-		c.installation = inst.ID
+	inst, err := c.installationID(ctx, jwt)
+	if err != nil {
+		return "", err
 	}
-	var tok struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}
-	if err := c.call(ctx, http.MethodPost, "/app/installations/"+strconv.FormatInt(c.installation, 10)+"/access_tokens", jwt, &tok); err != nil {
+	tok, err := c.accessToken(ctx, jwt, inst, nil)
+	if err != nil {
 		return "", fmt.Errorf("github: create an installation token: %v", err)
-	}
-	if tok.Token == "" || tok.ExpiresAt.IsZero() {
-		return "", errors.New("github: the installation token answer has no token or expiry")
 	}
 	c.token, c.expires = tok.Token, tok.ExpiresAt
 	return c.token, nil
+}
+
+// Org is the organization the App is installed on.
+func (c *Client) Org() string { return c.org }
+
+// PushToken creates an installation token that may only write the contents
+// of repo, as ReadRepo returned it, for a program that pushes a branch to it
+// (ADR 0023). The token is bound to the repository's ID and GitHub expires
+// it after an hour. It is not cached, and the token Token returns is neither
+// used nor replaced.
+//
+// Errors: a repository outside the client's organization is ErrNotInOrg,
+// without asking GitHub; one the installation does not include is
+// ErrNotInInstallation. When GitHub's answer is not limited to repo with
+// contents write (and the metadata read GitHub always adds), PushToken
+// revokes the token and returns ErrUnexpectedScope. Its errors never include
+// the token and are never ErrNotFound.
+func (c *Client) PushToken(ctx context.Context, repo RepoInfo) (PushToken, error) {
+	owner, _, _ := strings.Cut(repo.FullName, "/")
+	if _, err := repoPath(repo.FullName); err != nil || repo.ID <= 0 {
+		return PushToken{}, fmt.Errorf("github: %q (id %d) is not a repository ReadRepo returned", repo.FullName, repo.ID)
+	}
+	if !strings.EqualFold(owner, c.org) || !strings.EqualFold(repo.Owner, c.org) {
+		return PushToken{}, fmt.Errorf("%w: %s is not in %s", ErrNotInOrg, repo.FullName, c.org)
+	}
+	jwt, err := c.jwt()
+	if err != nil {
+		return PushToken{}, err
+	}
+	c.mu.Lock()
+	inst, err := c.installationID(ctx, jwt)
+	c.mu.Unlock()
+	if err != nil {
+		return PushToken{}, err
+	}
+	scope := map[string]any{"repository_ids": []int64{repo.ID}, "permissions": map[string]string{"contents": "write"}}
+	tok, err := c.accessToken(ctx, jwt, inst, scope)
+	if err != nil {
+		var ae *APIError
+		if errors.As(err, &ae) && ae.Status == http.StatusUnprocessableEntity {
+			return PushToken{}, fmt.Errorf("%w: %s: %s", ErrNotInInstallation, repo.FullName, ae.Message)
+		}
+		return PushToken{}, fmt.Errorf("github: create a push token for %s: %v", repo.FullName, err)
+	}
+	if err := checkScope(tok, repo); err != nil {
+		if rerr := c.RevokeToken(ctx, tok.Token); rerr != nil {
+			err = fmt.Errorf("%w; revoking it failed: %v", err, rerr)
+		}
+		return PushToken{}, err
+	}
+	return PushToken{Token: tok.Token, ExpiresAt: tok.ExpiresAt}, nil
+}
+
+// checkScope returns ErrUnexpectedScope when tok is not limited to repo with
+// contents write and metadata read at most.
+func checkScope(tok tokenAnswer, repo RepoInfo) error {
+	var wrong []string
+	if tok.RepositorySelection != "selected" {
+		wrong = append(wrong, fmt.Sprintf("repository_selection %q", tok.RepositorySelection))
+	}
+	if len(tok.Repositories) != 1 || tok.Repositories[0].ID != repo.ID {
+		names := make([]string, len(tok.Repositories))
+		for i, r := range tok.Repositories {
+			names[i] = fmt.Sprintf("%s (id %d)", r.FullName, r.ID)
+		}
+		wrong = append(wrong, "repositories ["+strings.Join(names, ", ")+"]")
+	}
+	for _, k := range slices.Sorted(maps.Keys(tok.Permissions)) {
+		if v := tok.Permissions[k]; !(k == "contents" && v == "write") && !(k == "metadata" && v == "read") {
+			wrong = append(wrong, "permission "+k+": "+v)
+		}
+	}
+	if len(wrong) > 0 {
+		return fmt.Errorf("%w: asked for %s (id %d) with contents write, got %s", ErrUnexpectedScope, repo.FullName, repo.ID, strings.Join(wrong, ", "))
+	}
+	return nil
+}
+
+// RevokeToken revokes an installation token (DELETE /installation/token,
+// authenticated with that token), such as a push token that will not be
+// handed out. Its errors never include the token.
+func (c *Client) RevokeToken(ctx context.Context, token string) error {
+	if token == "" {
+		return errors.New("github: no token to revoke")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/installation/token", nil)
+	if err != nil {
+		return fmt.Errorf("github: %w", err)
+	}
+	setHeaders(req, token, "application/vnd.github+json")
+	if _, err := c.send(req, 4<<10); err != nil {
+		return fmt.Errorf("revoke an installation token: %v", err)
+	}
+	return nil
+}
+
+// installationID returns the App's installation, found from the org on
+// first use. The caller holds c.mu.
+func (c *Client) installationID(ctx context.Context, jwt string) (int64, error) {
+	if c.installation != 0 {
+		return c.installation, nil
+	}
+	var inst struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/orgs/"+url.PathEscape(c.org)+"/installation", jwt, nil, &inst); err != nil {
+		return 0, fmt.Errorf("github: find the App's installation on %s: %v", c.org, err)
+	}
+	if inst.ID <= 0 {
+		return 0, fmt.Errorf("github: no installation of the App on %s", c.org)
+	}
+	c.installation = inst.ID
+	return inst.ID, nil
+}
+
+// accessToken creates an installation access token; scope, when not nil,
+// narrows its repositories and permissions. An answer GitHub refused is the
+// *APIError.
+func (c *Client) accessToken(ctx context.Context, jwt string, inst int64, scope any) (tokenAnswer, error) {
+	var tok tokenAnswer
+	if err := c.call(ctx, http.MethodPost, "/app/installations/"+strconv.FormatInt(inst, 10)+"/access_tokens", jwt, scope, &tok); err != nil {
+		return tokenAnswer{}, err
+	}
+	if tok.Token == "" || tok.ExpiresAt.IsZero() {
+		return tokenAnswer{}, errors.New("github: the installation token answer has no token or expiry")
+	}
+	return tok, nil
 }
 
 // --- reads ---
@@ -364,6 +525,40 @@ func (c *Client) ListRepos(ctx context.Context) ([]Repo, error) {
 	return out, nil
 }
 
+// ReadRepo returns repo's ID, its current owner/name and owner (GitHub
+// follows renames and transfers) and its topics. A repository that does not
+// exist or the installation cannot see is ErrNotFound.
+func (c *Client) ReadRepo(ctx context.Context, repo string) (RepoInfo, error) {
+	p, err := repoPath(repo)
+	if err != nil {
+		return RepoInfo{}, err
+	}
+	req, err := c.request(ctx, http.MethodGet, p, "application/vnd.github+json")
+	if err != nil {
+		return RepoInfo{}, err
+	}
+	body, err := c.send(req, 1<<20)
+	if err != nil {
+		return RepoInfo{}, fmt.Errorf("read %s: %w", repo, err)
+	}
+	var r struct {
+		ID       int64  `json:"id"`
+		FullName string `json:"full_name"`
+		Owner    struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Topics []string `json:"topics"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return RepoInfo{}, fmt.Errorf("github: read %s: decode: %w", repo, err)
+	}
+	owner, _, _ := strings.Cut(r.FullName, "/")
+	if _, err := repoPath(r.FullName); err != nil || r.ID <= 0 || !strings.EqualFold(owner, r.Owner.Login) {
+		return RepoInfo{}, fmt.Errorf("github: read %s: the answer has no valid id, full_name and owner", repo)
+	}
+	return RepoInfo{ID: r.ID, FullName: r.FullName, Owner: r.Owner.Login, Topics: r.Topics}, nil
+}
+
 // --- HTTP ---
 
 // APIError is a GitHub answer that is not a success. A 404 is ErrNotFound.
@@ -398,13 +593,25 @@ func (c *Client) request(ctx context.Context, method, path, accept string) (*htt
 	return req, nil
 }
 
-// call sends an App-authenticated (JWT) request and decodes the JSON answer.
-func (c *Client) call(ctx context.Context, method, path, jwt string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
+// call sends an App-authenticated (JWT) request, with in as its JSON body
+// unless in is nil, and decodes the JSON answer.
+func (c *Client) call(ctx context.Context, method, path, jwt string, in, out any) error {
+	var reqBody io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return fmt.Errorf("github: encode %s %s: %w", method, path, err)
+		}
+		reqBody = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
 	if err != nil {
 		return fmt.Errorf("github: %w", err)
 	}
 	setHeaders(req, jwt, "application/vnd.github+json")
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	body, err := c.send(req, 1<<20)
 	if err != nil {
 		return err

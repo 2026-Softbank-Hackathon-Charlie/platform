@@ -234,6 +234,7 @@ type harness struct {
 	n       int
 
 	webhookSecret string           // Config.GitHubWebhookSecret
+	gitOpsRepo    string           // Config.GitOpsRepo
 	admins        *auth.Admins     // Config.Admins
 	now           func() time.Time // Server.now; nil keeps the real clock
 	api           *Server          // the server behind srv
@@ -290,7 +291,7 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	tokens.Add("op", apiv1.RoleOperator, opToken)
 	tokens.Add("ai", apiv1.RoleAgent, agentToken)
 	tokens.Add("view", apiv1.RoleViewer, viewerToken)
-	api := New(Config{Tokens: tokens, Admins: h.admins, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret}, d)
+	api := New(Config{Tokens: tokens, Admins: h.admins, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret, GitOpsRepo: h.gitOpsRepo}, d)
 	if h.now != nil {
 		api.now = h.now
 	}

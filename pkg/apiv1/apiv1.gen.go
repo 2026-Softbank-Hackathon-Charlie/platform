@@ -2213,6 +2213,28 @@ type Principal struct {
 // Provider defines model for Provider.
 type Provider string
 
+// PushToken A GitHub App installation token that may only write the contents of `repo`.
+type PushToken struct {
+	// ExpiresAt When GitHub stops accepting the token, an hour after it was created.
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Repo The repository's current owner/name, which differs from the request after a rename.
+	//
+	// Example: 2026-Softbank-Hackathon-Charlie/gitea
+	Repo string `json:"repo"`
+
+	// Token The token, for git over HTTPS as the password of user `x-access-token`. Keep it out of logs.
+	Token string `json:"token"`
+}
+
+// PushTokenRequest defines model for PushTokenRequest.
+type PushTokenRequest struct {
+	// Repo owner/name of a repository scripts/import-repo.sh imported, without .git.
+	//
+	// Example: 2026-Softbank-Hackathon-Charlie/gitea
+	Repo string `json:"repo"`
+}
+
 // ReviewRequest defines model for ReviewRequest.
 type ReviewRequest struct {
 	Comment *string `json:"comment,omitempty"`
@@ -2851,6 +2873,9 @@ type ApproveDeviceLoginJSONRequestBody = DeviceLoginApproveRequest
 
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
+
+// CreatePushTokenJSONRequestBody defines body for CreatePushToken for application/json ContentType.
+type CreatePushTokenJSONRequestBody = PushTokenRequest
 
 // StartMigrationJSONRequestBody defines body for StartMigration for application/json ContentType.
 type StartMigrationJSONRequestBody = StartMigrationRequest

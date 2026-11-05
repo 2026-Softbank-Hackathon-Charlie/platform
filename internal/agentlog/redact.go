@@ -34,6 +34,9 @@ var (
 		`(\[redacted\]|\$\{\w+\}|"(?:[^"\\]|\\.)*"|'[^']*'|(?:basic|bearer|digest|token)[ \t]+[^\s"'&;,]+|[^\s"'&;,}\]]+)`)
 	// An AWS access key id; temporary (ASIA) ones too.
 	awsKeyID = regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)
+	// A GitHub token: OAuth, personal (classic), installation, user to
+	// server and refresh tokens, and fine-grained personal access tokens.
+	githubToken = regexp.MustCompile(`\bgh[opsur]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}`)
 	// ${NAME}: a reference to a variable, not a value. Plans name their
 	// database passwords this way, and the reference is worth keeping.
 	placeholder = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
@@ -48,7 +51,8 @@ var (
 //   - The "value" of an object whose "name" or "key" matches SecretKey, as in
 //     {"name": "DB_PASSWORD", "value": "..."} (Kubernetes, ECS, AWS tags).
 //   - Within every other string: NAME=value and NAME: value assignments,
-//     URL passwords, bearer tokens, AWS access key ids and PEM private keys.
+//     URL passwords, bearer tokens, AWS access key ids, GitHub tokens and
+//     PEM private keys.
 func Redact(v any) any { return redact(v, false) }
 
 func redact(v any, secret bool) any {
@@ -108,5 +112,6 @@ func RedactString(s string) string {
 		}
 		return name + sep + val
 	})
+	s = githubToken.ReplaceAllLiteralString(s, Redacted)
 	return awsKeyID.ReplaceAllLiteralString(s, Redacted)
 }
