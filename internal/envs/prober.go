@@ -97,10 +97,15 @@ func (p *clusterProber) Probe(ctx context.Context) apiv1.EnvironmentStatus {
 	} else {
 		st.Nodes = nodes
 	}
-	if dbs, err := p.databases(ctx); err != nil {
+	if dbs, servers, err := p.databases(ctx); err != nil {
 		errs = append(errs, describe("list CNPG clusters", err))
 	} else {
 		st.Databases = &dbs
+		// The databases stand without their backup times; a failure here
+		// only says why the times are missing.
+		if err := p.backupTimes(ctx, dbs, servers); err != nil {
+			errs = append(errs, describe("list Barman ObjectStores", err))
+		}
 	}
 	if len(errs) > 0 {
 		msg := strings.Join(errs, "; ")
@@ -142,37 +147,36 @@ const barmanPlugin = "barman-cloud.cloudnative-pg.io"
 
 var objectStoreGVR = schema.GroupVersionResource{Group: "barmancloud.cnpg.io", Version: "v1", Resource: "objectstores"}
 
-func (p *clusterProber) databases(ctx context.Context) ([]apiv1.DatabaseCluster, error) {
+// databases lists the CNPG Clusters, and for those with backups the name
+// their backups go under in the ObjectStore (namespace/name -> server name).
+func (p *clusterProber) databases(ctx context.Context) ([]apiv1.DatabaseCluster, map[string]string, error) {
 	list, err := p.dyn.Resource(cnpg.ClusterGVR).List(ctx, metav1.ListOptions{})
 	if apierrors.IsNotFound(err) {
 		// The CNPG CRD is not installed, so the cluster runs no CNPG databases.
-		return []apiv1.DatabaseCluster{}, nil
+		return []apiv1.DatabaseCluster{}, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make([]apiv1.DatabaseCluster, 0, len(list.Items))
-	servers := map[string]string{} // namespace/name -> the name its backups go under
+	servers := map[string]string{}
 	for i := range list.Items {
-		d := databaseFrom(&list.Items[i])
+		d, server := databaseFrom(&list.Items[i])
 		if d.Backup != nil {
-			servers[d.Namespace+"/"+d.Name] = serverName(&list.Items[i])
+			servers[d.Namespace+"/"+d.Name] = server
 		}
 		out = append(out, d)
-	}
-	if len(servers) > 0 {
-		p.backupTimes(ctx, out, servers)
 	}
 	slices.SortFunc(out, func(a, b apiv1.DatabaseCluster) int {
 		return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Name, b.Name))
 	})
-	return out, nil
+	return out, servers, nil
 }
 
 // databaseFrom reads a CNPG Cluster. Replica follows the engine's topology
 // rule (cnpg.Status.IsPrimary: spec.replica.primary names another cluster
 // than spec.replica.self) and also covers spec.replica.enabled.
-func databaseFrom(obj *unstructured.Unstructured) apiv1.DatabaseCluster {
+func databaseFrom(obj *unstructured.Unstructured) (apiv1.DatabaseCluster, string) {
 	o := obj.Object
 	d := apiv1.DatabaseCluster{Namespace: obj.GetNamespace(), Name: obj.GetName()}
 	instances, _, _ := unstructured.NestedInt64(o, "spec", "instances")
@@ -191,15 +195,19 @@ func databaseFrom(obj *unstructured.Unstructured) apiv1.DatabaseCluster {
 	topo.ReplicaPrimary, _, _ = unstructured.NestedString(o, "spec", "replica", "primary")
 	enabled, _, _ := unstructured.NestedBool(o, "spec", "replica", "enabled")
 	d.Replica = enabled || !topo.IsPrimary()
-	d.Backup = backupFrom(obj)
-	return d
+	var server string
+	d.Backup, server = backupFrom(obj)
+	return d, server
 }
 
 // backupFrom reads the backups of a Cluster whose WAL archiver is an enabled
-// Barman Cloud plugin, or nil. CNPG reports ContinuousArchiving True on a
-// Cluster without any archiver too, so the condition alone says nothing.
-// The times come later from the ObjectStore (backupTimes).
-func backupFrom(obj *unstructured.Unstructured) *apiv1.DatabaseBackup {
+// Barman Cloud plugin, and the name they go under in its ObjectStore (the
+// same entry's serverName, or the Cluster's name); nil without one. CNPG
+// reports ContinuousArchiving True on a Cluster without any archiver too, so
+// the condition alone says nothing; and a Cluster that has not reported the
+// condition yet is not called failing. The times come from the ObjectStore
+// (backupTimes).
+func backupFrom(obj *unstructured.Unstructured) (*apiv1.DatabaseBackup, string) {
 	plugins, _, _ := unstructured.NestedSlice(obj.Object, "spec", "plugins")
 	for _, item := range plugins {
 		pl, ok := item.(map[string]any)
@@ -210,40 +218,38 @@ func backupFrom(obj *unstructured.Unstructured) *apiv1.DatabaseBackup {
 		if store == "" {
 			continue
 		}
-		b := &apiv1.DatabaseBackup{ObjectStore: store}
+		server, _, _ := unstructured.NestedString(pl, "parameters", "serverName")
+		if server == "" {
+			server = obj.GetName()
+		}
+		b := &apiv1.DatabaseBackup{ObjectStore: store, WalArchiving: true}
 		conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 		for _, c := range conditions {
-			if cm, ok := c.(map[string]any); ok && cm["type"] == "ContinuousArchiving" {
-				b.WalArchiving = cm["status"] == "True"
+			if cm, ok := c.(map[string]any); ok && cm["type"] == "ContinuousArchiving" && cm["status"] == "False" {
+				b.WalArchiving = false
 			}
 		}
-		return b
+		return b, server
 	}
-	return nil
-}
-
-// serverName is the name a Cluster's backups go under in its ObjectStore:
-// the plugin's serverName parameter, or the Cluster's name.
-func serverName(obj *unstructured.Unstructured) string {
-	plugins, _, _ := unstructured.NestedSlice(obj.Object, "spec", "plugins")
-	for _, item := range plugins {
-		if pl, ok := item.(map[string]any); ok && pl["name"] == barmanPlugin {
-			if v, _, _ := unstructured.NestedString(pl, "parameters", "serverName"); v != "" {
-				return v
-			}
-		}
-	}
-	return obj.GetName()
+	return nil, ""
 }
 
 // backupTimes fills in the backup times of dbs from the ObjectStores'
 // status.serverRecoveryWindow, under each Cluster's server name in servers
-// (namespace/name). Any failure, such as no permission to list
-// ObjectStores, leaves the times out: the databases are still listed.
-func (p *clusterProber) backupTimes(ctx context.Context, dbs []apiv1.DatabaseCluster, servers map[string]string) {
+// (namespace/name). Without a Cluster with backups it reads nothing; without
+// the ObjectStore CRD there are no times to read. Any other failure, such as
+// no permission to list ObjectStores, is returned: the times are unknown,
+// not absent.
+func (p *clusterProber) backupTimes(ctx context.Context, dbs []apiv1.DatabaseCluster, servers map[string]string) error {
+	if len(servers) == 0 {
+		return nil
+	}
 	stores, err := p.dyn.Resource(objectStoreGVR).List(ctx, metav1.ListOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
 	if err != nil {
-		return
+		return err
 	}
 	windows := map[string]map[string]any{} // namespace/store -> serverRecoveryWindow
 	for _, s := range stores.Items {
@@ -272,6 +278,7 @@ func (p *clusterProber) backupTimes(ctx context.Context, dbs []apiv1.DatabaseClu
 		b.LastFailedBackup = at(w, "lastFailedBackupTime")
 		b.FirstRecoverabilityPoint = at(w, "firstRecoverabilityPoint")
 	}
+	return nil
 }
 
 // describe turns a client error into a short message without request URLs,

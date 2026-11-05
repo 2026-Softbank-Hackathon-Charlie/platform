@@ -1689,7 +1689,7 @@ type CreateAgentSessionRequest struct {
 	Title   string  `json:"title"`
 }
 
-// DatabaseBackup Backups of a CNPG Cluster whose WAL archiver is an enabled Barman Cloud plugin (ADR 0025); absent on a Cluster without one. The times come from the plugin's ObjectStore and are absent when the platform cannot read it.
+// DatabaseBackup Backups of a CNPG Cluster whose WAL archiver is an enabled Barman Cloud plugin (ADR 0025); absent on a Cluster without one. The times come from the plugin's ObjectStore; when the platform cannot read it they are absent and EnvironmentStatus.error says why.
 type DatabaseBackup struct {
 	// FirstRecoverabilityPoint the earliest time a restore can reach
 	FirstRecoverabilityPoint *time.Time `json:"firstRecoverabilityPoint,omitempty"`
@@ -1699,13 +1699,13 @@ type DatabaseBackup struct {
 	// ObjectStore the plugin's ObjectStore in the Cluster's namespace
 	ObjectStore string `json:"objectStore"`
 
-	// WalArchiving the Cluster's ContinuousArchiving condition is True: WAL is reaching the object store
+	// WalArchiving false when the Cluster's ContinuousArchiving condition is False: WAL is not reaching the object store. A Cluster that has not reported the condition yet counts as archiving
 	WalArchiving bool `json:"walArchiving"`
 }
 
 // DatabaseCluster A CloudNativePG Cluster.
 type DatabaseCluster struct {
-	// Backup Backups of a CNPG Cluster whose WAL archiver is an enabled Barman Cloud plugin (ADR 0025); absent on a Cluster without one. The times come from the plugin's ObjectStore and are absent when the platform cannot read it.
+	// Backup Backups of a CNPG Cluster whose WAL archiver is an enabled Barman Cloud plugin (ADR 0025); absent on a Cluster without one. The times come from the plugin's ObjectStore; when the platform cannot read it they are absent and EnvironmentStatus.error says why.
 	Backup         *DatabaseBackup `json:"backup,omitempty"`
 	CurrentPrimary *string         `json:"currentPrimary,omitempty"`
 	Instances      int             `json:"instances"`

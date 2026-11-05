@@ -5,7 +5,8 @@
 #
 # Two roles:
 #   hopcharlie-observer  cluster-wide reads: environment status (nodes, CNPG
-#                        clusters) and the security view (pods, services,
+#                        clusters, Barman ObjectStores for the backup times,
+#                        ADR 0025) and the security view (pods, services,
 #                        network policies, cluster role bindings)
 #   hopcharlie-migrator  bound only in app namespaces: what the migration
 #                        engine changes there (CNPG Cluster, scaling the app
@@ -49,6 +50,9 @@ rules:
   - apiGroups: [postgresql.cnpg.io]
     resources: [clusters]
     verbs: [get, list, watch]
+  - apiGroups: [barmancloud.cnpg.io]
+    resources: [objectstores]
+    verbs: [list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

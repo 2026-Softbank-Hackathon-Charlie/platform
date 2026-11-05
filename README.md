@@ -81,7 +81,7 @@ sequenceDiagram
 | `POST /v1/migrations/{runId}/switch` | operator | 전환 승인 |
 | `POST /v1/migrations/{runId}/abort` | operator | 중단. 결과는 엔진의 원복 경계를 따름 |
 | `POST /v1/migrations/{runId}/resume` | operator | interrupted, failed, aborted run 이어서 실행 |
-| `GET /v1/envs`, `GET /v1/envs/{name}` | viewer | 환경과 클러스터 실시간 상태 (노드, 버전, CNPG). Barman Cloud plugin으로 백업하는 DB는 WAL 보관 상태와 마지막 백업, 복구 가능 시작 시각(`backup`, ADR 0025). 시각은 ObjectStore를 읽으므로 서버 계정에 `objectstores.barmancloud.cnpg.io` 목록 권한이 필요하고, 없으면 시각만 빠진다 |
+| `GET /v1/envs`, `GET /v1/envs/{name}` | viewer | 환경과 클러스터 실시간 상태 (노드, 버전, CNPG). Barman Cloud plugin으로 백업하는 DB는 WAL 보관 상태와 마지막 백업, 복구 가능 시작 시각(`backup`, ADR 0025). 시각은 ObjectStore를 읽으므로 서버 계정에 `objectstores.barmancloud.cnpg.io` 목록 권한이 필요하고, 없으면 시각이 빠지고 `error`에 이유가 남는다 |
 | `GET /v1/traffic` | viewer | 게이트웨이 상태와 환경별 요청 통계 |
 | `GET /v1/matrix` | viewer | 6개 경로 결과표 |
 | `GET /v1/audit` | viewer | 감사 로그 (바꾸는 요청과 거부된 요청 전부) |
@@ -193,7 +193,7 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 - 원격의 종류와 자격 증명은 서버 환경 변수 `RCLONE_CONFIG_<원격>_*`로만 줍니다. 원격 이름은 대문자로 바꾸고 `-`를 `_`로 바꿉니다(`my-remote`는 `RCLONE_CONFIG_MY_REMOTE_TYPE`).
 - `files.rclone`은 비우거나 `rclone`이어야 하고, 플래그는 `--checksum`, `--size-only`, `--fast-list`, `--transfers`, `--checkers`만 받습니다.
 
-환경 설정의 `kubeContext`는 서버의 kubeconfig에 있어야 합니다. 서버 계정에는 `/version` 조회, `nodes` 목록, 모든 네임스페이스의 `clusters.postgresql.cnpg.io` 목록 권한이 필요합니다. 클러스터에 닿지 못하면 그 환경은 `reachable: false`와 짧은 오류로 표시되고, 서버는 그대로 뜹니다.
+환경 설정의 `kubeContext`는 서버의 kubeconfig에 있어야 합니다. 서버 계정에는 `/version` 조회, `nodes` 목록, 모든 네임스페이스의 `clusters.postgresql.cnpg.io` 목록 권한이 필요합니다. Barman Cloud plugin으로 백업하는 DB가 있으면 `objectstores.barmancloud.cnpg.io` 목록 권한도 필요합니다(ADR 0025). 없으면 백업 시각 없이 보여 주고 `error`에 이유를 적습니다. 클러스터에 닿지 못하면 그 환경은 `reachable: false`와 짧은 오류로 표시되고, 서버는 그대로 뜹니다.
 
 서버를 끌 때는 전환 승인을 기다리던 run을 바로 `interrupted`로 바꾸고, 단계를 실행 중인 run은 끝날 때까지 기다립니다(`-shutdown-wait`, 기본 15분). 다시 켜면 실행 중이던 run은 `interrupted`로 표시되고, 운영자가 `resume`으로 이어 갑니다.
 

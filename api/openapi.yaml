@@ -2645,12 +2645,13 @@ components:
       description: >
         Backups of a CNPG Cluster whose WAL archiver is an enabled Barman Cloud
         plugin (ADR 0025); absent on a Cluster without one. The times come from
-        the plugin's ObjectStore and are absent when the platform cannot read it.
+        the plugin's ObjectStore; when the platform cannot read it they are
+        absent and EnvironmentStatus.error says why.
       type: object
       required: [objectStore, walArchiving]
       properties:
         objectStore: { type: string, description: the plugin's ObjectStore in the Cluster's namespace }
-        walArchiving: { type: boolean, description: "the Cluster's ContinuousArchiving condition is True: WAL is reaching the object store" }
+        walArchiving: { type: boolean, description: "false when the Cluster's ContinuousArchiving condition is False: WAL is not reaching the object store. A Cluster that has not reported the condition yet counts as archiving" }
         lastSuccessfulBackup: { type: string, format: date-time }
         lastFailedBackup: { type: string, format: date-time }
         firstRecoverabilityPoint: { type: string, format: date-time, description: the earliest time a restore can reach }

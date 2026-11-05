@@ -172,10 +172,15 @@ func TestProbeReadsBackups(t *testing.T) {
 		cnpgCluster("moimroom", "moimroom-db", map[string]any{"instances": int64(1),
 			"plugins": barman(map[string]any{"barmanObjectName": "moimroom-db", "serverName": "moimroom-db"}, map[string]any{"enabled": true})},
 			archiving("True")),
-		// No serverName: the Cluster's name. Archiving is failing.
+		// No serverName: the Cluster's name. Archiving is failing. The serverName
+		// of another plugin entry is not this one's.
 		cnpgCluster("charlie-apps", "moimroom-db-gke", map[string]any{"instances": int64(1),
-			"plugins": barman(map[string]any{"barmanObjectName": "moimroom-db-gke-backup"}, nil)},
+			"plugins": append([]any{map[string]any{"name": "barman-cloud.cloudnative-pg.io", "isWALArchiver": false, "parameters": map[string]any{"barmanObjectName": "x", "serverName": "other"}}},
+				barman(map[string]any{"barmanObjectName": "moimroom-db-gke-backup"}, nil)...)},
 			archiving("False")),
+		// Just turned on: no ContinuousArchiving condition yet, so not failing.
+		cnpgCluster("fresh", "db", map[string]any{"instances": int64(1),
+			"plugins": barman(map[string]any{"barmanObjectName": "db"}, nil)}, nil),
 		// CNPG says ContinuousArchiving True without any archiver: no backups.
 		cnpgCluster("plain", "db", map[string]any{"instances": int64(1)}, archiving("True")),
 		// A plugin that is turned off, or not the WAL archiver: no backups.
@@ -203,6 +208,7 @@ func TestProbeReadsBackups(t *testing.T) {
 	want := map[string]string{
 		"charlie-apps/moimroom-db-gke": `{"lastSuccessfulBackup":"2026-11-06T18:00:30Z","objectStore":"moimroom-db-gke-backup","walArchiving":false}`,
 		"moimroom/moimroom-db":         `{"firstRecoverabilityPoint":"2026-11-05T18:00:10Z","lastFailedBackup":"2026-11-05T15:00:00Z","lastSuccessfulBackup":"2026-11-06T18:00:08Z","objectStore":"moimroom-db","walArchiving":true}`,
+		"fresh/db":                     `{"objectStore":"db","walArchiving":true}`,
 		"off/db":                       "null",
 		"other/db":                     "null",
 		"plain/db":                     "null",
@@ -215,27 +221,44 @@ func TestProbeReadsBackups(t *testing.T) {
 }
 
 // TestProbeBackupsWithoutObjectStores lists the databases without backup
-// times when the platform may not read ObjectStores or they do not exist.
+// times when the ObjectStores cannot be read. Without the CRD there are no
+// times; any other failure is named in error, so the times are unknown
+// rather than absent.
 func TestProbeBackupsWithoutObjectStores(t *testing.T) {
-	for name, fail := range map[string]error{
-		"forbidden": apierrors.NewForbidden(objectStoreGVR.GroupResource(), "", errors.New("cannot list objectstores")),
-		"no CRD":    apierrors.NewNotFound(objectStoreGVR.GroupResource(), ""),
+	for _, c := range []struct {
+		name, wantErr string
+		fail          error
+	}{
+		{"forbidden", "list Barman ObjectStores: forbidden by RBAC", apierrors.NewForbidden(objectStoreGVR.GroupResource(), "", errors.New("cannot list objectstores"))},
+		{"no CRD", "", apierrors.NewNotFound(objectStoreGVR.GroupResource(), "")},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
 			dyn := newDynamic(cnpgCluster("moimroom", "moimroom-db", map[string]any{"instances": int64(1),
 				"plugins": barman(map[string]any{"barmanObjectName": "moimroom-db"}, nil)}, archiving("True")))
 			dyn.PrependReactor("list", "objectstores", func(clienttesting.Action) (bool, runtime.Object, error) {
-				return true, nil, fail
+				return true, nil, c.fail
 			})
 			st := NewClusterProber(newKube("v1.35.0"), dyn).Probe(context.Background())
-			if st.Error != nil || st.Databases == nil || len(*st.Databases) != 1 {
-				t.Fatalf("status %+v error %q", st, deref(st.Error))
+			if deref(st.Error) != c.wantErr || st.Databases == nil || len(*st.Databases) != 1 {
+				t.Fatalf("status %+v error %q, want error %q", st, deref(st.Error), c.wantErr)
 			}
 			b := (*st.Databases)[0].Backup
 			if b == nil || !b.WalArchiving || b.ObjectStore != "moimroom-db" || b.LastSuccessfulBackup != nil || b.FirstRecoverabilityPoint != nil {
 				t.Fatalf("backup %+v", b)
 			}
 		})
+	}
+}
+
+// TestProbeSkipsObjectStoresWithoutBackups does not read ObjectStores when no
+// Cluster has backups, so a cluster without the permission reports no error.
+func TestProbeSkipsObjectStoresWithoutBackups(t *testing.T) {
+	dyn := newDynamic(cnpgCluster("plain", "db", map[string]any{"instances": int64(1)}, archiving("True")))
+	dyn.PrependReactor("list", "objectstores", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(objectStoreGVR.GroupResource(), "", errors.New("cannot list objectstores"))
+	})
+	if st := NewClusterProber(newKube("v1.35.0"), dyn).Probe(context.Background()); st.Error != nil {
+		t.Fatalf("error %q without any backups", deref(st.Error))
 	}
 }
 
