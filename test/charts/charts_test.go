@@ -315,7 +315,8 @@ func TestStatelessApp(t *testing.T) {
 
 func TestStatefulApp(t *testing.T) {
 	docs := mustRender(t, appChart, "moimroom", filepath.Join(appChart, "ci", "stateful-values.yaml"))
-	want := []string{"Cluster/moimroom-db", "Deployment/moimroom-web", "LimitRange/hopcharlie-app", "Namespace/moimroom",
+	// jobs has no port: a Deployment without a Service.
+	want := []string{"Cluster/moimroom-db", "Deployment/moimroom-jobs", "Deployment/moimroom-web", "LimitRange/hopcharlie-app", "Namespace/moimroom",
 		"NetworkPolicy/hopcharlie-app", "ResourceQuota/hopcharlie-app", "SealedSecret/app-s3", "SealedSecret/app-secrets", "Service/moimroom-web"}
 	if got := keys(docs); !slices.Equal(got, want) {
 		t.Fatalf("rendered %v, want %v", got, want)
@@ -329,6 +330,7 @@ func TestStatefulApp(t *testing.T) {
 				Size         string `json:"size"`
 				StorageClass string `json:"storageClass"`
 			} `json:"storage"`
+			Resources corev1.ResourceRequirements `json:"resources"`
 		} `json:"spec"`
 	}
 	if err := yaml.Unmarshal(docs["Cluster/moimroom-db"], &cluster); err != nil {
@@ -337,6 +339,10 @@ func TestStatefulApp(t *testing.T) {
 	if cluster.APIVersion != "postgresql.cnpg.io/v1" || cluster.Spec.Instances != 1 ||
 		cluster.Spec.Storage.Size != "2Gi" || cluster.Spec.Storage.StorageClass != "gp3" {
 		t.Errorf("Cluster %+v", cluster)
+	}
+	// The profile's resources of the Postgres pod (ADR 0024).
+	if r := cluster.Spec.Resources; r.Requests.Memory().String() != "256Mi" || r.Limits.Memory().String() != "512Mi" {
+		t.Errorf("Cluster resources %+v, want memory 256Mi requested and 512Mi limit", r)
 	}
 
 	var d appsv1.Deployment
@@ -354,13 +360,45 @@ func TestStatefulApp(t *testing.T) {
 		t.Errorf("imagePullSecrets %+v", pod.ImagePullSecrets)
 	}
 	c := pod.Containers[0]
-	wantEnv := []string{"PORT", "DATABASE_URL", "S3_ENDPOINT", "S3_BUCKET", "S3_REGION", "S3_PATH_STYLE", "S3_ACCESS_KEY", "S3_SECRET_KEY", "LOG_LEVEL"}
+	dbEnv := []string{"DATABASE_URL", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "JDBC_DATABASE_URL"}
+	s3Env := []string{"S3_ENDPOINT", "S3_BUCKET", "S3_REGION", "S3_PATH_STYLE", "S3_ACCESS_KEY", "S3_SECRET_KEY"}
+	wantEnv := slices.Concat([]string{"PORT"}, dbEnv, s3Env, []string{"LOG_LEVEL"})
 	if got := envNames(c); !slices.Equal(got, wantEnv) {
 		t.Errorf("env %v, want %v", got, wantEnv)
 	}
 	env := envByName(c)
-	if got := secretRef(t, env["DATABASE_URL"]); got != "moimroom-db-app/uri" {
-		t.Errorf("DATABASE_URL from %s, want moimroom-db-app/uri (CNPG's app secret)", got)
+	// The connection string and its parts, all from CNPG's app secret.
+	for name, key := range map[string]string{"DATABASE_URL": "uri", "PGHOST": "host", "PGPORT": "port", "PGDATABASE": "dbname",
+		"PGUSER": "username", "PGPASSWORD": "password", "JDBC_DATABASE_URL": "jdbc-uri"} {
+		if got := secretRef(t, env[name]); got != "moimroom-db-app/"+key {
+			t.Errorf("%s from %s, want moimroom-db-app/%s (CNPG's app secret)", name, got, key)
+		}
+	}
+	if r := c.Resources; r.Requests.Memory().String() != "64Mi" || r.Limits.Memory().String() != "256Mi" || r.Requests.Cpu().String() != "50m" {
+		t.Errorf("web resources %+v, want the profile's defaults", r)
+	}
+
+	// A worker (no port): no ports, probes or PORT; its own memory and CPU;
+	// its env after the platform's, so $(PGHOST) expands.
+	var jobs appsv1.Deployment
+	decode(t, docs, "Deployment/moimroom-jobs", &jobs)
+	jc := jobs.Spec.Template.Spec.Containers[0]
+	if len(jc.Ports) != 0 || jc.ReadinessProbe != nil || jc.LivenessProbe != nil || jc.StartupProbe != nil {
+		t.Errorf("worker ports %+v, probes %+v %+v %+v, want none", jc.Ports, jc.ReadinessProbe, jc.LivenessProbe, jc.StartupProbe)
+	}
+	// Without a probe, available only after 10 s without a restart.
+	if jobs.Spec.MinReadySeconds != 10 || d.Spec.MinReadySeconds != 0 {
+		t.Errorf("minReadySeconds: worker %d, web %d; want 10 and 0", jobs.Spec.MinReadySeconds, d.Spec.MinReadySeconds)
+	}
+	if got, want := envNames(jc), slices.Concat(dbEnv, s3Env, []string{"KC_DB_URL_HOST", "SPRING_DATASOURCE_URL"}); !slices.Equal(got, want) {
+		t.Errorf("worker env %v, want %v", got, want)
+	}
+	if je := envByName(jc); je["KC_DB_URL_HOST"].Value != "$(PGHOST)" || je["SPRING_DATASOURCE_URL"].Value != "$(JDBC_DATABASE_URL)" {
+		t.Errorf("worker env %+v", jc.Env)
+	}
+	if r := jc.Resources; r.Requests.Memory().String() != "512Mi" || r.Limits.Memory().String() != "512Mi" ||
+		r.Requests.Cpu().String() != "250m" || !r.Limits.Cpu().IsZero() {
+		t.Errorf("worker resources %+v, want memory 512Mi requested and limit, 250m CPU requested, no CPU limit", r)
 	}
 	for name, want := range map[string]string{
 		"S3_ENDPOINT":   "https://s3.ap-northeast-2.amazonaws.com",
@@ -475,7 +513,12 @@ func TestRejectsBadValues(t *testing.T) {
 		{"PORT in env", file(web(`, env: {PORT: "1"}`), "[]"), "invalid propertyName 'PORT'"},
 		{"S3_ prefix in env", file(web(", env: {S3_BUCKET: x}"), "[]"), "invalid propertyName 'S3_BUCKET'"},
 		{"env not a string", file(web(", env: {COUNT: 4}"), "[]"), "got number, want string"},
-		{"unknown service key", file(web(", cpu: 2"), "[]"), "'cpu' not allowed"},
+		{"unknown service key", file(web(", gpu: 1"), "[]"), "'gpu' not allowed"},
+		{"database variable in env", file(web(", env: {PGHOST: db}"), "[]"), "invalid propertyName 'PGHOST'"},
+		{"cpu as a number", file(web(", cpu: 2"), "[]"), "got number, want string"},
+		{"memory that is not a quantity", file(web(", memory: 512MB"), "[]"), "does not match pattern"},
+		{"a public service without a port", file("    - {name: web, image: "+img+", public: true}\n", "[]"), "'port'"},
+		{"a health check without a port", file("    - {name: web, image: "+img+", healthCheck: /healthz}\n", "[]"), "'port'"},
 		{"too many replicas", file(web(", replicas: 6"), "[]"), "maximum: got 6, want 5"},
 		{"unknown resource type", file(web(""), "[{name: cache, type: redis}]"), "value must be one of 'postgres', 's3'"},
 		{"unknown top-level key", file(web(""), "[]") + "extra: 1\n", "'extra' not allowed"},

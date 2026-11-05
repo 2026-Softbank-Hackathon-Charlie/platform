@@ -40,7 +40,7 @@ func checkSecretName(name string) string {
 	case !secretNamePattern.MatchString(name):
 		return fmt.Sprintf("secret name %q must match ^[A-Z_][A-Z0-9_]*$", name)
 	case appspec.Reserved(name):
-		return fmt.Sprintf("secret name %s is set by the platform (PORT, DATABASE_URL and S3_* are reserved)", name)
+		return fmt.Sprintf("secret name %s is set by the platform (%s are reserved)", name, appspec.ReservedNames)
 	}
 	return ""
 }

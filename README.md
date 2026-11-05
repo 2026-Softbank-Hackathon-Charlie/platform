@@ -415,6 +415,8 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 
 앱 저장소(서비스마다 Dockerfile, 루트에 `platform.yaml`)를 등록하면, 플랫폼이 서비스마다 이미지를 빌드하고 gitops 저장소에 `apps/<app>/<env>.yaml`을 커밋합니다. Argo CD가 Application `<app>-<env>`를 네임스페이스 `<app>`에 배포합니다. 설계와 `platform.yaml` 규칙은 [ADR 0011](docs/adr/0011-github-app-deploy.md)에 있습니다.
 
+서비스의 `port`는 선택입니다. `port`가 없는 서비스는 워커로, Service와 probe와 `PORT`가 없고 공개 서비스나 `healthCheck`를 둘 수 없습니다. `memory`(256Mi에서 1536Mi, request와 limit)와 `cpu`(50m에서 500m, request만)를 서비스마다 정할 수 있고, 모든 서비스의 (replicas + 1) x memory 합은 3Gi, (replicas + 1) x cpu 합은 1500m 이하여야 합니다(정하지 않은 값은 256Mi, 50m로 셈). `postgres` 리소스가 있으면 `DATABASE_URL`과 함께 `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `JDBC_DATABASE_URL`을 받고, 앱이 읽는 이름으로는 `env`에 `KC_DB_URL_HOST: "$(PGHOST)"`처럼 넘깁니다. 숫자의 근거는 [ADR 0024](docs/adr/0024-service-contract-workers-resources-db-env.md)에 있습니다.
+
 앱은 등록한 브랜치를 기본 인스턴스(이름은 앱 이름)로 띄우고, 운영자가 더한 브랜치를 인스턴스 `<app>--<slug>`로 따로 띄웁니다. 인스턴스 이름이 네임스페이스, gitops 경로 `apps/<instance>/`, Application `<instance>-<env>`, 주소 `https://<instance>.<도메인>`이 됩니다. 앱 하나에 인스턴스는 기본 인스턴스를 포함해 3개까지입니다. 그래서 앱 이름은 `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`에 맞고 `--`를 포함하지 않습니다. 설계는 [ADR 0015](docs/adr/0015-branch-instances.md)에 있습니다.
 
 | 요청 | 역할 | 설명 |
@@ -445,7 +447,7 @@ AI 플래너가 작업 하나(계획, 리허설, 진단, 설명)마다 세션을
 GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고치고, 다시 봅니다. 설계는 [ADR 0019](docs/adr/0019-app-secrets-and-redeploy.md)에 있습니다.
 
 - 시크릿은 앱 단위로 두고, 인스턴스마다 덮어쓸 수 있습니다. 인스턴스가 받는 값은 앱 단위 값 위에 그 인스턴스의 덮어쓰기를 얹은 것입니다. 덮어쓰기를 지우면 앱 단위 값으로 돌아갑니다. 기본 인스턴스의 덮어쓰기는 `instance`에 앱 이름을 씁니다.
-- 이름은 `^[A-Z_][A-Z0-9_]*$`, 64자까지이고 `PORT`, `DATABASE_URL`, `S3_*`는 쓸 수 없습니다. 값은 1바이트에서 4096바이트까지이고(빈 값은 400), 앱 단위와 인스턴스마다 50개까지입니다. 한 요청에서 같은 이름을 넣고 지우면 400, 바꿀 것이 없어도 400입니다. 50개는 바꾼 뒤의 개수로 셉니다.
+- 이름은 `^[A-Z_][A-Z0-9_]*$`, 64자까지이고 `PORT`, `DATABASE_URL`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `JDBC_DATABASE_URL`, `S3_*`는 쓸 수 없습니다. 값은 1바이트에서 4096바이트까지이고(빈 값은 400), 앱 단위와 인스턴스마다 50개까지입니다. 한 요청에서 같은 이름을 넣고 지우면 400, 바꿀 것이 없어도 400입니다. 50개는 바꾼 뒤의 개수로 셉니다.
 - 값은 `PLATFORM_SECRETS_KEY`로 AES-256-GCM 암호화해 플랫폼 DB에 저장합니다. nonce는 값마다 무작위이고, AAD는 앱, 인스턴스, 이름을 각각 길이와 함께 이어 붙인 값이라서 다른 행으로 옮긴 암호문은 복호화되지 않습니다. 행마다 키 버전(지금은 1)과 키 확인값(키에서 HKDF로 만든 16진수 12자)을 저장합니다. 다른 키로 띄운 서버는 시작할 때 그런 행의 개수를 오류 로그로 남기고, 그 값의 조회는 500이며 서버 로그에 두 키 확인값을 남깁니다. 키 자체는 어디에도 남기지 않습니다. 테이블은 `0008_app_secrets.sql`이 만듭니다.
 - 앱을 지우면 시크릿이 모두, 인스턴스를 지우면 그 인스턴스의 덮어쓰기가 같은 트랜잭션에서 지워집니다. 같은 이름으로 다시 등록해도 이전 시크릿은 없습니다.
 - 감사 로그에는 검증을 통과한 앱, 인스턴스, 넣은 이름(`set`), 지운 이름(`deleted`)만 남고 값은 남지 않습니다. 400으로 거절한 요청은 이름 대신 개수(`setCount`, `deleteCount`)만 남깁니다. 이름 자리에 값을 잘못 붙여 넣었을 수 있기 때문입니다. 같은 이유로 규칙에 맞지 않는 앱 이름이나 시크릿 이름은 감사 로그의 경로에 `{invalid}`로 남습니다.

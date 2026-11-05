@@ -1,6 +1,8 @@
 # platform ADR 0011's example gitops file (moimroom with a database and a bucket)
 # with a production-like profile, guardrails on, and the sealed values of
 # platform ADR 0016 and 0019 (made-up ciphertexts, sealed with no real key).
+# jobs is a worker without a port, with its own memory and CPU, that maps the
+# database variables to its own names (platform ADR 0024).
 app: "moimroom"
 env: "eks"
 namespace: "moimroom"
@@ -10,6 +12,7 @@ values:
   app: "moimroom"
   services:
     - {name: "web", image: "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/hopcharlie/apps/moimroom/web@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", port: 8080, healthCheck: "/healthz", public: true, replicas: 1, env: {"LOG_LEVEL": "info"}}
+    - {name: "jobs", image: "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/hopcharlie/apps/moimroom/jobs@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", public: false, replicas: 1, memory: "512Mi", cpu: "250m", env: {"SPRING_DATASOURCE_URL": "$(JDBC_DATABASE_URL)", "KC_DB_URL_HOST": "$(PGHOST)"}}
   resources:
     - {name: "db", type: "postgres"}
     - {name: "photos", type: "s3"}
@@ -29,7 +32,7 @@ profile:
       service.beta.kubernetes.io/aws-load-balancer-type: external
   imagePullSecrets: [ecr-pull]
   progressDeadlineSeconds: 300
-  postgres: {storageSize: 2Gi, storageClass: gp3}
+  postgres: {storageSize: 2Gi, storageClass: gp3, resources: {requests: {memory: 256Mi}, limits: {memory: 512Mi}}}
   s3:
     endpoint: https://s3.ap-northeast-2.amazonaws.com
     region: ap-northeast-2

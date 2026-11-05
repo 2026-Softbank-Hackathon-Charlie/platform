@@ -21,17 +21,26 @@ deployment: ""
 
 values:
   app: ""
-  # One Deployment and one Service <app>-<name> per service.
+  # One Deployment per service and, for a service with a port, one Service
+  # <app>-<name> (platform ADR 0024).
   #   - name: web
   #     image: registry/hopcharlie/apps/<app>/web@sha256:...   # pinned by digest
-  #     port: 8080            # containerPort, Service port and PORT
-  #     healthCheck: /healthz # optional HTTP path for the probes
-  #     public: true          # served at https://<app>.<domain>; at most one
+  #     port: 8080            # containerPort, Service port and PORT; without
+  #                           # it a worker: no Service, probes or PORT
+  #     healthCheck: /healthz # optional HTTP path for the probes; needs port
+  #     public: true          # served at https://<app>.<domain>; at most one;
+  #                           # needs port
   #     replicas: 1
-  #     env: {KEY: value}     # strings; never PORT, DATABASE_URL or S3_*
+  #     memory: 512Mi         # optional memory request and limit
+  #     cpu: 250m             # optional CPU request; no CPU limit
+  #     env: {KEY: value}     # strings; never a platform variable (PORT,
+  #                           # DATABASE_URL, PG*, JDBC_DATABASE_URL, S3_*);
+  #                           # "$(PGHOST)" expands to the platform's value
   services: []
   # At most one of each type.
-  #   - {name: db, type: postgres}   # CNPG Cluster <app>-db; DATABASE_URL
+  #   - {name: db, type: postgres}   # CNPG Cluster <app>-db; DATABASE_URL,
+  #                                  # PGHOST, PGPORT, PGDATABASE, PGUSER,
+  #                                  # PGPASSWORD, JDBC_DATABASE_URL
   #   - {name: photos, type: s3}     # S3_* from profile.s3
   resources: []
   # Values the platform sealed with the cluster's Sealed Secrets certificate,
@@ -52,6 +61,8 @@ profile:
   # ClusterIP.
   publicService:
     type: ClusterIP
+    # Local preserves the source IP for passthrough load balancers; empty keeps the cluster default.
+    externalTrafficPolicy: ""
     # Port of that Service; 0 uses the service's own port. A fixed port keeps
     # the platform's egress NetworkPolicy from opening every app's port.
     port: 0
@@ -60,7 +71,8 @@ profile:
   # Names of Secrets in the namespace for pulling the images.
   imagePullSecrets: []
 
-  # Requests and limits of every service's container.
+  # Requests and limits of every service's container. A service's memory
+  # replaces both memory values, its cpu the CPU request.
   resources:
     requests:
       cpu: 50m

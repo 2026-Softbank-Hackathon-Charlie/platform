@@ -424,7 +424,7 @@ operations:
       한 범위의 시크릿을 한 번에 바꾸고, 바꾼 뒤의 이름 목록을 돌려준다. instance가 없으면 앱 단위, 있으면 그 인스턴스의 덮어쓰기를 바꾼다. 기본 인스턴스는 앱 이름으로 가리킨다.
 
       - set은 이름과 값이고, 있는 이름이면 값을 바꾼다. delete는 지울 이름이고, 없는 이름은 무시한다. 덮어쓰기를 지우면 그 인스턴스는 앱 단위 값으로 돌아간다.
-      - 이름은 `^[A-Z_][A-Z0-9_]*$`, 64자까지이고 PORT, DATABASE_URL, S3_*는 쓸 수 없다. 값은 1바이트에서 4096바이트까지다. 앱 단위와 인스턴스마다 50개까지이고, 바꾼 뒤의 개수로 센다. 지우거나 값만 바꾸는 요청은 개수가 이미 50개를 넘어도 된다. set과 delete에는 각각 이름을 50개까지 넣는다.
+      - 이름은 `^[A-Z_][A-Z0-9_]*$`, 64자까지이고 PORT, DATABASE_URL, PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD, JDBC_DATABASE_URL, S3_*는 쓸 수 없다. 값은 1바이트에서 4096바이트까지다. 앱 단위와 인스턴스마다 50개까지이고, 바꾼 뒤의 개수로 센다. 지우거나 값만 바꾸는 요청은 개수가 이미 50개를 넘어도 된다. set과 delete에는 각각 이름을 50개까지 넣는다.
       - instance가 비어 있으면 앱 단위로 본다.
       - 값은 서버의 시크릿 키로 AES-256-GCM 암호화해 저장하고 로그에 쓰지 않는다. 감사 로그에는 검증을 통과한 이름(set, deleted)만 남는다. 400으로 거절한 요청은 이름 대신 개수(setCount, deleteCount)만 남는다.
       - 떠 있는 인스턴스는 다시 배포할 때까지 이전 값을 쓴다.
@@ -689,9 +689,11 @@ schemas:
 
     - `name`은 `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`(3자에서 32자)에 맞고 `--`가 없어야 한다. `--`는 인스턴스 이름(`<name>--<branch slug>`)에서 앱과 브랜치를 나누기 때문이다. name은 기본 인스턴스(네임스페이스, Argo CD Application `<name>-<env>`, 공개 URL `https://<name>.hopcharlie.dev`)와 모든 인스턴스가 함께 쓰는 이미지 `<registry>/hopcharlie/apps/<name>/<service>`의 이름이 된다.
     - 서비스는 1개에서 5개, 리소스는 종류마다 1개까지다. 서비스 이름과 리소스 이름은 `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$`에 맞고 겹치지 않아야 한다.
-    - `port`는 1에서 65535, `replicas`는 1에서 5이고, `public`인 서비스는 1개까지이며, `healthCheck`를 쓰면 `/`로 시작해야 한다.
+    - `port`는 쓰면 1에서 65535다. `port`가 없는 서비스는 워커다. Service와 probe가 없고 실행되면 준비된 것으로 보며, `public`일 수 없고 `healthCheck`를 쓸 수 없다. 워커만 있는 앱도 되고, 그 앱에는 URL이 없다.
+    - `replicas`는 1에서 5이고, `public`인 서비스는 1개까지이며, `healthCheck`를 쓰면 `/`로 시작해야 한다.
+    - `memory`는 쓰면 256Mi에서 1536Mi, `cpu`는 50m에서 500m다(ADR 0024). 모든 서비스의 (replicas + 1) x memory 합은 3Gi 이하, (replicas + 1) x cpu 합은 1500m 이하여야 한다. memory를 쓰지 않은 서비스는 256Mi, cpu를 쓰지 않은 서비스는 50m로 센다. 롤링 업데이트 동안 서비스마다 파드가 하나 더 떠도 DB와 함께 네임스페이스 quota 안에 들게 하기 위해서다.
     - `path`와 `dockerfile`은 상대 경로이고 `..`이 없어야 한다.
-    - `env` 키는 `^[A-Z_][A-Z0-9_]*$`에 맞고 플랫폼이 넣는 변수(`PORT`, `DATABASE_URL`, `S3_*`)가 아니어야 한다.
+    - `env` 키는 `^[A-Z_][A-Z0-9_]*$`에 맞고 플랫폼이 넣는 변수(`PORT`, `DATABASE_URL`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `JDBC_DATABASE_URL`, `S3_*`)가 아니어야 한다.
 
     AppSpecValidation은 규칙을 어긴 파일의 spec도 돌려주므로 규칙을 스키마 키워드로 다시 적지 않는다.
   AppSpecValidation: platform.yaml을 검사한 결과다. spec은 파일을 디코딩할 수 있으면 규칙을 어겨도 기본값을 채워 들어 있다. commit은 저장소를 검사할 때 브랜치를 찾은 뒤 파일을 읽은 커밋이다.
@@ -887,11 +889,13 @@ fields:
   AppEnvironmentStatus.url: 이 환경에서 공개 서비스가 답하는 주소 (알 때만)
   AppSpecService.path: docker 빌드 컨텍스트, 저장소 루트 기준 상대 경로
   AppSpecService.dockerfile: path 기준 상대 경로
-  AppSpecService.port: 서비스가 듣는 포트. 서비스는 이 값을 PORT로 받는다
+  AppSpecService.port: 서비스가 듣는 포트. 서비스는 이 값을 PORT로 받는다. 워커는 쓰지 않고, 그러면 Service, probe, PORT가 없다
+  AppSpecService.memory: 'Kubernetes 수량, 256Mi에서 1536Mi. 컨테이너의 memory request이자 limit이다. 쓰지 않으면 환경 기본값(request 64Mi, limit 256Mi)'
+  AppSpecService.cpu: 'Kubernetes 수량, 50m에서 500m. 컨테이너의 CPU request이고 CPU limit은 없다. 쓰지 않으면 환경 기본값(50m)'
   AppSpecService.healthCheck: 서비스가 준비되면 2xx로 답하는 HTTP 경로
   AppSpecService.public: '트래픽 게이트웨이를 거쳐 `https://<app>.hopcharlie.dev`로 서비스한다'
-  AppSpecService.env: 플랫폼이 넣는 변수 외의 환경 변수. 값은 문자열이다. YAML이 숫자, 불리언, null로 읽는 값(`4`, `yes`, `0755`, `~`)은 오류이므로 따옴표로 감싼다. platform.yaml은 git에 있으므로 비밀을 넣지 않는다
-  AppSpecResource.type: 'postgres: CNPG Cluster `<app>-<name>`. 모든 서비스가 시크릿 `<app>-<name>-app`의 `uri` 키에서 DATABASE_URL을 받는다. s3: 버킷. 모든 서비스가 S3_ENDPOINT, S3_BUCKET, S3_REGION, S3_PATH_STYLE, S3_ACCESS_KEY, S3_SECRET_KEY를 받는다'
+  AppSpecService.env: '플랫폼이 넣는 변수 외의 환경 변수. 값은 문자열이다. YAML이 숫자, 불리언, null로 읽는 값(`4`, `yes`, `0755`, `~`)은 오류이므로 따옴표로 감싼다. platform.yaml은 git에 있으므로 비밀을 넣지 않는다. 값에 `$(NAME)`을 쓰면 Kubernetes가 플랫폼이 넣은 변수로 바꾸므로 앱이 읽는 이름으로 넘길 수 있다. 예: `KC_DB_URL_HOST: "$(PGHOST)"`, `SPRING_DATASOURCE_URL: "$(JDBC_DATABASE_URL)"`, `AWS_ACCESS_KEY_ID: "$(S3_ACCESS_KEY)"`'
+  AppSpecResource.type: 'postgres: CNPG Cluster `<app>-<name>`. 모든 서비스가 시크릿 `<app>-<name>-app`의 `uri` 키에서 DATABASE_URL을 받고, 같은 시크릿에서 PGHOST(`host`), PGPORT(`port`), PGDATABASE(`dbname`), PGUSER(`username`), PGPASSWORD(`password`), JDBC_DATABASE_URL(`jdbc-uri`)을 받는다. s3: 버킷. 모든 서비스가 S3_ENDPOINT, S3_BUCKET, S3_REGION, S3_PATH_STYLE, S3_ACCESS_KEY, S3_SECRET_KEY를 받는다'
   AppSpecFieldError.path: platform.yaml 안의 위치. 파일 전체의 오류(없음, YAML이 아님, 모르는 키)면 비어 있다
   AppSpecValidation.errors: 통과하면 비어 있다
   AppSpecValidateRequest.repo: owner/name. branch의 head에서 GitHub App으로 platform.yaml을 읽는다

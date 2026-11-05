@@ -235,6 +235,7 @@ func TestAppSecretsUpdateErrors(t *testing.T) {
 		{name: "PORT", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"PORT": "1"}}, status: 400, code: "invalid_request"},
 		{name: "DATABASE_URL", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"DATABASE_URL": "x"}}, status: 400, code: "invalid_request"},
 		{name: "S3_", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"S3_BUCKET": "x"}}, status: 400, code: "invalid_request"},
+		{name: "PGPASSWORD", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"PGPASSWORD": "x"}}, status: 400, code: "invalid_request"},
 		{name: "reserved delete", app: "shop", token: opToken, body: map[string]any{"delete": []string{"PORT"}}, status: 400, code: "invalid_request"},
 		{name: "empty value", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"A": ""}}, status: 400, code: "invalid_request"},
 		{name: "empty value among others", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"A": "x", "B": ""}}, status: 400, code: "invalid_request"},

@@ -62,7 +62,7 @@ func (h *harness) registerShop() apiv1.Deployment {
 
 func TestCreateDeployment(t *testing.T) {
 	gh, dep := shopGitHub(), &fakeDeployer{}
-	gh.repo(shopRepo, "broken", pushSHA, "name: shop\nservices:\n  - name: web\n    port: 0\n", "Dockerfile")
+	gh.repo(shopRepo, "broken", pushSHA, "name: shop\nservices:\n  - name: web\n    port: 70000\n", "Dockerfile")
 	gh.repo(shopRepo, "renamed", "2222222222222222222222222222222222222222", strings.Replace(shopSpec, "name: shop", "name: store", 1), "Dockerfile", "worker/Dockerfile")
 	h := newHarness(t, withApps(""), withGitHub(gh, dep))
 	first := h.registerShop()

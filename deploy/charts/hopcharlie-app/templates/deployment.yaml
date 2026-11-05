@@ -22,6 +22,11 @@ metadata:
 spec:
   replicas: {{ $svc.replicas | default 1 }}
   revisionHistoryLimit: 3
+  {{- if not $svc.port }}
+  # A worker has no probe: it counts as available once it has run this long
+  # without a restart, so one that crashes at start leaves the old pods.
+  minReadySeconds: 10
+  {{- end }}
   # A new version that never becomes ready stops here; the old pods serve.
   progressDeadlineSeconds: {{ $profile.progressDeadlineSeconds }}
   strategy:
@@ -62,9 +67,11 @@ spec:
       containers:
         - name: {{ $svc.name }}
           image: {{ $svc.image | quote }}
+          {{- with $svc.port }}
           ports:
             - name: http
-              containerPort: {{ $svc.port }}
+              containerPort: {{ . }}
+          {{- end }}
           {{- if $.Values.values.sealedSecrets.app }}
           # env below wins over envFrom for the same name; the platform drops
           # such names from env itself (platform ADR 0019).
@@ -72,13 +79,20 @@ spec:
             - secretRef:
                 name: app-secrets
           {{- end }}
+          {{- $platformEnv := include "hopcharlie-app.platformEnv" $ctx | trim }}
+          {{- if or $platformEnv $svc.env }}
           env:
-            {{- include "hopcharlie-app.platformEnv" $ctx | nindent 12 }}
+            {{- with $platformEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
             {{- range $k, $v := $svc.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-          {{- if $svc.healthCheck }}
+          {{- end }}
+          {{- if not $svc.port }}
+          # A worker: no port to probe, so a running container is ready.
+          {{- else if $svc.healthCheck }}
           # Up to 3 minutes to start (an app may wait for its database)
           # before liveness applies.
           startupProbe:
@@ -115,9 +129,9 @@ spec:
               sleep:
                 seconds: {{ . }}
           {{- end }}
-          {{- with $profile.resources }}
+          {{- with include "hopcharlie-app.resources" $ctx }}
           resources:
-            {{- toYaml . | nindent 12 }}
+            {{- . | nindent 12 }}
           {{- end }}
           securityContext:
             allowPrivilegeEscalation: false

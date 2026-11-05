@@ -118,12 +118,24 @@ func Render(f File) ([]byte, error) {
 		}
 		fmt.Fprintf(&b, "    - name: %s\n", q(sv.Name))
 		fmt.Fprintf(&b, "      image: %s\n", q(image))
-		fmt.Fprintf(&b, "      port: %d\n", sv.Port)
+		if sv.Port != 0 {
+			fmt.Fprintf(&b, "      port: %d\n", sv.Port)
+		}
 		if sv.HealthCheck != "" {
 			fmt.Fprintf(&b, "      healthCheck: %s\n", q(sv.HealthCheck))
 		}
 		fmt.Fprintf(&b, "      public: %t\n", sv.Public)
 		fmt.Fprintf(&b, "      replicas: %d\n", max(sv.Replicas, 1))
+		for _, r := range []struct{ key, value string }{{"memory", sv.Memory}, {"cpu", sv.CPU}} {
+			if r.value == "" {
+				continue
+			}
+			v, err := appspec.Canonical(r.value)
+			if err != nil {
+				return nil, fmt.Errorf("render %s: service %s: %s %q: %w", FilePath(f.Instance, f.Env), sv.Name, r.key, r.value, err)
+			}
+			fmt.Fprintf(&b, "      %s: %s\n", r.key, q(v))
+		}
 		var env []string
 		for _, k := range sortedKeys(sv.Env) {
 			if f.Sealed == nil || f.Sealed.App[k] == "" {

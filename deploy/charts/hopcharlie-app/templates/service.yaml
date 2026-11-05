@@ -1,5 +1,7 @@
 {{- $public := .Values.profile.publicService }}
 {{- range $svc := .Values.values.services }}
+{{- /* A service without a port (a worker) gets no Service. */}}
+{{- if $svc.port }}
 {{- $ctx := dict "root" $ "svc" $svc }}
 ---
 apiVersion: v1
@@ -14,6 +16,9 @@ metadata:
   {{- end }}
 spec:
   type: {{ ternary ($public.type | default "ClusterIP") "ClusterIP" ($svc.public | default false) }}
+  {{- if and $svc.public $public.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ $public.externalTrafficPolicy }}
+  {{- end }}
   selector:
     {{- include "hopcharlie-app.selectorLabels" $ctx | nindent 4 }}
   ports:
@@ -21,4 +26,5 @@ spec:
       port: {{ if and $svc.public $public.port }}{{ $public.port }}{{ else }}{{ $svc.port }}{{ end }}
       targetPort: http
       protocol: TCP
+{{- end }}
 {{- end }}

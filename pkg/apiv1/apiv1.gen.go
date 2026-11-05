@@ -904,17 +904,29 @@ type AppDeploy struct {
 	// - 1 to 5 services and at most one resource per type. Service names,
 	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 	//   are unique.
-	// - `port` is 1 to 65535, `replicas` 1 to 5, at most one service is
-	//   `public`, and `healthCheck`, when set, starts with `/`.
+	// - `port`, when set, is 1 to 65535. A service without one is a
+	//   worker: no Service, no probes, ready once it runs, and it may be
+	//   neither `public` nor have a `healthCheck`. An app may have only
+	//   workers; it then has no URL.
+	// - `replicas` is 1 to 5, at most one service is `public`, and
+	//   `healthCheck`, when set, starts with `/`.
+	// - `memory`, when set, is 256Mi to 1536Mi and `cpu` 50m to 500m
+	//   (ADR 0024). Over all services, (replicas + 1) x memory adds up to
+	//   at most 3Gi and (replicas + 1) x cpu to at most 1500m, an unset
+	//   memory counting as 256Mi and an unset cpu as 50m, so that a
+	//   rolling update, with one pod more per service, fits the
+	//   namespace's quota next to the database.
 	// - `path` and `dockerfile` are relative and have no `..`.
 	// - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
-	//   variables the platform sets: `PORT`, `DATABASE_URL` and `S3_*`.
+	//   variables the platform sets: `PORT`, `DATABASE_URL`, `PGHOST`,
+	//   `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`,
+	//   `JDBC_DATABASE_URL` and `S3_*`.
 	//
 	// The rules are not repeated as schema keywords, because
 	// AppSpecValidation returns the spec of a file that breaks them.
 	//
 	//
-	// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1}]}
+	// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1},{"cpu":"250m","dockerfile":"Dockerfile","env":{"SPRING_DATASOURCE_URL":"$(JDBC_DATABASE_URL)"},"memory":"512Mi","name":"jobs","path":"jobs","public":false,"replicas":1}]}
 	Spec AppSpec `json:"spec"`
 
 	// SpecCommit Example: 9fceb02d0ae598e95dc970b74767f19372d61af8
@@ -1023,17 +1035,29 @@ type AppInstance struct {
 	// - 1 to 5 services and at most one resource per type. Service names,
 	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 	//   are unique.
-	// - `port` is 1 to 65535, `replicas` 1 to 5, at most one service is
-	//   `public`, and `healthCheck`, when set, starts with `/`.
+	// - `port`, when set, is 1 to 65535. A service without one is a
+	//   worker: no Service, no probes, ready once it runs, and it may be
+	//   neither `public` nor have a `healthCheck`. An app may have only
+	//   workers; it then has no URL.
+	// - `replicas` is 1 to 5, at most one service is `public`, and
+	//   `healthCheck`, when set, starts with `/`.
+	// - `memory`, when set, is 256Mi to 1536Mi and `cpu` 50m to 500m
+	//   (ADR 0024). Over all services, (replicas + 1) x memory adds up to
+	//   at most 3Gi and (replicas + 1) x cpu to at most 1500m, an unset
+	//   memory counting as 256Mi and an unset cpu as 50m, so that a
+	//   rolling update, with one pod more per service, fits the
+	//   namespace's quota next to the database.
 	// - `path` and `dockerfile` are relative and have no `..`.
 	// - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
-	//   variables the platform sets: `PORT`, `DATABASE_URL` and `S3_*`.
+	//   variables the platform sets: `PORT`, `DATABASE_URL`, `PGHOST`,
+	//   `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`,
+	//   `JDBC_DATABASE_URL` and `S3_*`.
 	//
 	// The rules are not repeated as schema keywords, because
 	// AppSpecValidation returns the spec of a file that breaks them.
 	//
 	//
-	// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1}]}
+	// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1},{"cpu":"250m","dockerfile":"Dockerfile","env":{"SPRING_DATASOURCE_URL":"$(JDBC_DATABASE_URL)"},"memory":"512Mi","name":"jobs","path":"jobs","public":false,"replicas":1}]}
 	Spec AppSpec `json:"spec"`
 
 	// SpecCommit Example: 9fceb02d0ae598e95dc970b74767f19372d61af8
@@ -1139,16 +1163,28 @@ type AppSecretsUpdate struct {
 //   - 1 to 5 services and at most one resource per type. Service names,
 //     and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 //     are unique.
-//   - `port` is 1 to 65535, `replicas` 1 to 5, at most one service is
-//     `public`, and `healthCheck`, when set, starts with `/`.
+//   - `port`, when set, is 1 to 65535. A service without one is a
+//     worker: no Service, no probes, ready once it runs, and it may be
+//     neither `public` nor have a `healthCheck`. An app may have only
+//     workers; it then has no URL.
+//   - `replicas` is 1 to 5, at most one service is `public`, and
+//     `healthCheck`, when set, starts with `/`.
+//   - `memory`, when set, is 256Mi to 1536Mi and `cpu` 50m to 500m
+//     (ADR 0024). Over all services, (replicas + 1) x memory adds up to
+//     at most 3Gi and (replicas + 1) x cpu to at most 1500m, an unset
+//     memory counting as 256Mi and an unset cpu as 50m, so that a
+//     rolling update, with one pod more per service, fits the
+//     namespace's quota next to the database.
 //   - `path` and `dockerfile` are relative and have no `..`.
 //   - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
-//     variables the platform sets: `PORT`, `DATABASE_URL` and `S3_*`.
+//     variables the platform sets: `PORT`, `DATABASE_URL`, `PGHOST`,
+//     `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`,
+//     `JDBC_DATABASE_URL` and `S3_*`.
 //
 // The rules are not repeated as schema keywords, because
 // AppSpecValidation returns the spec of a file that breaks them.
 //
-// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1}]}
+// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1},{"cpu":"250m","dockerfile":"Dockerfile","env":{"SPRING_DATASOURCE_URL":"$(JDBC_DATABASE_URL)"},"memory":"512Mi","name":"jobs","path":"jobs","public":false,"replicas":1}]}
 type AppSpec struct {
 	// Name Example: moimroom
 	Name      string             `json:"name"`
@@ -1184,7 +1220,10 @@ type AppSpecResource struct {
 	Name string `json:"name"`
 
 	// Type postgres: a CNPG Cluster `<app>-<name>`; every service gets
-	// DATABASE_URL from key `uri` of its secret `<app>-<name>-app`.
+	// DATABASE_URL from key `uri` of its secret `<app>-<name>-app`,
+	// and from the same secret PGHOST (key `host`), PGPORT (`port`),
+	// PGDATABASE (`dbname`), PGUSER (`username`), PGPASSWORD
+	// (`password`) and JDBC_DATABASE_URL (`jdbc-uri`).
 	// s3: a bucket; every service gets S3_ENDPOINT, S3_BUCKET,
 	// S3_REGION, S3_PATH_STYLE, S3_ACCESS_KEY and S3_SECRET_KEY.
 	//
@@ -1195,13 +1234,25 @@ type AppSpecResource struct {
 
 // AppSpecService defines model for AppSpecService.
 type AppSpecService struct {
+	// Cpu A Kubernetes quantity, 50m to 500m: the container's CPU request.
+	// There is no CPU limit. Without it the request is the
+	// environment's default (50m).
+	//
+	//
+	// Example: 250m
+	Cpu string `json:"cpu,omitempty"`
+
 	// Dockerfile relative to path
 	Dockerfile string `json:"dockerfile"`
 
 	// Env Environment variables besides the ones the platform sets. Values
 	// are strings: a value YAML reads as a number, boolean or null
 	// (`4`, `yes`, `0755`, `~`) is an error, so quote it. platform.yaml
-	// is in git, so it holds no secrets.
+	// is in git, so it holds no secrets. A value may use `$(NAME)` for
+	// a variable the platform sets, which Kubernetes expands, to give
+	// it the name the app reads: `KC_DB_URL_HOST: "$(PGHOST)"`,
+	// `SPRING_DATASOURCE_URL: "$(JDBC_DATABASE_URL)"`,
+	// `AWS_ACCESS_KEY_ID: "$(S3_ACCESS_KEY)"`.
 	Env *map[string]string `json:"env,omitempty"`
 
 	// HealthCheck an HTTP path that answers 2xx once the service is ready
@@ -1209,16 +1260,24 @@ type AppSpecService struct {
 	// Example: /healthz
 	HealthCheck *string `json:"healthCheck,omitempty"`
 
+	// Memory A Kubernetes quantity, 256Mi to 1536Mi: the container's memory
+	// request and limit. Without it the container gets the
+	// environment's defaults (request 64Mi, limit 256Mi).
+	//
+	//
+	// Example: 512Mi
+	Memory string `json:"memory,omitempty"`
+
 	// Name Example: web
 	Name string `json:"name"`
 
 	// Path the docker build context, relative to the repository root
 	Path string `json:"path"`
 
-	// Port the port the service listens on; the service gets it as PORT
+	// Port the port the service listens on; the service gets it as PORT. Left out for a worker, which gets no Service, no probes and no PORT.
 	//
 	// Example: 8080
-	Port int `json:"port"`
+	Port int `json:"port,omitempty"`
 
 	// Public served at https://<app>.hopcharlie.dev through the traffic gateway
 	Public   bool `json:"public"`
@@ -1269,17 +1328,29 @@ type AppSpecValidation struct {
 	// - 1 to 5 services and at most one resource per type. Service names,
 	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 	//   are unique.
-	// - `port` is 1 to 65535, `replicas` 1 to 5, at most one service is
-	//   `public`, and `healthCheck`, when set, starts with `/`.
+	// - `port`, when set, is 1 to 65535. A service without one is a
+	//   worker: no Service, no probes, ready once it runs, and it may be
+	//   neither `public` nor have a `healthCheck`. An app may have only
+	//   workers; it then has no URL.
+	// - `replicas` is 1 to 5, at most one service is `public`, and
+	//   `healthCheck`, when set, starts with `/`.
+	// - `memory`, when set, is 256Mi to 1536Mi and `cpu` 50m to 500m
+	//   (ADR 0024). Over all services, (replicas + 1) x memory adds up to
+	//   at most 3Gi and (replicas + 1) x cpu to at most 1500m, an unset
+	//   memory counting as 256Mi and an unset cpu as 50m, so that a
+	//   rolling update, with one pod more per service, fits the
+	//   namespace's quota next to the database.
 	// - `path` and `dockerfile` are relative and have no `..`.
 	// - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
-	//   variables the platform sets: `PORT`, `DATABASE_URL` and `S3_*`.
+	//   variables the platform sets: `PORT`, `DATABASE_URL`, `PGHOST`,
+	//   `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`,
+	//   `JDBC_DATABASE_URL` and `S3_*`.
 	//
 	// The rules are not repeated as schema keywords, because
 	// AppSpecValidation returns the spec of a file that breaks them.
 	//
 	//
-	// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1}]}
+	// Example: {"name":"moimroom","resources":[{"name":"db","type":"postgres"},{"name":"photos","type":"s3"}],"services":[{"dockerfile":"Dockerfile","env":{"LOG_LEVEL":"info"},"healthCheck":"/healthz","name":"web","path":".","port":8080,"public":true,"replicas":1},{"cpu":"250m","dockerfile":"Dockerfile","env":{"SPRING_DATASOURCE_URL":"$(JDBC_DATABASE_URL)"},"memory":"512Mi","name":"jobs","path":"jobs","public":false,"replicas":1}]}
 	Spec  *AppSpec `json:"spec,omitempty"`
 	Valid bool     `json:"valid"`
 }

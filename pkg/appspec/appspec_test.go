@@ -29,6 +29,9 @@ services:
       FEATURE_X: "true"
   - name: worker
     port: 9000
+  - name: jobs
+    memory: 512Mi
+    cpu: 250m
 resources:
   - name: db
     type: postgres
@@ -48,6 +51,8 @@ func TestParse(t *testing.T) {
 				Env: map[string]string{"LOG_LEVEL": "info", "FEATURE_X": "true"}},
 			// Defaults: path ".", dockerfile "Dockerfile", replicas 1.
 			{Name: "worker", Path: ".", Dockerfile: "Dockerfile", Port: 9000, Replicas: 1},
+			// No port: a worker.
+			{Name: "jobs", Path: ".", Dockerfile: "Dockerfile", Replicas: 1, Memory: "512Mi", CPU: "250m"},
 		},
 		Resources: []Resource{{Name: "db", Type: TypePostgres}, {Name: "photos", Type: TypeS3}},
 	}
@@ -180,7 +185,17 @@ func TestValidate(t *testing.T) {
 		{"absolute dockerfile", func(s *Spec) { s.Services[0].Dockerfile = "/Dockerfile" }, []string{"services[0].dockerfile: must be a relative path"}},
 		{"dockerfile with ..", func(s *Spec) { s.Services[0].Dockerfile = "../Dockerfile" }, []string{"services[0].dockerfile: must not contain .."}},
 		{"empty path and dockerfile are the defaults", func(s *Spec) { s.Services[1].Path, s.Services[1].Dockerfile = "", "" }, nil},
-		{"port missing", func(s *Spec) { s.Services[0].Port = 0 }, []string{"services[0].port: is required"}},
+		{"worker without a port", func(s *Spec) { s.Services[1].Port = 0 }, nil},
+		{"public service without a port", func(s *Spec) { s.Services[0].Port, s.Services[0].HealthCheck = 0, "" },
+			[]string{"services[0].public: needs a port: the traffic gateway sends requests to it"}},
+		{"health check without a port", func(s *Spec) { s.Services[1].Port, s.Services[1].HealthCheck = 0, "/healthz" },
+			[]string{"services[1].healthCheck: needs a port: the probes request the path on it"}},
+		{"port missing on a public service with a health check", func(s *Spec) { s.Services[0].Port = 0 },
+			[]string{"services[0].healthCheck: needs a port", "services[0].public: needs a port"}},
+		{"only workers", func(s *Spec) {
+			s.Services[0].Port, s.Services[0].Public, s.Services[0].HealthCheck = 0, false, ""
+			s.Services[1].Port = 0
+		}, nil},
 		{"port negative", func(s *Spec) { s.Services[0].Port = -1 }, []string{"services[0].port: must be between 1 and 65535"}},
 		{"port too large", func(s *Spec) { s.Services[0].Port = 65536 }, []string{"services[0].port: must be between 1 and 65535"}},
 		{"port 1 and 65535", func(s *Spec) { s.Services[0].Port, s.Services[1].Port = 1, 65535 }, nil},
@@ -190,6 +205,33 @@ func TestValidate(t *testing.T) {
 		{"replicas 6", func(s *Spec) { s.Services[0].Replicas = 6 }, []string{"services[0].replicas: must be between 1 and 5"}},
 		{"replicas negative", func(s *Spec) { s.Services[0].Replicas = -1 }, []string{"services[0].replicas: must be between 1 and 5"}},
 		{"replicas 0 is the default", func(s *Spec) { s.Services[0].Replicas = 0 }, nil},
+		{"memory and cpu", func(s *Spec) { s.Services[0].Memory, s.Services[0].CPU = "1Gi", "500m" }, nil},
+		{"memory at the bounds", func(s *Spec) { s.Services[0].Memory, s.Services[1].Memory = "256Mi", "1Gi" }, nil},
+		{"one replica of 1.5Gi fills the total", func(s *Spec) { s.Services = s.Services[:1]; s.Services[0].Memory = "1.5Gi" }, nil},
+		{"cpu as cores", func(s *Spec) { s.Services[0].CPU, s.Services[1].CPU = "0.5", "0.05" }, nil},
+		{"memory below 256Mi", func(s *Spec) { s.Services[0].Memory = "255Mi" }, []string{"services[0].memory: must be between 256Mi and 1536Mi"}},
+		{"memory above 1536Mi", func(s *Spec) { s.Services[0].Memory = "1537Mi" }, []string{"services[0].memory: must be between 256Mi and 1536Mi"}},
+		{"memory 2Gi", func(s *Spec) { s.Services[0].Memory = "2Gi" }, []string{"services[0].memory: must be between 256Mi and 1536Mi"}},
+		{"memory negative", func(s *Spec) { s.Services[0].Memory = "-1Gi" }, []string{"services[0].memory: must be between"}},
+		{"memory in MB", func(s *Spec) { s.Services[0].Memory = "512MB" }, []string{"services[0].memory: must be a Kubernetes quantity such as 512Mi or 1Gi"}},
+		{"memory a word", func(s *Spec) { s.Services[0].Memory = "lots" }, []string{"services[0].memory: must be a Kubernetes quantity"}},
+		{"cpu below 50m", func(s *Spec) { s.Services[1].CPU = "49m" }, []string{"services[1].cpu: must be between 50m and 500m"}},
+		{"cpu 1", func(s *Spec) { s.Services[1].CPU = "1" }, []string{"services[1].cpu: must be between 50m and 500m"}},
+		{"cpu not a quantity", func(s *Spec) { s.Services[1].CPU = "half" }, []string{"services[1].cpu: must be a Kubernetes quantity such as 250m or 0.5"}},
+		// (replicas + 1) x memory: one pod more per Deployment while it rolls out.
+		{"memory total 3Gi", func(s *Spec) { s.Services[0].Memory, s.Services[1].Memory = "1Gi", "512Mi" }, nil},
+		{"memory total over 3Gi", func(s *Spec) { s.Services[0].Memory, s.Services[1].Memory = "1Gi", "513Mi" },
+			[]string{"services: need at most 3Gi of memory during a rolling update: the sum of (replicas + 1) x memory, counting an unset memory as 256Mi, is 3074Mi"}},
+		{"max memory with 2 replicas", func(s *Spec) { s.Services[0].Memory, s.Services[0].Replicas = "1536Mi", 2 },
+			[]string{"services: need at most 3Gi of memory during a rolling update: the sum of (replicas + 1) x memory, counting an unset memory as 256Mi, is 5Gi"}},
+		{"twelve pods of unset memory", func(s *Spec) { s.Services = services(4); s.Services[0].Replicas = 5 }, nil},
+		{"fourteen pods of unset memory", func(s *Spec) { s.Services = services(5); s.Services[0].Replicas = 5 },
+			[]string{"services: need at most 3Gi of memory during a rolling update: the sum of (replicas + 1) x memory, counting an unset memory as 256Mi, is 3584Mi"}},
+		{"cpu total 1500m", func(s *Spec) { s.Services[0].CPU, s.Services[0].Replicas, s.Services[1].CPU = "450m", 2, "50m" }, nil},
+		{"cpu total over 1500m", func(s *Spec) { s.Services[0].CPU, s.Services[0].Replicas, s.Services[1].CPU = "500m", 2, "100m" },
+			[]string{"services: need at most 1500m of CPU during a rolling update: the sum of (replicas + 1) x cpu, counting an unset cpu as 50m, is 1700m"}},
+		{"no total with a wrong memory", func(s *Spec) { s.Services[0].Memory, s.Services[0].Replicas, s.Services[1].Memory = "1536Mi", 5, "9Gi" },
+			[]string{"services[1].memory: must be between"}},
 		{"health check without slash", func(s *Spec) { s.Services[0].HealthCheck = "healthz" }, []string{"services[0].healthCheck: must be an HTTP path"}},
 		{"health check with a space", func(s *Spec) { s.Services[0].HealthCheck = "/health z" }, []string{"services[0].healthCheck: must be an HTTP path"}},
 		{"health check with a query", func(s *Spec) { s.Services[0].HealthCheck = "/healthz?full=1" }, nil},
@@ -202,6 +244,16 @@ func TestValidate(t *testing.T) {
 		{"env key empty", func(s *Spec) { s.Services[0].Env = map[string]string{"": "x"} }, []string{"services[0].env.: must match"}},
 		{"env sets PORT", func(s *Spec) { s.Services[0].Env = map[string]string{"PORT": "80"} }, []string{"services[0].env.PORT: is set by the platform"}},
 		{"env sets DATABASE_URL", func(s *Spec) { s.Services[0].Env = map[string]string{"DATABASE_URL": "postgres://x"} }, []string{"services[0].env.DATABASE_URL: is set by the platform"}},
+		{"env sets the database parts", func(s *Spec) {
+			s.Services[0].Env = map[string]string{"PGHOST": "h", "PGPORT": "1", "PGDATABASE": "d", "PGUSER": "u", "PGPASSWORD": "p", "JDBC_DATABASE_URL": "j"}
+		}, []string{
+			"services[0].env.JDBC_DATABASE_URL: is set by the platform (PORT, DATABASE_URL, PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD, JDBC_DATABASE_URL and S3_* are reserved)",
+			"services[0].env.PGDATABASE: is set by the platform", "services[0].env.PGHOST: is set by the platform", "services[0].env.PGPASSWORD: is set by the platform",
+			"services[0].env.PGPORT: is set by the platform", "services[0].env.PGUSER: is set by the platform",
+		}},
+		{"env maps the database variables", func(s *Spec) {
+			s.Services[0].Env = map[string]string{"PGSSLMODE": "require", "KC_DB_URL_HOST": "$(PGHOST)", "SPRING_DATASOURCE_URL": "$(JDBC_DATABASE_URL)", "AWS_ACCESS_KEY_ID": "$(S3_ACCESS_KEY)"}
+		}, nil},
 		{"env sets S3 variables", func(s *Spec) {
 			s.Services[1].Env = map[string]string{"S3_BUCKET": "b", "S3_ANYTHING": "x", "S3": "ok", "MY_S3_BUCKET": "ok"}
 		}, []string{"services[1].env.S3_ANYTHING: is set by the platform", "services[1].env.S3_BUCKET: is set by the platform"}},
@@ -222,10 +274,11 @@ func TestValidate(t *testing.T) {
 		{"a resource may share a service's name", func(s *Spec) { s.Resources[0].Name = "web" }, nil},
 		{"several at once, in field order", func(s *Spec) {
 			s.Name = ""
-			s.Services[0].Port = 0
+			s.Services[0].Port = 70000
 			s.Services[1].Public = true
+			s.Services[1].Memory = "4Gi"
 			s.Resources[0].Type = "redis"
-		}, []string{"name: is required", "services[0].port: is required", "services[1].public: only one", "resources[0].type: must be"}},
+		}, []string{"name: is required", "services[0].port: must be between", "services[1].public: only one", "services[1].memory: must be between", "resources[0].type: must be"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := valid()
@@ -257,11 +310,11 @@ func TestCheck(t *testing.T) {
 		t.Fatalf("Check(valid) = %v, %v", s, errs)
 	}
 
-	s, errs = Check([]byte("name: shop\nservices:\n  - name: web\n"))
+	s, errs = Check([]byte("name: shop\nservices:\n  - name: web\n    public: true\n"))
 	if s == nil || s.Services[0].Replicas != 1 {
 		t.Fatalf("Check(invalid) spec = %v, want the decoded spec with defaults", s)
 	}
-	if want := []FieldError{{Path: "services[0].port", Message: "is required"}}; !reflect.DeepEqual(errs, want) {
+	if want := []FieldError{{Path: "services[0].public", Message: "needs a port: the traffic gateway sends requests to it"}}; !reflect.DeepEqual(errs, want) {
 		t.Fatalf("Check(invalid) errors = %v, want %v", errs, want)
 	}
 
@@ -279,7 +332,10 @@ func TestReserved(t *testing.T) {
 		EnvPort: true, EnvDatabaseURL: true,
 		EnvS3Endpoint: true, EnvS3Bucket: true, EnvS3Region: true, EnvS3PathStyle: true, EnvS3AccessKey: true, EnvS3SecretKey: true,
 		"S3_FUTURE": true,
-		"PORTS":     false, "DATABASE_URL_RO": false, "S3": false, "MY_S3_BUCKET": false, "port": false,
+		"PGHOST":    true, "PGPORT": true, "PGDATABASE": true, "PGUSER": true, "PGPASSWORD": true, "JDBC_DATABASE_URL": true,
+		"PORTS": false, "DATABASE_URL_RO": false, "S3": false, "MY_S3_BUCKET": false, "port": false,
+		// Only the six names: the app sets the rest of libpq's, and AWS_* is never set.
+		"PGSSLMODE": false, "PGOPTIONS": false, "PG": false, "JDBC_URL": false, "AWS_ACCESS_KEY_ID": false, "AWS_SECRET_ACCESS_KEY": false,
 	} {
 		if Reserved(name) != want {
 			t.Errorf("Reserved(%q) = %v, want %v", name, !want, want)
@@ -329,6 +385,7 @@ func TestJSONMatchesAPI(t *testing.T) {
 		full,
 		"name: x\n",
 		"name: Bad\nservices:\n  - name: web\n    port: 70000\n    replicas: 9\nresources:\n  - name: db\n    type: mysql\n",
+		"name: x\nservices:\n  - name: jobs\n    public: true\n    memory: lots\n    cpu: 2\n",
 	} {
 		s, errs := Check([]byte(in))
 		visit("AppSpec", s)
