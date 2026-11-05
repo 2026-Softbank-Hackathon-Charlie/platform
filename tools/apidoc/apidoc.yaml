@@ -580,6 +580,7 @@ schemaGroups:
   - EnvironmentStatus
   - NodeSummary
   - DatabaseCluster
+  - DatabaseBackup
   - EnvironmentList
   - TrafficState
   - InFlight
@@ -666,6 +667,7 @@ schemas:
   RunEvent: run 이벤트 스트림의 이벤트다. kind별 data는 아래 'SSE 이벤트' 절에 정리했다.
   EnvironmentStatus: 클러스터에서 실시간으로 읽고 몇 초 동안 캐시한다. 읽지 못한 값은 채우지 않는다.
   DatabaseCluster: CloudNativePG Cluster 하나다.
+  DatabaseBackup: WAL 보관자로 켜진 Barman Cloud plugin이 있는 Cluster의 백업이다(ADR 0025). 그런 plugin이 없으면 생략한다. 시각은 plugin의 ObjectStore에서 읽고, 읽지 못하면 생략하고 EnvironmentStatus.error에 이유를 적는다.
   BackendTotals: 게이트웨이 시작 이후 클라이언트가 이 백엔드에서 받은 응답이다. 이 백엔드에서 실패한(5xx 또는 무응답) 읽기를 게이트웨이가 다른 백엔드로 한 번 더 보냈다면 requests와 errors가 아니라 retried에 세고, 재시도는 응답한 백엔드 쪽에 센다. 구간 통계(BackendStats)는 재시도된 응답까지 모두 세므로 canary 게이트는 실패하는 백엔드를 그대로 본다.
   RouteRequest: 게이트웨이 관리 API에서 쓰기 백엔드를 바꾸는 요청이다.
   WeightsRequest: 게이트웨이 관리 API에서 읽기 비율을 바꾸는 요청이다.
@@ -794,6 +796,9 @@ fields:
   EnvironmentStatus.databases: CNPG 클러스터. 없거나 CNPG가 설치되지 않았으면 빈 배열, 읽지 못했으면 생략한다
   NodeSummary.architectures: 노드 CPU 아키텍처 목록
   DatabaseCluster.replica: spec.replica.enabled이거나, topology가 다른 클러스터를 primary로 지정한다
+  DatabaseBackup.objectStore: Cluster 네임스페이스에 있는 plugin의 ObjectStore
+  DatabaseBackup.walArchiving: Cluster의 ContinuousArchiving 조건이 False이면 false다. WAL이 오브젝트 스토어에 올라가지 않는다. 아직 조건을 보고하지 않은 Cluster는 보관 중으로 본다
+  DatabaseBackup.firstRecoverabilityPoint: 복원으로 되돌릴 수 있는 가장 이른 시각
   TrafficState.writeBackend: 읽기가 아닌 모든 요청이 가는 백엔드
   TrafficState.readWeights: 백엔드별 읽기 비율, 합계는 100
   TrafficState.writesHeld: 쓰기를 붙잡고 있는지
