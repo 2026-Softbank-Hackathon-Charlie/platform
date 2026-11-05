@@ -14,11 +14,13 @@ type secretKey struct{ app, instance, name string }
 
 type storageKey struct{ instance, env string }
 
-// secretsMemory holds app secrets and instance storage rows. Its zero value
-// is ready. The store's mutex guards it.
+// secretsMemory holds app secrets, instance storage rows and backup storage
+// rows (by app and environment). Its zero value is ready. The store's mutex
+// guards it.
 type secretsMemory struct {
 	secrets map[secretKey]store.AppSecret
 	storage map[storageKey]store.InstanceStorage
+	backup  map[storageKey]store.InstanceStorage
 }
 
 func copyAppSecret(s store.AppSecret) store.AppSecret {
@@ -156,4 +158,30 @@ func (m *memory) DeleteInstanceStorage(_ context.Context, instance, env string) 
 	}
 	delete(m.secrets.storage, k)
 	return nil
+}
+
+func (m *memory) PutBackupStorage(_ context.Context, s store.InstanceStorage) error {
+	s = s.Clean()
+	s.CreatedAt = pgTime(s.CreatedAt)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.secrets.backup == nil {
+		m.secrets.backup = map[storageKey]store.InstanceStorage{}
+	}
+	k := storageKey{s.App, s.Env}
+	if old, ok := m.secrets.backup[k]; ok {
+		s.CreatedAt = old.CreatedAt
+	}
+	m.secrets.backup[k] = s
+	return nil
+}
+
+func (m *memory) GetBackupStorage(_ context.Context, app, env string) (store.InstanceStorage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.secrets.backup[storageKey{app, env}]
+	if !ok {
+		return store.InstanceStorage{}, fmt.Errorf("%w: backup storage of app %s in %s", store.ErrNotFound, app, env)
+	}
+	return s, nil
 }

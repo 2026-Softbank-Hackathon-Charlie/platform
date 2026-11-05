@@ -172,6 +172,14 @@ func Render(f File) ([]byte, error) {
 			}
 			fmt.Fprintf(&b, "    appChecksum: %s\n", q(f.Sealed.AppChecksum))
 		}
+		if pb := f.Sealed.PGBackup; pb != nil {
+			b.WriteString("    pgBackup:\n")
+			fmt.Fprintf(&b, "      accessKey: %s\n", q(pb.AccessKey))
+			fmt.Fprintf(&b, "      secretKey: %s\n", q(pb.SecretKey))
+			b.WriteString("  backup:\n")
+			fmt.Fprintf(&b, "    bucket: %s\n", q(pb.Bucket))
+			fmt.Fprintf(&b, "    path: %s\n", q(pb.Path))
+		}
 	}
 	return b.Bytes(), nil
 }

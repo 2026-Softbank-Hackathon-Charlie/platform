@@ -24,6 +24,7 @@ func ConformanceSecrets(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"SecretsDeleteRace", testSecretsDeleteRace},
 		{"SecretsCopiesAndText", testSecretsCopiesAndText},
 		{"InstanceStorage", testInstanceStorage},
+		{"BackupStorage", testBackupStorage},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -452,4 +453,48 @@ func testInstanceStorage(t *testing.T, s store.Store) {
 	if len(list) != 0 {
 		t.Fatalf("an unclean app lists %v", storageKeys(list))
 	}
+}
+
+// testBackupStorage checks the backup bucket rows (ADR 0025): by app and
+// environment, apart from the instance storage rows, and kept when the app
+// is deleted.
+func testBackupStorage(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	_, err := s.GetBackupStorage(ctx, "moimroom", "eks")
+	wantErr(t, err, store.ErrNotFound)
+	r := newInstanceStorage("moimroom---pg", "eks", "moimroom", 1)
+	must(t, s.PutBackupStorage(ctx, r))
+	got, err := s.GetBackupStorage(ctx, "moimroom", "eks")
+	must(t, err)
+	want := r
+	want.CreatedAt = pg(want.CreatedAt)
+	eqFields(t, "moimroom backup@eks", got, want)
+	_, err = s.GetBackupStorage(ctx, "moimroom", "gke")
+	wantErr(t, err, store.ErrNotFound)
+	// Not an instance's bucket: the cleanup of deleted instances lists
+	// instance storage only.
+	_, err = s.GetInstanceStorage(ctx, "moimroom---pg", "eks")
+	wantErr(t, err, store.ErrNotFound)
+	list, err := s.ListInstanceStorage(ctx, "moimroom", "")
+	must(t, err)
+	eqList(t, "instance storage with a backup row", storageKeys(list), []string{})
+
+	// Put replaces the row and keeps when it was first made.
+	r2 := newInstanceStorage("moimroom---pg", "eks", "moimroom", 2)
+	r2.KeyID, r2.OldKeyID, r2.CertFingerprint = "AKIANEW", r.KeyID, "SHA256:def"
+	must(t, s.PutBackupStorage(ctx, r2))
+	got, err = s.GetBackupStorage(ctx, "moimroom", "eks")
+	must(t, err)
+	r2.CreatedAt = pg(at(1))
+	eqFields(t, "replaced moimroom backup@eks", got, r2)
+
+	// Deleting the app keeps the row.
+	must(t, s.CreateApp(ctx, newApp("moimroom", 0)))
+	must(t, s.DeleteApp(ctx, "moimroom"))
+	_, err = s.GetBackupStorage(ctx, "moimroom", "eks")
+	must(t, err)
+
+	// Unclean keys find nothing.
+	_, err = s.GetBackupStorage(ctx, "moim\x00room", "eks")
+	wantErr(t, err, store.ErrNotFound)
 }

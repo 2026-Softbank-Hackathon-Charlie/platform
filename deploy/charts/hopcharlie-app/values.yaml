@@ -54,7 +54,15 @@ values:
   #     HOST_CODE: <ciphertext> # service container
   #   appChecksum: <hex>        # with app; a pod annotation, so the pods
   #                             # restart exactly when the secrets change
+  #   pgBackup:                 # SealedSecret app-pgbackup: the key of the
+  #     accessKey: <ciphertext> # backup bucket below (platform ADR 0025)
+  #     secretKey: <ciphertext>
   sealedSecrets: {}
+  # The postgres resource's backup bucket and the path in it, new for every
+  # registration of the app (platform ADR 0025). The platform sets it with
+  # sealedSecrets.pgBackup; profile.postgres.backup.enabled turns backups on.
+  #   backup: {bucket: hopcharlie-eks-moimroom---pg, path: 20261104T082201Z}
+  backup: {}
 
 profile:
   # The Service of the public service, which the traffic gateway reaches.
@@ -103,6 +111,14 @@ profile:
     storageSize: 1Gi
     storageClass: ""     # empty: the cluster's default StorageClass
     resources: {}        # of the Postgres pod
+    # WAL archiving and daily backups with the Barman Cloud plugin into
+    # values.backup, with the key in values.sealedSecrets.pgBackup and the
+    # region in s3.region. Off, or without values.backup, the Cluster has no
+    # backups. Turning it on or off restarts the Postgres pod once.
+    backup:
+      enabled: false
+      schedule: "0 0 18 * * *"   # CNPG's six fields, UTC: 03:00 KST
+      retentionPolicy: 7d
 
   # s3 resources. The chart sets the variables; the platform creates the
   # bucket (platform ADR 0016).

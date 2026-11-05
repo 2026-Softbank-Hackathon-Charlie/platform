@@ -25,6 +25,9 @@ const (
 	S3Secret = "app-s3"
 	// AppSecret holds the app's secrets an instance gets (ADR 0019), by name.
 	AppSecret = "app-secrets"
+	// PGBackupSecret holds the key of the app's backup bucket (ADR 0025):
+	// accessKey and secretKey.
+	PGBackupSecret = "app-pgbackup"
 )
 
 // MinKeyBits is the smallest RSA key ParseCert accepts. The controller

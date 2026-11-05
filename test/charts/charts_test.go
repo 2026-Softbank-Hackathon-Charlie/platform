@@ -497,6 +497,80 @@ func TestStatefulApp(t *testing.T) {
 	}
 }
 
+// TestBackups renders the stateful app with a backup bucket and its key (ADR
+// 0025): with profile.postgres.backup.enabled the Cluster gets the Barman
+// Cloud plugin, an ObjectStore at the registration's path and a daily
+// ScheduledBackup; without it only the key's SealedSecret is drawn.
+func TestBackups(t *testing.T) {
+	stateful := filepath.Join(appChart, "ci", "stateful-values.yaml")
+	backup := writeValues(t, "values:\n  backup: {bucket: hopcharlie-eks-moimroom---pg, path: 20261104T082201Z}\n"+
+		"  sealedSecrets: {pgBackup: {accessKey: AgA3, secretKey: AgA4}}\n")
+	on := writeValues(t, "profile:\n  postgres: {backup: {enabled: true}}\n")
+	docs := mustRender(t, appChart, "moimroom", stateful, backup, on)
+	loose := func(key string, into any) {
+		t.Helper()
+		if err := yaml.Unmarshal(docs[key], into); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+	}
+	for _, k := range []string{"ObjectStore/moimroom-db", "ScheduledBackup/moimroom-db", "SealedSecret/app-pgbackup"} {
+		if _, ok := docs[k]; !ok {
+			t.Fatalf("rendered %v, want %s", keys(docs), k)
+		}
+	}
+	var cluster struct {
+		Spec struct {
+			Plugins []map[string]any `json:"plugins"`
+		} `json:"spec"`
+	}
+	loose("Cluster/moimroom-db", &cluster)
+	if got := jsonStrings(cluster.Spec.Plugins); !slices.Equal(got, []string{`{"enabled":true,"isWALArchiver":true,"name":"barman-cloud.cloudnative-pg.io","parameters":{"barmanObjectName":"moimroom-db","serverName":"moimroom-db"}}`}) {
+		t.Errorf("plugins %v", got)
+	}
+	var store struct {
+		Spec struct {
+			RetentionPolicy string `json:"retentionPolicy"`
+			Configuration   struct {
+				DestinationPath string         `json:"destinationPath"`
+				EndpointURL     string         `json:"endpointURL"`
+				S3Credentials   map[string]any `json:"s3Credentials"`
+			} `json:"configuration"`
+			InstanceSidecarConfiguration struct {
+				Env []corev1.EnvVar `json:"env"`
+			} `json:"instanceSidecarConfiguration"`
+		} `json:"spec"`
+	}
+	loose("ObjectStore/moimroom-db", &store)
+	c := store.Spec.Configuration
+	if c.DestinationPath != "s3://hopcharlie-eks-moimroom---pg/20261104T082201Z/" || c.EndpointURL != "" || store.Spec.RetentionPolicy != "7d" ||
+		!slices.Equal(jsonStrings([]map[string]any{c.S3Credentials}), []string{`{"accessKeyId":{"key":"accessKey","name":"app-pgbackup"},"secretAccessKey":{"key":"secretKey","name":"app-pgbackup"}}`}) {
+		t.Errorf("ObjectStore %+v", store.Spec)
+	}
+	if got := jsonStrings(store.Spec.InstanceSidecarConfiguration.Env); !slices.Equal(got, []string{`{"name":"AWS_REGION","value":"ap-northeast-2"}`, `{"name":"AWS_DEFAULT_REGION","value":"ap-northeast-2"}`}) {
+		t.Errorf("sidecar env %v", got)
+	}
+	var schedule struct {
+		Spec map[string]any `json:"spec"`
+	}
+	loose("ScheduledBackup/moimroom-db", &schedule)
+	if got := jsonStrings([]map[string]any{schedule.Spec}); !slices.Equal(got, []string{`{"backupOwnerReference":"self","cluster":{"name":"moimroom-db"},"immediate":true,"method":"plugin","pluginConfiguration":{"name":"barman-cloud.cloudnative-pg.io"},"schedule":"0 0 18 * * *","suspend":false}`}) {
+		t.Errorf("ScheduledBackup %v", got)
+	}
+
+	// Off: the Cluster is as without backups, and only the key is drawn.
+	docs = mustRender(t, appChart, "moimroom", stateful, backup)
+	want := []string{"Cluster/moimroom-db", "Deployment/moimroom-web", "LimitRange/hopcharlie-app", "Namespace/moimroom", "NetworkPolicy/hopcharlie-app",
+		"ResourceQuota/hopcharlie-app", "SealedSecret/app-pgbackup", "SealedSecret/app-s3", "SealedSecret/app-secrets", "Service/moimroom-web"}
+	if got := keys(docs); !slices.Equal(got, want) {
+		t.Fatalf("rendered %v, want %v", got, want)
+	}
+	cluster.Spec.Plugins = nil
+	loose("Cluster/moimroom-db", &cluster)
+	if len(cluster.Spec.Plugins) != 0 {
+		t.Errorf("plugins without backups %v", cluster.Spec.Plugins)
+	}
+}
+
 func TestRejectsBadValues(t *testing.T) {
 	const img = `"r/a/web@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"`
 	file := func(services, resources string) string {
@@ -531,6 +605,11 @@ func TestRejectsBadValues(t *testing.T) {
 		{"a reserved secret name", file(web(""), "[]") + "  sealedSecrets: {app: {PORT: AgA1}, appChecksum: " + strings.Repeat("a", 64) + "}\n", "PORT"},
 		{"a ciphertext that is not base64", file(web(""), "[]") + "  sealedSecrets: {app: {A: \"not base64!\"}, appChecksum: " + strings.Repeat("a", 64) + "}\n", "does not match pattern"},
 		{"an env name that is also a secret", file(web(", env: {A: x}"), "[]") + "  sealedSecrets: {app: {A: AgA1}, appChecksum: " + strings.Repeat("a", 64) + "}\n", "the secret must win"},
+		{"a backup bucket without its key", file(web(""), "[]") + "  backup: {bucket: b-pg, path: p}\n", "go together"},
+		{"a backup key without its bucket", file(web(""), "[]") + "  sealedSecrets: {pgBackup: {accessKey: AgA1, secretKey: AgA2}}\n", "go together"},
+		{"a backup path of two segments", file(web(""), "[]") + "  backup: {bucket: b-pg, path: a/b}\n  sealedSecrets: {pgBackup: {accessKey: AgA1, secretKey: AgA2}}\n", "does not match pattern"},
+		{"backups without the bucket's region", file(web(""), "[{name: db, type: postgres}]") + "  backup: {bucket: b-pg, path: p}\n  sealedSecrets: {pgBackup: {accessKey: AgA1, secretKey: AgA2}}\n" +
+			"profile: {postgres: {backup: {enabled: true}}}\n", "profile.s3.region is required"},
 		{"a sealed key read from another Secret", file(web(""), "[{name: files, type: s3}]") + "  sealedSecrets: {s3: {accessKey: AgA1, secretKey: AgA2}}\n" +
 			"profile: {s3: {endpoint: http://s3, credentialsSecret: s3-credentials}}\n", "profile.s3 must read exactly those"},
 	} {
@@ -703,7 +782,7 @@ func TestAppProject(t *testing.T) {
 		kinds = append(kinds, k["kind"])
 	}
 	slices.Sort(kinds)
-	if !slices.Equal(kinds, []string{"Cluster", "Deployment", "LimitRange", "NetworkPolicy", "ResourceQuota", "SealedSecret", "Service"}) {
+	if !slices.Equal(kinds, []string{"Cluster", "Deployment", "LimitRange", "NetworkPolicy", "ObjectStore", "ResourceQuota", "ScheduledBackup", "SealedSecret", "Service"}) {
 		t.Errorf("namespaceResourceWhitelist %v", ps.NamespaceResourceWhitelist)
 	}
 }

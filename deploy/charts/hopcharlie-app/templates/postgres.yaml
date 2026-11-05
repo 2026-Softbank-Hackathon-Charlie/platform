@@ -1,12 +1,24 @@
 {{- $pg := include "hopcharlie-app.resource" (dict "root" $ "type" "postgres") | fromJson }}
+{{- $backup := .Values.values.backup | default dict }}
+{{- $backupKey := .Values.values.sealedSecrets.pgBackup }}
+{{- if ne (empty $backup) (empty $backupKey) }}
+{{- fail "values.backup and values.sealedSecrets.pgBackup go together (platform ADR 0025)" }}
+{{- end }}
 {{- with $pg.name }}
 {{- $profile := $.Values.profile.postgres }}
+{{- $cluster := printf "%s-%s" $.Values.values.app . }}
+{{- /* Backups (platform ADR 0025): the platform sent a bucket and its key, and the profile turns them on. */}}
+{{- $backupOn := and $backup ($profile.backup | default dict).enabled }}
+{{- $region := ($.Values.profile.s3 | default dict).region }}
+{{- if and $backupOn (not $region) }}
+{{- fail "profile.s3.region is required for postgres backups: the backup bucket is in that region" }}
+{{- end }}
 # CNPG creates the database app owned by user app and the Secret
 # <name>-app, whose uri is the services' DATABASE_URL.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: {{ printf "%s-%s" $.Values.values.app . }}
+  name: {{ $cluster }}
   labels:
     hopcharlie.dev/app: {{ $.Values.values.app }}
     hopcharlie.dev/resource: {{ . }}
@@ -27,4 +39,84 @@ spec:
   resources:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+  {{- if $backupOn }}
+  # WAL archiving and backups through the Barman Cloud plugin. enabled is
+  # CNPG's default, written out so that Argo CD's diff matches the live list.
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      enabled: true
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: {{ $cluster }}
+        serverName: {{ $cluster }}
+  {{- end }}
+{{- if $backupOn }}
+---
+# Where the plugin puts the base backups and the WAL: the app's backup bucket,
+# under a path that is new for every registration of the app, so a new
+# database never finds an earlier one's WAL there.
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: {{ $cluster }}
+  labels:
+    hopcharlie.dev/app: {{ $.Values.values.app }}
+    hopcharlie.dev/resource: {{ . }}
+    app.kubernetes.io/part-of: {{ $.Values.values.app }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+  annotations:
+    # Before the Cluster: the plugin reads it when it adds its container.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  retentionPolicy: {{ $profile.backup.retentionPolicy | default "7d" | quote }}
+  configuration:
+    destinationPath: {{ printf "s3://%s/%s/" $backup.bucket $backup.path | quote }}
+    s3Credentials:
+      accessKeyId:
+        name: app-pgbackup
+        key: accessKey
+      secretAccessKey:
+        name: app-pgbackup
+        key: secretKey
+    wal:
+      compression: gzip
+    data:
+      compression: gzip
+  instanceSidecarConfiguration:
+    env:
+      - name: AWS_REGION
+        value: {{ $region | quote }}
+      - name: AWS_DEFAULT_REGION
+        value: {{ $region | quote }}
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 512Mi
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ $cluster }}
+  labels:
+    hopcharlie.dev/app: {{ $.Values.values.app }}
+    hopcharlie.dev/resource: {{ . }}
+    app.kubernetes.io/part-of: {{ $.Values.values.app }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+  annotations:
+    # After the Cluster has its plugin.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  cluster:
+    name: {{ $cluster }}
+  schedule: {{ $profile.backup.schedule | default "0 0 18 * * *" | quote }}
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  # One backup as soon as backups are turned on, then on schedule.
+  immediate: true
+  suspend: false
+  backupOwnerReference: self
+{{- end }}
 {{- end }}

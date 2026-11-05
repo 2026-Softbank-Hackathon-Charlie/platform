@@ -70,6 +70,7 @@ func (c controller) open(t *testing.T, namespace, name, sealed string) string {
 // fakeDriver is a storage driver in memory: one user per instance with at
 // most two keys.
 type fakeDriver struct {
+	name    string // "" is aws
 	mu      sync.Mutex
 	keys    map[string][]string // instance -> key ids
 	buckets map[string]bool
@@ -82,7 +83,12 @@ func newFakeDriver() *fakeDriver {
 	return &fakeDriver{keys: map[string][]string{}, buckets: map[string]bool{}}
 }
 
-func (f *fakeDriver) Name() string                  { return "aws" }
+func (f *fakeDriver) Name() string {
+	if f.name == "" {
+		return "aws"
+	}
+	return f.name
+}
 func (f *fakeDriver) Bucket(instance string) string { return "hc-" + instance }
 
 func (f *fakeDriver) Ensure(_ context.Context, in storage.Instance, newKey bool, current, old string) (storage.Result, error) {
@@ -208,9 +214,11 @@ type gitopsFile struct {
 		} `json:"services"`
 		SealedSecrets *struct {
 			S3          *struct{ AccessKey, SecretKey string } `json:"s3"`
+			PGBackup    *struct{ AccessKey, SecretKey string } `json:"pgBackup"`
 			App         map[string]string                      `json:"app"`
 			AppChecksum string                                 `json:"appChecksum"`
 		} `json:"sealedSecrets"`
+		Backup *struct{ Bucket, Path string } `json:"backup"`
 	} `json:"values"`
 }
 
@@ -734,5 +742,134 @@ func TestRenderSealed(t *testing.T) {
 	got, _ = Render(f)
 	if strings.Contains(string(got), "sealedSecrets") || !strings.Contains(string(got), `"from platform.yaml"`) {
 		t.Fatalf("empty sealed values rendered:\n%s", got)
+	}
+	// A backup bucket key alone (ADR 0025): pgBackup, then values.backup.
+	f.Sealed = &Sealed{PGBackup: &SealedBackup{SealedS3: SealedS3{AccessKey: "AgA3", SecretKey: "AgA4"}, Bucket: "hopcharlie-eks-shop---pg", Path: "20261104T082201Z"}}
+	got, _ = Render(f)
+	want = `  sealedSecrets:
+    pgBackup:
+      accessKey: "AgA3"
+      secretKey: "AgA4"
+  backup:
+    bucket: "hopcharlie-eks-shop---pg"
+    path: "20261104T082201Z"
+`
+	if !strings.HasSuffix(string(got), want) {
+		t.Fatalf("backup rendered:\n%s", got)
+	}
+}
+
+const pgSpec = `name: shop
+services:
+  - name: web
+    port: 8080
+    healthCheck: /healthz
+    public: true
+resources:
+  - {name: db, type: postgres}
+`
+
+func TestDeployBackupBucketKey(t *testing.T) {
+	se := newStorageEnv(t)
+	se.drvs["gke"].name = "gcs" // GKE's database is backed up with Workload Identity
+	se.github.push("main", sha("p1"), map[string]string{"platform.yaml": pgSpec, "Dockerfile": "FROM scratch\n"})
+	se.register("shop", "gke", "eks")
+	ex := se.start()
+	ctx := context.Background()
+	app, err := se.store.GetApp(ctx, "shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := se.deploy(sha("p1"), "gke", "eks")
+	if d.Status != store.DeployHealthy {
+		t.Fatalf("deployment %s %q\n%s", d.Status, d.Error, se.dump(d.ID))
+	}
+	eks := se.drvs["eks"]
+	f := se.file("shop", "eks")
+	ss := f.Values.SealedSecrets
+	if ss == nil || ss.PGBackup == nil || ss.S3 != nil || f.Values.Backup == nil {
+		t.Fatalf("eks values %+v", f.Values)
+	}
+	if want := (struct{ Bucket, Path string }{"hc-shop---pg", BackupPath(app.CreatedAt)}); *f.Values.Backup != want {
+		t.Fatalf("eks backup %+v, want %+v", *f.Values.Backup, want)
+	}
+	row, err := se.store.GetBackupStorage(ctx, "shop", "eks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct := se.ctrl["eks"]
+	if got := ct.open(t, "shop", "app-pgbackup", ss.PGBackup.AccessKey); got != row.KeyID {
+		t.Errorf("pgBackup accessKey opens to %q, want %q", got, row.KeyID)
+	}
+	if got := ct.open(t, "shop", "app-pgbackup", ss.PGBackup.SecretKey); got != "secret-"+row.KeyID {
+		t.Errorf("pgBackup secretKey opens to %q", got)
+	}
+	if row.Instance != "shop---pg" || row.App != "shop" || row.Bucket != "hc-shop---pg" || row.Driver != "aws" || row.SealedAccessKey != ss.PGBackup.AccessKey {
+		t.Errorf("backup row %+v", row)
+	}
+	// Not an instance's bucket, so the cleanup of deleted instances never sees it.
+	if _, err := se.store.GetInstanceStorage(ctx, "shop---pg", "eks"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("instance storage of the backup bucket: %v", err)
+	}
+	if g := se.file("shop", "gke").Values; g.Backup != nil || g.SealedSecrets != nil {
+		t.Errorf("gke values %+v", g)
+	}
+	if _, err := se.store.GetBackupStorage(ctx, "shop", "gke"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("gke backup row: %v", err)
+	}
+
+	// Again: the stored key is reused.
+	if d := se.deploy(sha("p1"), "gke", "eks"); d.Status != store.DeployHealthy {
+		t.Fatalf("second deployment %s %q", d.Status, d.Error)
+	}
+	if again := se.file("shop", "eks").Values.SealedSecrets.PGBackup; again.AccessKey != ss.PGBackup.AccessKey {
+		t.Error("the second deployment sealed a new backup key")
+	}
+	if k := eks.keysOf("shop---pg"); len(k) != 1 {
+		t.Fatalf("backup keys %v", k)
+	}
+
+	// A branch instance gets no backup bucket.
+	branch := se.addBranch("shop", "dev")
+	se.github.push("dev", sha("dev1"), map[string]string{"platform.yaml": pgSpec, "Dockerfile": "FROM scratch\n"})
+	dd := se.deploymentTo("shop", "dev", branch, sha("dev1"), "eks")
+	se.enqueue(dd.ID)
+	if got := se.wait(dd.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("dev: %s %q", got.Status, got.Error)
+	}
+	if b := se.file(branch, "eks").Values; b.Backup != nil || b.SealedSecrets != nil {
+		t.Errorf("branch values %+v", b)
+	}
+
+	// Deleting the app leaves the backup bucket, its key and the row.
+	if err := ex.RemoveApp(ctx, "shop"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := ex.CleanupStorage(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(eks.deleted, "shop---pg") || len(eks.keysOf("shop---pg")) != 1 {
+		t.Fatalf("deleted %v, backup keys %v", eks.deleted, eks.keysOf("shop---pg"))
+	}
+	if _, err := se.store.GetBackupStorage(ctx, "shop", "eks"); err != nil {
+		t.Fatalf("backup row after the app was deleted: %v", err)
+	}
+}
+
+func TestBackupPathChangesWithRegistration(t *testing.T) {
+	first := time.Date(2026, 11, 4, 8, 22, 1, 500, time.UTC)
+	if got := BackupPath(first); got != "20261104T082201Z" {
+		t.Fatalf("BackupPath = %q", got)
+	}
+	if BackupPath(first.Add(time.Second)) == BackupPath(first) {
+		t.Fatal("registrations a second apart share a backup path")
+	}
+	if got := BackupPath(first.In(time.FixedZone("KST", 9*3600))); got != "20261104T082201Z" {
+		t.Fatalf("BackupPath depends on the time zone: %q", got)
+	}
+	if got := BackupInstance("moimroom"); got != "moimroom---pg" {
+		t.Fatalf("BackupInstance = %q", got)
 	}
 }

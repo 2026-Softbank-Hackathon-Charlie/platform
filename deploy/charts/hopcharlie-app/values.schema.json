@@ -83,12 +83,30 @@
               },
               "additionalProperties": { "$ref": "#/definitions/ciphertext" }
             },
-            "appChecksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            "appChecksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "pgBackup": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["accessKey", "secretKey"],
+              "properties": {
+                "accessKey": { "$ref": "#/definitions/ciphertext" },
+                "secretKey": { "$ref": "#/definitions/ciphertext" }
+              }
+            }
           },
           "dependencies": {
             "app": ["appChecksum"],
             "appChecksum": ["app"]
           }
+        },
+        "backup": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bucket": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" },
+            "path": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" }
+          },
+          "dependencies": { "bucket": ["path"], "path": ["bucket"] }
         }
       }
     },
@@ -118,7 +136,16 @@
           "properties": {
             "storageSize": { "type": "string" },
             "storageClass": { "type": "string" },
-            "resources": { "type": "object" }
+            "resources": { "type": "object" },
+            "backup": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "schedule": { "type": "string", "minLength": 1 },
+                "retentionPolicy": { "type": "string", "pattern": "^[1-9][0-9]*[dwm]$" }
+              }
+            }
           }
         },
         "s3": {
