@@ -196,3 +196,35 @@ func TestConfigRejects(t *testing.T) {
 		t.Errorf("unknown field: err = %v", err)
 	}
 }
+
+// An environment may keep the app's database in its own namespace; the draft
+// endpoint of that environment uses it and the others keep the app's namespace.
+func TestDraftEnvironmentNamespace(t *testing.T) {
+	c := exampleCatalog(t, "")
+	for i, a := range c.apps {
+		if a.Name == "moimroom" {
+			e := a.Environments["gke"]
+			e.Namespace, e.CnpgCluster = "charlie-apps", "moimroom-gcp-db"
+			c.apps[i].Environments["gke"] = e
+		}
+	}
+	p, err := c.Draft(apiv1.PlanDraftRequest{App: "moimroom", Source: "gke", Target: "eks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Source.Namespace != "charlie-apps" || p.Source.Cluster != "moimroom-gcp-db" {
+		t.Fatalf("source = %s/%s, want charlie-apps/moimroom-gcp-db", p.Source.Namespace, p.Source.Cluster)
+	}
+	if p.Target.Namespace != "moimroom" {
+		t.Fatalf("target namespace = %s, want the app's namespace moimroom", p.Target.Namespace)
+	}
+}
+
+func TestConfigRejectsEnvironmentNamespace(t *testing.T) {
+	cfg := Config{Apps: []App{{Name: "moimroom", Namespace: "moimroom", Database: Database{Name: "app", User: "app"},
+		Environments: map[string]Environment{"gke": {Namespace: "Charlie_Apps", CnpgCluster: "db", DBHost: "db.ts.net", PasswordEnv: "GKE_MOIMROOM_PGPASSWORD"}}}}}
+	_, err := New(cfg, []envs.EnvConfig{{Name: "gke"}}, "")
+	if err == nil || !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("err = %v, want a namespace error", err)
+	}
+}
