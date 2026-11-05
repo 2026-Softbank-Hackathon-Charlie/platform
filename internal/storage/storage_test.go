@@ -2,6 +2,8 @@ package storage
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,8 +27,8 @@ func TestConfigValidate(t *testing.T) {
 		c    func() Config
 		want string
 	}{
-		"no driver":       {func() Config { c := validAWS(); c.Driver = ""; return c }, "must be aws or minio"},
-		"gcs":             {func() Config { c := validAWS(); c.Driver = "gcs"; return c }, "not implemented"},
+		"no driver":       {func() Config { c := validAWS(); c.Driver = ""; return c }, "must be aws, minio or gcs"},
+		"gcs no project":  {func() Config { c := validAWS(); c.Driver = "gcs"; return c }, "project"},
 		"no prefix":       {func() Config { c := validAWS(); c.BucketPrefix = ""; return c }, "bucketPrefix is required"},
 		"long prefix":     {func() Config { c := validAWS(); c.BucketPrefix = "hopcharlie-eks-x"; return c }, "longer than 15"},
 		"upper prefix":    {func() Config { c := validAWS(); c.BucketPrefix = "HopCharlie-"; return c }, "lowercase"},
@@ -63,6 +65,96 @@ func TestConfigValidate(t *testing.T) {
 func TestNewGCS(t *testing.T) {
 	if _, err := New(t.Context(), Config{Driver: "gcs", BucketPrefix: "x-"}, nil); err == nil {
 		t.Fatal("gcs: no error")
+	}
+}
+
+func TestNewGCSWithADC(t *testing.T) {
+	// Public WIF configuration; the token file is consumed only by API calls,
+	// so constructing the driver must not fetch credentials or contact GCP.
+	path := filepath.Join(t.TempDir(), "adc.json")
+	raw, err := json.Marshal(map[string]any{
+		"type":               "external_account",
+		"audience":           "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/test/providers/eks",
+		"subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+		"token_url":          "https://sts.googleapis.com/v1/token",
+		"credential_source":  map[string]string{"file": filepath.Join(t.TempDir(), "projected-token")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+	c := Config{Driver: DriverGCS, BucketPrefix: "hopcharlie-gke-", Region: "asia-northeast3", Project: "example-project"}
+	d, err := New(t.Context(), c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Name() != DriverGCS || d.Bucket("moimroom") != "hopcharlie-gke-moimroom" {
+		t.Fatalf("driver %s, bucket %s", d.Name(), d.Bucket("moimroom"))
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing-adc.json"))
+	if _, err := New(t.Context(), c, nil); err == nil {
+		t.Fatal("missing ADC accepted")
+	}
+}
+
+func TestGCSConfig(t *testing.T) {
+	base := map[string]string{"driver": "gcs", "bucketPrefix": "hopcharlie-gke-", "region": "asia-northeast3", "project": "example-project"}
+	for name, tc := range map[string]struct{ field, value, want string }{
+		"valid":             {},
+		"missing project":   {"project", "", "project"},
+		"numeric project":   {"project", "123456789012", "project"},
+		"short project":     {"project", "short", "project"},
+		"long project":      {"project", strings.Repeat("a", 31), "project"},
+		"unsafe project":    {"project", "example/../other", "project"},
+		"uppercase project": {"project", "Example-project", "project"},
+		"trailing hyphen":   {"project", "example-project-", "project"},
+		"missing region":    {"region", "", "region"},
+		"multi-region":      {"region", "us", "single region"},
+		"dual-region":       {"region", "nam4", "single region"},
+		"aws path":          {"iamPath", "/apps/", "only for the aws driver"},
+		"aws boundary":      {"permissionsBoundary", "arn:aws:iam::123456789012:policy/p", "only for the aws driver"},
+		"minio endpoint":    {"endpoint", "http://minio:9000", "only for the minio driver"},
+		"minio access key":  {"adminAccessKeyEnv", "MINIO_KEY", "only for the minio driver"},
+		"minio secret key":  {"adminSecretKeyEnv", "MINIO_SECRET", "only for the minio driver"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fields := make(map[string]string, len(base))
+			for k, v := range base {
+				fields[k] = v
+			}
+			if tc.field != "" {
+				fields[tc.field] = tc.value
+			}
+			raw, _ := json.Marshal(fields)
+			var c Config
+			if err := json.Unmarshal(raw, &c); err != nil {
+				t.Fatal(err)
+			}
+			err := c.Validate()
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if c.Users() != "the GCP project example-project" {
+					t.Fatalf("users = %q", c.Users())
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	for _, c := range []Config{validAWS(), validMinIO()} {
+		if err := json.Unmarshal([]byte(`{"project":"example-project"}`), &c); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "project is only for the gcs driver") {
+			t.Errorf("%s with project: %v", c.Driver, err)
+		}
 	}
 }
 

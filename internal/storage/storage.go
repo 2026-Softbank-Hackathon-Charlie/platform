@@ -2,8 +2,9 @@
 // only that bucket (ADR 0016). An environment's driver decides how: aws
 // makes an S3 bucket and an IAM user with an inline policy and an access
 // key; minio makes a MinIO bucket and a user with a canned policy and a
-// service account as the key. The platform seals the key for the cluster
-// and keeps only the sealed key and the key id.
+// service account as the key; gcs makes a private GCS bucket and a service
+// account with a bucket-scoped HMAC key. The platform seals the key for the
+// cluster and keeps only the sealed key and the key id.
 //
 // The minio driver links the MinIO admin client (madmin-go, AGPL-3.0), so it
 // is only in binaries built with -tags minio (the kind E2E and on-prem
@@ -29,8 +30,7 @@ import (
 const (
 	DriverAWS   = "aws"
 	DriverMinIO = "minio"
-	// DriverGCS is planned (ADR 0016) and not implemented.
-	DriverGCS = "gcs"
+	DriverGCS   = "gcs"
 )
 
 // MaxBucketPrefix is the longest bucket prefix: with the longest instance
@@ -52,14 +52,17 @@ const (
 // Config is an environment's storage driver, the storage block of
 // PLATFORM_ENVS_FILE.
 type Config struct {
-	// Driver is aws or minio.
+	// Driver is aws, minio or gcs.
 	Driver string `json:"driver"`
 	// BucketPrefix starts every bucket name: the bucket of an instance is
 	// <bucketPrefix><instance>. At most MaxBucketPrefix characters.
 	BucketPrefix string `json:"bucketPrefix"`
-	// Region is the buckets' region; required for aws, optional for minio
-	// (the server's default region).
+	// Region is the buckets' region; required for aws and gcs, optional for
+	// minio (the server's default region).
 	Region string `json:"region,omitempty"`
+	// Project is the GCP project ID whose buckets and service accounts the
+	// gcs driver manages. Project numbers are not accepted.
+	Project string `json:"project,omitempty"`
 
 	// IAMPath is the path of the IAM users (aws), e.g. /hopcharlie-apps/.
 	IAMPath string `json:"iamPath,omitempty"`
@@ -81,16 +84,16 @@ var (
 	iamPathPattern      = regexp.MustCompile(`^/([\x21-\x7e]*/)?$`)
 	envNamePattern      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	regionPattern       = regexp.MustCompile(`^[a-z0-9-]+$`)
+	gcsRegionPattern    = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+$`)
+	gcsProjectPattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 )
 
 // Validate checks c as PLATFORM_ENVS_FILE gives it.
 func (c Config) Validate() error {
 	switch c.Driver {
-	case DriverAWS, DriverMinIO:
-	case DriverGCS:
-		return errors.New("storage driver gcs is not implemented yet (ADR 0016); use aws or minio, or leave storage out")
+	case DriverAWS, DriverMinIO, DriverGCS:
 	default:
-		return fmt.Errorf("storage driver %q must be aws or minio", c.Driver)
+		return fmt.Errorf("storage driver %q must be aws, minio or gcs", c.Driver)
 	}
 	switch p := c.BucketPrefix; {
 	case p == "":
@@ -113,7 +116,26 @@ func (c Config) Validate() error {
 		}
 		return nil
 	}
+	if c.Driver != DriverGCS {
+		if err := only(DriverGCS, map[string]string{"project": c.Project}); err != nil {
+			return err
+		}
+	}
 	switch c.Driver {
+	case DriverGCS:
+		if !gcsProjectPattern.MatchString(c.Project) {
+			return errors.New("storage project must be a GCP project ID (6-30 lowercase letters, digits and hyphens, starting with a letter and ending with a letter or digit)")
+		}
+		if c.Region == "" {
+			return errors.New("storage region is required for the gcs driver")
+		}
+		if !gcsRegionPattern.MatchString(c.Region) {
+			return fmt.Errorf("storage region %q must name a GCS single region (e.g. asia-northeast3)", c.Region)
+		}
+		if err := only(DriverAWS, map[string]string{"iamPath": c.IAMPath, "permissionsBoundary": c.PermissionsBoundary}); err != nil {
+			return err
+		}
+		return only(DriverMinIO, map[string]string{"endpoint": c.Endpoint, "adminAccessKeyEnv": c.AdminAccessKeyEnv, "adminSecretKeyEnv": c.AdminSecretKeyEnv})
 	case DriverAWS:
 		switch {
 		case c.Region == "":
@@ -147,13 +169,15 @@ func (c Config) Validate() error {
 // without the minio driver.
 var errMinIONotBuilt = errors.New("storage driver minio is not in this build: build the platform API with -tags minio (the MinIO admin client is AGPL-3.0, so the default build and the published image leave it out)")
 
-// minioEndpoint returns the host:port of Endpoint and whether it is https.
 // Users names where the driver makes its users: the AWS account of the
-// server's credentials for every aws environment, the MinIO server for
-// minio. A user's name depends only on the instance, so two environments
-// with the same Users would share their instances' users. Call it on a
-// valid Config.
+// server's credentials for every aws environment, the GCP project for gcs,
+// the MinIO server for minio. A user's name depends only on the instance,
+// so two environments with the same Users would share their instances'
+// users. Call it on a valid Config.
 func (c Config) Users() string {
+	if c.Driver == DriverGCS {
+		return "the GCP project " + c.Project
+	}
 	if c.Driver == DriverMinIO {
 		host, _, _ := c.minioEndpoint()
 		return "the MinIO server " + strings.ToLower(host)
@@ -161,6 +185,7 @@ func (c Config) Users() string {
 	return "the AWS account"
 }
 
+// minioEndpoint returns the host:port of Endpoint and whether it is https.
 func (c Config) minioEndpoint() (host string, secure bool, err error) {
 	u, err := url.Parse(c.Endpoint)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.User != nil {
@@ -193,7 +218,7 @@ type Result struct {
 // Implementations are safe for concurrent use with different instances;
 // calls for one instance must not run concurrently.
 type Driver interface {
-	// Name is the driver: aws or minio.
+	// Name is the driver: aws, minio or gcs.
 	Name() string
 	// Bucket is the name of the instance's bucket.
 	Bucket(instance string) string
@@ -225,7 +250,7 @@ var ErrInUse = errors.New("storage: belongs to another app")
 
 // ErrKeyLimit means a new key is needed while the user has two keys that
 // may be in use, the current one and an old one. AWS allows two access
-// keys per user, and both drivers keep to that.
+// keys per user, and all drivers keep to that.
 var ErrKeyLimit = errors.New("storage: the user already has two keys that may be in use")
 
 // keysToDelete returns the ids among ids to delete before a new key is
@@ -265,6 +290,8 @@ func New(ctx context.Context, c Config, getenv func(string) string) (Driver, err
 	switch c.Driver {
 	case DriverAWS:
 		return newAWS(ctx, c)
+	case DriverGCS:
+		return newGCS(ctx, c)
 	default:
 		return newMinIO(c, getenv)
 	}
