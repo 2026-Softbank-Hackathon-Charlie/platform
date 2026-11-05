@@ -19,6 +19,7 @@ import (
 	specdoc "github.com/2026-Softbank-Hackathon-Charlie/platform/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
@@ -62,6 +63,12 @@ type GitHub interface {
 	ReadFile(ctx context.Context, repo, ref, path string) ([]byte, error)
 	// ListRepos returns the repositories the installation can see.
 	ListRepos(ctx context.Context) ([]github.Repo, error)
+	// RepoTopics returns the topics of repo (owner/name).
+	RepoTopics(ctx context.Context, repo string) ([]string, error)
+	// PushToken creates a token that may only write the contents of repo,
+	// for an hour (ADR 0023). A repo outside the App's organization is
+	// github.ErrNotInOrg.
+	PushToken(ctx context.Context, repo string) (github.PushToken, error)
 }
 
 // Config configures the API.
@@ -86,6 +93,9 @@ type Config struct {
 	// AppDomain is where public services of registered apps answer, as
 	// https://<app>.<AppDomain>. Default DefaultAppDomain.
 	AppDomain string
+	// GitOpsRepo is the gitops repository (owner/name, PLATFORM_GITOPS_REPO),
+	// which never gets a push token. Default deploy.DefaultGitOpsRepo.
+	GitOpsRepo string
 }
 
 // DefaultAppDomain is Config.AppDomain's default.
@@ -169,6 +179,9 @@ func New(cfg Config, d Deps) *Server {
 	if cfg.AppDomain == "" {
 		cfg.AppDomain = DefaultAppDomain
 	}
+	if cfg.GitOpsRepo == "" {
+		cfg.GitOpsRepo = deploy.DefaultGitOpsRepo
+	}
 	if cfg.Admins == nil {
 		cfg.Admins = &auth.Admins{}
 	}
@@ -240,6 +253,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/apps/{name}", viewer, s.getApp)
 	s.route("POST /v1/apps/validate", viewer, s.validateAppSpec)
 	s.route("GET /v1/github/repos", viewer, s.listGitHubRepos)
+	s.route("POST /v1/github/push-tokens", agent, s.createPushToken)
 	// GitHub signs the webhook instead of sending a token; the handler
 	// checks the signature and writes its own audit entries.
 	s.route("POST /v1/webhooks/github", "", s.githubWebhook)

@@ -113,6 +113,14 @@ func TestDeployOperations(t *testing.T) {
 			method: "GET", path: "/v1/github/repos",
 			resp: `{"repos":[{"fullName":"o/moimroom","private":true,"defaultBranch":"main","htmlUrl":"https://github.com/o/moimroom"}]}`,
 			got:  func(v any) string { return v.(*apiv1.GitHubRepoList).Repos[0].DefaultBranch }, want: "main"},
+		{name: "CreatePushToken", call: func(c *Client) (any, error) { return c.CreatePushToken(ctx, "o/app") },
+			method: "POST", path: "/v1/github/push-tokens", body: `{"repo":"o/app"}`, status: 201,
+			resp: `{"repo":"o/app","token":"ghs_x","expiresAt":"2026-11-05T13:00:00Z"}`,
+			got: func(v any) string {
+				p := v.(*apiv1.PushToken)
+				return p.Repo + " " + p.Token + " " + p.ExpiresAt.UTC().Format(time.RFC3339)
+			},
+			want: "o/app ghs_x 2026-11-05T13:00:00Z"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

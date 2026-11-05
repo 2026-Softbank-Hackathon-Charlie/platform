@@ -1705,6 +1705,55 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/github/push-tokens:
+    post:
+      tags: [github]
+      operationId: createPushToken
+      description: |
+        A GitHub token that may push to one imported repository, for the AI
+        agent that adds a Dockerfile and platform.yaml to an open-source copy
+        (ADR 0023). The platform creates a GitHub App installation token
+        limited to that one repository (`repositories: [name]`) and to
+        `contents: write`; GitHub expires it after an hour. Every call creates
+        a new token; the platform keeps none of them.
+
+        Only repositories `scripts/import-repo.sh` imported get a token: the
+        repository must be in the platform's GitHub organization and have the
+        topic `hopcharlie-imported`. The gitops repository never gets one.
+        Push the `hopcharlie` branch with it, as the password of user
+        `x-access-token` for `https://github.com/<repo>.git`, and register
+        that branch with `POST /v1/apps`. GitHub does not enforce the branch:
+        the token can write any branch of that one repository.
+
+        The answer has `Cache-Control: no-store`. The audit log records the
+        repository and `expiresAt`, never the token.
+
+        Error codes: invalid_request (400: repo is not owner/name),
+        repo_not_imported (403: the repository has no `hopcharlie-imported`
+        topic, is not in the organization, or is the gitops repository),
+        repo_not_found (404: the repository does not exist or the GitHub App
+        installation cannot see it), github_unreachable (502),
+        github_not_configured (503). Roles: agent, operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PushTokenRequest" }
+      responses:
+        "201":
+          description: The token, valid until `expiresAt`.
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushToken" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/webhooks/github:
     post:
       tags: [github]
@@ -1829,12 +1878,12 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: "forbidden: the token's role may not do this; console_session_required: only a console session may do this"
+      description: "forbidden: the token's role may not do this; console_session_required: only a console session may do this; repo_not_imported: the repository gets no push token"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
-      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found, bucket_not_registered, prefix_not_listed"
+      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found, bucket_not_registered, prefix_not_listed, repo_not_found"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -3533,3 +3582,28 @@ components:
         repos:
           type: array
           items: { $ref: "#/components/schemas/GitHubRepo" }
+
+    PushTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [repo]
+      properties:
+        repo:
+          type: string
+          pattern: '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$'
+          example: 2026-Softbank-Hackathon-Charlie/gitea
+          description: owner/name of a repository scripts/import-repo.sh imported.
+
+    PushToken:
+      description: A GitHub App installation token that may only write the contents of `repo`.
+      type: object
+      required: [repo, token, expiresAt]
+      properties:
+        repo: { type: string, example: 2026-Softbank-Hackathon-Charlie/gitea }
+        token:
+          type: string
+          description: The token, for git over HTTPS as the password of user `x-access-token`. Keep it out of logs.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When GitHub stops accepting the token, an hour after it was created.

@@ -19,6 +19,7 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
@@ -690,6 +691,58 @@ func (s *Server) listGitHubRepos(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(out.Repos, func(a, b apiv1.GitHubRepo) int { return strings.Compare(a.FullName, b.FullName) })
 	writeJSON(w, http.StatusOK, out)
+}
+
+// POST /v1/github/push-tokens: a token that may push to one repository
+// scripts/import-repo.sh imported, for an hour (ADR 0023). The token is only
+// in the answer: the audit entry records the repository and the expiry.
+func (s *Server) createPushToken(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store") // the answer holds a token
+	var req apiv1.PushTokenRequest
+	if !s.decode(w, r, &req, true) {
+		return
+	}
+	if !repoPattern.MatchString(req.Repo) {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "repo must be owner/name")
+		return
+	}
+	noteAudit(r, "repo", req.Repo)
+	if s.d.GitHub == nil {
+		s.githubNotConfigured(w, r)
+		return
+	}
+	if strings.EqualFold(req.Repo, s.cfg.GitOpsRepo) {
+		s.fail(w, r, http.StatusForbidden, "repo_not_imported", fmt.Sprintf("%s is the gitops repository; only the platform's deployments write it, so it never gets a push token", req.Repo))
+		return
+	}
+	notImported := func(why string) {
+		s.fail(w, r, http.StatusForbidden, "repo_not_imported", fmt.Sprintf("%s %s; push tokens are only for copies imported with scripts/import-repo.sh", req.Repo, why))
+	}
+	ctx := r.Context()
+	topics, err := s.d.GitHub.RepoTopics(ctx, req.Repo)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		s.fail(w, r, http.StatusNotFound, "repo_not_found", fmt.Sprintf("repository %s does not exist, or the GitHub App installation cannot see it", req.Repo))
+		return
+	case err != nil:
+		s.githubUnreachable(w, r, err)
+		return
+	}
+	if !slices.Contains(topics, github.ImportedTopic) {
+		notImported("has no topic " + github.ImportedTopic)
+		return
+	}
+	tok, err := s.d.GitHub.PushToken(ctx, req.Repo)
+	switch {
+	case errors.Is(err, github.ErrNotInOrg):
+		notImported("is not in the platform's GitHub organization")
+		return
+	case err != nil:
+		s.githubUnreachable(w, r, err)
+		return
+	}
+	noteAudit(r, "expiresAt", tok.ExpiresAt)
+	writeJSON(w, http.StatusCreated, apiv1.PushToken{Repo: req.Repo, Token: tok.Token, ExpiresAt: tok.ExpiresAt})
 }
 
 func (s *Server) githubNotConfigured(w http.ResponseWriter, r *http.Request) {

@@ -1,8 +1,9 @@
 // Package github is the platform's GitHub App client. It signs a JWT with the
 // App's private key, exchanges it for an installation access token (cached
 // until about five minutes before it expires) and reads the app repositories
-// the installation can see: refs, files and the repository list. The token
-// also authenticates git clone and the gitops commits.
+// the installation can see: refs, files, topics and the repository list. The
+// token also authenticates git clone and the gitops commits. PushToken mints
+// a separate, uncached token limited to one imported repository (ADR 0023).
 package github
 
 import (
@@ -37,11 +38,20 @@ import (
 // errors.Is(err, fs.ErrNotExist) without importing this package.
 var ErrNotFound = fmt.Errorf("github: not found: %w", fs.ErrNotExist)
 
+// ErrNotInOrg means PushToken was asked for a repository outside the
+// client's organization.
+var ErrNotInOrg = errors.New("github: the repository is not in the App's organization")
+
 // Defaults.
 const (
 	DefaultAPIURL = "https://api.github.com"
 	DefaultOrg    = "2026-Softbank-Hackathon-Charlie"
 )
+
+// ImportedTopic marks a repository scripts/import-repo.sh copied into the
+// organization. The platform issues push tokens only for repositories that
+// have it (ADR 0023).
+const ImportedTopic = "hopcharlie-imported"
 
 // refreshBefore is how long before expiry a cached installation token is
 // replaced. GitHub issues tokens for an hour.
@@ -73,6 +83,13 @@ type Repo struct {
 	Private       bool
 	DefaultBranch string
 	HTMLURL       string
+}
+
+// PushToken is an installation token that may only write the contents of
+// one repository, until ExpiresAt.
+type PushToken struct {
+	Token     string
+	ExpiresAt time.Time
 }
 
 // Client is a GitHub App client. It is safe for concurrent use.
@@ -212,30 +229,80 @@ func (c *Client) Token(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if c.installation == 0 {
-		var inst struct {
-			ID int64 `json:"id"`
-		}
-		if err := c.call(ctx, http.MethodGet, "/orgs/"+url.PathEscape(c.org)+"/installation", jwt, &inst); err != nil {
-			return "", fmt.Errorf("github: find the App's installation on %s: %v", c.org, err)
-		}
-		if inst.ID <= 0 {
-			return "", fmt.Errorf("github: no installation of the App on %s", c.org)
-		}
-		c.installation = inst.ID
+	inst, err := c.installationID(ctx, jwt)
+	if err != nil {
+		return "", err
 	}
+	tok, err := c.accessToken(ctx, jwt, inst, nil)
+	if err != nil {
+		return "", err
+	}
+	c.token, c.expires = tok.Token, tok.ExpiresAt
+	return c.token, nil
+}
+
+// PushToken creates an installation token that may only write the contents
+// of repo (owner/name), for a program that pushes a branch to it (ADR 0023).
+// GitHub limits it to that repository and permission and expires it after
+// an hour. It is not cached, and the token Token returns is neither used nor
+// replaced. A repository outside the client's organization is ErrNotInOrg.
+// Its errors are never ErrNotFound: check first that the installation sees
+// repo (RepoTopics).
+func (c *Client) PushToken(ctx context.Context, repo string) (PushToken, error) {
+	if _, err := repoPath(repo); err != nil {
+		return PushToken{}, err
+	}
+	owner, name, _ := strings.Cut(repo, "/")
+	if !strings.EqualFold(owner, c.org) {
+		return PushToken{}, fmt.Errorf("%w: %s is not in %s", ErrNotInOrg, repo, c.org)
+	}
+	jwt, err := c.jwt()
+	if err != nil {
+		return PushToken{}, err
+	}
+	c.mu.Lock()
+	inst, err := c.installationID(ctx, jwt)
+	c.mu.Unlock()
+	if err != nil {
+		return PushToken{}, err
+	}
+	scope := map[string]any{"repositories": []string{name}, "permissions": map[string]string{"contents": "write"}}
+	return c.accessToken(ctx, jwt, inst, scope)
+}
+
+// installationID returns the App's installation, found from the org on
+// first use. The caller holds c.mu.
+func (c *Client) installationID(ctx context.Context, jwt string) (int64, error) {
+	if c.installation != 0 {
+		return c.installation, nil
+	}
+	var inst struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/orgs/"+url.PathEscape(c.org)+"/installation", jwt, nil, &inst); err != nil {
+		return 0, fmt.Errorf("github: find the App's installation on %s: %v", c.org, err)
+	}
+	if inst.ID <= 0 {
+		return 0, fmt.Errorf("github: no installation of the App on %s", c.org)
+	}
+	c.installation = inst.ID
+	return inst.ID, nil
+}
+
+// accessToken creates an installation access token; scope, when not nil,
+// narrows its repositories and permissions.
+func (c *Client) accessToken(ctx context.Context, jwt string, inst int64, scope any) (PushToken, error) {
 	var tok struct {
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	if err := c.call(ctx, http.MethodPost, "/app/installations/"+strconv.FormatInt(c.installation, 10)+"/access_tokens", jwt, &tok); err != nil {
-		return "", fmt.Errorf("github: create an installation token: %v", err)
+	if err := c.call(ctx, http.MethodPost, "/app/installations/"+strconv.FormatInt(inst, 10)+"/access_tokens", jwt, scope, &tok); err != nil {
+		return PushToken{}, fmt.Errorf("github: create an installation token: %v", err)
 	}
 	if tok.Token == "" || tok.ExpiresAt.IsZero() {
-		return "", errors.New("github: the installation token answer has no token or expiry")
+		return PushToken{}, errors.New("github: the installation token answer has no token or expiry")
 	}
-	c.token, c.expires = tok.Token, tok.ExpiresAt
-	return c.token, nil
+	return PushToken{Token: tok.Token, ExpiresAt: tok.ExpiresAt}, nil
 }
 
 // --- reads ---
@@ -364,6 +431,30 @@ func (c *Client) ListRepos(ctx context.Context) ([]Repo, error) {
 	return out, nil
 }
 
+// RepoTopics returns the topics of repo (owner/name). A repository that does
+// not exist or the installation cannot see is ErrNotFound.
+func (c *Client) RepoTopics(ctx context.Context, repo string) ([]string, error) {
+	p, err := repoPath(repo)
+	if err != nil {
+		return nil, err
+	}
+	req, err := c.request(ctx, http.MethodGet, p, "application/vnd.github+json")
+	if err != nil {
+		return nil, err
+	}
+	body, err := c.send(req, 1<<20)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", repo, err)
+	}
+	var r struct {
+		Topics []string `json:"topics"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("github: read %s: decode: %w", repo, err)
+	}
+	return r.Topics, nil
+}
+
 // --- HTTP ---
 
 // APIError is a GitHub answer that is not a success. A 404 is ErrNotFound.
@@ -398,13 +489,25 @@ func (c *Client) request(ctx context.Context, method, path, accept string) (*htt
 	return req, nil
 }
 
-// call sends an App-authenticated (JWT) request and decodes the JSON answer.
-func (c *Client) call(ctx context.Context, method, path, jwt string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
+// call sends an App-authenticated (JWT) request, with in as its JSON body
+// unless in is nil, and decodes the JSON answer.
+func (c *Client) call(ctx context.Context, method, path, jwt string, in, out any) error {
+	var reqBody io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return fmt.Errorf("github: encode %s %s: %w", method, path, err)
+		}
+		reqBody = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
 	if err != nil {
 		return fmt.Errorf("github: %w", err)
 	}
 	setHeaders(req, jwt, "application/vnd.github+json")
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	body, err := c.send(req, 1<<20)
 	if err != nil {
 		return err

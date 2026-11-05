@@ -383,6 +383,7 @@ func main() {
 
 			GitHubWebhookSecret: webhookSecret,
 			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
+			GitOpsRepo:          os.Getenv("PLATFORM_GITOPS_REPO"),
 		}, deps),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

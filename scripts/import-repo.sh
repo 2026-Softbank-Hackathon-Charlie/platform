@@ -9,12 +9,17 @@
 #
 # Steps:
 #   1. bare-clone the upstream default branch (fails early on a bad URL)
-#   2. create <org>/<name>, private
+#   2. create <org>/<name>, private, with the topic hopcharlie-imported
 #   3. turn GitHub Actions off in it, so upstream workflows never run on our
 #      runners or minutes
 #   4. push the clone
 #   5. add the repository to the GitHub App installation, unless the
 #      installation already sees all repositories
+#
+# The platform issues push tokens (POST /v1/github/push-tokens, an hour,
+# contents write on this repository only) only for repositories with the
+# topic hopcharlie-imported, so the AI agent can push its hopcharlie branch
+# here and nowhere else (ADR 0023).
 #
 # It stops if <org>/<name> already exists, so it never touches a team repo.
 #
@@ -67,6 +72,9 @@ branch=$(git -C "$work/src.git" symbolic-ref --short HEAD)
 
 echo "==> creating $repo (private)"
 gh repo create "$repo" --private --description "Imported from $upstream" >/dev/null
+
+echo "==> marking $repo with the topic hopcharlie-imported"
+gh repo edit "$repo" --add-topic hopcharlie-imported >/dev/null
 
 echo "==> turning GitHub Actions off in $repo"
 gh api -X PUT "repos/$repo/actions/permissions" -F enabled=false >/dev/null

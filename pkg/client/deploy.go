@@ -114,6 +114,14 @@ func (c *Client) ListGitHubRepos(ctx context.Context) (*apiv1.GitHubRepoList, er
 	return call[apiv1.GitHubRepoList](ctx, c, request{method: http.MethodGet, path: "/v1/github/repos"})
 }
 
+// CreatePushToken returns a GitHub token that may push to repo (owner/name),
+// one scripts/import-repo.sh imported, for an hour (ADR 0023). Keep the
+// token out of logs. It needs the agent or operator role; a repository that
+// was not imported is ErrorCode repo_not_imported.
+func (c *Client) CreatePushToken(ctx context.Context, repo string) (*apiv1.PushToken, error) {
+	return call[apiv1.PushToken](ctx, c, request{method: http.MethodPost, path: "/v1/github/push-tokens", body: apiv1.PushTokenRequest{Repo: repo}})
+}
+
 // SendGitHubWebhook delivers a GitHub webhook the way GitHub does: no bearer
 // token, payload signed with secret in X-Hub-Signature-256. It is for tests
 // and tools that replay a push. The result lists the deployments the server
