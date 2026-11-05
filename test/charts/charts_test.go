@@ -558,9 +558,9 @@ func TestBackups(t *testing.T) {
 	}
 
 	// Off: the Cluster is as without backups, and only the key is drawn.
+	want := append(keys(mustRender(t, appChart, "moimroom", stateful)), "SealedSecret/app-pgbackup")
+	slices.Sort(want)
 	docs = mustRender(t, appChart, "moimroom", stateful, backup)
-	want := []string{"Cluster/moimroom-db", "Deployment/moimroom-web", "LimitRange/hopcharlie-app", "Namespace/moimroom", "NetworkPolicy/hopcharlie-app",
-		"ResourceQuota/hopcharlie-app", "SealedSecret/app-pgbackup", "SealedSecret/app-s3", "SealedSecret/app-secrets", "Service/moimroom-web"}
 	if got := keys(docs); !slices.Equal(got, want) {
 		t.Fatalf("rendered %v, want %v", got, want)
 	}
