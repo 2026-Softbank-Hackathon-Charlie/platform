@@ -7,6 +7,27 @@ import (
 	"time"
 )
 
+// Defines values for AIRunStatus.
+const (
+	AIRunStatusFailed    AIRunStatus = "failed"
+	AIRunStatusRunning   AIRunStatus = "running"
+	AIRunStatusSucceeded AIRunStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the AIRunStatus enum.
+func (e AIRunStatus) Valid() bool {
+	switch e {
+	case AIRunStatusFailed:
+		return true
+	case AIRunStatusRunning:
+		return true
+	case AIRunStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AgentEventType.
 const (
 	AgentEventTypeBlocked    AgentEventType = "blocked"
@@ -686,6 +707,46 @@ func (e StreamAgentEventsParamsFormat) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// AIRun defines model for AIRun.
+type AIRun struct {
+	App        string     `json:"app"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+
+	// Name the Job's name
+	//
+	// Example: hopai-moimroom-x7k2p
+	Name        string      `json:"name"`
+	RequestedBy string      `json:"requestedBy"`
+	Source      string      `json:"source"`
+	Status      AIRunStatus `json:"status"`
+	Target      string      `json:"target"`
+}
+
+// AIRunStatus defines model for AIRun.Status.
+type AIRunStatus string
+
+// AIRunList defines model for AIRunList.
+type AIRunList struct {
+	Runs []AIRun `json:"runs"`
+}
+
+// AIRunRequest defines model for AIRunRequest.
+type AIRunRequest struct {
+	// App Example: moimroom
+	App string `json:"app"`
+
+	// Source environment the app moves from
+	//
+	// Example: gke
+	Source string `json:"source"`
+
+	// Target environment the app moves to
+	//
+	// Example: eks
+	Target string `json:"target"`
 }
 
 // AbortRequest defines model for AbortRequest.
@@ -2780,6 +2841,12 @@ type StreamAgentEventsParams struct {
 // StreamAgentEventsParamsFormat defines parameters for StreamAgentEvents.
 type StreamAgentEventsParamsFormat string
 
+// ListAIRunsParams defines parameters for ListAIRuns.
+type ListAIRunsParams struct {
+	// App only this app's runs
+	App *string `form:"app,omitempty" json:"app,omitempty"`
+}
+
 // ListDeploymentsParams defines parameters for ListDeployments.
 type ListDeploymentsParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
@@ -2864,6 +2931,9 @@ type AppendAgentEventJSONRequestBody = AgentEventRequest
 
 // FinishAgentSessionJSONRequestBody defines body for FinishAgentSession for application/json ContentType.
 type FinishAgentSessionJSONRequestBody = FinishAgentSessionRequest
+
+// StartAIRunJSONRequestBody defines body for StartAIRun for application/json ContentType.
+type StartAIRunJSONRequestBody = AIRunRequest
 
 // CreateAppJSONRequestBody defines body for CreateApp for application/json ContentType.
 type CreateAppJSONRequestBody = AppCreateRequest

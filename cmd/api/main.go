@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
@@ -320,6 +321,17 @@ func main() {
 	}
 	agents := agentlog.New(st)
 	deps.Agents = agents
+	// The AI runner as a Job (ai-sandbox hopai), started from the console.
+	// Without PLATFORM_AIRUN_JOB_TEMPLATE it is off and /v1/ai-runs answers 503.
+	aiRuns, err := airun.FromEnv(os.Getenv)
+	if err != nil {
+		fatal("ai runner", "err", err)
+	}
+	if aiRuns != nil {
+		deps.AIRuns = aiRuns
+	} else {
+		log.Info("PLATFORM_AIRUN_JOB_TEMPLATE is not set: the console cannot start the AI runner; run hopai by hand")
+	}
 	deps.Secrets = secretsKey
 	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }
 	go agents.RunSweeper(runCtx, agentIdle, log)

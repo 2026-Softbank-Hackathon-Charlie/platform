@@ -1195,6 +1195,60 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/ai-runs:
+    get:
+      tags: [plans]
+      operationId: listAIRuns
+      description: |
+        The AI runner's runs (ai-sandbox hopai as a Kubernetes Job next to the
+        platform), newest first. A run plans the move, submits the plan,
+        rehearses it in a sandbox and uploads the report; its steps show as
+        agent sessions (`GET /v1/agent/sessions`) and its plan in `GET /v1/plans`.
+        Finished runs disappear once the cluster cleans up their Job.
+
+        Roles: viewer, agent, operator.
+      parameters:
+        - { name: app, in: query, required: false, schema: { type: string }, description: only this app's runs }
+      responses:
+        "200":
+          description: The runs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AIRunList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [plans]
+      operationId: startAIRun
+      description: |
+        Start the AI runner for one app and route, so nobody runs hopai by
+        hand. The app and both environments must be in the server's
+        configuration (`GET /v1/apps`). One run per app at a time: a second
+        one while the first is running answers 409 `ai_run_active`. Without a
+        configured Job template (PLATFORM_AIRUN_JOB_TEMPLATE) the server
+        answers 503 `ai_runner_not_configured`.
+
+        Roles: operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AIRunRequest" }
+      responses:
+        "202":
+          description: The run started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AIRun" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/residency/buckets/inspect:
     post:
       tags: [plans]
@@ -1897,7 +1951,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress, ai_run_active"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1922,7 +1976,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unavailable:
-      description: "gateway_not_configured, github_not_configured, login_not_configured, secrets_not_configured, storage_not_configured, audit_unavailable"
+      description: "gateway_not_configured, github_not_configured, login_not_configured, secrets_not_configured, storage_not_configured, audit_unavailable, ai_runner_not_configured"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2156,6 +2210,36 @@ components:
           description: Files uploaded for this plan (PUT /v1/plans/{ref}/attachments/{name}).
           items: { $ref: "#/components/schemas/PlanAttachment" }
         rehearsal: { $ref: "#/components/schemas/PlanRehearsalGate" }
+
+    AIRunRequest:
+      type: object
+      additionalProperties: false
+      required: [app, source, target]
+      properties:
+        app: { type: string, example: moimroom }
+        source: { type: string, description: environment the app moves from, example: gke }
+        target: { type: string, description: environment the app moves to, example: eks }
+
+    AIRun:
+      type: object
+      required: [name, app, source, target, status, requestedBy, createdAt]
+      properties:
+        name: { type: string, description: the Job's name, example: hopai-moimroom-x7k2p }
+        app: { type: string }
+        source: { type: string }
+        target: { type: string }
+        status: { type: string, enum: [running, succeeded, failed] }
+        requestedBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+
+    AIRunList:
+      type: object
+      required: [runs]
+      properties:
+        runs:
+          type: array
+          items: { $ref: "#/components/schemas/AIRun" }
 
     PlanRehearsalGate:
       type: object
