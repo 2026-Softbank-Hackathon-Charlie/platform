@@ -15,6 +15,15 @@ import (
 
 // RehearsalReportName is the attachment the AI runner (ai-sandbox hopai)
 // uploads after rehearsing a plan in a sandbox.
+//
+// Trust boundary (platform #24): the gate checks that a passing report exists
+// for exactly this plan body and target.yaml, and that the principal that
+// submitted the plan uploaded it. It does not prove the rehearsal really ran:
+// the hashes can be computed from the plan itself, so whoever holds the
+// runner's agent token can write a report by hand. The gate relies on the
+// runner being trusted, like the engine relies on the platform. Two setups
+// skip the gate because no caller is an agent: an Insecure (dev) server,
+// where every caller is an operator, and a runner given an operator token.
 const RehearsalReportName = "rehearsal-report.json"
 
 // RehearsalReportSchema is the report format this server reads
@@ -81,6 +90,11 @@ func (s *Service) rehearsalCheck(ctx context.Context, row store.Plan, attached [
 	}
 	if report == nil {
 		return "no rehearsal report: run the AI runner (hopai run) so it rehearses this plan in a sandbox and uploads " + RehearsalReportName, nil
+	}
+	if row.SubmittedBy != "" && report.CreatedBy != row.SubmittedBy {
+		// Only the runner that submitted the plan reports on it; another
+		// principal (another agent, an operator) cannot supply the evidence.
+		return fmt.Sprintf("the rehearsal report was uploaded by %q, not by %q who submitted the plan", report.CreatedBy, row.SubmittedBy), nil
 	}
 	full, err := s.store.GetPlanAttachment(ctx, row.Ref, RehearsalReportName)
 	if err != nil {

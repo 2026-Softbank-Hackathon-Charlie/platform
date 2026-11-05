@@ -436,9 +436,16 @@ func (h *harness) approved(body string) string {
 // manifest (hex SHA-256, "" when the plan has none) and returns the revision.
 func (h *harness) rehearsed(ref, body, manifestSHA string) int64 {
 	h.t.Helper()
+	return h.rehearsedAs(agentToken, ref, body, manifestSHA)
+}
+
+// rehearsedAs is rehearsed with the token of the principal that submitted the
+// plan: only that principal's report counts.
+func (h *harness) rehearsedAs(token, ref, body, manifestSHA string) int64 {
+	h.t.Helper()
 	sum := sha256.Sum256([]byte(body))
 	rep := fmt.Sprintf(`{"schemaVersion":"hopcharlie.rehearsal/v1","passed":true,"candidate":{"planSha256":%q,"manifestSha256":%q}}`, hex.EncodeToString(sum[:]), manifestSHA)
-	code, b := h.do("PUT", "/v1/plans/"+ref+"/attachments/rehearsal-report.json", agentToken, rep)
+	code, b := h.do("PUT", "/v1/plans/"+ref+"/attachments/rehearsal-report.json", token, rep)
 	if code != 200 && code != 201 {
 		h.t.Fatalf("upload rehearsal report: %d %s", code, b)
 	}

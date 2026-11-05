@@ -2167,7 +2167,7 @@ type PlanRecord struct {
 	// Ref Example: pln_3f9c1a0b2d4e
 	Ref string `json:"ref"`
 
-	// Rehearsal Set on plans waiting for approval. When required, approving needs the rehearsal-report.json attachment to have passed (schemaVersion hopcharlie.rehearsal/v1) for exactly the plan body and target.yaml attached now; otherwise approve answers 409 rehearsal_required.
+	// Rehearsal Set on plans waiting for approval. When required, approving needs the rehearsal-report.json attachment to have passed (schemaVersion hopcharlie.rehearsal/v1) for exactly the plan body and target.yaml attached now, uploaded by the principal that submitted the plan; otherwise approve answers 409 rehearsal_required. The report is the trusted runner's word: the gate binds it to the content, it does not prove the rehearsal ran.
 	Rehearsal     *PlanRehearsalGate `json:"rehearsal,omitempty"`
 	ReviewComment *string            `json:"reviewComment,omitempty"`
 	ReviewedAt    *time.Time         `json:"reviewedAt,omitempty"`
@@ -2190,7 +2190,7 @@ type PlanRecord struct {
 	Summary       PlanSummary `json:"summary"`
 }
 
-// PlanRehearsalGate Set on plans waiting for approval. When required, approving needs the rehearsal-report.json attachment to have passed (schemaVersion hopcharlie.rehearsal/v1) for exactly the plan body and target.yaml attached now; otherwise approve answers 409 rehearsal_required.
+// PlanRehearsalGate Set on plans waiting for approval. When required, approving needs the rehearsal-report.json attachment to have passed (schemaVersion hopcharlie.rehearsal/v1) for exactly the plan body and target.yaml attached now, uploaded by the principal that submitted the plan; otherwise approve answers 409 rehearsal_required. The report is the trusted runner's word: the gate binds it to the content, it does not prove the rehearsal ran.
 type PlanRehearsalGate struct {
 	// Passed a passing rehearsal report matches the plan as it is now
 	Passed bool `json:"passed"`

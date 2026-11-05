@@ -162,3 +162,28 @@ func TestRehearsalGateOnlyWhilePending(t *testing.T) {
 		t.Fatalf("list = %+v, %v", list, err)
 	}
 }
+
+// Only the principal that submitted an AI plan can supply its rehearsal report.
+func TestRehearsalReportFromAnotherPrincipal(t *testing.T) {
+	s := New(DefaultPolicy(), storetest.NewMemory())
+	raw := planJSON("")
+	rec, err := s.SubmitAs(ctx, raw, "hopai", apiv1.RoleAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutAttachment(ctx, rec.Ref, RehearsalReportName, report(true, hexSum(raw), ""), "someone-else"); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := s.Get(ctx, rec.Ref)
+	if _, err := s.Approve(ctx, rec.Ref, "op", "", &cur.Revision); !errors.Is(err, ErrRehearsal) || !strings.Contains(err.Error(), "uploaded by") {
+		t.Fatalf("approve with another principal's report: %v", err)
+	}
+}
+
+// The rehearsal report cannot double as the target manifest.
+func TestManifestCannotBeTheRehearsalReport(t *testing.T) {
+	_, err := New(DefaultPolicy(), storetest.NewMemory()).Submit(ctx, withManifest("attachment:"+RehearsalReportName), "hopai")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "rehearsal report") {
+		t.Fatalf("submit: %v", err)
+	}
+}

@@ -2163,7 +2163,10 @@ components:
         Set on plans waiting for approval. When required, approving needs the
         rehearsal-report.json attachment to have passed (schemaVersion
         hopcharlie.rehearsal/v1) for exactly the plan body and target.yaml
-        attached now; otherwise approve answers 409 rehearsal_required.
+        attached now, uploaded by the principal that submitted the plan;
+        otherwise approve answers 409 rehearsal_required. The report is the
+        trusted runner's word: the gate binds it to the content, it does not
+        prove the rehearsal ran.
       required: [required, passed]
       properties:
         required: { type: boolean, description: the plan was submitted by an agent (AI) }

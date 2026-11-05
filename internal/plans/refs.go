@@ -50,6 +50,9 @@ func checkManifest(v string) error {
 		if !ValidAttachmentName(name) {
 			return fmt.Errorf("target.manifest: attachment name %q must match %s and not be . or ..", name, attachmentName)
 		}
+		if name == RehearsalReportName {
+			return fmt.Errorf("target.manifest: %q is the rehearsal report, not a manifest", name)
+		}
 		return nil
 	}
 	return safeRelPath("target.manifest", v)

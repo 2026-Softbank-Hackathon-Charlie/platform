@@ -556,7 +556,7 @@ func TestCLITokenAuditVia(t *testing.T) {
 
 	// A console session and a static token act without via.
 	admin := h.session("seohyun")
-	rev := h.rehearsed(ref, planJSON("p1", "a", "b", false), "")
+	rev := h.rehearsedAs(cli.Token, ref, planJSON("p1", "a", "b", false), "")
 	if code, b := h.do("POST", "/v1/plans/"+ref+"/approve", admin.Token, map[string]any{"comment": "ok", "revision": rev}); code != 200 {
 		t.Fatalf("approve with the console session: %d %s", code, b)
 	}
