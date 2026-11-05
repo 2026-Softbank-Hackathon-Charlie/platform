@@ -183,10 +183,16 @@ func TestServiceStorage(t *testing.T) {
 		t.Fatalf("Storage(aks) err = %v", err)
 	}
 
-	// A driver that cannot be built stops New.
-	_, err = New(cfg, Options{NewStorage: func(storage.Config) (storage.Driver, error) { return nil, errors.New("admin key not set") }})
-	if err == nil || !strings.Contains(err.Error(), `environment "eks": admin key not set`) {
+	// A driver that cannot be built does not stop New; Storage says why.
+	s, err = New(cfg, Options{NewStorage: func(storage.Config) (storage.Driver, error) { return nil, errors.New("admin key not set") }})
+	if err != nil {
 		t.Fatalf("New with a broken driver: %v", err)
+	}
+	if d, err := s.Storage("eks"); d != nil || err == nil || !strings.Contains(err.Error(), `environment "eks": admin key not set`) {
+		t.Fatalf("Storage(eks) with a broken driver = %v, %v", d, err)
+	}
+	if _, err := s.Storage("gke"); !errors.Is(err, ErrStorageNotConfigured) {
+		t.Fatalf("Storage(gke) with a broken eks driver err = %v", err)
 	}
 }
 

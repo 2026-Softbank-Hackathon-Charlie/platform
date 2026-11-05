@@ -137,6 +137,10 @@ func main() {
 		storageDriver, bucketPrefix, sealing := "none", "", "none"
 		if c.Storage != nil {
 			storageDriver, bucketPrefix = c.Storage.Driver, c.Storage.BucketPrefix
+			if _, err := envSvc.Storage(c.Name); err != nil {
+				storageDriver = "unavailable"
+				log.Warn("storage driver could not be built: buckets and app keys in this environment fail until the API restarts with it fixed", "env", c.Name, "driver", c.Storage.Driver, "err", err)
+			}
 		}
 		switch sl, err := envSvc.Sealer(c.Name); {
 		case errors.Is(err, envs.ErrSealingNotConfigured):

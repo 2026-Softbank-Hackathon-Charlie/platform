@@ -66,8 +66,9 @@ type Service struct {
 
 // env is one environment and its cached status.
 type env struct {
-	cfg     EnvConfig
-	storage storage.Driver // nil without a storage block
+	cfg        EnvConfig
+	storage    storage.Driver // nil without a storage block or when it could not be built
+	storageErr error          // why the storage block's driver could not be built
 
 	sealMu   sync.Mutex
 	sealer   *sealing.Sealer // nil until the certificate is read
@@ -93,8 +94,10 @@ type flight struct {
 // New validates cfg and returns a Service. It does not contact any cluster:
 // clients are built on the first probe, so the server can start before the
 // clusters exist. It builds the storage drivers, which do not contact the
-// storage either; a driver that cannot be built (e.g. the minio admin key is
-// not set) is an error.
+// storage either. A driver that cannot be built (e.g. the minio admin key is
+// not set, or no Google credentials for gcs) does not stop New: Storage
+// returns that error for its environment, so one environment's credentials
+// do not keep the whole server down.
 func New(cfg Config, opt Options) (*Service, error) {
 	cfg, err := cfg.normalize()
 	if err != nil {
@@ -129,9 +132,10 @@ func New(cfg Config, opt Options) (*Service, error) {
 		if c.Storage != nil {
 			d, err := newStorage(*c.Storage)
 			if err != nil {
-				return nil, fmt.Errorf("environment %q: %w", c.Name, err)
+				e.storageErr = fmt.Errorf("environment %q: %w", c.Name, err)
+			} else {
+				e.storage = d
 			}
-			e.storage = d
 		}
 		s.envs = append(s.envs, e)
 		s.byName[c.Name] = e
@@ -191,11 +195,14 @@ func (s *Service) Sealer(name string) (*sealing.Sealer, error) {
 
 // Storage returns an environment's storage driver. ErrNotFound for an
 // unknown environment; ErrStorageNotConfigured when it has no storage
-// block.
+// block; the error of New when its driver could not be built.
 func (s *Service) Storage(name string) (storage.Driver, error) {
 	e, ok := s.byName[name]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrNotFound, name)
+	}
+	if e.storageErr != nil {
+		return nil, e.storageErr
 	}
 	if e.storage == nil {
 		return nil, fmt.Errorf("environment %s: %w", name, ErrStorageNotConfigured)
