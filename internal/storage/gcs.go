@@ -60,6 +60,7 @@ type gcsKey struct {
 	ServiceAccountEmail string `json:"serviceAccountEmail,omitempty"`
 	State               string `json:"state,omitempty"`
 	Etag                string `json:"etag,omitempty"`
+	TimeCreated         string `json:"timeCreated,omitempty"`
 }
 
 type gcsBinding struct {
@@ -99,6 +100,8 @@ func newGCS(ctx context.Context, c Config) (*gcsDriver, error) {
 	client.Timeout = 30 * time.Second
 	return &gcsDriver{project: c.Project, prefix: c.BucketPrefix, region: c.Region, client: client, storageURL: "https://storage.googleapis.com/storage/v1", iamURL: "https://iam.googleapis.com/v1"}, nil
 }
+
+var _ KeyReader = (*gcsDriver)(nil)
 
 func (d *gcsDriver) Name() string                  { return DriverGCS }
 func (d *gcsDriver) Bucket(instance string) string { return d.prefix + instance }
@@ -369,9 +372,12 @@ func (d *gcsDriver) Ensure(ctx context.Context, in Instance, newKey bool, curren
 	return result, nil
 }
 
+// gcsRoles are the roles an instance's service account has on its bucket.
+var gcsRoles = []string{"roles/storage.objectAdmin", "roles/storage.legacyBucketReader"}
+
 func (d *gcsDriver) bindAccount(ctx context.Context, bucket, email string, add, accountCreated bool) error {
 	member := "serviceAccount:" + email
-	roles := []string{"roles/storage.objectAdmin", "roles/storage.legacyBucketReader"}
+	roles := gcsRoles
 	delay := time.Second
 	for attempt := 0; attempt < 3; attempt++ {
 		var p gcsPolicy
@@ -468,6 +474,31 @@ func (d *gcsDriver) deleteKey(ctx context.Context, email, id string) error {
 	}
 	return nil
 }
+
+// Keys lists the service account's HMAC keys that are not deleted, with
+// their timeCreated. An inactive key is listed too: it is on its way out.
+func (d *gcsDriver) Keys(ctx context.Context, in Instance) ([]KeyInfo, error) {
+	if _, err := instanceNames(d.prefix, in); err != nil {
+		return nil, err
+	}
+	_, email := d.account(in)
+	keys, err := d.keys(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]KeyInfo, 0, len(keys))
+	for _, k := range keys {
+		info := KeyInfo{ID: k.AccessID}
+		if t, err := time.Parse(time.RFC3339, k.TimeCreated); err == nil {
+			info.CreatedAt = t.UTC()
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
+// Scope is the service account's roles on the bucket.
+func (d *gcsDriver) Scope() Scope { return Scope{Actions: slices.Clone(gcsRoles)} }
 
 func (d *gcsDriver) DeleteKey(ctx context.Context, in Instance, id string) error {
 	if _, err := instanceNames(d.prefix, in); err != nil {

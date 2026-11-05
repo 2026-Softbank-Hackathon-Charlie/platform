@@ -76,6 +76,8 @@ func newMinIO(c Config, getenv func(string) string) (Driver, error) {
 	return &minioDriver{prefix: c.BucketPrefix, region: c.Region, s3: s3c, admin: adm}, nil
 }
 
+var _ KeyReader = (*minioDriver)(nil)
+
 func (d *minioDriver) Name() string                  { return DriverMinIO }
 func (d *minioDriver) Bucket(instance string) string { return d.prefix + instance }
 
@@ -215,6 +217,32 @@ func (d *minioDriver) deleteKeys(ctx context.Context, user, current, old string)
 		}
 	}
 	return nil
+}
+
+// Keys lists the user's service accounts. MinIO does not record when one
+// was made, so CreatedAt stays zero.
+func (d *minioDriver) Keys(ctx context.Context, in Instance) ([]KeyInfo, error) {
+	n, err := instanceNames(d.prefix, in)
+	if err != nil {
+		return nil, err
+	}
+	list, err := d.admin.ListServiceAccounts(ctx, n.user)
+	if minioCode(err) == "XMinioAdminNoSuchUser" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("storage: list service accounts of user %s: %w", n.user, err)
+	}
+	keys := make([]KeyInfo, len(list.Accounts))
+	for i, a := range list.Accounts {
+		keys[i] = KeyInfo{ID: a.AccessKey}
+	}
+	return keys, nil
+}
+
+// Scope is the user's canned policy, the same document as the aws policy.
+func (d *minioDriver) Scope() Scope {
+	return Scope{Actions: slices.Concat(bucketActions, objectActions)}
 }
 
 // serviceAccountGone reports the error codes of a service account that

@@ -406,6 +406,28 @@ func TestMinIOEnsure(t *testing.T) {
 	}
 }
 
+// TestMinIOKeys: Keys lists the user's service accounts without a creation
+// time, which MinIO does not record.
+func TestMinIOKeys(t *testing.T) {
+	f := newFakeMinIO()
+	d := newMinIODriver(f)
+	ctx := t.Context()
+	keys, err := d.Keys(ctx, dev)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("keys of a missing user = %v, %v", keys, err)
+	}
+	if _, err := d.Ensure(ctx, dev, false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	keys, err = d.Keys(ctx, dev)
+	if err != nil || len(keys) != 1 || keys[0].ID != "SVC0001" || !keys[0].CreatedAt.IsZero() {
+		t.Fatalf("keys = %+v, %v", keys, err)
+	}
+	if s := d.Scope(); !slices.Equal(s.Actions, slices.Concat(bucketActions, objectActions)) || s.Boundary != "" {
+		t.Fatalf("scope %+v", s)
+	}
+}
+
 func TestMinIOEnsureRefusesAnotherApp(t *testing.T) {
 	f := newFakeMinIO()
 	f.buckets[devMinIOBucket] = &fakeMinIOBucket{tags: map[string]string{TagApp: "other"}}
