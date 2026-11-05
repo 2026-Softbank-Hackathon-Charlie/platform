@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeGCS implements the public JSON API wire format, including etags and
@@ -26,6 +27,7 @@ type fakeGCS struct {
 	objects           map[string][]gcsObject
 	calls             []string
 	fail              map[string]int
+	failOnce          map[string]int
 	foreign           map[string]bool
 	keyN              int
 	policyConflicts   int
@@ -47,6 +49,11 @@ func (f *fakeGCS) serve(w http.ResponseWriter, r *http.Request) {
 	call := r.Method + " " + r.URL.Path
 	f.calls = append(f.calls, call)
 	if code := f.fail[call]; code != 0 {
+		http.Error(w, `secret response must not be reported`, code)
+		return
+	}
+	if code := f.failOnce[call]; code != 0 {
+		delete(f.failOnce, call)
 		http.Error(w, `secret response must not be reported`, code)
 		return
 	}
@@ -278,6 +285,113 @@ func (f *fakeGCS) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "unexpected "+call, 400)
+}
+
+func TestGCSWaitsForNewAccountIAMPropagation(t *testing.T) {
+	d, f := newFakeGCS(t)
+	in := Instance{App: "shop", Name: "shop"}
+	call := "PUT /storage/v1/b/" + d.Bucket(in.Name) + "/iam"
+	f.failOnce = map[string]int{call: 400}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	got, err := d.Ensure(ctx, in, true, "", "")
+	if err != nil || got.Key == nil {
+		t.Fatalf("new account did not become usable: %+v, %v", got, err)
+	}
+	if n := strings.Count(strings.Join(f.calls, "\n"), call); n != 2 {
+		t.Fatalf("IAM PUT attempts = %d, want 2", n)
+	}
+	if len(f.accounts) != 1 || len(f.keys) != 1 {
+		t.Fatalf("resources: %d accounts, %d keys", len(f.accounts), len(f.keys))
+	}
+}
+
+func TestGCSDoesNotRetryUnrelatedIAMErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		existing bool
+		conflict bool
+		method   string
+		status   int
+	}{
+		{"existing account", true, false, "PUT", 400},
+		{"create conflict", true, true, "PUT", 400},
+		{"forbidden", false, false, "PUT", 403},
+		{"server error", false, false, "PUT", 500},
+		{"read error", false, false, "GET", 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, f := newFakeGCS(t)
+			in := Instance{App: "shop", Name: "shop"}
+			bucket := d.Bucket(in.Name)
+			if tc.existing {
+				if _, err := d.Ensure(t.Context(), in, true, "", ""); err != nil {
+					t.Fatal(err)
+				}
+				delete(f.policies, bucket)
+				f.calls = nil
+			}
+			if tc.conflict {
+				_, email := d.account(in)
+				f.failOnce = map[string]int{"GET /v1/projects/project-demo/serviceAccounts/" + email: 404}
+			}
+			call := tc.method + " /storage/v1/b/" + bucket + "/iam"
+			f.fail[call] = tc.status
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			_, err := d.Ensure(ctx, in, true, "", "")
+			if gcsStatus(err) != tc.status || strings.Contains(err.Error(), "secret response") {
+				t.Fatalf("IAM error = %v, want sanitized HTTP %d", err, tc.status)
+			}
+			if n := strings.Count(strings.Join(f.calls, "\n"), call); n != 1 {
+				t.Fatalf("IAM attempts = %d, want 1", n)
+			}
+		})
+	}
+}
+
+type gcsRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f gcsRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestGCSCancelsAccountPropagationWait(t *testing.T) {
+	d, f := newFakeGCS(t)
+	in := Instance{App: "shop", Name: "shop"}
+	call := "PUT /storage/v1/b/" + d.Bucket(in.Name) + "/iam"
+	f.fail[call] = 400
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	failed := make(chan struct{})
+	transport := d.client.Transport
+	d.client.Transport = gcsRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		res, err := transport.RoundTrip(r)
+		if r.Method+" "+r.URL.Path == call && res != nil && res.StatusCode == 400 {
+			close(failed)
+			<-ctx.Done()
+		}
+		return res, err
+	})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := d.Ensure(ctx, in, true, "", "")
+		finished <- err
+	}()
+	select {
+	case <-failed:
+	case err := <-finished:
+		t.Fatalf("ensure returned before IAM failure: %v", err)
+	}
+	cancel()
+	err := <-finished
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("propagation wait = %v, want context cancellation", err)
+	}
+	if n := strings.Count(strings.Join(f.calls, "\n"), call); n != 1 {
+		t.Fatalf("IAM attempts = %d, want 1 before cancellation", n)
+	}
+	if len(f.keys) != 0 {
+		t.Fatal("created an HMAC key after cancellation")
+	}
 }
 
 func TestGCSCreateKeepAndRotate(t *testing.T) {

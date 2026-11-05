@@ -325,12 +325,14 @@ func (d *gcsDriver) Ensure(ctx context.Context, in Instance, newKey bool, curren
 			return Result{}, fmt.Errorf("storage: make GCS bucket private: %w", err)
 		}
 	}
+	accountCreated := false
 	if aErr != nil {
 		body := struct {
 			ID      string     `json:"accountId"`
 			Account gcsAccount `json:"serviceAccount"`
 		}{id, gcsAccount{Description: gcsDescription(in), DisplayName: "HopCharlie " + in.Name}}
 		err = d.request(ctx, "POST", d.iamURL+"/projects/"+url.PathEscape(d.project)+"/serviceAccounts", nil, body, &a)
+		accountCreated = err == nil
 		if gcsStatus(err) == 409 {
 			a, err = d.readAccount(ctx, in, email)
 		}
@@ -341,7 +343,7 @@ func (d *gcsDriver) Ensure(ctx context.Context, in Instance, newKey bool, curren
 			return Result{}, errors.New("storage: empty GCP service account response")
 		}
 	}
-	if err = d.bindAccount(ctx, n.bucket, email, true); err != nil {
+	if err = d.bindAccount(ctx, n.bucket, email, true, accountCreated); err != nil {
 		return Result{}, err
 	}
 	result := Result{Bucket: n.bucket}
@@ -367,9 +369,10 @@ func (d *gcsDriver) Ensure(ctx context.Context, in Instance, newKey bool, curren
 	return result, nil
 }
 
-func (d *gcsDriver) bindAccount(ctx context.Context, bucket, email string, add bool) error {
+func (d *gcsDriver) bindAccount(ctx context.Context, bucket, email string, add, accountCreated bool) error {
 	member := "serviceAccount:" + email
 	roles := []string{"roles/storage.objectAdmin", "roles/storage.legacyBucketReader"}
+	delay := time.Second
 	for attempt := 0; attempt < 3; attempt++ {
 		var p gcsPolicy
 		if err := d.request(ctx, "GET", d.bucketPath(bucket)+"/iam", url.Values{"optionsRequestedPolicyVersion": {"3"}}, nil, &p); err != nil {
@@ -409,6 +412,16 @@ func (d *gcsDriver) bindAccount(ctx context.Context, bucket, email string, add b
 		}
 		p.Bindings = slices.DeleteFunc(p.Bindings, func(b gcsBinding) bool { return len(b.Members) == 0 })
 		err := d.request(ctx, "PUT", d.bucketPath(bucket)+"/iam", nil, p, nil)
+		// New service accounts can take over 60 seconds to become visible to bucket IAM.
+		for accountCreated && gcsStatus(err) == 400 && delay <= 64*time.Second {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+			delay *= 2
+			err = d.request(ctx, "PUT", d.bucketPath(bucket)+"/iam", nil, p, nil)
+		}
 		if gcsStatus(err) == 409 || gcsStatus(err) == 412 {
 			continue
 		}
@@ -502,7 +515,7 @@ func (d *gcsDriver) Delete(ctx context.Context, in Instance) error {
 		}
 	}
 	if bErr == nil {
-		if err = d.bindAccount(ctx, n.bucket, email, false); err != nil {
+		if err = d.bindAccount(ctx, n.bucket, email, false, false); err != nil {
 			return err
 		}
 	}
