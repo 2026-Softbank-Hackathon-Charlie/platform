@@ -560,14 +560,27 @@ func TestGatewaySpec(t *testing.T) {
 			&gateway.AppInfo{Backends: map[string]string{"eks": "http://a", "gke": "http://b"}, WriteBackend: "eks", ReadWeights: map[string]int{"eks": 90, "gke": 10}},
 			[]string{"eks"}, map[string]string{"eks": "http://new-eks"},
 			gateway.AppSpec{Backends: map[string]string{"eks": "http://new-eks", "gke": "http://b"}, WriteBackend: "eks", ReadWeights: map[string]int{"eks": 90, "gke": 10}}},
-		{"an environment the app does not list and that gets no requests is dropped",
+		{"a migration added a backend the app does not list before moving requests there",
 			&gateway.AppInfo{Backends: map[string]string{"eks": "http://a", "gke": "http://b"}, WriteBackend: "eks", ReadWeights: map[string]int{"eks": 100, "gke": 0}},
 			[]string{"eks"}, map[string]string{"eks": "http://new-eks"},
-			gateway.AppSpec{Backends: map[string]string{"eks": "http://new-eks"}, WriteBackend: "eks", ReadWeights: map[string]int{"eks": 100}}},
+			gateway.AppSpec{Backends: map[string]string{"eks": "http://new-eks", "gke": "http://b"}, WriteBackend: "eks", ReadWeights: map[string]int{"eks": 100}}},
 	} {
 		got := gatewaySpec(tc.cur, tc.appEnvs, tc.urls)
 		if !maps.Equal(got.Backends, tc.want.Backends) || got.WriteBackend != tc.want.WriteBackend || !maps.Equal(got.ReadWeights, tc.want.ReadWeights) {
 			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestHiddenPasswords(t *testing.T) {
+	cur := &gateway.AppInfo{Backends: map[string]string{
+		"eks": "http://u:xxxxx@a", "gke": "http://u:xxxxx@b", "onprem": "http://u@c", "aks": "http://d",
+	}}
+	// eks gets a new URL from the deployment; onprem has a user but no password.
+	if got := hiddenPasswords(cur, map[string]string{"eks": "http://new-eks"}); !slices.Equal(got, []string{"gke"}) {
+		t.Errorf("hiddenPasswords = %v, want [gke]", got)
+	}
+	if got := hiddenPasswords(nil, map[string]string{"eks": "http://new-eks"}); got != nil {
+		t.Errorf("hiddenPasswords of a new app = %v", got)
 	}
 }

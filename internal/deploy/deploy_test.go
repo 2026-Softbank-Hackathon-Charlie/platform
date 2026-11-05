@@ -499,9 +499,10 @@ func TestDeployGatewayWritesHeld(t *testing.T) {
 
 func TestDeployKeepsTheGatewayRouting(t *testing.T) {
 	te := newTestEnv(t)
-	// A migration moved shop to eks with a read canary on gke.
-	te.gw.apps["shop"] = gateway.AppInfo{Name: "shop", Backends: map[string]string{"gke": "http://a", "eks": "http://b", "gone": "http://c"},
-		WriteBackend: "eks", ReadWeights: map[string]int{"gke": 10, "eks": 90, "gone": 0}}
+	// A migration moved shop to eks with a read canary on gke, and another one
+	// added onprem, which the app does not have, before moving requests there.
+	te.gw.apps["shop"] = gateway.AppInfo{Name: "shop", Backends: map[string]string{"gke": "http://a", "eks": "http://b", "onprem": "http://c"},
+		WriteBackend: "eks", ReadWeights: map[string]int{"gke": 10, "eks": 90, "onprem": 0}}
 	te.register("shop", "gke", "eks")
 	te.start()
 	d := te.deployment("shop", sha("c1"), "gke") // only gke
@@ -510,7 +511,7 @@ func TestDeployKeepsTheGatewayRouting(t *testing.T) {
 		t.Fatalf("deployment %s %q", got.Status, got.Error)
 	}
 	app, _ := te.gw.app("shop")
-	if app.WriteBackend != "eks" || app.Backends["gke"] != "http://shop-web.shop.gke.test:8080" || app.Backends["eks"] != "http://b" || app.Backends["gone"] != "" {
+	if app.WriteBackend != "eks" || app.Backends["gke"] != "http://shop-web.shop.gke.test:8080" || app.Backends["eks"] != "http://b" || app.Backends["onprem"] != "http://c" {
 		t.Errorf("gateway app %+v", app)
 	}
 	if put := te.gw.puts[0]; put.ReadWeights["gke"] != 10 || put.ReadWeights["eks"] != 90 {
@@ -544,6 +545,24 @@ func TestDeployKeepsAMigratedBackendTheAppDoesNotList(t *testing.T) {
 	}
 	if put := te.gw.puts[0]; put.ReadWeights["gke"] != 100 || put.ReadWeights["eks"] != 0 {
 		t.Errorf("read weights %v", put.ReadWeights)
+	}
+}
+
+func TestDeployDoesNotSendBackAHiddenPassword(t *testing.T) {
+	te := newTestEnv(t)
+	// The gateway reports a URL set by hand with its password redacted.
+	te.gw.apps["shop"] = gateway.AppInfo{Name: "shop", Backends: map[string]string{"eks": "http://old-eks", "gke": "http://user:xxxxx@10.80.0.7:80"},
+		WriteBackend: "gke"}
+	te.register("shop", "eks")
+	te.start()
+	d := te.deployment("shop", sha("c1"), "eks")
+	te.enqueue(d.ID)
+	got := te.wait(d.ID)
+	if got.Status != store.DeployFailed || !strings.Contains(got.Error, "hides the password in the URL of the gke backend") {
+		t.Fatalf("deployment %s %q", got.Status, got.Error)
+	}
+	if len(te.gw.puts) != 0 {
+		t.Errorf("gateway changed: %+v", te.gw.puts)
 	}
 }
 

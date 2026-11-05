@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -591,7 +593,8 @@ func (j *job) includes(ctx context.Context, rev, commit string) bool {
 // already has is not probed again. If an environment the gateway sends
 // requests to does not answer in time, the deployment fails and the gateway
 // is not changed. Any other environment that has not answered by then is
-// left out (a route it had stays) and returned.
+// left out (a route it had stays) and returned. A kept backend whose URL has
+// a password fails the deployment (see hiddenPasswords).
 func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([]string, error) {
 	svc, ok := publicService(spec)
 	if !ok || j.e.cfg.Gateway == nil {
@@ -682,6 +685,9 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([
 		if cur != nil && maps.Equal(cur.Backends, routed.Backends) && cur.WriteBackend == routed.WriteBackend && sameWeights(cur.ReadWeights, routed.ReadWeights) {
 			unchanged = true
 			return nil
+		}
+		if hidden := hiddenPasswords(cur, urls); len(hidden) > 0 {
+			return fmt.Errorf("the gateway hides the password in the URL of the %s backend, and sending that URL back would replace the password, so it was not changed; set the backend again without a password in its URL, then deploy again", strings.Join(hidden, ", "))
 		}
 		err = j.e.cfg.Gateway.PutApp(ctx, instance, routed)
 		var ae *gateway.APIError
@@ -833,20 +839,16 @@ func (j *job) waitForBackends(ctx context.Context, envs, need []string, urls map
 }
 
 // gatewaySpec merges the deployment's backend URLs into the app's current
-// gateway routing. A backend of an environment the app does not have is
-// dropped only when it gets no requests: a migration can move writes or reads
-// to an environment the app was not deployed to, and dropping that backend
-// would move them back. The write backend and read weights stay as they are,
-// so a deployment never moves traffic a migration moved; a new app writes to
-// the first of its environments.
+// gateway routing. Every backend the gateway has stays, also one of an
+// environment the app does not have: a migration adds its target backend
+// before it moves requests there, and can move them to an environment the
+// app was not deployed to. The write backend and read weights stay as they
+// are, so a deployment never moves traffic a migration moved; a new app
+// writes to the first of its environments.
 func gatewaySpec(cur *gateway.AppInfo, appEnvs []string, urls map[string]string) gateway.AppSpec {
 	out := gateway.AppSpec{Backends: map[string]string{}}
 	if cur != nil {
-		for name, u := range cur.Backends {
-			if contains(appEnvs, name) || name == cur.WriteBackend || cur.ReadWeights[name] > 0 {
-				out.Backends[name] = u
-			}
-		}
+		maps.Copy(out.Backends, cur.Backends)
 	}
 	maps.Copy(out.Backends, urls)
 	if cur != nil && out.Backends[cur.WriteBackend] != "" {
@@ -866,6 +868,29 @@ func gatewaySpec(cur *gateway.AppInfo, appEnvs []string, urls map[string]string)
 	if len(out.Backends) > 0 {
 		out.WriteBackend = sortedKeys(out.Backends)[0]
 	}
+	return out
+}
+
+// hiddenPasswords returns the backends that keep the URL the gateway reports
+// for them (the deployment has no new URL there) when that URL has a
+// password. The gateway reports it redacted (url.URL.Redacted), so sending it
+// back would replace the password with "xxxxx".
+func hiddenPasswords(cur *gateway.AppInfo, urls map[string]string) []string {
+	if cur == nil {
+		return nil
+	}
+	var out []string
+	for name, u := range cur.Backends {
+		if _, ok := urls[name]; ok {
+			continue
+		}
+		if p, err := url.Parse(u); err == nil && p.User != nil {
+			if _, ok := p.User.Password(); ok {
+				out = append(out, name)
+			}
+		}
+	}
+	slices.Sort(out)
 	return out
 }
 
