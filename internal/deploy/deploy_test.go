@@ -526,6 +526,27 @@ func TestDeployKeepsTheGatewayRouting(t *testing.T) {
 	}
 }
 
+func TestDeployKeepsAMigratedBackendTheAppDoesNotList(t *testing.T) {
+	te := newTestEnv(t)
+	// A migration moved shop's writes and reads to gke, which the app was never deployed to.
+	te.gw.apps["shop"] = gateway.AppInfo{Name: "shop", Backends: map[string]string{"eks": "http://old-eks", "gke": "http://10.80.0.7:80"},
+		WriteBackend: "gke", ReadWeights: map[string]int{"gke": 100, "eks": 0}}
+	te.register("shop", "eks")
+	te.start()
+	d := te.deployment("shop", sha("c1"), "eks")
+	te.enqueue(d.ID)
+	if got := te.wait(d.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("deployment %s %q", got.Status, got.Error)
+	}
+	app, _ := te.gw.app("shop")
+	if app.WriteBackend != "gke" || app.Backends["gke"] != "http://10.80.0.7:80" || app.Backends["eks"] != "http://shop-web.shop.eks.test:8080" {
+		t.Errorf("gateway app %+v", app)
+	}
+	if put := te.gw.puts[0]; put.ReadWeights["gke"] != 100 || put.ReadWeights["eks"] != 0 {
+		t.Errorf("read weights %v", put.ReadWeights)
+	}
+}
+
 func TestDeployWithoutPublicServiceOrGateway(t *testing.T) {
 	te := newTestEnv(t)
 	te.cfg.Gateway, te.cfg.Backends = nil, nil

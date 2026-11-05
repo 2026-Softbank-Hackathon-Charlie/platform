@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -532,6 +533,41 @@ func TestReceivers(t *testing.T) {
 		slices.Sort(got)
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("receivers(%+v) = %v, want %v", tc.spec, got, tc.want)
+		}
+	}
+}
+
+func TestGatewaySpec(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cur     *gateway.AppInfo
+		appEnvs []string
+		urls    map[string]string
+		want    gateway.AppSpec
+	}{
+		{"a new app writes to its first environment", nil, []string{"gke", "eks"},
+			map[string]string{"gke": "http://new-gke", "eks": "http://new-eks"},
+			gateway.AppSpec{Backends: map[string]string{"gke": "http://new-gke", "eks": "http://new-eks"}, WriteBackend: "gke"}},
+		{"the deployed environment gets its new URL and the routing stays",
+			&gateway.AppInfo{Backends: map[string]string{"gke": "http://a", "eks": "http://b"}, WriteBackend: "eks", ReadWeights: map[string]int{"gke": 10, "eks": 90}},
+			[]string{"gke", "eks"}, map[string]string{"gke": "http://new-gke"},
+			gateway.AppSpec{Backends: map[string]string{"gke": "http://new-gke", "eks": "http://b"}, WriteBackend: "eks", ReadWeights: map[string]int{"gke": 10, "eks": 90}}},
+		{"a migration moved writes and reads to an environment the app does not list",
+			&gateway.AppInfo{Backends: map[string]string{"eks": "http://eks-nlb", "gke": "http://10.80.0.7:80"}, WriteBackend: "gke", ReadWeights: map[string]int{"gke": 100, "eks": 0}},
+			[]string{"eks"}, map[string]string{"eks": "http://new-eks"},
+			gateway.AppSpec{Backends: map[string]string{"eks": "http://new-eks", "gke": "http://10.80.0.7:80"}, WriteBackend: "gke", ReadWeights: map[string]int{"gke": 100}}},
+		{"a read canary on an environment the app does not list",
+			&gateway.AppInfo{Backends: map[string]string{"eks": "http://a", "gke": "http://b"}, WriteBackend: "eks", ReadWeights: map[string]int{"eks": 90, "gke": 10}},
+			[]string{"eks"}, map[string]string{"eks": "http://new-eks"},
+			gateway.AppSpec{Backends: map[string]string{"eks": "http://new-eks", "gke": "http://b"}, WriteBackend: "eks", ReadWeights: map[string]int{"eks": 90, "gke": 10}}},
+		{"an environment the app does not list and that gets no requests is dropped",
+			&gateway.AppInfo{Backends: map[string]string{"eks": "http://a", "gke": "http://b"}, WriteBackend: "eks", ReadWeights: map[string]int{"eks": 100, "gke": 0}},
+			[]string{"eks"}, map[string]string{"eks": "http://new-eks"},
+			gateway.AppSpec{Backends: map[string]string{"eks": "http://new-eks"}, WriteBackend: "eks", ReadWeights: map[string]int{"eks": 100}}},
+	} {
+		got := gatewaySpec(tc.cur, tc.appEnvs, tc.urls)
+		if !maps.Equal(got.Backends, tc.want.Backends) || got.WriteBackend != tc.want.WriteBackend || !maps.Equal(got.ReadWeights, tc.want.ReadWeights) {
+			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
 }

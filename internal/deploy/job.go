@@ -833,15 +833,17 @@ func (j *job) waitForBackends(ctx context.Context, envs, need []string, urls map
 }
 
 // gatewaySpec merges the deployment's backend URLs into the app's current
-// gateway routing. Backends of environments the app no longer has are
-// dropped. The write backend and read weights stay when they still name
-// backends, so a deployment never moves traffic a migration moved; a new app
-// writes to the first of its environments.
+// gateway routing. A backend of an environment the app does not have is
+// dropped only when it gets no requests: a migration can move writes or reads
+// to an environment the app was not deployed to, and dropping that backend
+// would move them back. The write backend and read weights stay as they are,
+// so a deployment never moves traffic a migration moved; a new app writes to
+// the first of its environments.
 func gatewaySpec(cur *gateway.AppInfo, appEnvs []string, urls map[string]string) gateway.AppSpec {
 	out := gateway.AppSpec{Backends: map[string]string{}}
 	if cur != nil {
 		for name, u := range cur.Backends {
-			if contains(appEnvs, name) {
+			if contains(appEnvs, name) || name == cur.WriteBackend || cur.ReadWeights[name] > 0 {
 				out.Backends[name] = u
 			}
 		}
@@ -850,11 +852,6 @@ func gatewaySpec(cur *gateway.AppInfo, appEnvs []string, urls map[string]string)
 	if cur != nil && out.Backends[cur.WriteBackend] != "" {
 		out.WriteBackend = cur.WriteBackend
 		weights := positive(cur.ReadWeights)
-		for name := range weights {
-			if out.Backends[name] == "" {
-				return out // reads went to a backend that is gone: all reads to the write backend
-			}
-		}
 		if len(weights) > 0 {
 			out.ReadWeights = weights
 		}
