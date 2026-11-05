@@ -63,12 +63,18 @@ type GitHub interface {
 	ReadFile(ctx context.Context, repo, ref, path string) ([]byte, error)
 	// ListRepos returns the repositories the installation can see.
 	ListRepos(ctx context.Context) ([]github.Repo, error)
-	// RepoTopics returns the topics of repo (owner/name).
-	RepoTopics(ctx context.Context, repo string) ([]string, error)
+	// Org is the organization the App is installed on.
+	Org() string
+	// ReadRepo returns repo's ID, its current owner/name and owner (after a
+	// rename or transfer) and its topics.
+	ReadRepo(ctx context.Context, repo string) (github.RepoInfo, error)
 	// PushToken creates a token that may only write the contents of repo,
-	// for an hour (ADR 0023). A repo outside the App's organization is
-	// github.ErrNotInOrg.
-	PushToken(ctx context.Context, repo string) (github.PushToken, error)
+	// bound to its ID, for an hour (ADR 0023). github.ErrNotInOrg,
+	// ErrNotInInstallation and ErrUnexpectedScope (the token is already
+	// revoked) say why it did not.
+	PushToken(ctx context.Context, repo github.RepoInfo) (github.PushToken, error)
+	// RevokeToken revokes a token PushToken created.
+	RevokeToken(ctx context.Context, token string) error
 }
 
 // Config configures the API.
@@ -253,7 +259,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/apps/{name}", viewer, s.getApp)
 	s.route("POST /v1/apps/validate", viewer, s.validateAppSpec)
 	s.route("GET /v1/github/repos", viewer, s.listGitHubRepos)
-	s.route("POST /v1/github/push-tokens", agent, s.createPushToken)
+	s.route(pushTokenRoute, agent, s.createPushToken)
 	// GitHub signs the webhook instead of sending a token; the handler
 	// checks the signature and writes its own audit entries.
 	s.route("POST /v1/webhooks/github", "", s.githubWebhook)
@@ -289,7 +295,9 @@ func (s *Server) route(pattern string, need apiv1.Role, h http.HandlerFunc) {
 	s.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
 		note := map[string]any{}
+		audited := false // set by auditBeforeAnswer
 		ctx := context.WithValue(r.Context(), noteKey{}, note)
+		ctx = context.WithValue(ctx, auditedKey{}, &audited)
 
 		var p auth.Principal
 		if need != "" {
@@ -309,7 +317,7 @@ func (s *Server) route(pattern string, need apiv1.Role, h http.HandlerFunc) {
 		} else {
 			h(rec, r.WithContext(ctx))
 		}
-		if need != "" && shouldAudit(pattern, r.Method, rec.status) {
+		if need != "" && !audited && shouldAudit(pattern, r.Method, rec.status) {
 			s.audit(r, p, pattern, rec.status, note)
 		}
 	})
@@ -387,6 +395,23 @@ func (s *Server) audit(r *http.Request, p auth.Principal, pattern string, status
 	return err
 }
 
+// auditBeforeAnswer writes the audit entry of the current request now, with
+// the status the handler is about to send, for a handler that must not
+// answer when the entry cannot be written. When it is written, the route
+// writes no second entry; when it is not, the handler answers an error,
+// which the route records as usual.
+func (s *Server) auditBeforeAnswer(r *http.Request, pattern string, status int) error {
+	p, _ := auth.FromContext(r.Context())
+	note, _ := r.Context().Value(noteKey{}).(map[string]any)
+	if err := s.audit(r, p, pattern, status, note); err != nil {
+		return err
+	}
+	if done, ok := r.Context().Value(auditedKey{}).(*bool); ok {
+		*done = true
+	}
+	return nil
+}
+
 // cors answers preflight requests and sets CORS headers. It reports whether
 // the request was fully handled.
 func (s *Server) cors(w http.ResponseWriter, r *http.Request) bool {
@@ -415,6 +440,7 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request) bool {
 
 type requestIDKey struct{}
 type noteKey struct{}
+type auditedKey struct{}
 
 var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 

@@ -448,12 +448,12 @@ operations:
     summary: 들여온 저장소 하나에 1시간 동안 push하는 토큰 발급
     role: agent, operator
     notes: |-
-      AI 에이전트가 들여온 오픈소스 사본에 Dockerfile과 platform.yaml을 더해 push할 수 있도록 GitHub 토큰을 만든다(ADR 0023). 플랫폼이 GitHub App 설치 토큰을 그 저장소 하나(`repositories: [name]`)와 `contents: write` 권한으로 좁혀 만들고, GitHub이 1시간 뒤에 만료시킨다. 부를 때마다 새 토큰을 만들고, 플랫폼은 어느 토큰도 보관하지 않는다.
+      AI 에이전트가 들여온 오픈소스 사본에 Dockerfile과 platform.yaml을 더해 push할 수 있도록 GitHub 토큰을 만든다(ADR 0023). 플랫폼이 GitHub에서 저장소의 id와 지금 이름을 읽고(이름 변경과 이전을 따라간다), GitHub App 설치 토큰을 그 id(`repository_ids: [id]`)와 `contents: write` 권한으로 좁혀 만든다. GitHub이 1시간 뒤에 만료시킨다. GitHub이 더 넓은 토큰으로 답하면 폐기하고 돌려주지 않는다. 부를 때마다 새 토큰을 만들고, 플랫폼은 어느 토큰도 보관하지 않는다.
 
-      - `scripts/import-repo.sh`로 들여온 저장소만 받는다. 플랫폼의 GitHub 조직에 있고 토픽 `hopcharlie-imported`가 있어야 한다. gitops 저장소는 받지 못한다.
-      - 토큰을 사용자 `x-access-token`의 비밀번호로 써서 `https://github.com/<repo>.git`에 `hopcharlie` 브랜치를 push하고, 그 브랜치를 `POST /v1/apps`로 등록한다. GitHub은 브랜치를 막지 않으므로 토큰은 그 저장소의 어느 브랜치에나 쓸 수 있다.
-      - 응답에는 `Cache-Control: no-store`가 붙는다. 감사 로그에는 저장소와 `expiresAt`만 남고 토큰은 남지 않는다.
-      - 오류 코드: invalid_request(400, repo가 owner/name이 아님), repo_not_imported(403, 토픽 `hopcharlie-imported`가 없거나, 조직 밖의 저장소이거나, gitops 저장소), repo_not_found(404, 저장소가 없거나 GitHub App 설치가 볼 수 없음), github_unreachable(502), github_not_configured(503).
+      - `scripts/import-repo.sh`로 들여온 저장소만 받는다. 요청한 이름과 지금 이름이 모두 플랫폼의 GitHub 조직에 있고, 토픽 `hopcharlie-imported`가 있어야 한다. 설정한 gitops 저장소는 받지 못한다. 응답의 `repo`는 지금 이름이다.
+      - 에이전트가 토큰을 사용자 `x-access-token`의 비밀번호로 써서 `https://github.com/<repo>.git`에 `hopcharlie` 브랜치를 push하고, 운영자가 그 브랜치를 `POST /v1/apps`로 등록한다. GitHub은 브랜치를 막지 않으므로 토큰은 그 저장소의 어느 브랜치에나 쓸 수 있다.
+      - 응답에는 `Cache-Control: no-store`가 붙는다. 감사 로그에는 저장소와 `expiresAt`만 남고 토큰은 남지 않는다. 감사 로그를 응답보다 먼저 쓰고, 쓰지 못하면 토큰을 폐기하고 503 audit_unavailable로 답한다.
+      - 오류 코드: invalid_request(400, repo가 owner/name이 아니거나 이름이 `.`, `..`이거나 `.git`으로 끝남), repo_not_imported(403, 토픽 `hopcharlie-imported`가 없거나, 조직 밖의 저장소이거나, gitops 저장소), repo_not_found(404, 저장소가 없거나, GitHub App 설치가 볼 수 없거나, 설치가 그 저장소의 토큰을 줄 수 없음), github_unreachable(502, GitHub이 더 넓은 토큰으로 답한 경우 포함), github_not_configured(503), audit_unavailable(503).
   receiveGitHubWebhook:
     summary: GitHub App 웹훅 (push 자동 배포)
     role: 인증 없음
@@ -934,7 +934,8 @@ fields:
   AppSecretsUpdate.set: 넣거나 바꿀 시크릿, 이름과 값, 50개까지. 값은 UTF-8로 1바이트에서 4096바이트
   AppSecretsUpdate.delete: 지울 이름, 50개까지. 없는 이름은 무시한다
   AppSecretValue.instance: 이 값이 덮어쓰기인 인스턴스. 앱 단위 값이면 없다
-  PushTokenRequest.repo: scripts/import-repo.sh로 들여온 저장소의 owner/name
+  PushTokenRequest.repo: scripts/import-repo.sh로 들여온 저장소의 owner/name. `.git`을 붙이지 않는다
+  PushToken.repo: 저장소의 지금 owner/name. 이름이 바뀌었으면 요청과 다르다
   PushToken.token: '토큰이다. git HTTPS에서 사용자 `x-access-token`의 비밀번호로 쓴다. 로그에 남기지 않는다'
   PushToken.expiresAt: GitHub이 토큰을 더 받지 않는 시각. 만든 때부터 1시간 뒤다
   DeploymentCreateRequest.redeploy: 인스턴스의 마지막 healthy 배포를 같은 커밋과 이미지로 빌드 없이 지금의 시크릿으로 그 배포가 간 환경에만 다시 배포한다. ref와 함께 쓸 수 없다

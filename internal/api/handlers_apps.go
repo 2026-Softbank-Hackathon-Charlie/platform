@@ -693,17 +693,22 @@ func (s *Server) listGitHubRepos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// pushTokenRoute writes its own audit entry before it answers with a token.
+const pushTokenRoute = "POST /v1/github/push-tokens"
+
 // POST /v1/github/push-tokens: a token that may push to one repository
 // scripts/import-repo.sh imported, for an hour (ADR 0023). The token is only
-// in the answer: the audit entry records the repository and the expiry.
+// in the answer: the audit entry records the repository and the expiry, and
+// is written before the answer; when it cannot be, the token is revoked and
+// not returned.
 func (s *Server) createPushToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store") // the answer holds a token
 	var req apiv1.PushTokenRequest
 	if !s.decode(w, r, &req, true) {
 		return
 	}
-	if !repoPattern.MatchString(req.Repo) {
-		s.fail(w, r, http.StatusBadRequest, "invalid_request", "repo must be owner/name")
+	if !validPushRepo(req.Repo) {
+		s.fail(w, r, http.StatusBadRequest, "invalid_request", "repo must be owner/name, without .git")
 		return
 	}
 	noteAudit(r, "repo", req.Repo)
@@ -711,15 +716,14 @@ func (s *Server) createPushToken(w http.ResponseWriter, r *http.Request) {
 		s.githubNotConfigured(w, r)
 		return
 	}
-	if strings.EqualFold(req.Repo, s.cfg.GitOpsRepo) {
-		s.fail(w, r, http.StatusForbidden, "repo_not_imported", fmt.Sprintf("%s is the gitops repository; only the platform's deployments write it, so it never gets a push token", req.Repo))
+	// The name asked for is checked before any GitHub call, and the name
+	// GitHub answers with (after a rename or transfer) again after.
+	if msg := s.pushRefusal(req.Repo); msg != "" {
+		s.fail(w, r, http.StatusForbidden, "repo_not_imported", msg)
 		return
 	}
-	notImported := func(why string) {
-		s.fail(w, r, http.StatusForbidden, "repo_not_imported", fmt.Sprintf("%s %s; push tokens are only for copies imported with scripts/import-repo.sh", req.Repo, why))
-	}
 	ctx := r.Context()
-	topics, err := s.d.GitHub.RepoTopics(ctx, req.Repo)
+	repo, err := s.d.GitHub.ReadRepo(ctx, req.Repo)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		s.fail(w, r, http.StatusNotFound, "repo_not_found", fmt.Sprintf("repository %s does not exist, or the GitHub App installation cannot see it", req.Repo))
@@ -728,21 +732,78 @@ func (s *Server) createPushToken(w http.ResponseWriter, r *http.Request) {
 		s.githubUnreachable(w, r, err)
 		return
 	}
-	if !slices.Contains(topics, github.ImportedTopic) {
-		notImported("has no topic " + github.ImportedTopic)
+	if repo.FullName != req.Repo {
+		noteAudit(r, "repo", repo.FullName)
+		noteAudit(r, "requested", req.Repo)
+	}
+	if msg := s.pushRefusal(repo.FullName); msg != "" {
+		s.fail(w, r, http.StatusForbidden, "repo_not_imported", msg)
 		return
 	}
-	tok, err := s.d.GitHub.PushToken(ctx, req.Repo)
-	switch {
-	case errors.Is(err, github.ErrNotInOrg):
-		notImported("is not in the platform's GitHub organization")
+	if !slices.Contains(repo.Topics, github.ImportedTopic) {
+		s.fail(w, r, http.StatusForbidden, "repo_not_imported", fmt.Sprintf("%s has no topic %s; push tokens are only for copies imported with scripts/import-repo.sh", repo.FullName, github.ImportedTopic))
 		return
-	case err != nil:
-		s.githubUnreachable(w, r, err)
+	}
+	tok, err := s.d.GitHub.PushToken(ctx, repo)
+	if err != nil {
+		s.pushTokenFailed(w, r, repo.FullName, err)
 		return
 	}
 	noteAudit(r, "expiresAt", tok.ExpiresAt)
-	writeJSON(w, http.StatusCreated, apiv1.PushToken{Repo: req.Repo, Token: tok.Token, ExpiresAt: tok.ExpiresAt})
+	if err := s.auditBeforeAnswer(r, pushTokenRoute, http.StatusCreated); err != nil {
+		s.revokePushToken(r, repo.FullName, tok.Token)
+		s.fail(w, r, http.StatusServiceUnavailable, "audit_unavailable", "the audit log could not be written, so the token was revoked and is not returned; try again")
+		return
+	}
+	writeJSON(w, http.StatusCreated, apiv1.PushToken{Repo: repo.FullName, Token: tok.Token, ExpiresAt: tok.ExpiresAt})
+}
+
+// validPushRepo accepts owner/name as the GitHub client does, except names
+// GitHub never gives a repository: "." and "..", and a ".git" suffix, which
+// belongs to a clone URL.
+func validPushRepo(repo string) bool {
+	_, name, _ := strings.Cut(repo, "/")
+	return repoPattern.MatchString(repo) && name != "." && name != ".." && !strings.HasSuffix(name, ".git")
+}
+
+// pushRefusal says why repo (owner/name) never gets a push token, or ""
+// when only its topic is left to check.
+func (s *Server) pushRefusal(repo string) string {
+	owner, _, _ := strings.Cut(repo, "/")
+	switch org := s.d.GitHub.Org(); {
+	case !strings.EqualFold(owner, org):
+		return fmt.Sprintf("%s is not in the platform's GitHub organization %s; push tokens are only for copies imported with scripts/import-repo.sh", repo, org)
+	case strings.EqualFold(repo, s.cfg.GitOpsRepo):
+		return fmt.Sprintf("%s is the gitops repository; only the platform's deployments write it, so it never gets a push token", repo)
+	}
+	return ""
+}
+
+// pushTokenFailed answers an error of GitHub.PushToken.
+func (s *Server) pushTokenFailed(w http.ResponseWriter, r *http.Request, repo string, err error) {
+	switch {
+	case errors.Is(err, github.ErrNotInOrg): // pushRefusal already checked; the client checks again
+		s.fail(w, r, http.StatusForbidden, "repo_not_imported", fmt.Sprintf("%s is not in the platform's GitHub organization %s", repo, s.d.GitHub.Org()))
+	case errors.Is(err, github.ErrNotInInstallation):
+		s.cfg.Log.Warn("github", "err", err, "path", r.URL.Path)
+		s.fail(w, r, http.StatusNotFound, "repo_not_found", fmt.Sprintf("the GitHub App installation cannot grant a token for %s; add the repository to the installation (scripts/import-repo.sh does)", repo))
+	case errors.Is(err, github.ErrUnexpectedScope):
+		s.cfg.Log.Error("GitHub answered a push token request with a wider token; it was revoked", "repo", repo, "err", err)
+		s.fail(w, r, http.StatusBadGateway, "github_unreachable", fmt.Sprintf("GitHub answered with a token that is not limited to %s with contents write, so it was revoked and is not returned; see the server logs", repo))
+	default:
+		s.cfg.Log.Warn("github", "err", err, "path", r.URL.Path)
+		s.fail(w, r, http.StatusBadGateway, "github_unreachable", "could not create the push token through the GitHub App; see the server logs")
+	}
+}
+
+// revokePushToken revokes a token the caller will not get. A failure is
+// logged without the token; GitHub expires the token within the hour.
+func (s *Server) revokePushToken(r *http.Request, repo, token string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+	defer cancel()
+	if err := s.d.GitHub.RevokeToken(ctx, token); err != nil {
+		s.cfg.Log.Error("could not revoke a push token that was not handed out; it expires within the hour", "repo", repo, "err", err)
+	}
 }
 
 func (s *Server) githubNotConfigured(w http.ResponseWriter, r *http.Request) {

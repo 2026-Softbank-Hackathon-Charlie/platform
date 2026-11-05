@@ -2218,7 +2218,9 @@ type PushToken struct {
 	// ExpiresAt When GitHub stops accepting the token, an hour after it was created.
 	ExpiresAt time.Time `json:"expiresAt"`
 
-	// Repo Example: 2026-Softbank-Hackathon-Charlie/gitea
+	// Repo The repository's current owner/name, which differs from the request after a rename.
+	//
+	// Example: 2026-Softbank-Hackathon-Charlie/gitea
 	Repo string `json:"repo"`
 
 	// Token The token, for git over HTTPS as the password of user `x-access-token`. Keep it out of logs.
@@ -2227,7 +2229,7 @@ type PushToken struct {
 
 // PushTokenRequest defines model for PushTokenRequest.
 type PushTokenRequest struct {
-	// Repo owner/name of a repository scripts/import-repo.sh imported.
+	// Repo owner/name of a repository scripts/import-repo.sh imported, without .git.
 	//
 	// Example: 2026-Softbank-Hackathon-Charlie/gitea
 	Repo string `json:"repo"`

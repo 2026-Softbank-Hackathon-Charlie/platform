@@ -9,12 +9,14 @@
 #
 # Steps:
 #   1. bare-clone the upstream default branch (fails early on a bad URL)
-#   2. create <org>/<name>, private, with the topic hopcharlie-imported
+#   2. create <org>/<name>, private
 #   3. turn GitHub Actions off in it, so upstream workflows never run on our
 #      runners or minutes
 #   4. push the clone
 #   5. add the repository to the GitHub App installation, unless the
 #      installation already sees all repositories
+#   6. add the topic hopcharlie-imported, last, so a repository that has it
+#      was imported completely
 #
 # The platform issues push tokens (POST /v1/github/push-tokens, an hour,
 # contents write on this repository only) only for repositories with the
@@ -73,9 +75,6 @@ branch=$(git -C "$work/src.git" symbolic-ref --short HEAD)
 echo "==> creating $repo (private)"
 gh repo create "$repo" --private --description "Imported from $upstream" >/dev/null
 
-echo "==> marking $repo with the topic hopcharlie-imported"
-gh repo edit "$repo" --add-topic hopcharlie-imported >/dev/null
-
 echo "==> turning GitHub Actions off in $repo"
 gh api -X PUT "repos/$repo/actions/permissions" -F enabled=false >/dev/null
 
@@ -93,9 +92,13 @@ else
 	if ! GH_TOKEN=$INSTALL_TOKEN gh api -X PUT "user/installations/$installation/repositories/$id" >/dev/null; then
 		echo "$repo is imported, but could not be added to the installation." >&2
 		echo "Add it at https://github.com/organizations/$org/settings/installations/$installation" >&2
+		echo "then mark it imported: gh repo edit $repo --add-topic hopcharlie-imported" >&2
 		exit 1
 	fi
 fi
+
+echo "==> marking $repo with the topic hopcharlie-imported"
+gh repo edit "$repo" --add-topic hopcharlie-imported >/dev/null
 
 cat <<EOF
 

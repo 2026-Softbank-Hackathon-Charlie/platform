@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,22 +45,26 @@ resources:
 `
 
 // fakeGitHub is api.GitHub over maps. err, when set, fails every call;
-// pushErr fails PushToken only.
+// pushErr fails PushToken and revokeErr RevokeToken only.
 type fakeGitHub struct {
 	mu        sync.Mutex
-	refs      map[string]string   // "owner/name@ref" -> sha
-	files     map[string]string   // "owner/name@sha:path" -> content
-	topics    map[string][]string // "owner/name" -> topics; absent is not found
+	org       string                     // Org; default acme
+	refs      map[string]string          // "owner/name@ref" -> sha
+	files     map[string]string          // "owner/name@sha:path" -> content
+	meta      map[string]github.RepoInfo // "owner/name" as asked -> ReadRepo; absent is not found
 	repos     []github.Repo
-	pushToken github.PushToken // what PushToken returns for a repo in acme
-	pushed    []string         // repos PushToken returned a token for
+	pushToken github.PushToken // what PushToken returns
+	asked     []string         // repos ReadRepo was asked for
+	pushed    []int64          // repository IDs PushToken returned a token for
+	revoked   []string         // tokens RevokeToken was given
 	err       error
 	pushErr   error
+	revokeErr error
 	reads     int
 }
 
 func newFakeGitHub() *fakeGitHub {
-	return &fakeGitHub{refs: map[string]string{}, files: map[string]string{}, topics: map[string][]string{}}
+	return &fakeGitHub{org: "acme", refs: map[string]string{}, files: map[string]string{}, meta: map[string]github.RepoInfo{}}
 }
 
 // repo adds a repository whose branch head holds spec and every file in dockerfiles.
@@ -109,33 +114,48 @@ func (f *fakeGitHub) ListRepos(context.Context) ([]github.Repo, error) {
 	return slices.Clone(f.repos), nil
 }
 
-func (f *fakeGitHub) RepoTopics(_ context.Context, repo string) ([]string, error) {
+func (f *fakeGitHub) Org() string { return f.org }
+
+// ReadRepo refuses names the client's repoPath refuses.
+func (f *fakeGitHub) ReadRepo(_ context.Context, repo string) (github.RepoInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.asked = append(f.asked, repo)
+	if _, name, _ := strings.Cut(repo, "/"); !repoPattern.MatchString(repo) || name == "." || name == ".." {
+		return github.RepoInfo{}, fmt.Errorf("github: %q is not owner/name", repo)
+	}
 	if f.err != nil {
-		return nil, f.err
+		return github.RepoInfo{}, f.err
 	}
-	if t, ok := f.topics[repo]; ok {
-		return slices.Clone(t), nil
+	if m, ok := f.meta[repo]; ok {
+		m.Topics = slices.Clone(m.Topics)
+		return m, nil
 	}
-	return nil, fmt.Errorf("%w: %s", github.ErrNotFound, repo)
+	return github.RepoInfo{}, fmt.Errorf("%w: %s", github.ErrNotFound, repo)
 }
 
-// PushToken refuses repositories outside the org acme, like the client.
-func (f *fakeGitHub) PushToken(_ context.Context, repo string) (github.PushToken, error) {
+// PushToken refuses repositories outside f.org, like the client.
+func (f *fakeGitHub) PushToken(_ context.Context, repo github.RepoInfo) (github.PushToken, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	owner, _, _ := strings.Cut(repo, "/")
+	owner, _, _ := strings.Cut(repo.FullName, "/")
 	switch {
 	case f.err != nil:
 		return github.PushToken{}, f.err
 	case f.pushErr != nil:
 		return github.PushToken{}, f.pushErr
-	case !strings.EqualFold(owner, "acme"):
-		return github.PushToken{}, fmt.Errorf("%w: %s", github.ErrNotInOrg, repo)
+	case !strings.EqualFold(owner, f.org) || repo.ID <= 0:
+		return github.PushToken{}, fmt.Errorf("%w: %s", github.ErrNotInOrg, repo.FullName)
 	}
-	f.pushed = append(f.pushed, repo)
+	f.pushed = append(f.pushed, repo.ID)
 	return f.pushToken, nil
+}
+
+func (f *fakeGitHub) RevokeToken(_ context.Context, token string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revoked = append(f.revoked, token)
+	return f.revokeErr
 }
 
 func (f *fakeGitHub) fail(err error) {
@@ -523,53 +543,84 @@ func TestListGitHubRepos(t *testing.T) {
 	}
 }
 
+const pushSecret = "ghs_push_token_for_tests"
+
+// pushGitHub has acme/imported (id 7, imported), acme/plain (no topic),
+// acme/old-name (renamed to acme/imported), acme/moved (transferred to
+// other/moved, imported) and acme/old-deploys (renamed to acme/deploys,
+// imported).
+func pushGitHub() *fakeGitHub {
+	gh := newFakeGitHub()
+	imported := github.RepoInfo{ID: 7, FullName: "acme/imported", Owner: "acme", Topics: []string{"go", github.ImportedTopic}}
+	gh.meta["acme/imported"] = imported
+	gh.meta["acme/old-name"] = imported
+	gh.meta["acme/plain"] = github.RepoInfo{ID: 8, FullName: "acme/plain", Owner: "acme", Topics: []string{"go"}}
+	gh.meta["acme/moved"] = github.RepoInfo{ID: 9, FullName: "other/moved", Owner: "other", Topics: []string{github.ImportedTopic}}
+	gh.meta["acme/old-deploys"] = github.RepoInfo{ID: 10, FullName: "acme/deploys", Owner: "acme", Topics: []string{github.ImportedTopic}}
+	gh.meta[deploy.DefaultGitOpsRepo] = github.RepoInfo{ID: 11, FullName: deploy.DefaultGitOpsRepo, Owner: "2026-Softbank-Hackathon-Charlie", Topics: []string{github.ImportedTopic}}
+	gh.pushToken = github.PushToken{Token: pushSecret, ExpiresAt: time.Date(2026, 11, 5, 13, 0, 0, 0, time.UTC)}
+	return gh
+}
+
 func TestCreatePushToken(t *testing.T) {
-	const secret = "ghs_push_token_for_tests"
-	expires := time.Date(2026, 11, 5, 13, 0, 0, 0, time.UTC)
 	imported := map[string]any{"repo": "acme/imported"}
+	repo := func(r string) map[string]any { return map[string]any{"repo": r} }
+	boom := errors.New("boom")
 	cases := []struct {
 		name       string
 		token      string
 		body       any
 		setup      func(*fakeGitHub)
+		gitOps     string // Config.GitOpsRepo; "" is the default
 		noGitHub   bool
 		wantStatus int
 		wantCode   string
 		wantMsg    string // in the error message
+		wantRepo   string // in the 201 answer
+		noRead     bool   // refused before any GitHub call
 	}{
-		{name: "agent", token: agentToken, body: imported, wantStatus: 201},
-		{name: "operator", token: opToken, body: imported, wantStatus: 201},
-		{name: "viewer", token: viewerToken, body: imported, wantStatus: 403, wantCode: "forbidden"},
-		{name: "no token", body: imported, wantStatus: 401, wantCode: "unauthorized"},
-		{name: "no topic", token: agentToken, body: map[string]any{"repo": "acme/plain"}, wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "scripts/import-repo.sh"},
-		{name: "gitops", token: agentToken, body: map[string]any{"repo": deploy.DefaultGitOpsRepo}, wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "gitops repository"},
-		{name: "gitops in another case", token: opToken, body: map[string]any{"repo": strings.ToLower(deploy.DefaultGitOpsRepo)}, wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "gitops repository"},
-		{name: "another org", token: agentToken, body: map[string]any{"repo": "other/imported"}, wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "organization"},
-		{name: "not owner/name", token: agentToken, body: map[string]any{"repo": "imported"}, wantStatus: 400, wantCode: "invalid_request"},
-		{name: "path in name", token: agentToken, body: map[string]any{"repo": "acme/imported/../x"}, wantStatus: 400, wantCode: "invalid_request"},
-		{name: "unknown field", token: agentToken, body: map[string]any{"repo": "acme/imported", "permissions": "admin"}, wantStatus: 400, wantCode: "invalid_request"},
-		{name: "invisible", token: agentToken, body: map[string]any{"repo": "acme/none"}, wantStatus: 404, wantCode: "repo_not_found"},
-		{name: "topics unreadable", token: agentToken, body: imported, setup: func(f *fakeGitHub) { f.err = errors.New("boom") }, wantStatus: 502, wantCode: "github_unreachable"},
-		{name: "token refused", token: agentToken, body: imported, setup: func(f *fakeGitHub) { f.pushErr = errors.New("boom") }, wantStatus: 502, wantCode: "github_unreachable"},
-		{name: "not configured", token: agentToken, body: imported, noGitHub: true, wantStatus: 503, wantCode: "github_not_configured"},
+		{name: "agent", token: agentToken, body: imported, wantStatus: 201, wantRepo: "acme/imported"},
+		{name: "operator", token: opToken, body: imported, wantStatus: 201, wantRepo: "acme/imported"},
+		{name: "renamed", token: agentToken, body: repo("acme/old-name"), wantStatus: 201, wantRepo: "acme/imported"},
+		{name: "viewer", token: viewerToken, body: imported, wantStatus: 403, wantCode: "forbidden", noRead: true},
+		{name: "no token", body: imported, wantStatus: 401, wantCode: "unauthorized", noRead: true},
+		{name: "no topic", token: agentToken, body: repo("acme/plain"), wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "scripts/import-repo.sh"},
+		{name: "default gitops", token: agentToken, body: repo(deploy.DefaultGitOpsRepo), setup: func(f *fakeGitHub) { f.org = "2026-Softbank-Hackathon-Charlie" },
+			wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "gitops repository", noRead: true},
+		{name: "default gitops in another case", token: opToken, body: repo(strings.ToLower(deploy.DefaultGitOpsRepo)), setup: func(f *fakeGitHub) { f.org = "2026-Softbank-Hackathon-Charlie" },
+			wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "gitops repository", noRead: true},
+		{name: "configured gitops", token: agentToken, body: repo("acme/deploys"), gitOps: "acme/deploys", wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "gitops repository", noRead: true},
+		{name: "renamed to the gitops repository", token: agentToken, body: repo("acme/old-deploys"), gitOps: "acme/deploys", wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "gitops repository"},
+		{name: "default gitops name is not refused when another is configured", token: agentToken, body: repo("acme/old-deploys"), gitOps: "acme/gitops", wantStatus: 201, wantRepo: "acme/deploys"},
+		{name: "another org", token: agentToken, body: repo("other/imported"), wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "not in the platform's GitHub organization", noRead: true},
+		{name: "org as a suffix", token: agentToken, body: repo("notacme/imported"), wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "not in the platform's GitHub organization", noRead: true},
+		{name: "transferred out of the org", token: agentToken, body: repo("acme/moved"), wantStatus: 403, wantCode: "repo_not_imported", wantMsg: "not in the platform's GitHub organization"},
+		{name: "not owner/name", token: agentToken, body: repo("imported"), wantStatus: 400, wantCode: "invalid_request", noRead: true},
+		{name: "path in name", token: agentToken, body: repo("acme/imported/../x"), wantStatus: 400, wantCode: "invalid_request", noRead: true},
+		{name: "dot", token: agentToken, body: repo("acme/."), wantStatus: 400, wantCode: "invalid_request", noRead: true},
+		{name: "dot dot", token: agentToken, body: repo("acme/.."), wantStatus: 400, wantCode: "invalid_request", noRead: true},
+		{name: "clone URL suffix", token: agentToken, body: repo("acme/imported.git"), wantStatus: 400, wantCode: "invalid_request", noRead: true},
+		{name: "unknown field", token: agentToken, body: map[string]any{"repo": "acme/imported", "permissions": "admin"}, wantStatus: 400, wantCode: "invalid_request", noRead: true},
+		{name: "invisible", token: agentToken, body: repo("acme/none"), wantStatus: 404, wantCode: "repo_not_found", wantMsg: "cannot see it"},
+		{name: "not in the installation", token: agentToken, body: imported, setup: func(f *fakeGitHub) { f.pushErr = fmt.Errorf("%w: acme/imported", github.ErrNotInInstallation) },
+			wantStatus: 404, wantCode: "repo_not_found", wantMsg: "add the repository to the installation"},
+		{name: "wider scope", token: agentToken, body: imported, setup: func(f *fakeGitHub) { f.pushErr = fmt.Errorf("%w: all", github.ErrUnexpectedScope) },
+			wantStatus: 502, wantCode: "github_unreachable", wantMsg: "not limited to acme/imported"},
+		{name: "read fails", token: agentToken, body: imported, setup: func(f *fakeGitHub) { f.err = boom }, wantStatus: 502, wantCode: "github_unreachable", wantMsg: "could not read"},
+		{name: "mint fails", token: agentToken, body: imported, setup: func(f *fakeGitHub) { f.pushErr = boom }, wantStatus: 502, wantCode: "github_unreachable", wantMsg: "could not create the push token"},
+		{name: "not configured", token: agentToken, body: imported, noGitHub: true, wantStatus: 503, wantCode: "github_not_configured", noRead: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gh := newFakeGitHub()
-			gh.topics["acme/imported"] = []string{"go", github.ImportedTopic}
-			gh.topics["acme/plain"] = []string{"go"}
-			gh.topics["other/imported"] = []string{github.ImportedTopic}
-			gh.topics[deploy.DefaultGitOpsRepo] = []string{github.ImportedTopic}
-			gh.pushToken = github.PushToken{Token: secret, ExpiresAt: expires}
+			gh := pushGitHub()
 			if tc.setup != nil {
 				tc.setup(gh)
 			}
-			var h *harness
-			if tc.noGitHub {
-				h = newHarness(t)
-			} else {
-				h = newHarness(t, withGitHub(gh, nil))
+			opts := []option{func(h *harness, _ *runs.Config, _ *Deps) { h.gitOpsRepo = tc.gitOps }}
+			if !tc.noGitHub {
+				opts = append(opts, withGitHub(gh, nil))
 			}
+			h := newHarness(t, opts...)
 			var auth []string
 			if tc.token != "" {
 				auth = []string{"Authorization", "Bearer " + tc.token}
@@ -578,40 +629,82 @@ func TestCreatePushToken(t *testing.T) {
 			if code != tc.wantStatus {
 				t.Fatalf("%d %s, want %d", code, b, tc.wantStatus)
 			}
-			a := h.lastAudit()
-			if a.Action != "POST /v1/github/push-tokens" || a.Status != code || strings.Contains(string(a.Detail), secret) {
-				t.Fatalf("audit %+v %s", a, a.Detail)
+			// The route answers 401 and the role's 403 before the handler runs.
+			if hdr.Get("Cache-Control") != "no-store" && tc.wantCode != "unauthorized" && tc.wantCode != "forbidden" {
+				t.Fatalf("Cache-Control %q", hdr.Get("Cache-Control"))
+			}
+			// One audit entry per request, whoever writes it, never with the token.
+			entries, _ := h.store.ListAudit(t.Context(), 0, 0)
+			if len(entries) != 1 || entries[0].Action != pushTokenRoute || entries[0].Status != code || strings.Contains(string(entries[0].Detail), pushSecret) {
+				t.Fatalf("audit %+v", entries)
+			}
+			if tc.noRead && len(gh.asked) != 0 {
+				t.Fatalf("refused, but asked GitHub about %v", gh.asked)
 			}
 			if tc.wantStatus != 201 {
 				if errorCode(t, b) != tc.wantCode || !strings.Contains(decode[apiv1.Error](t, b).Error.Message, tc.wantMsg) {
 					t.Fatalf("%s", b)
 				}
-				if strings.Contains(string(b), secret) || len(gh.pushed) != 0 {
+				if strings.Contains(string(b), pushSecret) || len(gh.pushed) != 0 {
 					t.Fatalf("refused, but a token was issued for %v: %s", gh.pushed, b)
 				}
 				return
 			}
 			got := decode[apiv1.PushToken](t, b)
-			if got.Repo != "acme/imported" || got.Token != secret || !got.ExpiresAt.Equal(expires) || !slices.Equal(gh.pushed, []string{"acme/imported"}) {
-				t.Fatalf("%s, pushed %v", b, gh.pushed)
-			}
-			if hdr.Get("Cache-Control") != "no-store" {
-				t.Fatalf("Cache-Control %q", hdr.Get("Cache-Control"))
+			if got.Repo != tc.wantRepo || got.Token != pushSecret || !got.ExpiresAt.Equal(gh.pushToken.ExpiresAt) || len(gh.pushed) != 1 || len(gh.revoked) != 0 {
+				t.Fatalf("%s, pushed %v, revoked %v", b, gh.pushed, gh.revoked)
 			}
 			for k, v := range hdr {
-				if strings.Contains(strings.Join(v, " "), secret) {
+				if strings.Contains(strings.Join(v, " "), pushSecret) {
 					t.Fatalf("header %s has the token", k)
 				}
 			}
-			if !strings.Contains(string(a.Detail), `"repo":"acme/imported"`) || !strings.Contains(string(a.Detail), `"expiresAt":"2026-11-05T13:00:00Z"`) {
-				t.Fatalf("audit %s", a.Detail)
+			d := string(entries[0].Detail)
+			if !strings.Contains(d, `"repo":"`+tc.wantRepo+`"`) || !strings.Contains(d, `"expiresAt":"2026-11-05T13:00:00Z"`) {
+				t.Fatalf("audit %s", d)
 			}
 		})
 	}
 
-	h := newHarness(t, withGitHub(newFakeGitHub(), nil))
+	h := newHarness(t, withGitHub(pushGitHub(), nil))
 	if code, b := h.do("POST", "/v1/github/push-tokens", agentToken, nil); code != 400 || errorCode(t, b) != "invalid_request" {
 		t.Fatalf("no body: %d %s", code, b)
+	}
+}
+
+func TestPushTokenAuditFailsClosed(t *testing.T) {
+	var fail atomic.Bool
+	gh := pushGitHub()
+	h := newHarness(t, withGitHub(gh, nil),
+		func(_ *harness, _ *runs.Config, d *Deps) { d.Store = failingAudit{d.Store, &fail} })
+
+	fail.Store(true)
+	code, b := h.do("POST", "/v1/github/push-tokens", agentToken, map[string]any{"repo": "acme/imported"})
+	if code != 503 || errCode(t, b) != "audit_unavailable" || strings.Contains(string(b), pushSecret) {
+		t.Fatalf("with the audit log down: %d %s", code, b)
+	}
+	if !slices.Equal(gh.revoked, []string{pushSecret}) {
+		t.Fatalf("revoked %v, want the token that was not handed out", gh.revoked)
+	}
+	// A revoke that fails is only logged; the token is still not returned.
+	gh.revokeErr = errors.New("revoke failed")
+	if code, b := h.do("POST", "/v1/github/push-tokens", agentToken, map[string]any{"repo": "acme/imported"}); code != 503 || strings.Contains(string(b), pushSecret) {
+		t.Fatalf("with the audit log down and revoke failing: %d %s", code, b)
+	}
+	if entries, _ := h.store.ListAudit(t.Context(), 0, 0); len(entries) != 0 {
+		t.Fatalf("audit entries written while the log was down: %+v", entries)
+	}
+
+	fail.Store(false)
+	code, b = h.do("POST", "/v1/github/push-tokens", agentToken, map[string]any{"repo": "acme/imported"})
+	if code != 201 || decode[apiv1.PushToken](t, b).Token != pushSecret {
+		t.Fatalf("with the audit log back: %d %s", code, b)
+	}
+	// Exactly one entry for the request that returned the token: the route
+	// does not add a second one.
+	entries, _ := h.store.ListAudit(t.Context(), 0, 0)
+	if len(entries) != 1 || entries[0].Action != pushTokenRoute || entries[0].Status != 201 || entries[0].Actor != "ai" || strings.Contains(string(entries[0].Detail), pushSecret) {
+		t.Fatalf("audit entries %+v", entries)
 	}
 }
 
