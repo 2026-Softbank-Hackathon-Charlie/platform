@@ -73,6 +73,6 @@
 
 ## 관련 자료
 
-- [internal/deploy/sealed.go](../../internal/deploy/sealed.go), [internal/store/migrations/0009_backup_storage.sql](../../internal/store/migrations/0009_backup_storage.sql)
+- [internal/deploy/sealed.go](../../internal/deploy/sealed.go), [internal/store/migrations/0010_backup_storage.sql](../../internal/store/migrations/0010_backup_storage.sql)
 - infra `helm/charts/hopcharlie-app/templates/postgres.yaml`
 - [Barman Cloud plugin](https://cloudnative-pg.io/plugin-barman-cloud/docs/), [CNPG replica clusters](https://cloudnative-pg.io/docs/1.30/replica_cluster)
