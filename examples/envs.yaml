@@ -17,10 +17,14 @@
 #   storage         optional, the driver that makes each instance's bucket and a
 #                   key for that bucket only (ADR 0016). Without it, apps with an
 #                   s3 resource cannot be registered for this environment.
-#     driver        aws | minio (gcs is not implemented yet)
+#     driver        aws | minio | gcs
 #     bucketPrefix  at most 15 characters, lowercase letters, digits and hyphens;
 #                   the bucket of an instance is <bucketPrefix><instance>
-#     region        the buckets' region; required for aws
+#     region        the buckets' region; required for aws and gcs (single region)
+#     gcs:   project (GCP project ID); uses Application Default Credentials
+#            (GOOGLE_APPLICATION_CREDENTIALS can name a public WIF config).
+#            App accounts get objectAdmin and legacyBucketReader on their
+#            own bucket only. HMAC key creation must be allowed by org policy.
 #     aws:   iamPath (e.g. /hopcharlie-apps/), permissionsBoundary (policy ARN);
 #            the IAM user of an instance is hopcharlie-app-<instance>. The
 #            platform uses its own AWS credentials (the pod's role).
@@ -35,6 +39,13 @@ environments:
     displayName: GCP GKE
     region: asia-northeast3
     kubeContext: gke-hopcharlie
+    # Enable after the GCS driver image, ADC access and certificate are ready:
+    # sealedSecretsCert: /config/sealed-secrets/gke.pem
+    # storage:
+    #   driver: gcs
+    #   bucketPrefix: hopcharlie-gke-
+    #   region: asia-northeast3
+    #   project: your-gcp-project
   - name: eks
     provider: aws
     displayName: AWS EKS

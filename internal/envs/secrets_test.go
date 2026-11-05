@@ -68,10 +68,10 @@ environments:
 func TestLoadConfigStorageInvalid(t *testing.T) {
 	base := "environments:\n  - name: eks\n    provider: aws\n    kubeContext: eks\n    storage:\n"
 	cases := map[string]struct{ storage, want string }{
-		"gcs":           {"      driver: gcs\n      bucketPrefix: hc-\n", `environment "eks": storage driver gcs is not implemented`},
-		"unknown field": {"      driver: aws\n      bucket: x\n", "unknown field"},
-		"long prefix":   {"      driver: minio\n      bucketPrefix: hopcharlie-onprem-\n", "longer than 15"},
-		"aws missing":   {"      driver: aws\n      bucketPrefix: hc-\n", "region is required"},
+		"gcs no project": {"      driver: gcs\n      bucketPrefix: hc-\n", `environment "eks": storage project`},
+		"unknown field":  {"      driver: aws\n      bucket: x\n", "unknown field"},
+		"long prefix":    {"      driver: minio\n      bucketPrefix: hopcharlie-onprem-\n", "longer than 15"},
+		"aws missing":    {"      driver: aws\n      bucketPrefix: hc-\n", "region is required"},
 	}
 	for name, tc := range cases {
 		_, err := LoadConfig(writeFile(t, "envs.yaml", base+tc.storage))
@@ -108,8 +108,27 @@ func checkStorageUsers(t *testing.T, cases map[string]struct{ yaml, want string 
 
 func TestLoadConfigStorageSharedUsers(t *testing.T) {
 	checkStorageUsers(t, map[string]struct{ yaml, want string }{
-		"two aws": {storageEnvs(awsStorage("hc-a-"), awsStorage("hc-b-")), `environments "a" and "b" both keep their storage users in the AWS account`},
+		"two aws":                   {storageEnvs(awsStorage("hc-a-"), awsStorage("hc-b-")), `environments "a" and "b" both keep their storage users in the AWS account`},
+		"two gcs in one project":    {storageEnvs(gcsStorage("hc-a-", "example-project"), gcsStorage("hc-b-", "example-project")), `both keep their storage users in the GCP project example-project`},
+		"gcs in different projects": {storageEnvs(gcsStorage("hc-a-", "example-project-a"), gcsStorage("hc-b-", "example-project-b")), ""},
+		"aws and gcs":               {storageEnvs(awsStorage("hc-a-"), gcsStorage("hc-b-", "example-project")), ""},
 	})
+}
+
+func gcsStorage(prefix, project string) string {
+	return "      driver: gcs\n      bucketPrefix: " + prefix + "\n      region: asia-northeast3\n      project: " + project + "\n"
+}
+
+func TestLoadGCSStorageConfig(t *testing.T) {
+	path := writeFile(t, "envs.yaml", "environments:\n  - name: gke\n    provider: gcp\n    kubeContext: gke\n    sealedSecretsCert: /config/sealed-secrets/gke.pem\n    storage:\n"+gcsStorage("hopcharlie-gke-", "example-project"))
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := cfg.Environments[0]
+	if e.Storage == nil || e.Storage.Driver != storage.DriverGCS || e.Storage.Project != "example-project" || e.SealedSecretsCert != "/config/sealed-secrets/gke.pem" {
+		t.Fatalf("GKE configuration = %+v", e)
+	}
 }
 
 func TestLoadExampleConfigStorage(t *testing.T) {

@@ -1,6 +1,6 @@
 # 0016. 앱 인스턴스마다 플랫폼이 버킷과 그 버킷 전용 키를 만들고, 키는 Sealed Secrets로 gitops에 넣는다
 
-- 상태: 채택, 구현됨(2026-11-04)
+- 상태: 채택, 구현됨(AWS·MinIO 2026-11-04, GCS 코드 2026-11-05; GCS 실환경 검증은 별도)
 - 날짜: 2026-11-03
 
 ## 상황
@@ -28,10 +28,10 @@
 | 드라이버 | 환경 | 키를 만드는 방법 |
 | --- | --- | --- |
 | `aws` | EKS | IAM 사용자 `hopcharlie-app-<instance>`(경로 `/hopcharlie-apps/`, permissions boundary 적용), 그 버킷만 허용하는 인라인 정책, 액세스 키 |
-| `gcs` | GKE | 서비스 계정(이름은 인스턴스 이름의 해시), 그 버킷의 `roles/storage.objectAdmin`, HMAC 키 |
+| `gcs` | GKE | 서비스 계정(이름은 인스턴스 이름의 해시), 그 버킷에만 `roles/storage.objectAdmin`·`roles/storage.legacyBucketReader`, HMAC 키 |
 | `minio` | 온프렘, kind E2E | MinIO 관리 API로 사용자와 그 버킷만 허용하는 정책 |
 
-- 드라이버의 관리 자격 증명은 플랫폼만 가진다. AWS는 플랫폼 pod 역할을 쓰고, GCP와 MinIO는 SSM에 둔 값을 쓴다.
+- 드라이버의 관리 자격 증명은 플랫폼만 가진다. AWS는 플랫폼 pod 역할, GCP는 ADC(Application Default Credentials), MinIO는 SSM에서 전달한 환경 변수를 쓴다. GCP 운영 설정은 `GOOGLE_APPLICATION_CREDENTIALS`가 가리키는 공개 WIF 설정과 projected pod token으로 인증하며 서비스 계정 개인키를 발급하지 않는다.
 - `minio` 드라이버가 쓰는 MinIO 관리 클라이언트(madmin-go)는 AGPL-3.0이다. 그래서 이 드라이버는 빌드 태그 `minio`로 빌드한 API에만 들어간다(kind E2E, 온프렘). 기본 빌드와 게시하는 플랫폼 이미지에는 없고, 그 빌드는 `minio` 저장소 설정을 시작할 때 거절한다.
 - 소유는 태그 `hopcharlie:app`으로 가린다. 다른 앱의 태그가 붙은 버킷과 사용자는 쓰지도 지우지도 않는다. IAM 사용자는 만드는 호출에서 태그가 붙으므로 태그가 없으면 플랫폼의 것이 아니다. 태그가 없는 버킷은 같은 계정이 방금 만든 경우에만 이어서 쓴다.
 - 앱 이름으로 소유를 가리므로, 지운 앱이나 인스턴스의 버킷과 키를 지우는 중이면 같은 이름의 앱 등록과 인스턴스 추가를 409 `storage_cleanup_pending`으로 거절한다.
@@ -51,7 +51,10 @@
 
 ### 구현
 
-- 드라이버는 `internal/storage`의 `aws`(S3, IAM 사용자, 인라인 정책 `hopcharlie-bucket`, 액세스 키)와 `minio`(버킷, 사용자, 같은 이름의 canned policy, 서비스 계정)다. `gcs`는 아직 없고, 설정하면 시작하지 않는다. `minio`는 빌드 태그 `minio`가 있어야 들어간다.
+- 드라이버는 `internal/storage`의 `aws`(S3, IAM 사용자, 인라인 정책 `hopcharlie-bucket`, 액세스 키), `minio`(버킷, 사용자, 같은 이름의 canned policy, 서비스 계정), `gcs`(GCS 버킷, 서비스 계정, HMAC 키)다. `minio`는 빌드 태그 `minio`가 있어야 들어간다.
+- `gcs` 설정은 `bucketPrefix`, 단일 리전 `region`(예: `asia-northeast3`), 프로젝트 ID `project`를 요구한다. 기존 `golang.org/x/oauth2/google` ADC와 공식 Storage·IAM REST API를 사용한다. 서비스 계정 이름 충돌을 막기 위해 한 GCP 프로젝트는 한 환경에서만 쓴다. 버킷은 생성할 때 소유 라벨(`hopcharlie-app`, `hopcharlie-instance`), 균일 버킷 수준 접근, 공개 접근 방지를 함께 설정한다. 기존 버킷은 프로젝트·소유 라벨·리전을 확인하고, 라벨이 없는 기존 버킷은 인수하지 않는다. 버킷 IAM 변경은 기존 바인딩과 조건·etag를 보존한다.
+- 앱 계정의 `objectAdmin`은 객체 접근용이고, 같은 버킷의 `legacyBucketReader`는 S3 호환 클라이언트의 버킷 위치·정보 조회용이다. 플랫폼 관리 계정에는 대상 프로젝트의 버킷 목록·생성·조회·수정·IAM·객체 삭제, 서비스 계정 생성·조회·삭제, HMAC 키 관리 권한이 필요하다. 이 권한 연결과 projected token·WIF 설정은 infra가 담당한다.
+- GCS HMAC은 access ID만 저장하고 비밀값은 생성 응답에서만 받아 기존 봉인 경로로 전달한다. 키 삭제는 INACTIVE 전환 뒤 수행한다. 생성 키 사용까지 최대 60초, 비활성화 전파는 최대 3분 걸릴 수 있어 실패는 재실행할 수 있게 남긴다. `iam.disableServiceAccountKeyCreation`·`storage.restrictAuthTypes` 정책이 막으면 오류로 끝내며 정책을 자동 변경하지 않는다. GCS soft delete·보존 정책은 기본값 또는 기존 값을 유지하므로 앱 삭제 후에도 보존 비용이 남을 수 있다.
 - 배포 실행기가 커밋하기 전에 인스턴스 잠금 안에서 환경마다 버킷과 키를 확인한다. 저장한 키가 없으면 새로 만들어 봉인하고, 있으면 그 키가 아직 있는지 확인해 저장한 암호문을 다시 쓴다(사라졌으면 새 키). 저장한 행을 만든 드라이버가 그 환경의 지금 드라이버와 다르면 새 키를 만들지 않고 배포를 실패시킨다.
 - 인증서 지문이 바뀌었으면 새 키를 만들어 다시 봉인하고, 바뀌기 전 키를 행의 `old_key_id`에 적는다. 돌고 있는 파드가 옛 키를 쓸 수 있으므로 커밋할 때는 지우지 않는다. 시크릿이 있는 앱은 `appChecksum`에 키 id가 들어가 키가 바뀌면 파드가 다시 뜬다. 그래서 그 뒤 healthy가 된 배포가 무엇이든 옛 키를 지우고 `old_key_id`를 비운다.
 - 사용자당 키는 둘까지다(AWS 한도이고, `minio`도 같게 둔다). `old_key_id`가 남아 있을 때 인증서가 또 바뀌면 지금 키와 옛 키를 모두 지켜야 하므로, 새 키를 만들지 않고 배포를 실패시킨다.
