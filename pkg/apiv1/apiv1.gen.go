@@ -2500,9 +2500,10 @@ type SecurityReport struct {
 	GeneratedAt time.Time        `json:"generatedAt"`
 	Sources     []SecuritySource `json:"sources"`
 
-	// StorageKeys The bucket keys of app instances (ADR 0016), by instance and then
-	// environment; for each, the key in use first, then the old one,
-	// then keys the platform has no record of. Empty when no instance
+	// StorageKeys The bucket keys of app instances (ADR 0016), by environment (in
+	// the order of `sources`) and then instance; for each instance, the
+	// key in use first, then the old one, then keys the platform has no
+	// record of. Empty when no instance
 	// has a bucket or the server has no storage drivers.
 	StorageKeys []StorageKey    `json:"storageKeys"`
 	Summary     SecuritySummary `json:"summary"`
@@ -2702,8 +2703,9 @@ type StorageKey struct {
 	// deployment (aws: the user's inline policy `hopcharlie-bucket`; minio:
 	// the user's canned policy; gcs: the service account's roles on the
 	// bucket). It is the platform's grant, not read back from the provider.
-	// Absent when the environment's driver now is not the one that made the
-	// key.
+	// Absent when the key's driver could not be used (the environment has no
+	// usable storage driver, or its driver now is not the one that made the
+	// key).
 	Scope *StorageKeyScope `json:"scope,omitempty"`
 
 	// State - ok: the provider has the key.
@@ -2721,8 +2723,9 @@ type StorageKey struct {
 // deployment (aws: the user's inline policy `hopcharlie-bucket`; minio:
 // the user's canned policy; gcs: the service account's roles on the
 // bucket). It is the platform's grant, not read back from the provider.
-// Absent when the environment's driver now is not the one that made the
-// key.
+// Absent when the key's driver could not be used (the environment has no
+// usable storage driver, or its driver now is not the one that made the
+// key).
 type StorageKeyScope struct {
 	// Actions S3 actions (aws, minio) or GCS roles (gcs).
 	//

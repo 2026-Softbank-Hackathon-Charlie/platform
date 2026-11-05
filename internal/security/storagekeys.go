@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 
@@ -62,7 +63,16 @@ func (c *StorageKeyCollector) Collect(ctx context.Context) []Report {
 	fails := make([]string, len(rows))
 	var wg sync.WaitGroup
 	for i, row := range rows {
-		wg.Go(func() { keys[i], fails[i] = c.read(ctx, row) })
+		wg.Go(func() {
+			// Service.run recovers only the collector's own goroutine.
+			defer func() {
+				if v := recover(); v != nil {
+					keys[i], fails[i] = nil, "the collector failed; see the server log"
+					slog.Error("storage key collector panicked", "instance", row.Instance, "env", row.Env, "panic", v)
+				}
+			}()
+			keys[i], fails[i] = c.read(ctx, row)
+		})
 	}
 	wg.Wait()
 

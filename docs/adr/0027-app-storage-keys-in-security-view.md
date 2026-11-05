@@ -23,7 +23,7 @@ EKS도 Pod Identity로 바꾸지 않고 인스턴스마다 정적 키를 쓴다.
 코드와 실환경에서 확인했다.
 
 - 키 하나는 버킷 하나만 쓴다. `aws` 드라이버는 사용자마다 인라인 정책 `hopcharlie-bucket`을 두고, 그 버킷에 `s3:ListBucket`, `s3:GetBucketLocation`, `s3:ListBucketMultipartUploads`, 그 버킷의 객체에 `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload`, `s3:ListMultipartUploadParts`만 허용한다(`internal/storage` `bucketPolicy`). 배포할 때마다 `PutUserPolicy`로 다시 쓴다. `minio` 드라이버는 같은 문서를 canned policy로 쓰고, `gcs` 드라이버는 서비스 계정에 그 버킷의 `roles/storage.objectAdmin`과 `roles/storage.legacyBucketReader`만 준다.
-- permissions boundary가 정책을 덮는다. infra의 `hopcharlie-app-boundary`는 이 계정의 `hopcharlie-eks-*` 버킷 목록 작업과 객체 작업만 허용하고, 버킷 설정(정책, ACL, 공개 차단, 삭제)은 허용하지 않는다. 플랫폼 pod 역할은 이 boundary를 붙일 때만 `/hopcharlie-apps/` 사용자를 만들고 정책을 쓸 수 있다(`iam:PermissionsBoundary` 조건). 그래서 인라인 정책이 잘못 써져도 앱 키는 다른 계정의 버킷이나 버킷 설정에 닿지 않는다.
+- permissions boundary가 정책을 덮는다. infra의 `hopcharlie-app-boundary`는 이 계정의 `hopcharlie-eks-*` 버킷 목록 작업과 객체 작업만 허용하고, 버킷 설정(정책, ACL, 공개 차단, 삭제)은 허용하지 않는다. 플랫폼 pod 역할은 이 boundary를 붙일 때만 `/hopcharlie-apps/` 사용자를 만들고 정책을 쓸 수 있다(`iam:PermissionsBoundary` 조건). 그래서 인라인 정책이 잘못 써져도 앱 키는 `hopcharlie-eks-*`가 아닌 버킷, 다른 계정의 버킷, 버킷 설정에 닿지 않는다. 다른 앱의 버킷을 막는 것은 인라인 정책이다.
 - 새 키를 만들고 옛 키를 지우는 경로가 있다(ADR 0016). sealed-secrets 인증서가 바뀌면 새 키를 만들고 옛 키를 `old_key_id`에 적었다가 healthy 배포 뒤에 지운다. 키가 밖에서 지워졌으면 다음 배포가 새 키를 만든다. 새 키를 만들기 전에 기록에 없는 키를 지우고, 사용자당 키는 둘까지다. 인스턴스나 앱을 지우면 사용자, 키, 버킷을 지우고 실패하면 5분마다 다시 한다.
 - 실환경(2026-11-05, 읽기 전용 IAM 조회): `/hopcharlie-apps/` 사용자는 `hopcharlie-app-moimroom` 하나다. boundary는 `hopcharlie-app-boundary`, 인라인 정책은 `hopcharlie-bucket` 하나이고 `hopcharlie-eks-moimroom`과 그 객체만 허용한다. 활성 액세스 키가 하나이고 2026-11-04 08:21:52 UTC에 만들어졌다.
 

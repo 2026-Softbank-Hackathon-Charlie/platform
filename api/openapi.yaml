@@ -2803,9 +2803,10 @@ components:
           items: { $ref: "#/components/schemas/SecurityFinding" }
         storageKeys:
           description: |
-            The bucket keys of app instances (ADR 0016), by instance and then
-            environment; for each, the key in use first, then the old one,
-            then keys the platform has no record of. Empty when no instance
+            The bucket keys of app instances (ADR 0016), by environment (in
+            the order of `sources`) and then instance; for each instance, the
+            key in use first, then the old one, then keys the platform has no
+            record of. Empty when no instance
             has a bucket or the server has no storage drivers.
           type: array
           items: { $ref: "#/components/schemas/StorageKey" }
@@ -2855,8 +2856,9 @@ components:
         deployment (aws: the user's inline policy `hopcharlie-bucket`; minio:
         the user's canned policy; gcs: the service account's roles on the
         bucket). It is the platform's grant, not read back from the provider.
-        Absent when the environment's driver now is not the one that made the
-        key.
+        Absent when the key's driver could not be used (the environment has no
+        usable storage driver, or its driver now is not the one that made the
+        key).
       type: object
       required: [actions]
       properties:

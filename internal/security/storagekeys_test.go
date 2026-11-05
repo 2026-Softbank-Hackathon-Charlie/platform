@@ -41,6 +41,11 @@ func (d keyDriver) Keys(_ context.Context, in storage.Instance) ([]storage.KeyIn
 
 func (d keyDriver) Scope() storage.Scope { return d.scope }
 
+// panicDriver panics when it reads keys.
+type panicDriver struct{ keyDriver }
+
+func (panicDriver) Keys(context.Context, storage.Instance) ([]storage.KeyInfo, error) { panic("boom") }
+
 // plainDriver cannot read keys back.
 type plainDriver struct{ storage.Driver }
 
@@ -157,6 +162,14 @@ func TestStorageKeysReadFailures(t *testing.T) {
 	reps = NewStorageKeyCollector(environments, fakeRows{rows: []store.InstanceStorage{row}}, func(string) (storage.Driver, error) { return plainDriver{}, nil }).Collect(t.Context())
 	if k := reps[0].StorageKeys; k[0].State != apiv1.StorageKeyStateUnread || !strings.Contains(*k[0].Message, "aws driver made this key") {
 		t.Fatalf("driver changed: %+v", k)
+	}
+
+	// A driver that panics fails its row, not the server.
+	reps = NewStorageKeyCollector(environments, fakeRows{rows: []store.InstanceStorage{row}}, func(string) (storage.Driver, error) {
+		return panicDriver{keyDriver{name: storage.DriverAWS}}, nil
+	}).Collect(t.Context())
+	if reps[0].Status != apiv1.SecuritySourceStatusError || len(reps[0].StorageKeys) != 0 || !strings.Contains(reps[0].Message, "the collector failed") {
+		t.Fatalf("panic: %+v", reps)
 	}
 
 	reps = NewStorageKeyCollector(environments, fakeRows{err: errors.New("connection refused")}, nil).Collect(t.Context())
