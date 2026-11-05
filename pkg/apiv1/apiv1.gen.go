@@ -2165,9 +2165,12 @@ type PlanRecord struct {
 	Attachments *[]PlanAttachment `json:"attachments,omitempty"`
 
 	// Ref Example: pln_3f9c1a0b2d4e
-	Ref           string     `json:"ref"`
-	ReviewComment *string    `json:"reviewComment,omitempty"`
-	ReviewedAt    *time.Time `json:"reviewedAt,omitempty"`
+	Ref string `json:"ref"`
+
+	// Rehearsal Set on plans waiting for approval. When required, approving needs the rehearsal-report.json attachment to have passed (schemaVersion hopcharlie.rehearsal/v1) for exactly the plan body and target.yaml attached now, uploaded by the principal that submitted the plan; otherwise approve answers 409 rehearsal_required. The report is the trusted runner's word: the gate binds it to the content, it does not prove the rehearsal ran.
+	Rehearsal     *PlanRehearsalGate `json:"rehearsal,omitempty"`
+	ReviewComment *string            `json:"reviewComment,omitempty"`
+	ReviewedAt    *time.Time         `json:"reviewedAt,omitempty"`
 
 	// ReviewedBy who approved or rejected
 	ReviewedBy *string `json:"reviewedBy,omitempty"`
@@ -2176,12 +2179,27 @@ type PlanRecord struct {
 	Revision int64 `json:"revision"`
 
 	// RollbackOf the run this plan rolls back (POST /v1/migrations/{runId}/rollback)
-	RollbackOf  *string     `json:"rollbackOf,omitempty"`
-	RunId       *string     `json:"runId,omitempty"`
-	Status      PlanStatus  `json:"status"`
-	SubmittedAt time.Time   `json:"submittedAt"`
-	SubmittedBy string      `json:"submittedBy"`
-	Summary     PlanSummary `json:"summary"`
+	RollbackOf  *string    `json:"rollbackOf,omitempty"`
+	RunId       *string    `json:"runId,omitempty"`
+	Status      PlanStatus `json:"status"`
+	SubmittedAt time.Time  `json:"submittedAt"`
+	SubmittedBy string     `json:"submittedBy"`
+
+	// SubmittedRole The role the plan was submitted with. An agent's (AI) plan needs a passing rehearsal report before it can be approved. Absent for plans stored before the role was kept.
+	SubmittedRole *Role       `json:"submittedRole,omitempty"`
+	Summary       PlanSummary `json:"summary"`
+}
+
+// PlanRehearsalGate Set on plans waiting for approval. When required, approving needs the rehearsal-report.json attachment to have passed (schemaVersion hopcharlie.rehearsal/v1) for exactly the plan body and target.yaml attached now, uploaded by the principal that submitted the plan; otherwise approve answers 409 rehearsal_required. The report is the trusted runner's word: the gate binds it to the content, it does not prove the rehearsal ran.
+type PlanRehearsalGate struct {
+	// Passed a passing rehearsal report matches the plan as it is now
+	Passed bool `json:"passed"`
+
+	// Reason why approval is blocked, when it is
+	Reason *string `json:"reason,omitempty"`
+
+	// Required the plan was submitted by an agent (AI)
+	Required bool `json:"required"`
 }
 
 // PlanStatus defines model for PlanStatus.

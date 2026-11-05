@@ -117,12 +117,12 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 func (s *Postgres) Close() { s.pool.Close() }
 
 const planColumns = `ref, plan_id, status, summary, raw, submitted_by, submitted_at,
-	reviewed_by, reviewed_at, review_comment, run_id, revision, rollback_of`
+	reviewed_by, reviewed_at, review_comment, run_id, revision, rollback_of, submitted_role`
 
 func scanPlan(row pgx.Row) (Plan, error) {
 	var p Plan
 	err := row.Scan(&p.Ref, &p.PlanID, &p.Status, &p.Summary, &p.Raw, &p.SubmittedBy, &p.SubmittedAt,
-		&p.ReviewedBy, &p.ReviewedAt, &p.ReviewComment, &p.RunID, &p.Revision, &p.RollbackOf)
+		&p.ReviewedBy, &p.ReviewedAt, &p.ReviewComment, &p.RunID, &p.Revision, &p.RollbackOf, &p.SubmittedRole)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -136,9 +136,9 @@ func scanPlan(row pgx.Row) (Plan, error) {
 
 func (s *Postgres) CreatePlan(ctx context.Context, p Plan) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO plans (`+planColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		p.Ref, p.PlanID, p.Status, p.Summary, p.Raw, p.SubmittedBy, p.SubmittedAt,
-		p.ReviewedBy, p.ReviewedAt, p.ReviewComment, p.RunID, p.Revision, p.RollbackOf)
+		p.ReviewedBy, p.ReviewedAt, p.ReviewComment, p.RunID, p.Revision, p.RollbackOf, p.SubmittedRole)
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "plans_rollback_of_idx":

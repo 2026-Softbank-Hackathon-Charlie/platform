@@ -71,7 +71,44 @@ func (s *Service) recordOf(ctx context.Context, row store.Plan) (apiv1.PlanRecor
 	if err := s.withAttachments(ctx, recs); err != nil {
 		return apiv1.PlanRecord{}, err
 	}
+	if err := s.withRehearsal(ctx, []store.Plan{row}, recs); err != nil {
+		return apiv1.PlanRecord{}, err
+	}
 	return recs[0], nil
+}
+
+// withRehearsal sets Rehearsal on the records of plans waiting for approval:
+// whether approving needs rehearsal evidence and whether it is there. rows
+// and recs are in the same order.
+func (s *Service) withRehearsal(ctx context.Context, rows []store.Plan, recs []apiv1.PlanRecord) error {
+	var refs []string
+	for _, row := range rows {
+		if row.Status == store.PlanPending {
+			refs = append(refs, row.Ref)
+		}
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	list, err := s.store.ListPlanAttachments(ctx, refs)
+	if err != nil {
+		return err
+	}
+	byRef := map[string][]store.PlanAttachment{}
+	for _, a := range list {
+		byRef[a.Ref] = append(byRef[a.Ref], a)
+	}
+	for i, row := range rows {
+		if row.Status != store.PlanPending {
+			continue
+		}
+		g, err := s.rehearsalGate(ctx, row, byRef[row.Ref])
+		if err != nil {
+			return err
+		}
+		recs[i].Rehearsal = g
+	}
+	return nil
 }
 
 // withAttachments sets Attachments on every record with one store read.

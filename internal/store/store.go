@@ -45,7 +45,11 @@ type Plan struct {
 	// plan that is not rejected rolls back a given run (CreatePlan).
 	RollbackOf string
 
-	SubmittedBy   string
+	SubmittedBy string
+	// SubmittedRole is the role of the caller that submitted the plan
+	// (viewer, agent, operator), or empty for plans stored before it was kept.
+	// Approving an agent's plan needs a passing rehearsal report (plans.requireRehearsal).
+	SubmittedRole string
 	SubmittedAt   time.Time
 	ReviewedBy    string     // approver or rejecter, empty until reviewed
 	ReviewedAt    *time.Time // nil until reviewed

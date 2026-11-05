@@ -525,6 +525,8 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_plan", err.Error())
 	case errors.Is(err, plans.ErrWrongStatus):
 		s.fail(w, r, http.StatusConflict, "plan_state_conflict", err.Error())
+	case errors.Is(err, plans.ErrRehearsal):
+		s.fail(w, r, http.StatusConflict, "rehearsal_required", err.Error())
 	case errors.Is(err, plans.ErrResidencyDenied):
 		// The verdict holds fixed codes and validated identifiers only.
 		var denied *plans.ResidencyDenied
