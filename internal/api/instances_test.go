@@ -26,7 +26,7 @@ func instanceGitHub() *fakeGitHub {
 	}
 	gh.repo(shopRepo, "nospec", "4444444444444444444444444444444444444444", "")
 	gh.repo(shopRepo, "renamed", "5555555555555555555555555555555555555555", strings.Replace(shopSpec, "name: shop", "name: store", 1), "Dockerfile", "worker/Dockerfile")
-	gh.repo(shopRepo, "broken", "6666666666666666666666666666666666666666", "name: shop\nservices:\n  - name: web\n    port: 0\n", "Dockerfile")
+	gh.repo(shopRepo, "broken", "6666666666666666666666666666666666666666", "name: shop\nservices:\n  - name: web\n    port: 70000\n", "Dockerfile")
 	return gh
 }
 

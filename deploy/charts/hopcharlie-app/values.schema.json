@@ -23,7 +23,7 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["name", "image", "port"],
+            "required": ["name", "image"],
             "properties": {
               "name": { "$ref": "#/definitions/partName" },
               "image": { "type": "string", "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
@@ -31,15 +31,21 @@
               "healthCheck": { "type": "string", "pattern": "^(/[^\\s]*)?$" },
               "public": { "type": "boolean" },
               "replicas": { "type": "integer", "minimum": 1, "maximum": 5 },
+              "memory": { "$ref": "#/definitions/quantity" },
+              "cpu": { "$ref": "#/definitions/quantity" },
               "env": {
                 "type": ["object", "null"],
                 "propertyNames": {
                   "pattern": "^[A-Z_][A-Z0-9_]*$",
-                  "not": { "anyOf": [{ "enum": ["PORT", "DATABASE_URL"] }, { "pattern": "^S3_" }] }
+                  "not": { "$ref": "#/definitions/reservedEnv" }
                 },
                 "additionalProperties": { "type": "string" }
               }
-            }
+            },
+            "allOf": [
+              { "if": { "required": ["public"], "properties": { "public": { "const": true } } }, "then": { "required": ["port"] } },
+              { "if": { "required": ["healthCheck"] }, "then": { "required": ["port"] } }
+            ]
           }
         },
         "resources": {
@@ -73,7 +79,7 @@
               "propertyNames": {
                 "pattern": "^[A-Z_][A-Z0-9_]*$",
                 "maxLength": 64,
-                "not": { "anyOf": [{ "enum": ["PORT", "DATABASE_URL"] }, { "pattern": "^S3_" }] }
+                "not": { "$ref": "#/definitions/reservedEnv" }
               },
               "additionalProperties": { "$ref": "#/definitions/ciphertext" }
             },
@@ -95,6 +101,7 @@
           "additionalProperties": false,
           "properties": {
             "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+            "externalTrafficPolicy": { "enum": ["", "Cluster", "Local"] },
             "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
             "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
           }
@@ -160,6 +167,13 @@
   },
   "definitions": {
     "partName": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$" },
-    "ciphertext": { "type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$" }
+    "ciphertext": { "type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$" },
+    "quantity": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?([eE][0-9]+|[mkMGTPE]|[KMGTPE]i)?$" },
+    "reservedEnv": {
+      "anyOf": [
+        { "enum": ["PORT", "DATABASE_URL", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "JDBC_DATABASE_URL"] },
+        { "pattern": "^S3_" }
+      ]
+    }
   }
 }

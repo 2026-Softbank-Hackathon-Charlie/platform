@@ -42,19 +42,27 @@ variables of a second one would have no names (platform ADR 0011).
 
 {{/*
 The variables the platform sets in every container (pkg/appspec Reserved).
+A service without a port gets no PORT. They come before the service's own
+env, so its values can refer to them as $(PGHOST).
 */}}
 {{- define "hopcharlie-app.platformEnv" -}}
 {{- $root := .root -}}
 {{- $app := $root.Values.values.app -}}
+{{- with .svc.port }}
 - name: PORT
-  value: {{ .svc.port | quote }}
+  value: {{ . | quote }}
+{{- end }}
 {{- $pg := include "hopcharlie-app.resource" (dict "root" $root "type" "postgres") | fromJson }}
 {{- with $pg.name }}
-- name: DATABASE_URL
+{{- $secret := printf "%s-%s-app" $app . }}
+{{- /* Variable and key of CNPG's app secret: the connection string and its parts. */}}
+{{- range list "DATABASE_URL uri" "PGHOST host" "PGPORT port" "PGDATABASE dbname" "PGUSER username" "PGPASSWORD password" "JDBC_DATABASE_URL jdbc-uri" }}
+- name: {{ first (splitList " " .) }}
   valueFrom:
     secretKeyRef:
-      name: {{ printf "%s-%s-app" $app . }}
-      key: uri
+      name: {{ $secret }}
+      key: {{ last (splitList " " .) }}
+{{- end }}
 {{- end }}
 {{- $s3res := include "hopcharlie-app.resource" (dict "root" $root "type" "s3") | fromJson }}
 {{- with $s3res.name }}
@@ -82,6 +90,27 @@ The variables the platform sets in every container (pkg/appspec Reserved).
       name: {{ $s3.credentialsSecret }}
       key: {{ $s3.secretKeyKey | default "secretKey" }}
 {{- end }}
+{{- end -}}
+
+{{/*
+Requests and limits of a service's container: profile.resources, with the
+service's memory as the memory request and limit and its cpu as the CPU
+request.
+*/}}
+{{- define "hopcharlie-app.resources" -}}
+{{- $res := deepCopy (.root.Values.profile.resources | default dict) -}}
+{{- $requests := $res.requests | default dict -}}
+{{- $limits := $res.limits | default dict -}}
+{{- with .svc.memory -}}
+{{- $_ := set $requests "memory" . -}}
+{{- $_ := set $limits "memory" . -}}
+{{- end -}}
+{{- with .svc.cpu -}}
+{{- $_ := set $requests "cpu" . -}}
+{{- end -}}
+{{- if $requests }}{{ $_ := set $res "requests" $requests }}{{ end -}}
+{{- if $limits }}{{ $_ := set $res "limits" $limits }}{{ end -}}
+{{- with $res }}{{ toYaml . }}{{ end -}}
 {{- end -}}
 
 {{/*

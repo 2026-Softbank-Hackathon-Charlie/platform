@@ -27,6 +27,9 @@ services:
     path: worker
     port: 9000
     replicas: 2
+  - name: jobs
+    memory: 0.5Gi
+    cpu: 0.25
 resources:
   - {name: db, type: postgres}
   - {name: photos, type: s3}
@@ -35,7 +38,7 @@ resources:
 		t.Fatal(errs)
 	}
 	f := File{App: "moimroom", Instance: "moimroom", Env: "eks", Commit: "9fceb02d0ae598e95dc970b74767f19372d61af8", Deployment: "dep_3f9c1a0b2d4e", Spec: *spec,
-		Images: map[string]string{"web": "r/hopcharlie/apps/moimroom/web@sha256:aa", "worker": "r/hopcharlie/apps/moimroom/worker@sha256:bb"}}
+		Images: map[string]string{"web": "r/hopcharlie/apps/moimroom/web@sha256:aa", "worker": "r/hopcharlie/apps/moimroom/worker@sha256:bb", "jobs": "r/hopcharlie/apps/moimroom/jobs@sha256:cc"}}
 	got, err := Render(f)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +67,12 @@ values:
       port: 9000
       public: false
       replicas: 2
+    - name: "jobs"
+      image: "r/hopcharlie/apps/moimroom/jobs@sha256:cc"
+      public: false
+      replicas: 1
+      memory: "512Mi"
+      cpu: "250m"
   resources:
     - name: "db"
       type: "postgres"

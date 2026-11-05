@@ -32,15 +32,27 @@ var (
 	appNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`)
 )
 
-// checkSecretName returns why name cannot be a secret's name, or "".
+// checkSecretName returns why name cannot be a stored secret's name, or "".
+// A name the platform reserved after it was stored (ADR 0024) passes, so
+// such a secret can still be read and deleted.
 func checkSecretName(name string) string {
 	switch {
 	case len(name) > maxSecretName:
 		return fmt.Sprintf("secret name %.20q... is longer than %d characters", name, maxSecretName)
 	case !secretNamePattern.MatchString(name):
 		return fmt.Sprintf("secret name %q must match ^[A-Z_][A-Z0-9_]*$", name)
-	case appspec.Reserved(name):
-		return fmt.Sprintf("secret name %s is set by the platform (PORT, DATABASE_URL and S3_* are reserved)", name)
+	}
+	return ""
+}
+
+// checkNewSecretName is checkSecretName for a secret being set: it also
+// refuses the names the platform sets.
+func checkNewSecretName(name string) string {
+	if msg := checkSecretName(name); msg != "" {
+		return msg
+	}
+	if appspec.Reserved(name) {
+		return fmt.Sprintf("secret name %s is set by the platform (%s are reserved)", name, appspec.ReservedNames)
 	}
 	return ""
 }
@@ -173,7 +185,7 @@ func (s *Server) updateAppSecrets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, n := range names {
-		if msg := checkSecretName(n); msg != "" {
+		if msg := checkNewSecretName(n); msg != "" {
 			bad(msg)
 			return
 		}
