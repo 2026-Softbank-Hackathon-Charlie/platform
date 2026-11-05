@@ -323,9 +323,11 @@ func main() {
 	deps.Agents = agents
 	// The AI runner as a Job (ai-sandbox hopai), started from the console.
 	// Without PLATFORM_AIRUN_JOB_TEMPLATE it is off and /v1/ai-runs answers 503.
+	// A bad template turns only /v1/ai-runs off (503), not the whole API.
 	aiRuns, err := airun.FromEnv(os.Getenv)
 	if err != nil {
-		fatal("ai runner", "err", err)
+		log.Error("AI runner is off: its Job template cannot be used; /v1/ai-runs answers 503", "err", err)
+		aiRuns = nil
 	}
 	if aiRuns != nil {
 		deps.AIRuns = aiRuns

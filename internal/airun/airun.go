@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -70,6 +71,9 @@ type Runner struct {
 	cs        kubernetes.Interface
 	namespace string
 	template  batchv1.Job
+	// mu makes the one-run-per-app check and the create one step: the API
+	// runs as one replica, so two requests cannot both pass the check.
+	mu sync.Mutex
 }
 
 // New checks the template: a Job with a container named hopai.
@@ -136,6 +140,8 @@ func (r *Runner) Start(ctx context.Context, req Request, actor string) (Run, err
 	if req.Source == req.Target {
 		return Run{}, fmt.Errorf("%w: source and target are both %q", ErrInvalid, req.Source)
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	runs, err := r.List(ctx, req.App)
 	if err != nil {
 		return Run{}, err
@@ -216,6 +222,11 @@ func runOf(j *batchv1.Job) Run {
 	if j.Status.CompletionTime != nil {
 		t := j.Status.CompletionTime.UTC()
 		run.FinishedAt = &t
+	}
+	// A suspended Job runs nothing; counting it as running would block the
+	// app for good (the API cannot delete Jobs).
+	if run.Status == "running" && j.Spec.Suspend != nil && *j.Spec.Suspend {
+		run.Status = "failed"
 	}
 	return run
 }

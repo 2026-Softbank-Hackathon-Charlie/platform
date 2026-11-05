@@ -126,3 +126,47 @@ func TestFromEnvWithoutTemplateIsOff(t *testing.T) {
 		t.Fatalf("FromEnv = %v, %v", r, err)
 	}
 }
+
+// A suspended Job does not hold the app forever.
+func TestSuspendedJobDoesNotBlock(t *testing.T) {
+	cs := clientset()
+	r, _ := New(cs, "ns", template())
+	if _, err := r.Start(ctx, Request{App: "moimroom", Source: "gke", Target: "eks"}, "a"); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ := cs.BatchV1().Jobs("ns").List(ctx, metav1.ListOptions{})
+	j := jobs.Items[0]
+	yes := true
+	j.Spec.Suspend = &yes
+	if _, err := cs.BatchV1().Jobs("ns").Update(ctx, &j, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Start(ctx, Request{App: "moimroom", Source: "gke", Target: "eks"}, "b"); err != nil {
+		t.Fatalf("after the first was suspended: %v", err)
+	}
+}
+
+// Concurrent starts for one app create one Job.
+func TestConcurrentStartsCreateOneJob(t *testing.T) {
+	cs := clientset()
+	r, _ := New(cs, "ns", template())
+	errs := make(chan error, 8)
+	for range 8 {
+		go func() {
+			_, err := r.Start(ctx, Request{App: "moimroom", Source: "gke", Target: "eks"}, "x")
+			errs <- err
+		}()
+	}
+	ok := 0
+	for range 8 {
+		if err := <-errs; err == nil {
+			ok++
+		} else if !errors.Is(err, ErrBusy) {
+			t.Fatal(err)
+		}
+	}
+	jobs, _ := cs.BatchV1().Jobs("ns").List(ctx, metav1.ListOptions{})
+	if ok != 1 || len(jobs.Items) != 1 {
+		t.Fatalf("started %d, jobs %d", ok, len(jobs.Items))
+	}
+}

@@ -43,6 +43,7 @@ func (s *Server) startAIRun(w http.ResponseWriter, r *http.Request) {
 			envs = append(envs, e.Env)
 		}
 		known = slices.Contains(envs, req.Source) && slices.Contains(envs, req.Target)
+		break
 	}
 	if !known || req.Source == req.Target {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", "app "+req.App+" is not configured for "+req.Source+" -> "+req.Target+" (GET /v1/apps)")
