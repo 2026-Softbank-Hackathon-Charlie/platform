@@ -31,12 +31,14 @@ type EnvOptions struct {
 	Kube func(env string) (kubernetes.Interface, error)
 	// AppDomain names the app URL in the events.
 	AppDomain string
-	// Secrets, Sealer and Storage are Config's: the app secrets' cipher and
-	// each environment's sealer and storage driver.
-	Secrets *secrets.Cipher
-	Sealer  func(env string) (*sealing.Sealer, error)
-	Storage func(env string) (storage.Driver, error)
-	Log     *slog.Logger
+	// Secrets, Sealer, Storage and StorageDriver are Config's: the app
+	// secrets' cipher, each environment's sealer and storage driver, and the
+	// driver its configuration names.
+	Secrets       *secrets.Cipher
+	Sealer        func(env string) (*sealing.Sealer, error)
+	Storage       func(env string) (storage.Driver, error)
+	StorageDriver func(env string) string
+	Log           *slog.Logger
 	// Envs are the environments of PLATFORM_ENVS_FILE; a backend template
 	// for another one is logged.
 	Envs []string
@@ -89,7 +91,7 @@ func FromEnv(ctx context.Context, getenv func(string) string, o EnvOptions) (*Ex
 		}
 	}
 
-	cfg := Config{Store: o.Store, GitHub: o.GitHub, AppDomain: o.AppDomain, Log: o.Log, Secrets: o.Secrets, Sealer: o.Sealer, Storage: o.Storage, GKEImageRegistry: gkeRegistry}
+	cfg := Config{Store: o.Store, GitHub: o.GitHub, AppDomain: o.AppDomain, Log: o.Log, Secrets: o.Secrets, Sealer: o.Sealer, Storage: o.Storage, StorageDriver: o.StorageDriver, GKEImageRegistry: gkeRegistry}
 	switch builderKind {
 	case "codebuild":
 		project := getenv("PLATFORM_CODEBUILD_PROJECT")

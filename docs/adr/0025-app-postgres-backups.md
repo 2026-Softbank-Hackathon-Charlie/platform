@@ -2,7 +2,8 @@
 
 - 상태: 제안
 - 날짜: 2026-11-05
-- 관련 ADR: [0011](0011-github-app-deploy.md), [0015](0015-branch-instances.md), [0016](0016-app-object-storage.md), [0019](0019-app-secrets-and-redeploy.md), infra ADR 0050, migration-engine ADR 0001, 0008
+- 관련 ADR: [0011](0011-github-app-deploy.md), [0015](0015-branch-instances.md), [0016](0016-app-object-storage.md), [0019](0019-app-secrets-and-redeploy.md), infra ADR 0050, 0057, migration-engine ADR 0001, 0008
+- 관련 PR: 이 PR(버킷과 키), platform #75(환경 화면의 백업 상태), infra #75(차트), #76(ObjectStore 읽기 권한), #77(eks DB 디스크 4Gi), #80(GKE moimroom DB 백업, ADR 0057, 이전 runbook), frontend #36(콘솔)
 
 ## 상황
 
@@ -26,12 +27,13 @@
 
 ### 버킷과 키(eks, `aws` 드라이버)
 
-- 앱의 기본 인스턴스(앱 이름과 같은 인스턴스)에 `postgres` 리소스가 있으면, 환경의 저장소 드라이버가 `aws`일 때 배포 실행기가 앱 전용 백업 버킷과 그 버킷만 쓰는 키를 만든다. 브랜치 인스턴스는 미리보기라 만들지 않는다.
+- 앱의 기본 인스턴스(앱 이름과 같은 인스턴스)에 `postgres` 리소스가 있으면, 환경 설정의 저장소 드라이버가 `aws`일 때 배포 실행기가 앱 전용 백업 버킷과 그 버킷만 쓰는 키를 만든다. 브랜치 인스턴스는 미리보기라 만들지 않는다.
+- 드라이버를 만들 수 있었는지가 아니라 설정으로 정한다. 설정은 `aws`인데 드라이버를 만들지 못했으면(예: 자격 증명 오류, platform #66 이후 API는 그래도 뜬다) 배포를 실패시킨다. 백업 값 없이 배포하면 차트가 plugin, ObjectStore, ScheduledBackup을 빼서 돌고 있는 DB의 백업이 꺼지기 때문이다.
 - ADR 0016의 드라이버를 그대로 쓴다. 드라이버가 만드는 이름의 인스턴스 자리에 `<app>---pg`를 넘긴다. 버킷은 `<bucketPrefix><app>---pg`(예: `hopcharlie-eks-moimroom---pg`), IAM 사용자는 `hopcharlie-app-<app>---pg`다. 앱 이름에는 `--`가 없고 브랜치 슬러그에는 `-`가 연달아 오지 않으므로 어떤 인스턴스 이름에도 `---`가 없다. 그래서 다른 인스턴스의 버킷과 겹치지 않는다. 앱 이름은 32자까지라 버킷과 사용자 이름이 길이 제한 안에 든다.
 - 키는 ADR 0016처럼 봉인한다. strict 범위, 네임스페이스는 인스턴스, Secret 이름은 `app-pgbackup`이다. gitops 파일에는 `values.sealedSecrets.pgBackup`(키)과 `values.backup`(`bucket`, `path`)이 들어간다.
 - 인증서가 바뀌면 새 키를 만들고, 옛 키는 그 뒤 healthy가 된 배포가 지운다. plugin은 WAL을 올릴 때마다 Secret을 다시 읽으므로 파드가 다시 뜰 필요가 없다.
-- 버킷이나 키를 만들지 못하면 s3 리소스와 같이 배포를 실패시킨다. 실패를 건너뛰고 배포하면 백업 설정이 빠져 Postgres 파드가 다시 만들어지기 때문이다.
-- GKE(`gcs` 드라이버)에는 만들지 않는다. HMAC 경로를 검증하지 않았기 때문이다. 지금 GKE의 moimroom DB는 플랫폼 배포가 아니라 손으로 만든 Cluster이므로, infra ADR 0057이 Workload Identity로 따로 백업한다.
+- 버킷이나 키를 만들지 못해도 s3 리소스와 같이 배포를 실패시킨다. 같은 이유다.
+- GKE(`gcs` 드라이버)에는 만들지 않는다. HMAC 경로를 검증하지 않았기 때문이다. 지금 GKE의 moimroom DB는 플랫폼 배포가 아니라 손으로 만든 Cluster이므로, infra ADR 0057(infra #80)이 Workload Identity로 따로 백업한다.
 
 ### 행은 따로 두고 지우지 않는다
 
@@ -42,20 +44,22 @@
 
 - 버킷 안의 경로는 앱을 등록한 시각(UTC, `20060102T150405Z`)이다. ObjectStore의 `destinationPath`는 `s3://<bucket>/<path>/`, Barman의 서버 이름은 Cluster 이름이다.
 - 같은 이름으로 지웠다가 다시 등록한 앱은 새 경로를 받는다. Barman은 새 DB가 처음 WAL을 보관할 때 그 자리가 비어 있는지 검사하고, 비어 있지 않으면 보관을 멈춘다. 새 경로라 이 검사를 통과한다.
-- 다시 등록한 앱은 같은 버킷과 키를 이어 쓰므로 예전 등록의 백업도 읽을 수 있다. 다른 사람에게 같은 이름을 줄 때는 운영자가 먼저 백업 버킷을 지운다.
+- 다시 등록한 앱은 같은 버킷과 키를 이어 쓰므로 예전 등록의 백업도 읽을 수 있다. 키를 등록 경로로 좁히려면 드라이버 정책을 경로마다 바꿔야 해서 이번에는 받아들인다. 키는 앱 네임스페이스의 Secret에만 있어 그 클러스터에 접근할 수 있는 사람만 쓸 수 있다. 다른 사람에게 같은 이름을 줄 때는 운영자가 먼저 백업 버킷을 지운다.
 
-### 상태 표시
+### 상태 표시(platform #75, infra #76, frontend #36)
 
 - 환경 화면의 `DatabaseCluster`에 `backup`을 더한다(`objectStore`, `walArchiving`, `lastSuccessfulBackup`, `lastFailedBackup`, `firstRecoverabilityPoint`). WAL 보관자 plugin이 켜진 Cluster에만 있다. CNPG는 보관자가 없어도 `ContinuousArchiving`을 True로 두므로 그 조건만으로 보관 중이라고 말하지 않는다.
-- 플랫폼 계정은 워크로드에서 `objectstores`를 `list`할 수 있어야 한다(infra `hopcharlie-platform-access.yaml`). 권한이 없으면 시각 없이 보여 준다.
+- 플랫폼 계정은 워크로드에서 `objectstores`를 `list`할 수 있어야 한다(infra `hopcharlie-platform-access.yaml`). 권한이 없으면 시각 없이 보여 주고 `EnvironmentStatus.error`에 이유를 적는다.
 
 ## 결과
 
 - 백업을 켜거나 끄면 CNPG가 plugin 컨테이너를 넣거나 빼려고 Postgres 파드를 한 번 다시 만든다. 인스턴스가 하나라 20~40초 동안 DB가 내려간다.
 - WAL 보관이 실패하면 PostgreSQL이 WAL을 지우지 못해 디스크가 찬다. CNPG 기본값(`wal_keep_size` 512MB, `max_wal_size` 1GB)만으로 1Gi를 넘으므로 eks 프로필의 디스크를 4Gi로 늘리고, 콘솔이 WAL 보관 실패를 경고한다.
-- **이전과의 관계.** CNPG 1.30.1은 원본을 강등할 때 shutdown checkpoint가 든 WAL을 보관해야 demotion token을 낸다(`replicaclusterswitch/shutdown_wal.go`). 원본의 WAL 보관이 실패하면 토큰이 나오지 않는다. 그러면 엔진은 migration-engine ADR 0008대로 원본이 펜싱된 채 쓰기를 게이트웨이에 붙잡고 `halted`로 멈춘다. 자동 원복은 없고, 게이트웨이의 최대 보류 시간이 지나면 쓰기는 503이 된다. 그래서 이전을 시작하기 전에 운영자가 원본의 `ContinuousArchiving`이 True이고 최근 WAL이 보관됐는지 확인한다(infra의 DB 이전 runbook). 엔진은 바꾸지 않는다.
+- **이전과의 관계.** CNPG 1.30.1은 원본을 강등할 때 shutdown checkpoint가 든 WAL을 보관해야 demotion token을 낸다(`replicaclusterswitch/shutdown_wal.go`). 원본의 WAL 보관이 실패하면 토큰이 나오지 않는다. 그러면 엔진은 migration-engine ADR 0008대로 원본이 펜싱된 채 쓰기를 게이트웨이에 붙잡고 `halted`로 멈춘다. 자동 원복은 없고, 게이트웨이의 최대 보류 시간이 지나면 쓰기는 503이 된다. 그래서 이전을 시작하기 전에 운영자가 원본의 WAL 보관을 확인한다(infra `docs/runbooks/aws-gcp-db-migration.md` 1절 6번, infra #80). 엔진은 바꾸지 않는다.
 - 전환 뒤 옛 원본은 새 primary를 따르는 replica로 남고, 받은 WAL을 계속 자기 저장소에 보관하며 매일 백업한다. 다른 클라우드에 사본이 하나 더 생긴다.
+- **replica의 백업은 primary를 기다린다.** replica(`archive_mode: always`)에서 하는 base backup은 `pg_backup_stop`에서 백업 끝의 WAL이 보관되기를 기다리는데, replica는 세그먼트를 스스로 바꾸지 못한다. primary에 쓰기가 없으면 다음 쓰기 뒤 `archive_timeout`(5분)이 지날 때까지 Backup이 `running`으로 남는다. 지금 EKS의 `moimroom-db`가 GKE primary를 따르는 replica이므로, GKE 쪽 백업을 10분 뒤(03:10 KST, infra #80)에 두어 그 백업이 세그먼트를 바꿔 주게 했다. 오래 걸리면 primary에서 `SELECT pg_switch_wal()`을 한 번 실행한다.
 - 같은 등록 안에서 Cluster를 같은 이름으로 다시 만들면(예: 그 환경의 gitops 파일을 지웠다 다시 배포) 경로가 같아 빈 보관소 검사에 걸린다. 운영자가 그 경로의 `<Cluster 이름>/`을 지우거나 옮긴 뒤 다시 만든다.
+- **이미지를 되돌리면.** 이 결정 이전의 플랫폼 이미지로 되돌리면 버킷과 키, 객체는 남는다. 그러나 그 이미지의 다음 배포가 백업 값 없는 gitops 파일을 쓰므로 차트가 plugin, ObjectStore, ScheduledBackup을 빼고(Postgres 파드가 한 번 다시 만들어진다) ScheduledBackup이 소유한 Backup 기록도 지워진다. S3의 base backup과 WAL은 남아 복원할 수 있다.
 - 비용: 버킷 저장량(7일치 base backup과 WAL)과 요청 비용이 든다.
 
 ## 후속 작업
@@ -70,6 +74,8 @@
 1. IAM 사용자 `hopcharlie-app-<app>---pg`의 액세스 키, 인라인 정책 `hopcharlie-bucket`, 사용자를 지운다.
 2. 버킷 `<bucketPrefix><app>---pg`의 모든 객체 버전을 지우고 버킷을 지운다.
 3. 플랫폼 DB에서 `DELETE FROM backup_storage WHERE app = '<app>'`를 실행한다.
+
+infra `terraform/platform/aws`를 destroy하기 전에도 이 절차로 모든 백업 사용자를 지운다. 플랫폼이 지우지 않으므로 permissions boundary를 단 사용자가 남아 destroy가 실패한다.
 
 ## 관련 자료
 

@@ -79,14 +79,17 @@ const checksumKeyID = "s3:keyId"
 // Once the deployment is healthy, the environment's old key goes when the
 // pods restart with every key change.
 type sealedKey struct {
-	env  string
-	drv  storage.Driver
-	in   storage.Instance
-	id   string
-	pods bool // app secrets: the key id is in the pods' checksum, so they restart when it changes
+	env string
+	drv storage.Driver
+	in  storage.Instance
+	id  string
+	// pods: nothing still uses the old key once the deployment is healthy,
+	// so deleteOldKeys may delete it. With app secrets the key id is in the
+	// pods' checksum, so they restart when it changes. A backup key is read
+	// by the Barman Cloud plugin from the Secret for every upload.
+	pods bool
 	// backup: the app's backup bucket key (ADR 0025), whose row is in the
-	// backup storage. The Barman Cloud plugin reads the Secret for every
-	// upload, so nothing has to restart for a new key.
+	// backup storage.
 	backup bool
 }
 
@@ -106,17 +109,23 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 	}
 	needS3 := slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypeS3 })
 	// The default instance's postgres resource gets a backup bucket (ADR
-	// 0025) where the environment's driver is aws. Branch instances get
-	// none; GKE's database is backed up with Workload Identity instead.
-	needBackup := j.d.Instance == app.Name && slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres })
+	// 0025) where the environment's configuration names the aws driver.
+	// Branch instances get none; GKE's database is backed up with Workload
+	// Identity instead. It goes by the configuration, not by whether the
+	// driver could be built: a deployment without the backup values would
+	// take the plugin off the running database.
+	needBackup := j.d.Instance == app.Name && j.e.cfg.StorageDriver != nil &&
+		slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres })
 	j.keys = nil
 	files := map[string][]byte{}
 	for _, env := range j.d.Environments {
 		var backupDrv storage.Driver
-		if needBackup {
-			if drv, err := j.driver(env.Env); err == nil && drv.Name() == storage.DriverAWS {
-				backupDrv = drv
+		if needBackup && j.e.cfg.StorageDriver(env.Env) == storage.DriverAWS {
+			drv, err := j.driver(env.Env)
+			if err != nil {
+				return nil, fmt.Errorf("the postgres resource of %s needs a backup bucket in %s: %w", app.Name, env.Env, err)
 			}
+			backupDrv = drv
 		}
 		var sealed *Sealed
 		if needS3 || len(values) > 0 || backupDrv != nil {
@@ -242,13 +251,13 @@ func (j *job) sealer(env string) (*sealing.Sealer, error) {
 // A row of another app (being deleted) or of another driver (the
 // environment's driver changed) is refused, not replaced.
 func (j *job) bucketKey(ctx context.Context, app store.App, env string, sl *sealing.Sealer, backup bool) (*SealedS3, string, storage.Driver, error) {
+	in, secret, what := storage.Instance{App: app.Name, Name: j.d.Instance}, sealing.S3Secret, "bucket"
+	if backup {
+		in.Name, secret, what = BackupInstance(app.Name), sealing.PGBackupSecret, "backup bucket"
+	}
 	drv, err := j.driver(env)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("the s3 resource of %s needs a bucket in %s: %w", app.Name, env, err)
-	}
-	in, secret := storage.Instance{App: app.Name, Name: j.d.Instance}, sealing.S3Secret
-	if backup {
-		in.Name, secret = BackupInstance(app.Name), sealing.PGBackupSecret
 	}
 	row, err := j.getRow(ctx, backup, app.Name, env)
 	found := err == nil
@@ -257,10 +266,10 @@ func (j *job) bucketKey(ctx context.Context, app store.App, env string, sl *seal
 	case err != nil:
 		return nil, "", nil, fmt.Errorf("read the bucket key of %s in %s: %w", j.d.Instance, env, err)
 	case row.App != app.Name:
-		return nil, "", nil, fmt.Errorf("the bucket of %s in %s was made for app %s; it is being deleted, so deploy again later", j.d.Instance, env, row.App)
+		return nil, "", nil, fmt.Errorf("the %s of %s in %s was made for app %s; it is being deleted, so deploy again later", what, in.Name, env, row.App)
 	case row.Driver != drv.Name():
-		return nil, "", nil, fmt.Errorf("the bucket %s of %s in %s was made by the %s driver, but %s now has the %s driver; an operator deletes that bucket, its user and the platform's record of them (ADR 0016) before %s gets a new bucket there",
-			row.Bucket, j.d.Instance, env, row.Driver, env, drv.Name(), j.d.Instance)
+		return nil, "", nil, fmt.Errorf("the %s %s of %s in %s was made by the %s driver, but %s now has the %s driver; an operator deletes that bucket, its user and the platform's record of them (ADR 0016, 0025) before %s gets a new bucket there",
+			what, row.Bucket, in.Name, env, row.Driver, env, drv.Name(), in.Name)
 	}
 	newKey, current, old := true, "", ""
 	if found {
@@ -269,11 +278,11 @@ func (j *job) bucketKey(ctx context.Context, app store.App, env string, sl *seal
 	}
 	res, err := drv.Ensure(ctx, in, newKey, current, old)
 	if errors.Is(err, storage.ErrKeyLimit) {
-		return nil, "", nil, fmt.Errorf("%s in %s needs a new bucket key for a new sealed-secrets certificate, but the key %s that the last key change replaced may still be used by pods that did not restart since (%w); an operator restarts them and deletes that key (ADR 0016), then deploy again",
-			j.d.Instance, env, storage.MaskKey(old), err)
+		return nil, "", nil, fmt.Errorf("%s in %s needs a new %s key for a new sealed-secrets certificate, but the key %s that the last key change replaced may still be used by pods that did not restart since (%w); an operator restarts them and deletes that key (ADR 0016), then deploy again",
+			in.Name, env, what, storage.MaskKey(old), err)
 	}
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("make the bucket and key of %s in %s: %w", j.d.Instance, env, err)
+		return nil, "", nil, fmt.Errorf("make the %s and key of %s in %s: %w", what, in.Name, env, err)
 	}
 	if res.Key == nil {
 		return &SealedS3{AccessKey: row.SealedAccessKey, SecretKey: row.SealedSecretKey}, row.KeyID, drv, nil
@@ -281,11 +290,11 @@ func (j *job) bucketKey(ctx context.Context, app store.App, env string, sl *seal
 	ns := Namespace(j.d.Instance)
 	ak, err := sl.Seal(ns, secret, []byte(res.Key.ID))
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("seal the bucket key of %s for %s: %w", j.d.Instance, env, err)
+		return nil, "", nil, fmt.Errorf("seal the %s key of %s for %s: %w", what, in.Name, env, err)
 	}
 	sk, err := sl.Seal(ns, secret, []byte(res.Key.Secret))
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("seal the bucket key of %s for %s: %w", j.d.Instance, env, err)
+		return nil, "", nil, fmt.Errorf("seal the %s key of %s for %s: %w", what, in.Name, env, err)
 	}
 	rotated := found && newKey
 	if rotated {
@@ -296,7 +305,7 @@ func (j *job) bucketKey(ctx context.Context, app store.App, env string, sl *seal
 		SealedAccessKey: ak, SealedSecretKey: sk, CertFingerprint: sl.Fingerprint(), CreatedAt: j.e.now(),
 	}
 	if err := j.putRow(ctx, backup, next); err != nil {
-		return nil, "", nil, fmt.Errorf("store the bucket key of %s in %s: %w", j.d.Instance, env, err)
+		return nil, "", nil, fmt.Errorf("store the %s key of %s in %s: %w", what, in.Name, env, err)
 	}
 	why := "new"
 	switch {
@@ -305,7 +314,7 @@ func (j *job) bucketKey(ctx context.Context, app store.App, env string, sl *seal
 	case found:
 		why = "new, as key " + storage.MaskKey(row.KeyID) + " was gone,"
 	}
-	j.note(ctx, fmt.Sprintf("bucket %s in %s: %s key %s, sealed for %s/%s", res.Bucket, env, why, storage.MaskKey(res.Key.ID), ns, secret))
+	j.note(ctx, fmt.Sprintf("%s %s in %s: %s key %s, sealed for %s/%s", what, res.Bucket, env, why, storage.MaskKey(res.Key.ID), ns, secret))
 	return &SealedS3{AccessKey: ak, SecretKey: sk}, res.Key.ID, drv, nil
 }
 

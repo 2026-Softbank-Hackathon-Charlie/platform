@@ -185,6 +185,12 @@ func newStorageEnv(t *testing.T) *storageEnv {
 		}
 		return drv, nil
 	}
+	te.cfg.StorageDriver = func(env string) string {
+		if drv, ok := se.drvs[env]; ok {
+			return drv.Name()
+		}
+		return ""
+	}
 	te.cfg.CleanupInterval = time.Hour
 	return se
 }
@@ -855,6 +861,27 @@ func TestDeployBackupBucketKey(t *testing.T) {
 	}
 	if _, err := se.store.GetBackupStorage(ctx, "shop", "eks"); err != nil {
 		t.Fatalf("backup row after the app was deleted: %v", err)
+	}
+}
+
+// TestDeployFailsWithoutItsBackupDriver fails the deployment of a postgres
+// app where the configuration names the aws driver but it could not be
+// built: deploying without the backup values would take the backups off the
+// running database.
+func TestDeployFailsWithoutItsBackupDriver(t *testing.T) {
+	se := newStorageEnv(t)
+	se.github.push("main", sha("p1"), map[string]string{"platform.yaml": pgSpec, "Dockerfile": "FROM scratch\n"})
+	se.register("shop", "eks")
+	se.cfg.Storage = func(string) (storage.Driver, error) { return nil, errors.New(`environment "eks": no AWS credentials`) }
+	se.cfg.StorageDriver = func(string) string { return storage.DriverAWS }
+	se.start()
+	d := se.deploy(sha("p1"), "eks")
+	if d.Status != store.DeployFailed || !strings.Contains(d.Error, "the postgres resource of shop needs a backup bucket in eks") || !strings.Contains(d.Error, "no AWS credentials") {
+		t.Fatalf("deployment %s %q", d.Status, d.Error)
+	}
+	files, _ := se.git.snapshot()
+	if _, ok := files[FilePath("shop", "eks")]; ok {
+		t.Fatal("a gitops file was written without the backup values")
 	}
 }
 

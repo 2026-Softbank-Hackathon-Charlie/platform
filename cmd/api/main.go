@@ -376,6 +376,12 @@ func main() {
 		Sealer:  envSvc.Sealer,
 		Storage: envSvc.Storage,
 		Envs:    envSvc.Names(),
+		StorageDriver: func(env string) string {
+			if c, ok := envSvc.Config(env); ok && c.Storage != nil {
+				return c.Storage.Driver
+			}
+			return ""
+		},
 	}
 	if gh != nil {
 		deployOpts.GitHub = gh
