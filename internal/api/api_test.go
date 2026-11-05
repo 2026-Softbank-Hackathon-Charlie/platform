@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -421,10 +423,30 @@ func (h *harness) submit(body string) apiv1.PlanRecord {
 func (h *harness) approved(body string) string {
 	h.t.Helper()
 	rec := h.submit(body)
-	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, map[string]string{"comment": "looks good"}); code != 200 {
+	// The agent submitted it, so approval needs a passing rehearsal report
+	// for this body, as the AI runner uploads (platform #24).
+	rev := h.rehearsed(rec.Ref, body, "")
+	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, map[string]any{"comment": "looks good", "revision": rev}); code != 200 {
 		h.t.Fatalf("approve: %d %s", code, b)
 	}
 	return rec.Ref
+}
+
+// rehearsed uploads a passing rehearsal report for the plan body and target
+// manifest (hex SHA-256, "" when the plan has none) and returns the revision.
+func (h *harness) rehearsed(ref, body, manifestSHA string) int64 {
+	h.t.Helper()
+	sum := sha256.Sum256([]byte(body))
+	rep := fmt.Sprintf(`{"schemaVersion":"hopcharlie.rehearsal/v1","passed":true,"candidate":{"planSha256":%q,"manifestSha256":%q}}`, hex.EncodeToString(sum[:]), manifestSHA)
+	code, b := h.do("PUT", "/v1/plans/"+ref+"/attachments/rehearsal-report.json", agentToken, rep)
+	if code != 200 && code != 201 {
+		h.t.Fatalf("upload rehearsal report: %d %s", code, b)
+	}
+	code, b = h.do("GET", "/v1/plans/"+ref, opToken, nil)
+	if code != 200 {
+		h.t.Fatalf("get plan: %d %s", code, b)
+	}
+	return decode[apiv1.PlanRecord](h.t, b).Revision
 }
 
 func (h *harness) start(req apiv1.StartMigrationRequest) string {
@@ -1062,3 +1084,41 @@ func names(ms []sseMsg) []string {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// An agent's plan is approved only with a passing rehearsal report for the
+// plan as it is now; GET shows why approval is blocked (platform #24).
+func TestApproveAIPlanNeedsRehearsal(t *testing.T) {
+	h := newHarness(t)
+	body := planJSON("p1", "a", "b", false)
+	rec := h.submit(body)
+	if rec.SubmittedRole == nil || *rec.SubmittedRole != apiv1.RoleAgent || rec.Rehearsal == nil || !rec.Rehearsal.Required || rec.Rehearsal.Passed {
+		t.Fatalf("new AI plan: %+v %+v", rec.SubmittedRole, rec.Rehearsal)
+	}
+	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, nil); code != 409 || errCode(t, b) != "rehearsal_required" {
+		t.Fatalf("approve without a report: %d %s", code, b)
+	}
+	failed := `{"schemaVersion":"hopcharlie.rehearsal/v1","passed":false,"candidate":{"planSha256":"x"}}`
+	if code, b := h.do("PUT", "/v1/plans/"+rec.Ref+"/attachments/rehearsal-report.json", agentToken, failed); code != 200 {
+		t.Fatalf("upload: %d %s", code, b)
+	}
+	_, b := h.do("GET", "/v1/plans/"+rec.Ref, viewerToken, nil)
+	if got := decode[apiv1.PlanRecord](t, b); got.Rehearsal == nil || got.Rehearsal.Passed || got.Rehearsal.Reason == nil || !strings.Contains(*got.Rehearsal.Reason, "did not pass") {
+		t.Fatalf("gate after a failed rehearsal: %s", b)
+	}
+	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, map[string]any{"revision": 2}); code != 409 || errCode(t, b) != "rehearsal_required" {
+		t.Fatalf("approve after a failed rehearsal: %d %s", code, b)
+	}
+	rev := h.rehearsed(rec.Ref, body, "")
+	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, map[string]any{"revision": rev}); code != 200 {
+		t.Fatalf("approve after a passing rehearsal: %d %s", code, b)
+	}
+	// An operator's plan needs no report.
+	code, b := h.do("POST", "/v1/plans", opToken, planJSON("p2", "a", "b", false))
+	op := decode[apiv1.PlanRecord](t, b)
+	if code != 201 || op.Rehearsal == nil || op.Rehearsal.Required {
+		t.Fatalf("operator plan: %d %s", code, b)
+	}
+	if code, b := h.do("POST", "/v1/plans/"+op.Ref+"/approve", opToken, nil); code != 200 {
+		t.Fatalf("approve an operator plan: %d %s", code, b)
+	}
+}

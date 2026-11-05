@@ -70,8 +70,16 @@ func (s *Service) parse(raw []byte) (*plan.Plan, apiv1.PlanSummary, error) {
 	return p, summarize(p, hosts), nil
 }
 
-// Submit validates and stores a plan awaiting approval.
+// Submit validates and stores a plan awaiting approval, with the submitter's
+// role unknown. Handlers use SubmitAs.
 func (s *Service) Submit(ctx context.Context, raw []byte, actor string) (apiv1.PlanRecord, error) {
+	return s.SubmitAs(ctx, raw, actor, "")
+}
+
+// SubmitAs validates and stores a plan awaiting approval. role is the
+// authenticated caller's role; an agent's plan needs a passing rehearsal
+// report before it can be approved (requireRehearsal).
+func (s *Service) SubmitAs(ctx context.Context, raw []byte, actor string, role apiv1.Role) (apiv1.PlanRecord, error) {
 	p, summary, err := s.parse(raw)
 	if err != nil {
 		return apiv1.PlanRecord{}, err
@@ -81,14 +89,15 @@ func (s *Service) Submit(ctx context.Context, raw []byte, actor string) (apiv1.P
 		return apiv1.PlanRecord{}, err
 	}
 	row := store.Plan{
-		Ref:         newRef("pln_"),
-		PlanID:      p.ID,
-		Status:      store.PlanPending,
-		Summary:     sum,
-		Raw:         append([]byte(nil), raw...),
-		Revision:    1,
-		SubmittedBy: actor,
-		SubmittedAt: s.now(),
+		Ref:           newRef("pln_"),
+		PlanID:        p.ID,
+		Status:        store.PlanPending,
+		Summary:       sum,
+		Raw:           append([]byte(nil), raw...),
+		Revision:      1,
+		SubmittedBy:   actor,
+		SubmittedRole: string(role),
+		SubmittedAt:   s.now(),
 	}
 	if err := s.store.CreatePlan(ctx, row); err != nil {
 		return apiv1.PlanRecord{}, err
@@ -122,6 +131,9 @@ func (s *Service) List(ctx context.Context) ([]apiv1.PlanRecord, error) {
 	if err := s.withAttachments(ctx, out); err != nil {
 		return nil, err
 	}
+	if err := s.withRehearsal(ctx, rows, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -139,6 +151,9 @@ func (s *Service) Approve(ctx context.Context, ref, actor, comment string, revis
 		return apiv1.PlanRecord{}, err
 	}
 	if err := requireAttachments(row, attached); err != nil {
+		return apiv1.PlanRecord{}, err
+	}
+	if err := s.requireRehearsal(ctx, row, attached); err != nil {
 		return apiv1.PlanRecord{}, err
 	}
 	want := row.Revision
@@ -353,6 +368,10 @@ func record(row store.Plan) (apiv1.PlanRecord, error) {
 		SubmittedBy: row.SubmittedBy,
 		SubmittedAt: row.SubmittedAt,
 		ReviewedAt:  row.ReviewedAt,
+	}
+	if row.SubmittedRole != "" {
+		role := apiv1.Role(row.SubmittedRole)
+		rec.SubmittedRole = &role
 	}
 	if err := json.Unmarshal(row.Summary, &rec.Summary); err != nil {
 		return apiv1.PlanRecord{}, fmt.Errorf("decode plan %s summary: %w", row.Ref, err)

@@ -140,7 +140,8 @@ func TestLogin(t *testing.T) {
 		t.Fatalf("me: %d %+v", code, me)
 	}
 	rec := h.submit(planJSON("p1", "a", "b", false))
-	code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", sess.Token, map[string]string{"comment": "looks good"})
+	rev := h.rehearsed(rec.Ref, planJSON("p1", "a", "b", false), "")
+	code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", sess.Token, map[string]any{"comment": "looks good", "revision": rev})
 	if code != 200 || decode[apiv1.PlanRecord](t, b).ReviewedBy == nil || *decode[apiv1.PlanRecord](t, b).ReviewedBy != "seohyun" {
 		t.Fatalf("approve with a session: %d %s", code, b)
 	}
@@ -555,7 +556,8 @@ func TestCLITokenAuditVia(t *testing.T) {
 
 	// A console session and a static token act without via.
 	admin := h.session("seohyun")
-	if code, b := h.do("POST", "/v1/plans/"+ref+"/approve", admin.Token, map[string]string{"comment": "ok"}); code != 200 {
+	rev := h.rehearsed(ref, planJSON("p1", "a", "b", false), "")
+	if code, b := h.do("POST", "/v1/plans/"+ref+"/approve", admin.Token, map[string]any{"comment": "ok", "revision": rev}); code != 200 {
 		t.Fatalf("approve with the console session: %d %s", code, b)
 	}
 	if code, _ := h.do("POST", "/v1/auth/logout", opToken, nil); code != 204 {

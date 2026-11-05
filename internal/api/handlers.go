@@ -69,7 +69,8 @@ func (s *Server) submitPlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rec, err := s.d.Plans.Submit(r.Context(), body, actor(r))
+	p, _ := auth.FromContext(r.Context())
+	rec, err := s.d.Plans.SubmitAs(r.Context(), body, p.Name, p.Role)
 	if err != nil {
 		s.planError(w, r, err)
 		return

@@ -280,6 +280,7 @@ func testPlanCreateGet(t *testing.T, s store.Store) {
 	full := newPlan("pln_2", at(1))
 	full.Status = store.PlanStarted
 	full.ReviewedBy, full.ReviewedAt, full.ReviewComment, full.RunID = "bob", ptr(at(2)), "lgtm", "run_1"
+	full.SubmittedRole = "agent"
 	full.Revision, full.RollbackOf = 7, "run_0"
 	must(t, s.CreatePlan(ctx, full))
 	got, err = s.GetPlan(ctx, "pln_2")

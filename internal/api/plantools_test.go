@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -256,7 +258,13 @@ func TestWrittenRecordsReachVerifyAlsoOnResume(t *testing.T) {
 func TestPlanAttachmentsAPI(t *testing.T) {
 	c := &toolsCapture{}
 	h := newHarness(t, planTools(c))
-	rec := h.submit(withManifest(moimroomPlan("p1", "a", "b", ""), "attachment:target.yaml"))
+	// An operator's plan: this test is about attachments and revisions, not
+	// the rehearsal evidence an agent's plan needs (TestApproveAIPlanNeedsRehearsal).
+	code, b := h.do("POST", "/v1/plans", opToken, withManifest(moimroomPlan("p1", "a", "b", ""), "attachment:target.yaml"))
+	if code != 201 {
+		t.Fatalf("submit: %d %s", code, b)
+	}
+	rec := decode[apiv1.PlanRecord](t, b)
 	if rec.Attachments == nil || len(*rec.Attachments) != 0 {
 		t.Fatalf("attachments of a new plan: %v", rec.Attachments)
 	}
@@ -283,7 +291,7 @@ func TestPlanAttachmentsAPI(t *testing.T) {
 		t.Fatalf("upload to a missing plan: %d %s", code, b)
 	}
 
-	code, b := h.do("PUT", base+"target.yaml", agentToken, manifest, octet...)
+	code, b = h.do("PUT", base+"target.yaml", agentToken, manifest, octet...)
 	info := decode[apiv1.PlanAttachment](t, b)
 	if code != 200 || info.Name != "target.yaml" || info.Size != int64(len(manifest)) || len(info.Sha256) != 64 {
 		t.Fatalf("upload: %d %s", code, b)
@@ -495,7 +503,9 @@ func TestRollback(t *testing.T) {
 	if code, b := h.do("PUT", "/v1/plans/"+rec.Ref+"/attachments/target.yaml", agentToken, "kind: Cluster\n"); code != 200 {
 		t.Fatalf("upload: %d %s", code, b)
 	}
-	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, map[string]any{"revision": 2}); code != 200 {
+	sum := sha256.Sum256([]byte("kind: Cluster\n"))
+	rev := h.rehearsed(rec.Ref, withManifest(moimroomPlan("p1", "gke-ctx", "eks-ctx", extra), "attachment:target.yaml"), hex.EncodeToString(sum[:]))
+	if code, b := h.do("POST", "/v1/plans/"+rec.Ref+"/approve", opToken, map[string]any{"revision": rev}); code != 200 {
 		t.Fatalf("approve: %d %s", code, b)
 	}
 	id := h.start(apiv1.StartMigrationRequest{PlanRef: rec.Ref, AutoSwitch: ptr(true)})
