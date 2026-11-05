@@ -184,7 +184,7 @@ func TestProbeReadsBackups(t *testing.T) {
 		cnpgCluster("other", "db", map[string]any{"instances": int64(1),
 			"plugins": barman(map[string]any{"barmanObjectName": "db"}, map[string]any{"isWALArchiver": false})}, archiving("True")),
 		objectStore("moimroom", "moimroom-db", map[string]any{
-			"moimroom-db":   map[string]any{"firstRecoverabilityPoint": "2026-11-05T18:00:10Z", "lastSuccessfulBackupTime": "2026-11-06T18:00:08Z", "lastFailedBackupTime": "2026-11-05T15:00:00Z"},
+			"moimroom-db":    map[string]any{"firstRecoverabilityPoint": "2026-11-05T18:00:10Z", "lastSuccessfulBackupTime": "2026-11-06T18:00:08Z", "lastFailedBackupTime": "2026-11-05T15:00:00Z"},
 			"another-server": map[string]any{"lastSuccessfulBackupTime": "2020-01-01T00:00:00Z"},
 		}),
 		objectStore("charlie-apps", "moimroom-db-gke-backup", map[string]any{
