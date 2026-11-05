@@ -17,6 +17,7 @@ import (
 	"time"
 
 	specdoc "github.com/2026-Softbank-Hackathon-Charlie/platform/api"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
@@ -147,6 +148,15 @@ type Deps struct {
 	// Buckets inspects the residency policy's buckets (gate.Gate); nil
 	// answers POST /v1/residency/buckets/inspect 503 residency_not_configured.
 	Buckets BucketInspector
+	// AIRuns starts the AI runner as a Job (airun.Runner); nil answers the
+	// /v1/ai-runs endpoints 503 ai_runner_not_configured.
+	AIRuns AIRunner
+}
+
+// AIRunner starts and lists AI runner Jobs (airun.Runner).
+type AIRunner interface {
+	Start(ctx context.Context, req airun.Request, actor string) (airun.Run, error)
+	List(ctx context.Context, app string) ([]airun.Run, error)
 }
 
 // BucketInspector measures a registered bucket next to its policy entry.
@@ -244,6 +254,8 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/plans/{ref}/attachments/{name}", viewer, s.getPlanAttachment)
 	s.route("GET /v1/apps", viewer, s.listApps)
 	s.route("POST /v1/plans/draft", agent, s.draftPlan)
+	s.route("GET /v1/ai-runs", viewer, s.listAIRuns)
+	s.route("POST /v1/ai-runs", operator, s.startAIRun)
 	s.route("POST /v1/residency/buckets/inspect", agent, s.inspectBucket)
 	s.route("POST /v1/migrations/{runId}/rollback", operator, s.rollbackMigration)
 	s.route("GET /{$}", "", s.root)
