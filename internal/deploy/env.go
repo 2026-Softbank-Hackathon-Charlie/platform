@@ -144,11 +144,34 @@ func FromEnv(ctx context.Context, getenv func(string) string, o EnvOptions) (*Ex
 
 	if o.Gateway != nil {
 		cfg.Gateway = o.Gateway
-		if t := getenv("PLATFORM_APP_BACKEND_TEMPLATE"); t != "" {
-			cfg.Backends = TemplateBackends{Template: t}
-		} else {
-			cfg.Backends = &ServiceBackends{Kube: o.Kube}
+		b, err := backendsFromEnv(getenv("PLATFORM_APP_BACKEND_TEMPLATE"), o.Kube)
+		if err != nil {
+			return nil, fmt.Errorf("PLATFORM_APP_BACKEND_TEMPLATE: %w", err)
 		}
+		cfg.Backends = b
 	}
 	return New(cfg)
+}
+
+// backendsFromEnv picks the Backends for PLATFORM_APP_BACKEND_TEMPLATE v:
+// empty reads every environment's Service, one template serves every
+// environment, and <env>=<template> entries serve their environments while
+// the others read their Service.
+func backendsFromEnv(v string, kube func(env string) (kubernetes.Interface, error)) (Backends, error) {
+	services := &ServiceBackends{Kube: kube}
+	if v == "" {
+		return services, nil
+	}
+	all, perEnv, err := ParseBackendTemplates(v)
+	if err != nil {
+		return nil, err
+	}
+	if perEnv == nil {
+		return TemplateBackends{Template: all}, nil
+	}
+	b := EnvBackends{Templates: map[string]TemplateBackends{}, Fallback: services}
+	for env, t := range perEnv {
+		b.Templates[env] = TemplateBackends{Template: t}
+	}
+	return b, nil
 }

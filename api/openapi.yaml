@@ -1118,8 +1118,8 @@ paths:
         PLATFORM_ENVS_FILE, a repo that is not owner/name), app_exists (409:
         another registered app has the name, or the platform serves the name
         itself under the app domain: `api`, `console`, `headlamp` and the
-        gateway's default app `app`; a name only in PLATFORM_APPS_FILE is
-        not taken),
+        gateway's default app `app`, or names an infra namespace of the app
+        clusters: `traefik`; a name only in PLATFORM_APPS_FILE is not taken),
         storage_cleanup_pending (409: the bucket and key of a deleted app or
         instance with this name are still being deleted; try again later),
         invalid_app_spec (422: the repository, the branch or

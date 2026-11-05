@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,53 @@ type TemplateBackends struct {
 
 func (t TemplateBackends) URL(_ context.Context, app, instance, env string, svc appspec.Service) (string, error) {
 	return strings.NewReplacer("{app}", app, "{instance}", instance, "{service}", svc.Name, "{port}", strconv.Itoa(svc.Port), "{env}", env).Replace(t.Template), nil
+}
+
+// EnvBackends builds the URL from the template of the environment, and asks
+// Fallback for an environment that has none, so one environment can move to
+// a shared entry while the others keep their load balancers.
+type EnvBackends struct {
+	Templates map[string]TemplateBackends
+	Fallback  Backends
+}
+
+func (b EnvBackends) URL(ctx context.Context, app, instance, env string, svc appspec.Service) (string, error) {
+	if t, ok := b.Templates[env]; ok {
+		return t.URL(ctx, app, instance, env, svc)
+	}
+	if b.Fallback == nil {
+		return "", fmt.Errorf("no backend template for environment %s", env)
+	}
+	return b.Fallback.URL(ctx, app, instance, env, svc)
+}
+
+// envName is an environment name as PLATFORM_ENVS_FILE allows it.
+var envName = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// ParseBackendTemplates reads PLATFORM_APP_BACKEND_TEMPLATE. The value is
+// either one template for every environment (the first entry has no
+// "<env>=" in front) or a comma-separated list of <env>=<template>, one per
+// environment that uses a template; perEnv is nil for the first form.
+func ParseBackendTemplates(v string) (all string, perEnv map[string]string, err error) {
+	entries := strings.Split(v, ",")
+	if name, _, ok := strings.Cut(entries[0], "="); !ok || !envName.MatchString(strings.TrimSpace(name)) {
+		return v, nil, nil
+	}
+	perEnv = map[string]string{}
+	for _, e := range entries {
+		name, t, ok := strings.Cut(strings.TrimSpace(e), "=")
+		if !ok || !envName.MatchString(name) {
+			return "", nil, fmt.Errorf("%q is not <env>=<template>", e)
+		}
+		if _, dup := perEnv[name]; dup {
+			return "", nil, fmt.Errorf("environment %s has two templates", name)
+		}
+		if !strings.HasPrefix(t, "http://") && !strings.HasPrefix(t, "https://") {
+			return "", nil, fmt.Errorf("the template of %s must start with http:// or https://", name)
+		}
+		perEnv[name] = t
+	}
+	return "", perEnv, nil
 }
 
 // ServiceBackends reads the Service <app>-<service> in namespace <instance>

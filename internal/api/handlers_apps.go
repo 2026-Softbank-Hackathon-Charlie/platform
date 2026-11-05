@@ -27,8 +27,10 @@ import (
 
 // reservedAppNames are served by the platform itself under the app domain
 // (the API, the console and the gateway's default app, ADR 0012, and the
-// Headlamp ingress of infra), so no registered app may take them.
-var reservedAppNames = []string{"api", "console", "app", "headlamp"}
+// Headlamp ingress of infra), or name an infra namespace in the app clusters
+// (traefik, the shared app entry of infra ADR 0058), so no registered app
+// may take them.
+var reservedAppNames = []string{"api", "console", "app", "headlamp", "traefik"}
 
 // appStatusDeployments is how many newest deployments an instance's
 // per-environment status is read from. Each instance is read on its own, so
