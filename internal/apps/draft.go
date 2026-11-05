@@ -1,6 +1,7 @@
 package apps
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net"
@@ -94,7 +95,7 @@ func (c *Catalog) endpoint(a App, envName, role string) (apiv1.EnginePlanEndpoin
 	return apiv1.EnginePlanEndpoint{
 		Env:       envName,
 		Context:   ptr(env.KubeContext),
-		Namespace: a.Namespace,
+		Namespace: cmp.Or(e.Namespace, a.Namespace),
 		Cluster:   e.CnpgCluster,
 		Dsn:       dsn,
 	}, e, nil

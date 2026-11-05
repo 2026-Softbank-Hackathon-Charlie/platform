@@ -28,7 +28,8 @@ type Config struct {
 type App struct {
 	// Name becomes part of plan ids, e.g. "moimroom".
 	Name string `json:"name"`
-	// Namespace holds the app's CNPG Cluster in every environment.
+	// Namespace holds the app's CNPG Cluster in every environment that does
+	// not set its own (Environment.Namespace).
 	Namespace string   `json:"namespace"`
 	Database  Database `json:"database"`
 	// Environments is keyed by environment name from PLATFORM_ENVS_FILE.
@@ -45,6 +46,10 @@ type Database struct {
 
 // Environment is the app in one environment.
 type Environment struct {
+	// Namespace overrides App.Namespace in this environment, for an app whose
+	// database lives in a different namespace there (moimroom on GKE runs in
+	// charlie-apps). Empty uses App.Namespace.
+	Namespace   string `json:"namespace,omitempty"`
 	CnpgCluster string `json:"cnpgCluster"`
 	// DBHost is the host of the cluster's -rw service (over Tailscale).
 	DBHost string `json:"dbHost"`
@@ -124,6 +129,8 @@ func New(cfg Config, environments []envs.EnvConfig, gatewayURL string) (*Catalog
 			switch {
 			case !known[name]:
 				return nil, fmt.Errorf("app %q: environment %q is not in the environments file", a.Name, name)
+			case e.Namespace != "" && !dnsLabel.MatchString(e.Namespace):
+				return nil, fmt.Errorf("app %q in %s: namespace %q is not a Kubernetes namespace name", a.Name, name, e.Namespace)
 			case !dnsLabel.MatchString(e.CnpgCluster):
 				return nil, fmt.Errorf("app %q in %s: cnpgCluster %q is not a Kubernetes resource name", a.Name, name, e.CnpgCluster)
 			case !hostName.MatchString(e.DBHost):

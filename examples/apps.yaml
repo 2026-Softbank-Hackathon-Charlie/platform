@@ -5,6 +5,8 @@
 #   namespace     namespace of the app's CNPG Cluster in every environment
 #   database      name and user the DSNs connect with; schemas verification compares
 #   environments  keyed by environment name from PLATFORM_ENVS_FILE:
+#     namespace     optional, the CNPG Cluster's namespace in this environment
+#                   when it is not the app's namespace
 #     cnpgCluster   CNPG Cluster resource name
 #     dbHost        host of the cluster's -rw service (over Tailscale)
 #     dbPort        optional, default 5432
