@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -36,6 +37,9 @@ type EnvOptions struct {
 	Sealer  func(env string) (*sealing.Sealer, error)
 	Storage func(env string) (storage.Driver, error)
 	Log     *slog.Logger
+	// Envs are the environments of PLATFORM_ENVS_FILE; a backend template
+	// for another one is logged.
+	Envs []string
 }
 
 // FromEnv builds the executor from the PLATFORM_* variables (see the README).
@@ -144,32 +148,54 @@ func FromEnv(ctx context.Context, getenv func(string) string, o EnvOptions) (*Ex
 
 	if o.Gateway != nil {
 		cfg.Gateway = o.Gateway
-		b, err := backendsFromEnv(getenv("PLATFORM_APP_BACKEND_TEMPLATE"), o.Kube)
+		b, err := backendsFromEnv(getenv("PLATFORM_APP_BACKEND_TEMPLATE"), getenv("PLATFORM_APP_BACKEND_TEMPLATES"), o.Kube)
 		if err != nil {
-			return nil, fmt.Errorf("PLATFORM_APP_BACKEND_TEMPLATE: %w", err)
+			return nil, err
 		}
 		cfg.Backends = b
+		warnUnknownEnvs(b, o.Envs, o.Log)
 	}
 	return New(cfg)
 }
 
-// backendsFromEnv picks the Backends for PLATFORM_APP_BACKEND_TEMPLATE v:
-// empty reads every environment's Service, one template serves every
-// environment, and <env>=<template> entries serve their environments while
-// the others read their Service.
-func backendsFromEnv(v string, kube func(env string) (kubernetes.Interface, error)) (Backends, error) {
-	services := &ServiceBackends{Kube: kube}
-	if v == "" {
-		return services, nil
+// warnUnknownEnvs logs each environment of PLATFORM_APP_BACKEND_TEMPLATES
+// that is not in envs (PLATFORM_ENVS_FILE), most likely a typo: it is not an
+// error, as the list may name an environment before the file gets it.
+func warnUnknownEnvs(b Backends, envs []string, log *slog.Logger) {
+	eb, ok := b.(EnvBackends)
+	if !ok || len(envs) == 0 {
+		return
 	}
-	all, perEnv, err := ParseBackendTemplates(v)
+	if log == nil {
+		log = slog.Default()
+	}
+	for env := range eb.Templates {
+		if !slices.Contains(envs, env) {
+			log.Warn("PLATFORM_APP_BACKEND_TEMPLATES names an environment that is not in PLATFORM_ENVS_FILE", "env", env)
+		}
+	}
+}
+
+// backendsFromEnv picks the Backends. PLATFORM_APP_BACKEND_TEMPLATES
+// (templates) gives the environments it names their template; every other
+// environment uses PLATFORM_APP_BACKEND_TEMPLATE (template), or reads its
+// Service's load balancer when that is empty too.
+func backendsFromEnv(template, templates string, kube func(env string) (kubernetes.Interface, error)) (Backends, error) {
+	var fallback Backends = &ServiceBackends{Kube: kube}
+	if template != "" {
+		if err := checkTemplate(template); err != nil {
+			return nil, fmt.Errorf("PLATFORM_APP_BACKEND_TEMPLATE: %w", err)
+		}
+		fallback = TemplateBackends{Template: template}
+	}
+	if templates == "" {
+		return fallback, nil
+	}
+	perEnv, err := parseBackendTemplates(templates)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("PLATFORM_APP_BACKEND_TEMPLATES: %w", err)
 	}
-	if perEnv == nil {
-		return TemplateBackends{Template: all}, nil
-	}
-	b := EnvBackends{Templates: map[string]TemplateBackends{}, Fallback: services}
+	b := EnvBackends{Templates: map[string]TemplateBackends{}, Fallback: fallback}
 	for env, t := range perEnv {
 		b.Templates[env] = TemplateBackends{Template: t}
 	}

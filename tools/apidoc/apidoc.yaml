@@ -348,7 +348,7 @@ operations:
 
       - 배포는 서비스마다 이미지를 빌드하고, gitops 저장소에 `apps/<instance>/<env>.yaml`을 커밋하고, Argo CD가 Application `<instance>-<env>`를 네임스페이스 `<instance>`에 동기화하게 한다. `branch`가 기본 인스턴스(앱 이름)다.
       - `platform.yaml`에 s3 리소스가 있으면 모든 대상 환경에 저장소 드라이버가 있어야 한다. 플랫폼이 인스턴스마다 버킷과 그 버킷 전용 키를 만들어 봉인한다(ADR 0016).
-      - 앱 이름 `api`, `console`, `app`, `headlamp`는 플랫폼과 infra가 쓴다.
+      - 앱 이름 `api`, `console`, `app`, `headlamp`는 플랫폼과 infra가 쓴다. 앱 클러스터에서 플랫폼과 infra가 쓰는 네임스페이스 이름(`kube-system`, `argocd`, `traefik` 등, infra `deniedNamespaces`)도 쓸 수 없다.
       - 오류 코드: invalid_request(400), app_exists(409, 같은 이름의 앱이 있거나 예약된 이름), storage_cleanup_pending(409, 지운 같은 이름 앱의 버킷과 키를 아직 지우는 중), invalid_app_spec(422), github_unreachable(502), github_not_configured(503), storage_not_configured(503, s3 리소스가 있는데 저장소 드라이버가 없는 환경).
   getApp:
     summary: 앱 하나 조회

@@ -54,39 +54,64 @@ func (b EnvBackends) URL(ctx context.Context, app, instance, env string, svc app
 	if t, ok := b.Templates[env]; ok {
 		return t.URL(ctx, app, instance, env, svc)
 	}
-	if b.Fallback == nil {
-		return "", fmt.Errorf("no backend template for environment %s", env)
-	}
 	return b.Fallback.URL(ctx, app, instance, env, svc)
 }
 
-// envName is an environment name as PLATFORM_ENVS_FILE allows it.
-var envName = regexp.MustCompile(`^[a-z0-9-]+$`)
+var (
+	// envName is an environment name as PLATFORM_ENVS_FILE allows it.
+	envName = regexp.MustCompile(`^[a-z0-9-]+$`)
+	// templateHost is the host a template may give: a DNS name or an IPv4
+	// address, lowercase.
+	templateHost = regexp.MustCompile(`^[a-z0-9.-]+$`)
+)
 
-// ParseBackendTemplates reads PLATFORM_APP_BACKEND_TEMPLATE. The value is
-// either one template for every environment (the first entry has no
-// "<env>=" in front) or a comma-separated list of <env>=<template>, one per
-// environment that uses a template; perEnv is nil for the first form.
-func ParseBackendTemplates(v string) (all string, perEnv map[string]string, err error) {
-	entries := strings.Split(v, ",")
-	if name, _, ok := strings.Cut(entries[0], "="); !ok || !envName.MatchString(strings.TrimSpace(name)) {
-		return v, nil, nil
+// checkTemplate fills a backend template with sample values and checks that
+// the result is an http or https URL with a host name, so a typo stops the
+// API at startup instead of failing every deployment's probe.
+func checkTemplate(t string) error {
+	filled := strings.NewReplacer("{app}", "app", "{instance}", "app--branch", "{service}", "web", "{port}", "8080", "{env}", "env").Replace(t)
+	if strings.ContainsAny(filled, "{} \t") {
+		return fmt.Errorf("%q has a placeholder other than {app}, {instance}, {service}, {port} and {env}, or a space", t)
 	}
-	perEnv = map[string]string{}
-	for _, e := range entries {
-		name, t, ok := strings.Cut(strings.TrimSpace(e), "=")
-		if !ok || !envName.MatchString(name) {
-			return "", nil, fmt.Errorf("%q is not <env>=<template>", e)
-		}
-		if _, dup := perEnv[name]; dup {
-			return "", nil, fmt.Errorf("environment %s has two templates", name)
-		}
-		if !strings.HasPrefix(t, "http://") && !strings.HasPrefix(t, "https://") {
-			return "", nil, fmt.Errorf("the template of %s must start with http:// or https://", name)
-		}
-		perEnv[name] = t
+	u, err := url.Parse(filled)
+	if err != nil {
+		return fmt.Errorf("%q is not a URL", t)
 	}
-	return "", perEnv, nil
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%q must start with http:// or https://", t)
+	}
+	if !templateHost.MatchString(u.Hostname()) {
+		return fmt.Errorf("%q has no host of lowercase letters, digits, dots and dashes", t)
+	}
+	return nil
+}
+
+// parseBackendTemplates reads PLATFORM_APP_BACKEND_TEMPLATES: a
+// comma-separated list of <env>=<template>, one per environment, so a
+// template cannot contain a comma.
+func parseBackendTemplates(v string) (map[string]string, error) {
+	if strings.HasSuffix(strings.TrimSpace(v), ",") {
+		return nil, errors.New("ends with a comma; give <env>=<template> entries separated by commas, with no comma after the last")
+	}
+	out := map[string]string{}
+	for _, e := range strings.Split(v, ",") {
+		e = strings.TrimSpace(e)
+		name, t, ok := strings.Cut(e, "=")
+		if !ok {
+			return nil, fmt.Errorf("%q is not <env>=<template> (a template cannot contain a comma)", e)
+		}
+		if !envName.MatchString(name) {
+			return nil, fmt.Errorf("environment name %q must match %s", name, envName)
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("environment %s has two templates", name)
+		}
+		if err := checkTemplate(t); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		out[name] = t
+	}
+	return out, nil
 }
 
 // ServiceBackends reads the Service <app>-<service> in namespace <instance>
