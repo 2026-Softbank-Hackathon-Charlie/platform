@@ -41,9 +41,11 @@
 | `memory` | 선택. Kubernetes quantity, 256Mi에서 1536Mi | memory request와 limit 모두 이 값 |
 | `cpu` | 선택. Kubernetes quantity, 50m에서 500m | CPU request. CPU limit 없음 |
 
-- 워커(`port` 없음)는 Service, `containerPort`, probe, `PORT`가 없다. 컨테이너가 실행되면 준비된 것으로 본다. Deployment에 `minReadySeconds: 10`을 두어, 10초 동안 재시작 없이 돌아야 available로 센다. probe가 없으면 시작하자마자 죽는 워커도 잠깐 Ready가 되어 롤링 업데이트가 옛 파드를 내리고 Argo CD가 Healthy로 볼 수 있기 때문이다.
+- 워커(`port` 없음, `port: 0`도 같다)는 Service, `containerPort`, probe, `PORT`가 없다. 컨테이너가 실행되면 준비된 것으로 본다. Deployment에 `minReadySeconds: 10`을 두어, 10초 동안 재시작 없이 돌아야 available로 센다. probe가 없으면 시작하자마자 죽는 워커도 잠깐 Ready가 되어 롤링 업데이트가 옛 파드를 내리고 Argo CD가 Healthy로 볼 수 있기 때문이다.
 - 워커만 있는 앱도 된다. 공개 서비스가 없으므로 게이트웨이에 등록하지 않고 URL이 없으며, 배포는 모든 환경이 Synced, Healthy이면 끝난다. 지금의 공개 서비스 없는 앱과 같은 경로다.
-- `memory`와 `cpu`는 문자열로 받는다. YAML이 숫자로 읽는 `cpu: 0.5`도 문자열 `"0.5"`로 들어온다. gitops 파일에는 Kubernetes가 되돌려 쓰는 정규형(`1.5Gi`는 `1536Mi`, `0.5`는 `500m`)으로 쓴다. 그래서 Argo CD가 보는 값과 클러스터의 값이 같다.
+- `memory`와 `cpu`는 문자열로 받는다. YAML이 숫자로 읽는 `cpu: 0.5`도 문자열 `"0.5"`로, `memory: 1e9`는 `"1e+09"`로 들어온다.
+- 값은 바이트(memory)와 밀리코어(cpu)의 정수여야 한다. `0.3Gi`(322122547.2바이트), `50.5m`, `0.0505`는 거절한다. Kubernetes는 이런 값을 `50500u`처럼 쓰는데 차트 schema가 그 형식을 거부하기 때문이다. 범위는 int64로 바꾸기 전에 quantity끼리 비교하므로, int64를 넘어 한 바퀴 돈 값(`18446744073709551866m`이 250m, `18446744074246422528`이 512Mi로 읽힘)도 범위 밖으로 거절한다.
+- gitops 파일에는 검사한 정수를 Kubernetes가 되돌려 쓰는 정규형으로 쓴다(`1.5Gi`는 `1536Mi`, `0.5`는 `500m`, `1e9`는 `1000000000`). 사용자가 쓴 글자를 그대로 옮기지 않으므로 차트 schema를 늘 통과하고, Argo CD가 보는 값과 클러스터의 값이 같다.
 
 ### 합계와 숫자
 
@@ -65,7 +67,8 @@
 - memory 하한을 256Mi로 둔 것은 pods 때문이다. 하한이 64Mi이면 3Gi로 48개를 셀 수 있어 pods 20을 넘는다. 256Mi보다 작게 주면 기본값보다 limit만 낮아지므로 쓸 이유도 적다. 그런 서비스는 `memory`를 쓰지 않으면 된다.
 - 상한 1536Mi는 replicas 1인 서비스 하나가 롤링 업데이트에서 합계 3Gi를 다 쓰는 값이다. cpu 상한 500m은 합계 1500m 안에서 replicas 2까지 되는 값이고, 2026-11-05 23시 워크로드 노드 두 대(각 allocatable 1930m)에 남은 CPU request 여유가 각각 약 600m여서 한 파드가 노드 하나에 들어가는 크기다.
 - 지금 운영 앱은 둘 다 서비스 하나, replicas 1, `memory`와 `cpu` 없음이라 memory 512Mi, cpu 100m로 센다.
-- 남는 한계: quota는 종료 중인 파드도 grace period가 끝날 때까지 센다. Deployment 컨트롤러는 옛 파드가 종료되는 동안(preStop 5초와 앱 종료 시간) 다음 새 파드를 만들 수 있고, 그때 잠깐 quota가 모자라면 ReplicaSet이 다시 시도한다. 배포가 늦어질 수는 있지만 `progressDeadlineSeconds`(eks 300초) 안에 끝난다. 노드 용량은 quota와 별개라 이 규칙이 보장하지 않는다.
+- 남는 한계: quota는 종료 중인 파드도 grace period가 끝날 때까지 센다. Deployment 컨트롤러는 옛 파드가 종료되는 동안(preStop 5초와 앱 종료 시간) 다음 새 파드를 만들 수 있고, 그때 잠깐 quota가 모자라면 ReplicaSet이 다시 시도한다. 보통은 배포가 몇 초에서 수십 초 늦어지는 데 그치지만, 앱의 종료가 길고 replicas가 많으면 `progressDeadlineSeconds`(eks 300초)를 넘길 수도 있다.
+- 노드 용량은 quota와 별개라 이 규칙이 보장하지 않는다. 2026-11-05 23시 워크로드 노드 두 대에 남은 CPU request 여유는 각각 약 600m였다. CPU 합계 1500m를 다 쓰는 앱은 여유가 그보다 적은 노드에 들어가지 못해 파드가 Pending으로 남을 수 있다. 상한 500m은 한 파드가 지금 노드 하나에 들어가는 크기이고, 앱 전체가 들어간다는 뜻은 아니다.
 
 ### 검사 메시지
 
@@ -74,13 +77,13 @@
 - `services[i].port`: `must be between 1 and 65535`
 - `services[i].public`: `needs a port: the traffic gateway sends requests to it`
 - `services[i].healthCheck`: `needs a port: the probes request the path on it`
-- `services[i].memory`: `must be a Kubernetes quantity such as 512Mi or 1Gi`, `must be between 256Mi and 1536Mi`
-- `services[i].cpu`: `must be a Kubernetes quantity such as 250m or 0.5`, `must be between 50m and 500m`
+- `services[i].memory`: `must be a Kubernetes quantity such as 512Mi or 1Gi`, `must be between 256Mi and 1536Mi`, `must be a whole number of bytes, such as 512Mi or 1Gi`
+- `services[i].cpu`: `must be a Kubernetes quantity such as 250m or 0.5`, `must be between 50m and 500m`, `must be a whole number of millicores, such as 250m or 0.5`
 - `services`: `need at most 3Gi of memory during a rolling update: the sum of (replicas + 1) x memory, counting an unset memory as 256Mi, is <합>`
 - `services`: `need at most 1500m of CPU during a rolling update: the sum of (replicas + 1) x cpu, counting an unset cpu as 50m, is <합>`
 - `services[i].env.<NAME>`: `is set by the platform (PORT, DATABASE_URL, PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD, JDBC_DATABASE_URL and S3_* are reserved)`
 
-어느 서비스의 `memory`나 `cpu`가 틀리면 그 합계는 검사하지 않는다(같은 원인을 두 번 알리지 않는다).
+어느 서비스의 `memory`, `cpu`나 `replicas`가 틀리면 그 합계는 검사하지 않는다(같은 원인을 두 번 알리지 않는다).
 
 ### DB 연결 변수
 
@@ -96,6 +99,7 @@
 | `JDBC_DATABASE_URL` | `jdbc-uri` |
 
 - 여섯 이름은 `Reserved`에 더해 서비스 `env`와 앱 시크릿(ADR 0019) 이름으로 쓸 수 없다. `PGSSLMODE` 같은 나머지 PG 변수는 앱이 정한다.
+- 이 변경 전에 그 이름으로 저장한 앱 시크릿은 막지 않고 처리한다. 배포는 그 시크릿을 봉인하지 않고 `not sealing secrets PGHOST: the platform sets these variables now; delete the secrets` 같은 log 이벤트를 남긴다(그대로 넣으면 차트 schema가 거부해 앱을 배포할 수 없다). 시크릿 API는 그 이름을 새로 넣는 것만 거절하고, 읽기와 지우기는 받는다. 2026-11-05 운영 플랫폼 DB에는 그런 시크릿이 없었다(이름만 조회: docker-doom `TIGER_VNC_PASSWORD`, moimroom `ADMIN_TOKEN`, `HOST_CODE`).
 - 차트는 플랫폼 변수를 서비스 `env`보다 앞에 둔다. Kubernetes는 `$(NAME)`을 앞에 정한 변수로 바꾸므로 앱이 읽는 이름으로 넘길 수 있다: `KC_DB_URL_HOST: "$(PGHOST)"`, `SPRING_DATASOURCE_URL: "$(JDBC_DATABASE_URL)"`, `AWS_ACCESS_KEY_ID: "$(S3_ACCESS_KEY)"`. 앱 시크릿(`envFrom`)도 `env`보다 먼저 정해지므로 같은 방법이 된다.
 
 ### 적용 범위

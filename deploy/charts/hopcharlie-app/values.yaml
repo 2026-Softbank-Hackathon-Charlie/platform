@@ -33,8 +33,9 @@ values:
   #     replicas: 1
   #     memory: 512Mi         # optional memory request and limit
   #     cpu: 250m             # optional CPU request; no CPU limit
-  #     env: {KEY: value}     # strings; never a platform variable (PORT,
-  #                           # DATABASE_URL, PG*, JDBC_DATABASE_URL, S3_*);
+  #     env: {KEY: value}     # strings; never a platform variable: PORT,
+  #                           # DATABASE_URL, PGHOST, PGPORT, PGDATABASE,
+  #                           # PGUSER, PGPASSWORD, JDBC_DATABASE_URL, S3_*;
   #                           # "$(PGHOST)" expands to the platform's value
   services: []
   # At most one of each type.

@@ -218,6 +218,17 @@ func TestValidate(t *testing.T) {
 		{"cpu below 50m", func(s *Spec) { s.Services[1].CPU = "49m" }, []string{"services[1].cpu: must be between 50m and 500m"}},
 		{"cpu 1", func(s *Spec) { s.Services[1].CPU = "1" }, []string{"services[1].cpu: must be between 50m and 500m"}},
 		{"cpu not a quantity", func(s *Spec) { s.Services[1].CPU = "half" }, []string{"services[1].cpu: must be a Kubernetes quantity such as 250m or 0.5"}},
+		// Whole bytes and millicores only, as the chart and Kubernetes write them.
+		{"cpu 50.5m", func(s *Spec) { s.Services[1].CPU = "50.5m" }, []string{"services[1].cpu: must be a whole number of millicores, such as 250m or 0.5"}},
+		{"cpu 0.0505", func(s *Spec) { s.Services[1].CPU = "0.0505" }, []string{"services[1].cpu: must be a whole number of millicores"}},
+		{"cpu 0.0501", func(s *Spec) { s.Services[1].CPU = "0.0501" }, []string{"services[1].cpu: must be a whole number of millicores"}},
+		{"memory 0.3Gi", func(s *Spec) { s.Services[0].Memory = "0.3Gi" }, []string{"services[0].memory: must be a whole number of bytes, such as 512Mi or 1Gi"}},
+		{"memory 1e9 bytes", func(s *Spec) { s.Services[0].Memory = "1e+09" }, nil},
+		// Values past int64 must not wrap around into the range.
+		{"cpu that wraps to 250m", func(s *Spec) { s.Services[1].CPU = "18446744073709551866m" }, []string{"services[1].cpu: must be between 50m and 500m"}},
+		{"memory that wraps to 512Mi", func(s *Spec) { s.Services[0].Memory = "18446744074246422528" }, []string{"services[0].memory: must be between 256Mi and 1536Mi"}},
+		{"no total with wrong replicas", func(s *Spec) { s.Services[0].Memory, s.Services[0].Replicas = "1Gi", 9 },
+			[]string{"services[0].replicas: must be between 1 and 5"}},
 		// (replicas + 1) x memory: one pod more per Deployment while it rolls out.
 		{"memory total 3Gi", func(s *Spec) { s.Services[0].Memory, s.Services[1].Memory = "1Gi", "512Mi" }, nil},
 		{"memory total over 3Gi", func(s *Spec) { s.Services[0].Memory, s.Services[1].Memory = "1Gi", "513Mi" },
@@ -324,6 +335,34 @@ func TestCheck(t *testing.T) {
 	}
 	if errs[0].Error() != errs[0].Message {
 		t.Errorf("a file-wide error prints %q, want the bare message", errs[0].Error())
+	}
+}
+
+// The gitops file gets the checked value in Kubernetes' form, never the
+// text as written: YAML turns an unquoted 1e9 into "1e+09".
+func TestQuantities(t *testing.T) {
+	s, err := Parse([]byte("name: x\nservices:\n  - name: jobs\n    memory: 1e9\n    cpu: 0.25\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sv := s.Services[0]; sv.Memory != "1e+09" || sv.CPU != "0.25" {
+		t.Fatalf("decoded memory %q, cpu %q", sv.Memory, sv.CPU)
+	}
+	for _, c := range []struct{ memory, cpu, wantMemory, wantCPU string }{
+		{"1e+09", "0.25", "1000000000", "250m"},
+		{"1.5Gi", "0.5", "1536Mi", "500m"},
+		{"256Mi", "50m", "256Mi", "50m"},
+		{"", "", "", ""},
+	} {
+		m, cpu, err := (Service{Memory: c.memory, CPU: c.cpu}).Quantities()
+		if err != nil || m != c.wantMemory || cpu != c.wantCPU {
+			t.Errorf("Quantities(%q, %q) = %q, %q, %v; want %q, %q", c.memory, c.cpu, m, cpu, err, c.wantMemory, c.wantCPU)
+		}
+	}
+	for _, sv := range []Service{{Memory: "0.3Gi"}, {CPU: "50.5m"}, {CPU: "18446744073709551866m"}, {Memory: "18446744074246422528"}, {Memory: "lots"}} {
+		if m, cpu, err := sv.Quantities(); err == nil {
+			t.Errorf("Quantities(%q, %q) = %q, %q; want an error", sv.Memory, sv.CPU, m, cpu)
+		}
 	}
 }
 

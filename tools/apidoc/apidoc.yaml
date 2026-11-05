@@ -689,9 +689,9 @@ schemas:
 
     - `name`은 `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`(3자에서 32자)에 맞고 `--`가 없어야 한다. `--`는 인스턴스 이름(`<name>--<branch slug>`)에서 앱과 브랜치를 나누기 때문이다. name은 기본 인스턴스(네임스페이스, Argo CD Application `<name>-<env>`, 공개 URL `https://<name>.hopcharlie.dev`)와 모든 인스턴스가 함께 쓰는 이미지 `<registry>/hopcharlie/apps/<name>/<service>`의 이름이 된다.
     - 서비스는 1개에서 5개, 리소스는 종류마다 1개까지다. 서비스 이름과 리소스 이름은 `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$`에 맞고 겹치지 않아야 한다.
-    - `port`는 쓰면 1에서 65535다. `port`가 없는 서비스는 워커다. Service와 probe가 없고 실행되면 준비된 것으로 보며, `public`일 수 없고 `healthCheck`를 쓸 수 없다. 워커만 있는 앱도 되고, 그 앱에는 URL이 없다.
+    - `port`는 쓰면 1에서 65535다. `port`가 없거나 0인 서비스는 워커다. Service와 probe가 없고 실행되면 준비된 것으로 보며, `public`일 수 없고 `healthCheck`를 쓸 수 없다. 워커만 있는 앱도 되고, 그 앱에는 URL이 없다.
     - `replicas`는 1에서 5이고, `public`인 서비스는 1개까지이며, `healthCheck`를 쓰면 `/`로 시작해야 한다.
-    - `memory`는 쓰면 256Mi에서 1536Mi, `cpu`는 50m에서 500m다(ADR 0024). 모든 서비스의 (replicas + 1) x memory 합은 3Gi 이하, (replicas + 1) x cpu 합은 1500m 이하여야 한다. memory를 쓰지 않은 서비스는 256Mi, cpu를 쓰지 않은 서비스는 50m로 센다. 롤링 업데이트 동안 서비스마다 파드가 하나 더 떠도 DB와 함께 네임스페이스 quota 안에 들게 하기 위해서다.
+    - `memory`는 쓰면 바이트 정수로 256Mi에서 1536Mi, `cpu`는 밀리코어 정수로 50m에서 500m다(ADR 0024). 모든 서비스의 (replicas + 1) x memory 합은 3Gi 이하, (replicas + 1) x cpu 합은 1500m 이하여야 한다. memory를 쓰지 않은 서비스는 256Mi, cpu를 쓰지 않은 서비스는 50m로 센다. 롤링 업데이트 동안 서비스마다 파드가 하나 더 떠도 DB와 함께 네임스페이스 quota 안에 들게 하기 위해서다. 노드에 남은 용량은 quota보다 작을 수 있어서, CPU 몫을 거의 다 쓰는 앱은 노드에 그만큼 자리가 날 때까지 Pending일 수 있다.
     - `path`와 `dockerfile`은 상대 경로이고 `..`이 없어야 한다.
     - `env` 키는 `^[A-Z_][A-Z0-9_]*$`에 맞고 플랫폼이 넣는 변수(`PORT`, `DATABASE_URL`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `JDBC_DATABASE_URL`, `S3_*`)가 아니어야 한다.
 
@@ -890,8 +890,8 @@ fields:
   AppSpecService.path: docker 빌드 컨텍스트, 저장소 루트 기준 상대 경로
   AppSpecService.dockerfile: path 기준 상대 경로
   AppSpecService.port: 서비스가 듣는 포트. 서비스는 이 값을 PORT로 받는다. 워커는 쓰지 않고, 그러면 Service, probe, PORT가 없다
-  AppSpecService.memory: 'Kubernetes 수량, 256Mi에서 1536Mi. 컨테이너의 memory request이자 limit이다. 쓰지 않으면 환경 기본값(request 64Mi, limit 256Mi)'
-  AppSpecService.cpu: 'Kubernetes 수량, 50m에서 500m. 컨테이너의 CPU request이고 CPU limit은 없다. 쓰지 않으면 환경 기본값(50m)'
+  AppSpecService.memory: 'Kubernetes 수량, 바이트 정수로 256Mi에서 1536Mi. 컨테이너의 memory request이자 limit이다. 쓰지 않으면 환경 기본값(request 64Mi, limit 256Mi)'
+  AppSpecService.cpu: 'Kubernetes 수량, 밀리코어 정수로 50m에서 500m. 컨테이너의 CPU request이고 CPU limit은 없다. 쓰지 않으면 환경 기본값(50m)'
   AppSpecService.healthCheck: 서비스가 준비되면 2xx로 답하는 HTTP 경로
   AppSpecService.public: '트래픽 게이트웨이를 거쳐 `https://<app>.hopcharlie.dev`로 서비스한다'
   AppSpecService.env: '플랫폼이 넣는 변수 외의 환경 변수. 값은 문자열이다. YAML이 숫자, 불리언, null로 읽는 값(`4`, `yes`, `0755`, `~`)은 오류이므로 따옴표로 감싼다. platform.yaml은 git에 있으므로 비밀을 넣지 않는다. 값에 `$(NAME)`을 쓰면 Kubernetes가 플랫폼이 넣은 변수로 바꾸므로 앱이 읽는 이름으로 넘길 수 있다. 예: `KC_DB_URL_HOST: "$(PGHOST)"`, `SPRING_DATASOURCE_URL: "$(JDBC_DATABASE_URL)"`, `AWS_ACCESS_KEY_ID: "$(S3_ACCESS_KEY)"`'

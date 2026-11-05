@@ -42,9 +42,10 @@
                 "additionalProperties": { "type": "string" }
               }
             },
-            "dependencies": { "healthCheck": ["port"] },
-            "if": { "required": ["public"], "properties": { "public": { "const": true } } },
-            "then": { "required": ["port"] }
+            "allOf": [
+              { "if": { "required": ["public"], "properties": { "public": { "const": true } } }, "then": { "required": ["port"] } },
+              { "if": { "required": ["healthCheck"] }, "then": { "required": ["port"] } }
+            ]
           }
         },
         "resources": {

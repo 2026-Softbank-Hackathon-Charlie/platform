@@ -336,14 +336,21 @@ func (s Spec) Validate() []FieldError {
 				add(p+".public", "needs a port: the traffic gateway sends requests to it")
 			}
 		}
-		if sv.Replicas < 0 || sv.Replicas > MaxReplicas {
+		replicasOK := sv.Replicas >= 0 && sv.Replicas <= MaxReplicas
+		if !replicasOK {
 			add(p+".replicas", "must be between 1 and %d", MaxReplicas)
 		}
 		pods := int64(max(sv.Replicas, 1) + 1) // one more during a rolling update
-		m, ok := quantity(add, p+".memory", sv.Memory, "512Mi or 1Gi", MinMemory, MaxMemory, UnsetMemory, (*resource.Quantity).Value, mebibytes)
-		memory = addTotal(memory, ok, pods*m)
-		c, ok := quantity(add, p+".cpu", sv.CPU, "250m or 0.5", MinCPU, MaxCPU, UnsetCPU, (*resource.Quantity).MilliValue, millicores)
-		cpu = addTotal(cpu, ok, pods*c)
+		m, msg := memoryQuantity.check(sv.Memory)
+		if msg != "" {
+			add(p+".memory", "%s", msg)
+		}
+		memory = addTotal(memory, msg == "" && replicasOK, pods*m)
+		c, msg := cpuQuantity.check(sv.CPU)
+		if msg != "" {
+			add(p+".cpu", "%s", msg)
+		}
+		cpu = addTotal(cpu, msg == "" && replicasOK, pods*c)
 		for _, k := range sortedKeys(sv.Env) {
 			switch {
 			case !envKey.MatchString(k):
@@ -382,23 +389,69 @@ func (s Spec) Validate() []FieldError {
 	return errs
 }
 
-// quantity checks a service's memory or cpu, a Kubernetes quantity whose
-// value (bytes or millicores) is lo to hi, and returns that value, or unset
-// when it is empty. ok is false when the quantity is wrong.
-func quantity(add func(string, string, ...any), path, s, example string, lo, hi, unset int64, value func(*resource.Quantity) int64, format func(int64) string) (v int64, ok bool) {
+// A kind of quantity: memory in bytes or cpu in millicores. A value must be
+// exactly a whole number of them (no 0.3Gi, no 50.5m) and within min to
+// max, compared as quantities, so a huge one cannot wrap around int64 into
+// the range.
+type quantityKind struct {
+	min, max, unset int64
+	example, unit   string
+	of              func(int64) *resource.Quantity
+	value           func(*resource.Quantity) int64
+	format          func(int64) string
+}
+
+var (
+	memoryQuantity = quantityKind{MinMemory, MaxMemory, UnsetMemory, "512Mi or 1Gi", "bytes",
+		func(v int64) *resource.Quantity { return resource.NewQuantity(v, resource.BinarySI) }, (*resource.Quantity).Value, mebibytes}
+	cpuQuantity = quantityKind{MinCPU, MaxCPU, UnsetCPU, "250m or 0.5", "millicores",
+		func(v int64) *resource.Quantity { return resource.NewMilliQuantity(v, resource.DecimalSI) }, (*resource.Quantity).MilliValue, millicores}
+)
+
+// check returns the value of s, or unset when s is empty, and "" or why s
+// is wrong.
+func (k quantityKind) check(s string) (int64, string) {
 	if s == "" {
-		return unset, true
+		return k.unset, ""
 	}
 	q, err := resource.ParseQuantity(s)
 	if err != nil {
-		add(path, "must be a Kubernetes quantity such as %s", example)
-		return 0, false
+		return 0, "must be a Kubernetes quantity such as " + k.example
 	}
-	if v = value(&q); v < lo || v > hi {
-		add(path, "must be between %s and %s", format(lo), format(hi))
-		return 0, false
+	if q.Cmp(*k.of(k.min)) < 0 || q.Cmp(*k.of(k.max)) > 0 {
+		return 0, fmt.Sprintf("must be between %s and %s", k.format(k.min), k.format(k.max))
 	}
-	return v, true
+	v := k.value(&q)
+	if q.Cmp(*k.of(v)) != 0 {
+		return 0, "must be a whole number of " + k.unit + ", such as " + k.example
+	}
+	return v, ""
+}
+
+// canonical returns s as the gitops file writes it: the checked value in
+// Kubernetes' own form (1.5Gi is 1536Mi, 0.5 is 500m, 1e9 is 1000000000), or
+// "" when s is empty.
+func (k quantityKind) canonical(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	v, msg := k.check(s)
+	if msg != "" {
+		return "", fmt.Errorf("%q %s", s, msg)
+	}
+	return k.of(v).String(), nil
+}
+
+// Quantities returns the service's memory and cpu as the gitops file writes
+// them, "" for an unset one; an error when one breaks the rules of Validate.
+func (s Service) Quantities() (memory, cpu string, err error) {
+	if memory, err = memoryQuantity.canonical(s.Memory); err != nil {
+		return "", "", fmt.Errorf("memory %w", err)
+	}
+	if cpu, err = cpuQuantity.canonical(s.CPU); err != nil {
+		return "", "", fmt.Errorf("cpu %w", err)
+	}
+	return memory, cpu, nil
 }
 
 // addTotal adds v to a total that is -1 once a value was wrong.
@@ -418,17 +471,6 @@ func mebibytes(b int64) string {
 }
 
 func millicores(m int64) string { return fmt.Sprintf("%dm", m) }
-
-// Canonical returns a memory or cpu quantity the way Kubernetes writes it
-// back (1.5Gi is 1536Mi, 0.5 is 500m), so the gitops file matches what the
-// cluster stores.
-func Canonical(quantity string) (string, error) {
-	q, err := resource.ParseQuantity(quantity)
-	if err != nil {
-		return "", err
-	}
-	return q.String(), nil
-}
 
 // checkName checks a service or resource name and that it is unique in seen.
 func checkName(add func(string, string, ...any), path, name string, seen map[string]int, list string, i int) {

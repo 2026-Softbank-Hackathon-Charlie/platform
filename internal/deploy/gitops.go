@@ -126,15 +126,15 @@ func Render(f File) ([]byte, error) {
 		}
 		fmt.Fprintf(&b, "      public: %t\n", sv.Public)
 		fmt.Fprintf(&b, "      replicas: %d\n", max(sv.Replicas, 1))
-		for _, r := range []struct{ key, value string }{{"memory", sv.Memory}, {"cpu", sv.CPU}} {
-			if r.value == "" {
-				continue
-			}
-			v, err := appspec.Canonical(r.value)
-			if err != nil {
-				return nil, fmt.Errorf("render %s: service %s: %s %q: %w", FilePath(f.Instance, f.Env), sv.Name, r.key, r.value, err)
-			}
-			fmt.Fprintf(&b, "      %s: %s\n", r.key, q(v))
+		memory, cpu, err := sv.Quantities()
+		if err != nil {
+			return nil, fmt.Errorf("render %s: service %s: %w", FilePath(f.Instance, f.Env), sv.Name, err)
+		}
+		if memory != "" {
+			fmt.Fprintf(&b, "      memory: %s\n", q(memory))
+		}
+		if cpu != "" {
+			fmt.Fprintf(&b, "      cpu: %s\n", q(cpu))
 		}
 		var env []string
 		for _, k := range sortedKeys(sv.Env) {

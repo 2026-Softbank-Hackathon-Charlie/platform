@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
@@ -236,7 +237,6 @@ func TestAppSecretsUpdateErrors(t *testing.T) {
 		{name: "DATABASE_URL", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"DATABASE_URL": "x"}}, status: 400, code: "invalid_request"},
 		{name: "S3_", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"S3_BUCKET": "x"}}, status: 400, code: "invalid_request"},
 		{name: "PGPASSWORD", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"PGPASSWORD": "x"}}, status: 400, code: "invalid_request"},
-		{name: "reserved delete", app: "shop", token: opToken, body: map[string]any{"delete": []string{"PORT"}}, status: 400, code: "invalid_request"},
 		{name: "empty value", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"A": ""}}, status: 400, code: "invalid_request"},
 		{name: "empty value among others", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"A": "x", "B": ""}}, status: 400, code: "invalid_request"},
 		{name: "long value", app: "shop", token: opToken, body: map[string]any{"set": map[string]string{"A": strings.Repeat("가", 1366)}}, status: 400, code: "invalid_request"},
@@ -300,6 +300,29 @@ func TestAppSecretsNotConfigured(t *testing.T) {
 	// An unknown app is still not found.
 	if code, b := h.do("GET", "/v1/apps/nope/secrets", opToken, nil); code != 404 {
 		t.Errorf("unknown app: %d %s", code, b)
+	}
+}
+
+// A secret stored before the platform reserved its name (ADR 0024) can still
+// be read and deleted, but not set again.
+func TestAppSecretsReservedAfterStored(t *testing.T) {
+	h := secretsHarness(t)
+	r, err := testCipher(t).Row("shop", "", "PGHOST", "db", "op")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.UpdatedAt = time.Now().UTC()
+	if err := h.store.ChangeAppSecrets(t.Context(), "shop", "", []store.AppSecret{r}, nil, 50); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := h.do("GET", "/v1/apps/shop/secrets/PGHOST", opToken, nil); code != 200 || decode[apiv1.AppSecretValue](t, b).Value != "db" {
+		t.Fatalf("read: %d %s", code, b)
+	}
+	if code, b := h.do("PUT", "/v1/apps/shop/secrets", opToken, map[string]any{"set": map[string]string{"PGHOST": "x"}}); code != 400 || !strings.Contains(string(b), "is set by the platform") {
+		t.Fatalf("set: %d %s", code, b)
+	}
+	if got := h.putSecrets(map[string]any{"delete": []string{"PGHOST"}}); secretList(got) != "" {
+		t.Fatalf("after delete: %s", mustJSON(t, got))
 	}
 }
 

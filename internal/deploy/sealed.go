@@ -144,6 +144,18 @@ func (j *job) appSecretValues(ctx context.Context, app store.App) (map[string]st
 	if err != nil {
 		return nil, fmt.Errorf("decrypt the secrets of %s: %w", j.d.Instance, err)
 	}
+	// A secret stored before the platform reserved its name (ADR 0024) would
+	// clash with the platform's variable, and the chart refuses it.
+	var reserved []string
+	for _, k := range sortedKeys(values) {
+		if appspec.Reserved(k) {
+			reserved = append(reserved, k)
+			delete(values, k)
+		}
+	}
+	if len(reserved) > 0 {
+		j.note(ctx, "not sealing secrets "+strings.Join(reserved, ", ")+": the platform sets these variables now; delete the secrets")
+	}
 	return values, nil
 }
 

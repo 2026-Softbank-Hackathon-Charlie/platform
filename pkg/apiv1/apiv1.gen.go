@@ -904,18 +904,21 @@ type AppDeploy struct {
 	// - 1 to 5 services and at most one resource per type. Service names,
 	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 	//   are unique.
-	// - `port`, when set, is 1 to 65535. A service without one is a
-	//   worker: no Service, no probes, ready once it runs, and it may be
+	// - `port`, when set, is 1 to 65535. A service without one (or with
+	//   0) is a worker: no Service, no probes, ready once it runs, and it may be
 	//   neither `public` nor have a `healthCheck`. An app may have only
 	//   workers; it then has no URL.
 	// - `replicas` is 1 to 5, at most one service is `public`, and
 	//   `healthCheck`, when set, starts with `/`.
-	// - `memory`, when set, is 256Mi to 1536Mi and `cpu` 50m to 500m
+	// - `memory`, when set, is a whole number of bytes from 256Mi to
+	//   1536Mi and `cpu` a whole number of millicores from 50m to 500m
 	//   (ADR 0024). Over all services, (replicas + 1) x memory adds up to
 	//   at most 3Gi and (replicas + 1) x cpu to at most 1500m, an unset
 	//   memory counting as 256Mi and an unset cpu as 50m, so that a
 	//   rolling update, with one pod more per service, fits the
-	//   namespace's quota next to the database.
+	//   namespace's quota next to the database. The nodes may have less
+	//   room than the quota: an app that uses most of its CPU budget can
+	//   stay Pending until a node has that much CPU free.
 	// - `path` and `dockerfile` are relative and have no `..`.
 	// - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
 	//   variables the platform sets: `PORT`, `DATABASE_URL`, `PGHOST`,
@@ -1035,18 +1038,21 @@ type AppInstance struct {
 	// - 1 to 5 services and at most one resource per type. Service names,
 	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 	//   are unique.
-	// - `port`, when set, is 1 to 65535. A service without one is a
-	//   worker: no Service, no probes, ready once it runs, and it may be
+	// - `port`, when set, is 1 to 65535. A service without one (or with
+	//   0) is a worker: no Service, no probes, ready once it runs, and it may be
 	//   neither `public` nor have a `healthCheck`. An app may have only
 	//   workers; it then has no URL.
 	// - `replicas` is 1 to 5, at most one service is `public`, and
 	//   `healthCheck`, when set, starts with `/`.
-	// - `memory`, when set, is 256Mi to 1536Mi and `cpu` 50m to 500m
+	// - `memory`, when set, is a whole number of bytes from 256Mi to
+	//   1536Mi and `cpu` a whole number of millicores from 50m to 500m
 	//   (ADR 0024). Over all services, (replicas + 1) x memory adds up to
 	//   at most 3Gi and (replicas + 1) x cpu to at most 1500m, an unset
 	//   memory counting as 256Mi and an unset cpu as 50m, so that a
 	//   rolling update, with one pod more per service, fits the
-	//   namespace's quota next to the database.
+	//   namespace's quota next to the database. The nodes may have less
+	//   room than the quota: an app that uses most of its CPU budget can
+	//   stay Pending until a node has that much CPU free.
 	// - `path` and `dockerfile` are relative and have no `..`.
 	// - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
 	//   variables the platform sets: `PORT`, `DATABASE_URL`, `PGHOST`,
@@ -1163,18 +1169,21 @@ type AppSecretsUpdate struct {
 //   - 1 to 5 services and at most one resource per type. Service names,
 //     and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 //     are unique.
-//   - `port`, when set, is 1 to 65535. A service without one is a
-//     worker: no Service, no probes, ready once it runs, and it may be
+//   - `port`, when set, is 1 to 65535. A service without one (or with
+//     0) is a worker: no Service, no probes, ready once it runs, and it may be
 //     neither `public` nor have a `healthCheck`. An app may have only
 //     workers; it then has no URL.
 //   - `replicas` is 1 to 5, at most one service is `public`, and
 //     `healthCheck`, when set, starts with `/`.
-//   - `memory`, when set, is 256Mi to 1536Mi and `cpu` 50m to 500m
+//   - `memory`, when set, is a whole number of bytes from 256Mi to
+//     1536Mi and `cpu` a whole number of millicores from 50m to 500m
 //     (ADR 0024). Over all services, (replicas + 1) x memory adds up to
 //     at most 3Gi and (replicas + 1) x cpu to at most 1500m, an unset
 //     memory counting as 256Mi and an unset cpu as 50m, so that a
 //     rolling update, with one pod more per service, fits the
-//     namespace's quota next to the database.
+//     namespace's quota next to the database. The nodes may have less
+//     room than the quota: an app that uses most of its CPU budget can
+//     stay Pending until a node has that much CPU free.
 //   - `path` and `dockerfile` are relative and have no `..`.
 //   - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
 //     variables the platform sets: `PORT`, `DATABASE_URL`, `PGHOST`,
@@ -1234,7 +1243,8 @@ type AppSpecResource struct {
 
 // AppSpecService defines model for AppSpecService.
 type AppSpecService struct {
-	// Cpu A Kubernetes quantity, 50m to 500m: the container's CPU request.
+	// Cpu A Kubernetes quantity, a whole number of millicores from 50m
+	// to 500m: the container's CPU request.
 	// There is no CPU limit. Without it the request is the
 	// environment's default (50m).
 	//
@@ -1260,8 +1270,8 @@ type AppSpecService struct {
 	// Example: /healthz
 	HealthCheck *string `json:"healthCheck,omitempty"`
 
-	// Memory A Kubernetes quantity, 256Mi to 1536Mi: the container's memory
-	// request and limit. Without it the container gets the
+	// Memory A Kubernetes quantity, a whole number of bytes from 256Mi to
+	// 1536Mi: the container's memory request and limit. Without it the container gets the
 	// environment's defaults (request 64Mi, limit 256Mi).
 	//
 	//
@@ -1328,18 +1338,21 @@ type AppSpecValidation struct {
 	// - 1 to 5 services and at most one resource per type. Service names,
 	//   and resource names, match `^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$` and
 	//   are unique.
-	// - `port`, when set, is 1 to 65535. A service without one is a
-	//   worker: no Service, no probes, ready once it runs, and it may be
+	// - `port`, when set, is 1 to 65535. A service without one (or with
+	//   0) is a worker: no Service, no probes, ready once it runs, and it may be
 	//   neither `public` nor have a `healthCheck`. An app may have only
 	//   workers; it then has no URL.
 	// - `replicas` is 1 to 5, at most one service is `public`, and
 	//   `healthCheck`, when set, starts with `/`.
-	// - `memory`, when set, is 256Mi to 1536Mi and `cpu` 50m to 500m
+	// - `memory`, when set, is a whole number of bytes from 256Mi to
+	//   1536Mi and `cpu` a whole number of millicores from 50m to 500m
 	//   (ADR 0024). Over all services, (replicas + 1) x memory adds up to
 	//   at most 3Gi and (replicas + 1) x cpu to at most 1500m, an unset
 	//   memory counting as 256Mi and an unset cpu as 50m, so that a
 	//   rolling update, with one pod more per service, fits the
-	//   namespace's quota next to the database.
+	//   namespace's quota next to the database. The nodes may have less
+	//   room than the quota: an app that uses most of its CPU budget can
+	//   stay Pending until a node has that much CPU free.
 	// - `path` and `dockerfile` are relative and have no `..`.
 	// - `env` keys match `^[A-Z_][A-Z0-9_]*$` and are none of the
 	//   variables the platform sets: `PORT`, `DATABASE_URL`, `PGHOST`,

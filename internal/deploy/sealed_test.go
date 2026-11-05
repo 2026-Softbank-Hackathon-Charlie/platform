@@ -459,6 +459,27 @@ func TestDeployWithoutSealerOrStorage(t *testing.T) {
 	}
 }
 
+// A secret stored before its name became one the platform sets (ADR 0024)
+// is left out with a note, so the app still deploys; the others are sealed.
+func TestDeploySkipsReservedSecrets(t *testing.T) {
+	se := newStorageEnv(t)
+	se.register("shop", "gke")
+	se.setSecrets("", map[string]string{"HOST_CODE": "4821", "PGHOST": "db", "JDBC_DATABASE_URL": "jdbc:x"})
+	se.start()
+
+	d := se.deploy(sha("s1"), "gke")
+	if d.Status != store.DeployHealthy {
+		t.Fatalf("deployment %s %q\n%s", d.Status, d.Error, se.dump(d.ID))
+	}
+	ss := se.file("shop", "gke").Values.SealedSecrets
+	if ss == nil || len(ss.App) != 1 || ss.App["HOST_CODE"] == "" {
+		t.Fatalf("sealed app secrets %+v, want only HOST_CODE", ss)
+	}
+	if !hasEvent(se.events(d.ID), EventLog, "not sealing secrets JDBC_DATABASE_URL, PGHOST: the platform sets these variables now") {
+		t.Errorf("no note about the reserved secrets\n%s", se.dump(d.ID))
+	}
+}
+
 func TestDeployNothingToSeal(t *testing.T) {
 	te := newTestEnv(t) // shop has a postgres resource only, and no secrets
 	te.register("shop", "gke")
