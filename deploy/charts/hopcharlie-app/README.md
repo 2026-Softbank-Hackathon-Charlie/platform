@@ -18,6 +18,8 @@ HopCharlie 플랫폼이 GitHub에서 배포하는 앱 하나를 그리는 차트
 | (없음) | | `s3` 리소스는 `S3_*` 변수를 넣는다. 버킷은 `<bucketPrefix><namespace>`이고 플랫폼이 만든다(platform ADR 0016). 키는 Secret `profile.s3.credentialsSecret`에서 읽는다 |
 | SealedSecret | `app-s3` | `values.sealedSecrets.s3`. 버킷 키(`accessKey`, `secretKey`). 이때 `profile.s3`는 Secret `app-s3`와 기본 키 이름을 읽어야 한다 |
 | SealedSecret | `app-secrets` | `values.sealedSecrets.app`. 앱 시크릿(platform ADR 0019) |
+| SealedSecret | `app-pgbackup` | `values.sealedSecrets.pgBackup`. 백업 버킷 키(`accessKey`, `secretKey`, platform ADR 0025) |
+| ObjectStore, ScheduledBackup | `<app>-<resource>` | `postgres` 리소스, `values.backup`, `profile.postgres.backup.enabled`가 모두 있을 때. infra의 같은 차트 README 백업 절 |
 | ResourceQuota, LimitRange, NetworkPolicy | `hopcharlie-app` | `profile.quota`, `limitRange`, `networkPolicy`의 `enabled` |
 
 ## 서비스 계약

@@ -125,4 +125,14 @@ type SecretStore interface {
 	ListInstanceStorage(ctx context.Context, app, instance string) ([]InstanceStorage, error)
 	// DeleteInstanceStorage removes one row. ErrNotFound when there is none.
 	DeleteInstanceStorage(ctx context.Context, instance, env string) error
+
+	// PutBackupStorage stores the backup bucket and key of app s.App in
+	// s.Env (ADR 0025), replacing the row there is but keeping its
+	// CreatedAt. s.Instance is the name the driver made them under. These
+	// rows are apart from the instance storage rows: they outlive the app,
+	// and the platform never deletes them.
+	PutBackupStorage(ctx context.Context, s InstanceStorage) error
+	// GetBackupStorage returns ErrNotFound when the app has no backup bucket
+	// in env.
+	GetBackupStorage(ctx context.Context, app, env string) (InstanceStorage, error)
 }

@@ -31,6 +31,10 @@ spec:
     - { group: apps, kind: Deployment }
     - { group: "", kind: Service }
     - { group: postgresql.cnpg.io, kind: Cluster }
+    # The Cluster's backups (platform ADR 0025). The Backups the schedule
+    # makes are CNPG's, owned by the ScheduledBackup.
+    - { group: postgresql.cnpg.io, kind: ScheduledBackup }
+    - { group: barmancloud.cnpg.io, kind: ObjectStore }
     - { group: "", kind: ResourceQuota }
     - { group: "", kind: LimitRange }
     - { group: networking.k8s.io, kind: NetworkPolicy }

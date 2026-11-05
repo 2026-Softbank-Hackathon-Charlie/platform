@@ -154,6 +154,11 @@ type Config struct {
 	// fails a deployment of an app with an s3 resource there, and turns off
 	// the cleanup of deleted instances' buckets.
 	Storage func(env string) (storage.Driver, error)
+	// StorageDriver is the storage driver an environment's configuration
+	// names ("" without a storage block), whether or not it could be built.
+	// The default instance's postgres resource gets a backup bucket where it
+	// is aws (ADR 0025); nil means nowhere.
+	StorageDriver func(env string) string
 	// CleanupInterval is how often the buckets and keys of deleted
 	// instances are deleted again when an earlier try failed (default 5m).
 	CleanupInterval time.Duration

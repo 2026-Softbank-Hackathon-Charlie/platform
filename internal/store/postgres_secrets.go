@@ -158,6 +158,30 @@ func (s *Postgres) ListInstanceStorage(ctx context.Context, app, instance string
 	return collect(rows, scanInstanceStorage)
 }
 
+const backupStorageColumns = `instance, env, app, driver, bucket, key_id, old_key_id, sealed_access_key, sealed_secret_key, cert_fingerprint, created_at`
+
+func (s *Postgres) PutBackupStorage(ctx context.Context, is InstanceStorage) error {
+	is = is.Clean()
+	_, err := s.pool.Exec(ctx, `INSERT INTO backup_storage (`+backupStorageColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (app, env) DO UPDATE SET instance = EXCLUDED.instance, driver = EXCLUDED.driver, bucket = EXCLUDED.bucket,
+			key_id = EXCLUDED.key_id, old_key_id = EXCLUDED.old_key_id, sealed_access_key = EXCLUDED.sealed_access_key, sealed_secret_key = EXCLUDED.sealed_secret_key,
+			cert_fingerprint = EXCLUDED.cert_fingerprint`,
+		is.Instance, is.Env, is.App, is.Driver, is.Bucket, is.KeyID, is.OldKeyID, is.SealedAccessKey, is.SealedSecretKey, is.CertFingerprint, is.CreatedAt)
+	return err
+}
+
+func (s *Postgres) GetBackupStorage(ctx context.Context, app, env string) (InstanceStorage, error) {
+	if !Clean(app) || !Clean(env) {
+		return InstanceStorage{}, fmt.Errorf("%w: backup storage of app %q in %q", ErrNotFound, app, env)
+	}
+	out, err := scanInstanceStorage(s.pool.QueryRow(ctx, `SELECT `+backupStorageColumns+` FROM backup_storage
+		WHERE app = $1 AND env = $2`, app, env))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InstanceStorage{}, fmt.Errorf("%w: backup storage of app %s in %s", ErrNotFound, app, env)
+	}
+	return out, err
+}
+
 func (s *Postgres) DeleteInstanceStorage(ctx context.Context, instance, env string) error {
 	if !Clean(instance) || !Clean(env) {
 		return fmt.Errorf("%w: storage of instance %q in %q", ErrNotFound, instance, env)
