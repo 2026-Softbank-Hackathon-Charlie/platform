@@ -50,6 +50,7 @@ type fakeUser struct {
 	tags           map[string]string
 	policies       map[string]string
 	keys           []string
+	inactive       map[string]bool // deactivated keys
 }
 
 func newFakeAWS() *fakeAWS {
@@ -337,7 +338,11 @@ func (f *fakeAWS) ListAccessKeys(_ context.Context, in *iam.ListAccessKeysInput,
 	}
 	out := &iam.ListAccessKeysOutput{}
 	for _, k := range u.keys {
-		out.AccessKeyMetadata = append(out.AccessKeyMetadata, iamtypes.AccessKeyMetadata{AccessKeyId: aws.String(k), CreateDate: aws.Time(fakeKeyMade)})
+		status := iamtypes.StatusTypeActive
+		if u.inactive[k] {
+			status = iamtypes.StatusTypeInactive
+		}
+		out.AccessKeyMetadata = append(out.AccessKeyMetadata, iamtypes.AccessKeyMetadata{AccessKeyId: aws.String(k), CreateDate: aws.Time(fakeKeyMade), Status: status})
 	}
 	return out, nil
 }
@@ -535,11 +540,15 @@ func TestAWSKeys(t *testing.T) {
 	}
 	f.calls = nil
 	keys, err = d.Keys(ctx, dev)
-	if err != nil || len(keys) != 1 || keys[0].ID != "AKIA0001" || !keys[0].CreatedAt.Equal(fakeKeyMade) {
+	if err != nil || len(keys) != 1 || keys[0].ID != "AKIA0001" || !keys[0].CreatedAt.Equal(fakeKeyMade) || !keys[0].Active {
 		t.Fatalf("keys = %+v, %v", keys, err)
 	}
 	if !slices.Equal(f.calls, []string{"ListAccessKeys"}) {
 		t.Fatalf("calls %v, want only ListAccessKeys", f.calls)
+	}
+	f.users[devUser].inactive = map[string]bool{"AKIA0001": true}
+	if keys, err := d.Keys(ctx, dev); err != nil || keys[0].Active {
+		t.Fatalf("a deactivated key = %+v, %v", keys, err)
 	}
 
 	var doc struct{ Statement []struct{ Action []string } }

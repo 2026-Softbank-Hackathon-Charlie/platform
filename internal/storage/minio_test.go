@@ -266,7 +266,7 @@ func (f *fakeMinIO) ListServiceAccounts(_ context.Context, user string) (madmin.
 	defer f.mu.Unlock()
 	var out madmin.ListServiceAccountsResp
 	for id := range f.accounts[user] {
-		out.Accounts = append(out.Accounts, madmin.ServiceAccountInfo{AccessKey: id, ParentUser: user})
+		out.Accounts = append(out.Accounts, madmin.ServiceAccountInfo{AccessKey: id, ParentUser: user, AccountStatus: "on"})
 	}
 	return out, nil
 }
@@ -420,7 +420,7 @@ func TestMinIOKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys, err = d.Keys(ctx, dev)
-	if err != nil || len(keys) != 1 || keys[0].ID != "SVC0001" || !keys[0].CreatedAt.IsZero() {
+	if err != nil || len(keys) != 1 || keys[0].ID != "SVC0001" || !keys[0].CreatedAt.IsZero() || !keys[0].Active {
 		t.Fatalf("keys = %+v, %v", keys, err)
 	}
 	if s := d.Scope(); !slices.Equal(s.Actions, slices.Concat(bucketActions, objectActions)) || s.Boundary != "" {

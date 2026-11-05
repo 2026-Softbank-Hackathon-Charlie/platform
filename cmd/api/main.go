@@ -309,6 +309,7 @@ func main() {
 		GatewayConfigured: gw != nil,
 		StorageRows:       st,
 		Storage:           envSvc.Storage,
+		Log:               log,
 	}), security.Options{Log: log})
 	// A running agent session with no event for PLATFORM_AGENT_IDLE is closed
 	// as cancelled, so an agent that crashed does not leave it open forever.

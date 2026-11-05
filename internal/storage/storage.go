@@ -251,6 +251,9 @@ type KeyInfo struct {
 	// CreatedAt is when the provider made the key; zero when the provider
 	// does not record it (minio).
 	CreatedAt time.Time
+	// Active is whether the key can be used: IAM status Active, GCS state
+	// ACTIVE, MinIO status on. Ensure counts an inactive key as present.
+	Active bool
 }
 
 // Scope is what an instance's key may do on the instance's bucket: the S3

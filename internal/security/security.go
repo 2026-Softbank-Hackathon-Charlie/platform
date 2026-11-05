@@ -367,6 +367,8 @@ type Config struct {
 	// both, every environment with a storage block lists its keys.
 	StorageRows StorageRows
 	Storage     func(env string) (storage.Driver, error)
+	// Log gets what a collector cannot show without provider text.
+	Log *slog.Logger
 }
 
 // Collectors returns the collectors for cfg: every environment's cluster, the
@@ -385,7 +387,7 @@ func Collectors(cfg Config) []Collector {
 		NewPlatformCollector(cfg.Audit, cfg.DSNHostSuffixes, cfg.GatewayConfigured),
 	)
 	if cfg.StorageRows != nil && cfg.Storage != nil {
-		out = append(out, NewStorageKeyCollector(cfg.Environments, cfg.StorageRows, cfg.Storage))
+		out = append(out, NewStorageKeyCollectors(cfg.Environments, cfg.StorageRows, cfg.Storage, cfg.Log)...)
 	}
 	return out
 }

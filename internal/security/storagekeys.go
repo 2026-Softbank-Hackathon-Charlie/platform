@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"slices"
 	"sync"
 
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/smithy-go"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
@@ -16,7 +18,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
-// StorageRows is the part of the store the storage key collector reads: the
+// StorageRows is the part of the store the storage key collectors read: the
 // bucket and keys the platform made for every instance (ADR 0016).
 type StorageRows interface {
 	ListInstanceStorage(ctx context.Context, app, instance string) ([]store.InstanceStorage, error)
@@ -25,105 +27,141 @@ type StorageRows interface {
 // SourceStorageKeys is the name of the storage key sources.
 const SourceStorageKeys = "storage-keys"
 
-// StorageKeyCollector lists the bucket keys of app instances (ADR 0027):
-// the platform's record of each instance's key in use and old key, with
-// when the provider made it and what it may do. Every environment with a
-// storage driver is one source. It reads the provider, never changes it,
-// and reports no findings.
+// CheckUnrecordedKey is the finding for a key of an instance's user that the
+// platform has no record of.
+const CheckUnrecordedKey = "storage.unrecorded-key"
+
+// maxKeyCalls caps the provider calls the storage key collectors of one
+// server make at once.
+const maxKeyCalls = 8
+
+// errCollectorFailed stands for a panic while reading keys.
+var errCollectorFailed = errors.New("the collector failed")
+
+// StorageKeyCollector lists the bucket keys of app instances (ADR 0027): the
+// platform's record of each instance's key in use and old key, with when the
+// provider made it, whether it is active and what it may do. It reads the
+// provider and never changes it. A key of an instance's user that the
+// platform has no record of is also a finding.
+//
+// There is one collector per environment with a storage driver, so a
+// provider that does not answer delays only its own environment, and one
+// more for the records of environments without one.
 type StorageKeyCollector struct {
-	srcs   []Source
-	rows   StorageRows
-	driver func(env string) (storage.Driver, error)
+	src        *Source         // nil: the records of every environment not in configured
+	configured map[string]bool // environments with a collector of their own
+	rows       StorageRows
+	driver     func(env string) (storage.Driver, error)
+	calls      chan struct{} // provider calls in progress, shared by a server's collectors
+	log        *slog.Logger
 }
 
-// NewStorageKeyCollector reports on the environments that have a storage
-// block, reading rows and each environment's driver.
-func NewStorageKeyCollector(environments []envs.EnvConfig, rows StorageRows, driver func(env string) (storage.Driver, error)) *StorageKeyCollector {
-	c := &StorageKeyCollector{rows: rows, driver: driver}
+// NewStorageKeyCollectors returns one collector per environment with a
+// storage block and one for the records of other environments, reading rows
+// and each environment's driver. They make at most maxKeyCalls provider
+// calls at once together.
+func NewStorageKeyCollectors(environments []envs.EnvConfig, rows StorageRows, driver func(env string) (storage.Driver, error), log *slog.Logger) []Collector {
+	if log == nil {
+		log = slog.Default()
+	}
+	calls := make(chan struct{}, maxKeyCalls)
+	configured := map[string]bool{}
+	var out []Collector
 	for _, e := range environments {
-		if e.Storage != nil {
-			c.srcs = append(c.srcs, Source{Name: SourceStorageKeys, Provider: apiv1.SecurityProvider(e.Provider), Environment: e.Name})
+		if e.Storage == nil {
+			continue
+		}
+		configured[e.Name] = true
+		src := Source{Name: SourceStorageKeys, Provider: apiv1.SecurityProvider(e.Provider), Environment: e.Name}
+		out = append(out, &StorageKeyCollector{src: &src, rows: rows, driver: driver, calls: calls, log: log})
+	}
+	return append(out, &StorageKeyCollector{configured: configured, rows: rows, driver: driver, calls: calls, log: log})
+}
+
+// Sources is the collector's environment; none for the collector of the
+// other environments, which reports only when there are such records.
+func (c *StorageKeyCollector) Sources() []Source {
+	if c.src == nil {
+		return nil
+	}
+	return []Source{*c.src}
+}
+
+// rowResult is what one record gave.
+type rowResult struct {
+	keys     []apiv1.StorageKey
+	findings []apiv1.SecurityFinding
+	fail     string // why the provider was not read; "" when it was
+}
+
+// Collect reads the records of the collector's environments and, for each,
+// the keys the environment's driver finds for the instance.
+func (c *StorageKeyCollector) Collect(ctx context.Context) []Report {
+	all, err := c.rows.ListInstanceStorage(ctx, "", "")
+	if err != nil {
+		if c.src != nil {
+			c.log.Error("storage keys: read the platform's records", "env", c.src.Environment, "err", err)
+		}
+		return failed(c.Sources(), apiv1.SecuritySourceStatusError, "could not read the platform's records of bucket keys")
+	}
+	var rows []store.InstanceStorage
+	for _, r := range all {
+		if (c.src != nil && r.Env == c.src.Environment) || (c.src == nil && !c.configured[r.Env]) {
+			rows = append(rows, r)
 		}
 	}
-	return c
-}
-
-// Sources are the environments with a storage driver.
-func (c *StorageKeyCollector) Sources() []Source { return c.srcs }
-
-// Collect reads every stored row and the keys its environment's driver
-// finds for the instance. A row of an environment that is no longer
-// configured gets a source of its own, in error.
-func (c *StorageKeyCollector) Collect(ctx context.Context) []Report {
-	rows, err := c.rows.ListInstanceStorage(ctx, "", "")
-	if err != nil {
-		return failed(c.srcs, apiv1.SecuritySourceStatusError, "could not read the platform's records of bucket keys")
-	}
-	keys := make([][]apiv1.StorageKey, len(rows))
-	fails := make([]string, len(rows))
+	results := make([]rowResult, len(rows))
 	var wg sync.WaitGroup
 	for i, row := range rows {
-		wg.Go(func() {
-			// Service.run recovers only the collector's own goroutine.
-			defer func() {
-				if v := recover(); v != nil {
-					keys[i], fails[i] = nil, "the collector failed; see the server log"
-					slog.Error("storage key collector panicked", "instance", row.Instance, "env", row.Env, "panic", v)
-				}
-			}()
-			keys[i], fails[i] = c.read(ctx, row)
-		})
+		wg.Go(func() { results[i] = c.readRow(ctx, row) })
 	}
 	wg.Wait()
 
-	var reps []Report
-	at := map[string]int{}
-	for _, src := range c.srcs {
-		at[src.Environment] = len(reps)
-		reps = append(reps, Report{Source: src, Status: apiv1.SecuritySourceStatusOk})
-	}
-	type tally struct {
-		instances int
-		fails     []string
-	}
-	tallies := make([]tally, len(reps))
-	for i, row := range rows {
-		j, ok := at[row.Env]
-		if !ok {
-			j = len(reps)
-			at[row.Env] = j
-			reps = append(reps, Report{
-				Source: Source{Name: SourceStorageKeys, Provider: apiv1.SecurityProviderPlatform, Environment: row.Env},
-				Status: apiv1.SecuritySourceStatusError,
-				Message: fmt.Sprintf("environment %s has no storage driver in this server's configuration, but the platform has bucket keys there; an operator deletes them and their records (ADR 0016)",
-					row.Env),
-			})
-			tallies = append(tallies, tally{})
-		}
-		reps[j].StorageKeys = append(reps[j].StorageKeys, keys[i]...)
-		tallies[j].instances++
-		if fails[i] != "" {
-			tallies[j].fails = append(tallies[j].fails, fails[i])
-		}
-	}
-	for j := range c.srcs {
-		t := tallies[j]
-		msg := fmt.Sprintf("%s of %s", many(len(reps[j].StorageKeys), "key", "keys"), many(t.instances, "instance", "instances"))
-		if len(t.fails) > 0 {
-			reps[j].Status = apiv1.SecuritySourceStatusError
-			msg += "; not read: " + t.fails[0]
-			if n := len(t.fails); n > 1 {
-				msg += fmt.Sprintf(" (and %d more)", n-1)
+	if c.src == nil {
+		// A source per environment, in error: the platform cannot read
+		// or delete these keys (ADR 0016).
+		var reps []Report
+		at := map[string]int{}
+		for i, row := range rows {
+			j, ok := at[row.Env]
+			if !ok {
+				j = len(reps)
+				at[row.Env] = j
+				reps = append(reps, Report{
+					Source: Source{Name: SourceStorageKeys, Provider: apiv1.SecurityProviderPlatform, Environment: row.Env},
+					Status: apiv1.SecuritySourceStatusError,
+					Message: fmt.Sprintf("environment %s has no storage driver in this server's configuration, but the platform has bucket keys there; an operator deletes them and their records (ADR 0016)",
+						row.Env),
+				})
 			}
+			reps[j].StorageKeys = append(reps[j].StorageKeys, results[i].keys...)
+			reps[j].Findings = append(reps[j].Findings, results[i].findings...)
 		}
-		reps[j].Message = msg
+		return reps
 	}
-	return reps
+
+	rep := Report{Source: *c.src, Status: apiv1.SecuritySourceStatusOk}
+	var fails []string
+	for _, r := range results {
+		rep.StorageKeys = append(rep.StorageKeys, r.keys...)
+		rep.Findings = append(rep.Findings, r.findings...)
+		if r.fail != "" {
+			fails = append(fails, r.fail)
+		}
+	}
+	rep.Message = fmt.Sprintf("%s of %s", many(len(rep.StorageKeys), "key", "keys"), many(len(rows), "instance", "instances"))
+	if len(fails) > 0 {
+		rep.Status = apiv1.SecuritySourceStatusError
+		rep.Message += "; not read: " + fails[0]
+		if n := len(fails); n > 1 {
+			rep.Message += fmt.Sprintf(" (and %d more)", n-1)
+		}
+	}
+	return []Report{rep}
 }
 
-// read lists one row's keys. fail says why the provider was not read; ""
-// when it was.
-func (c *StorageKeyCollector) read(ctx context.Context, row store.InstanceStorage) (keys []apiv1.StorageKey, fail string) {
+// readRow lists one record's keys. A panic leaves the recorded keys unread.
+func (c *StorageKeyCollector) readRow(ctx context.Context, row store.InstanceStorage) (res rowResult) {
 	key := func(id string, use apiv1.StorageKeyUse) apiv1.StorageKey {
 		return apiv1.StorageKey{App: row.App, Instance: row.Instance, Environment: row.Env, Driver: row.Driver, Bucket: row.Bucket,
 			KeyId: storage.MaskKey(id), Use: use, State: apiv1.StorageKeyStateUnread}
@@ -139,12 +177,19 @@ func (c *StorageKeyCollector) read(ctx context.Context, row store.InstanceStorag
 			recorded = append(recorded, key(k.id, k.use))
 		}
 	}
-	unread := func(why string) ([]apiv1.StorageKey, string) {
-		for i := range recorded {
-			recorded[i].Message = &why
+	unread := func(why string) rowResult {
+		out := slices.Clone(recorded)
+		for i := range out {
+			out[i].State, out[i].CreatedAt, out[i].Message = apiv1.StorageKeyStateUnread, nil, &why
 		}
-		return recorded, why
+		return rowResult{keys: out, fail: why}
 	}
+	defer func() {
+		if v := recover(); v != nil {
+			c.log.Error("storage keys: reading a record panicked", "instance", row.Instance, "env", row.Env, "panic", v)
+			res = unread("the collector failed; see the server log")
+		}
+	}()
 
 	if c.driver == nil {
 		return unread("this server has no storage drivers")
@@ -168,9 +213,9 @@ func (c *StorageKeyCollector) read(ctx context.Context, row store.InstanceStorag
 	for i := range recorded {
 		recorded[i].Scope = s
 	}
-	found, err := kr.Keys(ctx, storage.Instance{App: row.App, Name: row.Instance})
+	found, err := c.keys(ctx, kr, storage.Instance{App: row.App, Name: row.Instance})
 	if err != nil {
-		return unread(keyReadError(row.Driver, err))
+		return unread(c.keyReadError(row, err))
 	}
 
 	var extra []apiv1.StorageKey
@@ -183,8 +228,16 @@ func (c *StorageKeyCollector) read(ctx context.Context, row store.InstanceStorag
 		} else {
 			msg := "the platform has no record of this key; delete it if nobody uses it (the next new key deletes it too)"
 			k.Scope, k.Message = s, &msg
+			res.findings = append(res.findings, unrecordedFinding(row, f))
 		}
 		k.State = apiv1.StorageKeyStateOk
+		if !f.Active {
+			k.State = apiv1.StorageKeyStateInactive
+			if k.Use == apiv1.StorageKeyUseCurrent {
+				msg := "the key the pods are given is deactivated, so the app cannot use its bucket; the platform still counts it as present and does not replace it. Activate it, or delete it so the next deployment makes a new one"
+				k.Message = &msg
+			}
+		}
 		if !f.CreatedAt.IsZero() {
 			t := f.CreatedAt
 			k.CreatedAt = &t
@@ -198,26 +251,94 @@ func (c *StorageKeyCollector) read(ctx context.Context, row store.InstanceStorag
 	for i := range recorded {
 		if !seen[i] {
 			recorded[i].State = apiv1.StorageKeyStateMissing
-			msg := "the provider has no such key; the next deployment makes a new one"
+			msg := "the provider has no such key; the instance's next deployment makes a new one (the record of a deleted instance goes when its cleanup finishes)"
 			if recorded[i].Use == apiv1.StorageKeyUseOld {
 				msg = "the provider has no such key any more; the record is cleared after a healthy deployment restarts the pods"
 			}
 			recorded[i].Message = &msg
 		}
 	}
-	return slices.Concat(recorded, extra), ""
+	res.keys = slices.Concat(recorded, extra)
+	return res
 }
 
-// keyReadError says why a driver could not read the keys, without the
-// provider's message: an AWS error code, a timeout, or the driver's own
-// words (the gcs and minio drivers leave provider bodies out).
-func keyReadError(driver string, err error) string {
-	var ae smithy.APIError
-	switch {
-	case errors.As(err, &ae):
-		return fmt.Sprintf("the %s driver could not list the keys: %s", driver, ae.ErrorCode())
-	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
-		return fmt.Sprintf("the %s driver could not list the keys: timed out", driver)
+// keys calls kr.Keys holding one of the shared call slots, and returns when
+// ctx ends even if the call goes on: a call that does not follow ctx (such as
+// a GCS token refresh, which uses the context the driver was made with)
+// keeps its slot until it returns, and the others wait for a slot only as
+// long as ctx lasts.
+func (c *StorageKeyCollector) keys(ctx context.Context, kr storage.KeyReader, in storage.Instance) ([]storage.KeyInfo, error) {
+	select {
+	case c.calls <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return shorten(err.Error(), 160)
+	type result struct {
+		keys []storage.KeyInfo
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer func() { <-c.calls }()
+		defer func() {
+			if v := recover(); v != nil {
+				c.log.Error("storage keys: listing keys panicked", "instance", in.Name, "panic", v)
+				done <- result{err: errCollectorFailed}
+			}
+		}()
+		k, err := kr.Keys(ctx, in)
+		done <- result{k, err}
+	}()
+	select {
+	case r := <-done:
+		return r.keys, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// keyReadError says why a driver could not read the keys without the
+// provider's or the SDK's own words, which can carry endpoints, ARNs and
+// file paths: an AWS error code, why AWS credentials could not be had, a
+// timeout, a network error or an HTTP status. Anything else goes to the
+// server log.
+func (c *StorageKeyCollector) keyReadError(row store.InstanceStorage, err error) string {
+	prefix := "the " + row.Driver + " driver could not list the keys: "
+	var se *v4.SigningError
+	var ae smithy.APIError
+	var ne net.Error
+	switch {
+	case errors.Is(err, errCollectorFailed):
+		return "the collector failed; see the server log"
+	case errors.As(err, &se):
+		return prefix + credentialsError(se.Err).Error()
+	case errors.As(err, &ae):
+		return prefix + ae.ErrorCode()
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || (errors.As(err, &ne) && ne.Timeout()):
+		return prefix + "timed out"
+	case errors.As(err, &ne):
+		return prefix + "network error"
+	case storage.HTTPStatus(err) != 0:
+		return prefix + fmt.Sprintf("HTTP %d", storage.HTTPStatus(err))
+	}
+	c.log.Warn("storage keys: list keys", "instance", row.Instance, "env", row.Env, "err", err)
+	return prefix + "see the server log"
+}
+
+// unrecordedFinding is the finding for a key the platform has no record of.
+// An active one can use the bucket; an inactive one only matters once
+// someone activates it.
+func unrecordedFinding(row store.InstanceStorage, f storage.KeyInfo) apiv1.SecurityFinding {
+	sev := apiv1.SecuritySeverityMedium
+	if !f.Active {
+		sev = apiv1.SecuritySeverityLow
+	}
+	return apiv1.SecurityFinding{
+		Id: f.ID, Check: CheckUnrecordedKey, Category: apiv1.SecurityCategoryIdentity, Severity: sev,
+		Title:    "Bucket key the platform has no record of",
+		Resource: "bucket/" + row.Bucket + "/key/" + storage.MaskKey(f.ID),
+		Detail: fmt.Sprintf("The %s user of instance %s (app %s) has a key the platform did not make or no longer records. While active it can use the bucket %s.",
+			row.Driver, row.Instance, row.App, row.Bucket),
+		Recommendation: "Delete the key if nobody uses it. The platform also deletes it before it makes the instance's next new key.",
+	}
 }

@@ -454,8 +454,14 @@ func TestGCSKeys(t *testing.T) {
 	}
 	before := len(f.calls)
 	keys, err = d.Keys(ctx, in)
-	if err != nil || len(keys) != 1 || keys[0].ID != got.Key.ID || !keys[0].CreatedAt.Equal(time.Date(2026, 11, 5, 1, 2, 1, 0, time.UTC)) {
+	if err != nil || len(keys) != 1 || keys[0].ID != got.Key.ID || !keys[0].CreatedAt.Equal(time.Date(2026, 11, 5, 1, 2, 1, 0, time.UTC)) || !keys[0].Active {
 		t.Fatalf("keys = %+v, %v", keys, err)
+	}
+	k := f.keys[got.Key.ID]
+	k.State = "INACTIVE"
+	f.keys[got.Key.ID] = k
+	if keys, err := d.Keys(ctx, in); err != nil || len(keys) != 1 || keys[0].Active {
+		t.Fatalf("an inactive key = %+v, %v", keys, err)
 	}
 	for _, call := range f.calls[before:] {
 		if !strings.HasPrefix(call, "GET ") {

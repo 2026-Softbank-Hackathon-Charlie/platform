@@ -235,7 +235,7 @@ func (d *minioDriver) Keys(ctx context.Context, in Instance) ([]KeyInfo, error) 
 	}
 	keys := make([]KeyInfo, len(list.Accounts))
 	for i, a := range list.Accounts {
-		keys[i] = KeyInfo{ID: a.AccessKey}
+		keys[i] = KeyInfo{ID: a.AccessKey, Active: a.AccountStatus == "on"}
 	}
 	return keys, nil
 }

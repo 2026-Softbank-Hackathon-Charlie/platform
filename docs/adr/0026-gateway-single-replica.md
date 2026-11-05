@@ -65,6 +65,7 @@ ADR 0004와 0012는 게이트웨이가 단일 장애점이라고 적었다. 모�
 ## 시연 당일 운영 메모
 
 - 노드를 정리하지 않는다. drain, 노드 그룹 업데이트(AMI 포함), 인스턴스 교체, 노드 수 변경을 하지 않는다. 게이트웨이 볼륨은 `ap-northeast-2c`에 묶여 있고 그 존의 노드는 하나라서, 그 노드가 빠지면 새 노드와 볼륨 연결이 끝날 때까지 모든 앱이 끊긴다. API(`hopcharlie-api`)도 같은 노드에 있다.
+- 노드를 바꾸는 자동 경로도 막는다. infra main에 병합하면 Terraform이 자동으로 apply한다(infra 5dfdbab부터). 그래서 노드 그룹, 시작 템플릿, AMI 버전, `node_count_by_az`처럼 `terraform/modules/eks`의 노드 그룹을 바꾸는 infra PR은 시연이 끝날 때까지 병합하지 않는다. 노드 그룹은 EKS 노드 자동 복구(`terraform/modules/eks/main.tf`의 `node_repair_config { enabled = true }`)도 켜져 있어서, 그 노드가 NotReady로 판정되면 EKS가 교체할 수 있다. 시연 전에 `kubectl get nodes`로 `ip-10-40-27-132`가 Ready인지 본다.
 - 플랫폼 이미지를 바꾸지 않는다. platform main에 병합하면 CI가 이미지를 게시하고 infra main의 `clusters/aws-dev-management/values/hopcharlie-platform.yaml`에 `images.platform`을 바로 고정하므로, platform PR 병합과 `images.platform`을 바꾸는 infra 커밋을 시연이 끝날 때까지 미룬다. 바꾸면 Argo CD가 몇 초 안에 동기화하고 API와 게이트웨이가 함께 재시작한다. 모든 앱이 약 25~45초 끊기고, 이전이 진행 중이면 보류 중에 기다리던 쓰기가 503을 받는다. 콘솔 이미지 교체는 게이트웨이에 영향이 없다.
 - 꼭 바꿔야 하면 진행 중인 이전이 없을 때, 시연 순서 사이에 바꾸고 `kubectl -n charlie-platform get pod -l app.kubernetes.io/component=gateway`로 새 pod가 Ready인지 본 뒤 1분 더 기다린다(ALB 헬스 체크).
 - 시연 전에 게이트웨이 pod의 RESTARTS가 0이고 AGE가 마지막 이미지 교체 시각과 맞는지 확인한다.

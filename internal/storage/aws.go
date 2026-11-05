@@ -307,7 +307,7 @@ func (d *awsDriver) Keys(ctx context.Context, in Instance) ([]KeyInfo, error) {
 			return nil, fmt.Errorf("storage: list access keys of user %s: %w", n.user, err)
 		}
 		for _, k := range page.AccessKeyMetadata {
-			keys = append(keys, KeyInfo{ID: aws.ToString(k.AccessKeyId), CreatedAt: aws.ToTime(k.CreateDate).UTC()})
+			keys = append(keys, KeyInfo{ID: aws.ToString(k.AccessKeyId), CreatedAt: aws.ToTime(k.CreateDate).UTC(), Active: k.Status == iamtypes.StatusTypeActive})
 		}
 	}
 	return keys, nil

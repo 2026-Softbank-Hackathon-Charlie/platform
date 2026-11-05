@@ -3,6 +3,8 @@ package security
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +48,18 @@ type panicDriver struct{ keyDriver }
 
 func (panicDriver) Keys(context.Context, storage.Instance) ([]storage.KeyInfo, error) { panic("boom") }
 
+// stuckDriver does not answer until release is closed, whatever its context
+// says, like a GCS token refresh.
+type stuckDriver struct {
+	keyDriver
+	release chan struct{}
+}
+
+func (d stuckDriver) Keys(context.Context, storage.Instance) ([]storage.KeyInfo, error) {
+	<-d.release
+	return nil, nil
+}
+
 // plainDriver cannot read keys back.
 type plainDriver struct{ storage.Driver }
 
@@ -56,6 +70,15 @@ var keyMade = time.Date(2026, 11, 4, 8, 21, 52, 0, time.UTC)
 func storageRow(instance, env, driver, key, old string) store.InstanceStorage {
 	return store.InstanceStorage{Instance: instance, Env: env, App: strings.Split(instance, "--")[0], Driver: driver,
 		Bucket: "hopcharlie-" + env + "-" + instance, KeyID: key, OldKeyID: old}
+}
+
+// collectAll runs every collector as the Service does, in order.
+func collectAll(ctx context.Context, cs []Collector) []Report {
+	var out []Report
+	for _, c := range cs {
+		out = append(out, c.Collect(ctx)...)
+	}
+	return out
 }
 
 func TestStorageKeys(t *testing.T) {
@@ -72,8 +95,8 @@ func TestStorageKeys(t *testing.T) {
 	}}
 	eks := keyDriver{name: storage.DriverAWS,
 		keys: map[string][]storage.KeyInfo{"moimroom": {
-			{ID: "AKIAHANDMADE", CreatedAt: keyMade.Add(time.Hour)},
-			{ID: "AKIACURRENT1", CreatedAt: keyMade},
+			{ID: "AKIAHANDMADE", CreatedAt: keyMade.Add(time.Hour), Active: true},
+			{ID: "AKIACURRENT1", CreatedAt: keyMade, Active: true},
 		}},
 		scope: storage.Scope{Actions: []string{"s3:GetObject"}, Boundary: "arn:aws:iam::123456789012:policy/hopcharlie-app-boundary"},
 	}
@@ -86,11 +109,20 @@ func TestStorageKeys(t *testing.T) {
 		}
 		return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
 	}
-	c := NewStorageKeyCollector(environments, rows, drivers)
-	if got := c.Sources(); len(got) != 2 || got[0].Environment != "gke" || got[1].Environment != "eks" || got[1].Provider != apiv1.SecurityProviderAws {
-		t.Fatalf("sources %+v", got)
+	cs := NewStorageKeyCollectors(environments, rows, drivers, nil)
+	if len(cs) != 3 {
+		t.Fatalf("%d collectors, want gke, eks and the other environments", len(cs))
 	}
-	reps := c.Collect(t.Context())
+	if s := cs[0].Sources(); len(s) != 1 || s[0].Environment != "gke" || s[0].Provider != apiv1.SecurityProviderGcp {
+		t.Fatalf("gke sources %+v", s)
+	}
+	if s := cs[1].Sources(); len(s) != 1 || s[0].Environment != "eks" || s[0].Provider != apiv1.SecurityProviderAws {
+		t.Fatalf("eks sources %+v", s)
+	}
+	if s := cs[2].Sources(); len(s) != 0 {
+		t.Fatalf("the collector of other environments has fixed sources %+v", s)
+	}
+	reps := collectAll(t.Context(), cs)
 	if len(reps) != 3 {
 		t.Fatalf("%d reports, want gke, eks and the unconfigured old-env", len(reps))
 	}
@@ -121,6 +153,11 @@ func TestStorageKeys(t *testing.T) {
 	if k[3].Instance != "shop" || k[3].State != apiv1.StorageKeyStateUnread || k[3].Scope != nil || k[3].Message == nil {
 		t.Fatalf("key of another driver %+v", k[3])
 	}
+	// The unrecorded key is also a finding; its id is hashed by the Service.
+	if f := ekr.Findings; len(f) != 1 || f[0].Check != CheckUnrecordedKey || f[0].Severity != apiv1.SecuritySeverityMedium ||
+		f[0].Category != apiv1.SecurityCategoryIdentity || f[0].Resource != "bucket/hopcharlie-eks-moimroom/key/...MADE" || strings.Contains(f[0].Detail+f[0].Resource, "AKIAHANDMADE") {
+		t.Fatalf("findings %+v", f)
+	}
 
 	// gke: the driver could not be built, so its key is listed unread.
 	if gke.Status != apiv1.SecuritySourceStatusError || len(gke.StorageKeys) != 1 || gke.StorageKeys[0].State != apiv1.StorageKeyStateUnread ||
@@ -136,10 +173,10 @@ func TestStorageKeys(t *testing.T) {
 	// The keys go through the report and its environment filter; the
 	// severity filter does not drop them.
 	rep := assemble(t0, reps)
-	if len(rep.StorageKeys) != 6 {
-		t.Fatalf("report keys %d", len(rep.StorageKeys))
+	if len(rep.StorageKeys) != 6 || len(rep.Findings) != 1 || rep.Findings[0].Id == "AKIAHANDMADE" {
+		t.Fatalf("report keys %d, findings %+v", len(rep.StorageKeys), rep.Findings)
 	}
-	if f := Filter(rep, "eks", apiv1.SecuritySeverityCritical); len(f.StorageKeys) != 4 || f.StorageKeys[0].Environment != "eks" {
+	if f := Filter(rep, "eks", apiv1.SecuritySeverityCritical); len(f.StorageKeys) != 4 || f.StorageKeys[0].Environment != "eks" || len(f.Findings) != 0 {
 		t.Fatalf("filtered keys %+v", f.StorageKeys)
 	}
 	if f := Filter(rep, EnvPlatform, ""); f.StorageKeys == nil || len(f.StorageKeys) != 0 {
@@ -147,56 +184,176 @@ func TestStorageKeys(t *testing.T) {
 	}
 }
 
+func TestStorageKeysInactive(t *testing.T) {
+	environments := []envs.EnvConfig{{Name: "eks", Provider: "aws", Storage: &storage.Config{Driver: storage.DriverAWS}}}
+	row := storageRow("moimroom", "eks", storage.DriverAWS, "AKIACURRENT1", "AKIAOLDKEY02")
+	drv := keyDriver{name: storage.DriverAWS, keys: map[string][]storage.KeyInfo{"moimroom": {
+		{ID: "AKIACURRENT1", CreatedAt: keyMade},
+		{ID: "AKIAOLDKEY02", CreatedAt: keyMade},
+		{ID: "AKIAHANDMADE", CreatedAt: keyMade},
+	}}}
+	reps := collectAll(t.Context(), NewStorageKeyCollectors(environments, fakeRows{rows: []store.InstanceStorage{row}}, func(string) (storage.Driver, error) { return drv, nil }, nil))
+	k := reps[0].StorageKeys
+	if reps[0].Status != apiv1.SecuritySourceStatusOk || len(k) != 3 {
+		t.Fatalf("report %+v", reps[0])
+	}
+	for _, key := range k {
+		if key.State != apiv1.StorageKeyStateInactive || key.CreatedAt == nil {
+			t.Fatalf("key %+v, want inactive with its creation time", key)
+		}
+	}
+	if k[0].Message == nil || !strings.Contains(*k[0].Message, "cannot use its bucket") || k[1].Message != nil {
+		t.Fatalf("messages %v %v", k[0].Message, k[1].Message)
+	}
+	if f := reps[0].Findings; len(f) != 1 || f[0].Severity != apiv1.SecuritySeverityLow {
+		t.Fatalf("an inactive unrecorded key is a low finding: %+v", f)
+	}
+}
+
 func TestStorageKeysReadFailures(t *testing.T) {
 	environments := []envs.EnvConfig{{Name: "eks", Provider: "aws", Storage: &storage.Config{Driver: storage.DriverAWS}}}
 	row := storageRow("moimroom", "eks", storage.DriverAWS, "AKIACURRENT1", "")
-
-	denied := keyDriver{name: storage.DriverAWS, err: &smithy.GenericAPIError{Code: "AccessDenied", Message: "User: arn:aws:sts::123456789012:assumed-role/x is not authorized"}}
-	reps := NewStorageKeyCollector(environments, fakeRows{rows: []store.InstanceStorage{row}}, func(string) (storage.Driver, error) { return denied, nil }).Collect(t.Context())
-	k := reps[0].StorageKeys
-	if reps[0].Status != apiv1.SecuritySourceStatusError || len(k) != 1 || k[0].State != apiv1.StorageKeyStateUnread || k[0].Scope == nil ||
-		k[0].Message == nil || !strings.Contains(*k[0].Message, "AccessDenied") || strings.Contains(reps[0].Message, "arn:aws") {
-		t.Fatalf("denied: %s %q %+v", reps[0].Status, reps[0].Message, k)
+	collect := func(t *testing.T, ctx context.Context, rows StorageRows, drv storage.Driver) Report {
+		t.Helper()
+		reps := collectAll(ctx, NewStorageKeyCollectors(environments, rows, func(string) (storage.Driver, error) { return drv, nil }, nil))
+		if len(reps) != 1 {
+			t.Fatalf("%d reports", len(reps))
+		}
+		return reps[0]
+	}
+	one := fakeRows{rows: []store.InstanceStorage{row}}
+	unread := func(t *testing.T, rep Report, want string) {
+		t.Helper()
+		k := rep.StorageKeys
+		if rep.Status != apiv1.SecuritySourceStatusError || len(k) != 1 || k[0].State != apiv1.StorageKeyStateUnread || k[0].Message == nil || !strings.Contains(*k[0].Message, want) {
+			t.Fatalf("want an unread key saying %q: %s %q %+v", want, rep.Status, rep.Message, k)
+		}
 	}
 
-	reps = NewStorageKeyCollector(environments, fakeRows{rows: []store.InstanceStorage{row}}, func(string) (storage.Driver, error) { return plainDriver{}, nil }).Collect(t.Context())
-	if k := reps[0].StorageKeys; k[0].State != apiv1.StorageKeyStateUnread || !strings.Contains(*k[0].Message, "aws driver made this key") {
-		t.Fatalf("driver changed: %+v", k)
-	}
+	t.Run("denied", func(t *testing.T) {
+		denied := keyDriver{name: storage.DriverAWS, err: &smithy.GenericAPIError{Code: "AccessDenied", Message: "User: arn:aws:sts::123456789012:assumed-role/x is not authorized"}}
+		rep := collect(t, t.Context(), one, denied)
+		unread(t, rep, "AccessDenied")
+		if rep.StorageKeys[0].Scope == nil || strings.Contains(rep.Message, "arn:aws") {
+			t.Fatalf("%+v", rep)
+		}
+	})
+	t.Run("network and HTTP errors name no provider text", func(t *testing.T) {
+		netErr := fmt.Errorf("storage: list access keys of user x: %w", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect to iam.amazonaws.com:443 refused")})
+		rep := collect(t, t.Context(), one, keyDriver{name: storage.DriverAWS, err: netErr})
+		unread(t, rep, "network error")
+		if strings.Contains(rep.Message, "amazonaws") {
+			t.Fatalf("message %q", rep.Message)
+		}
+		rep = collect(t, t.Context(), one, keyDriver{name: storage.DriverAWS, err: errors.New("something at /home/x/.aws/config")})
+		unread(t, rep, "see the server log")
+		if strings.Contains(rep.Message, ".aws") {
+			t.Fatalf("message %q", rep.Message)
+		}
+	})
+	t.Run("driver changed", func(t *testing.T) {
+		unread(t, collect(t, t.Context(), one, plainDriver{}), "aws driver made this key")
+	})
+	t.Run("panic", func(t *testing.T) {
+		unread(t, collect(t, t.Context(), one, panicDriver{keyDriver{name: storage.DriverAWS}}), "the collector failed")
+	})
+	t.Run("timeout", func(t *testing.T) {
+		stuck := stuckDriver{keyDriver{name: storage.DriverAWS}, make(chan struct{})}
+		defer close(stuck.release)
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		rep := collect(t, ctx, one, stuck)
+		if time.Since(start) > 5*time.Second {
+			t.Fatal("the collector waited for a call that does not follow its context")
+		}
+		unread(t, rep, "timed out")
+	})
+	t.Run("store down", func(t *testing.T) {
+		rep := collect(t, t.Context(), fakeRows{err: errors.New("connection refused")}, nil)
+		if rep.Status != apiv1.SecuritySourceStatusError || len(rep.StorageKeys) != 0 || strings.Contains(rep.Message, "refused") {
+			t.Fatalf("%+v", rep)
+		}
+	})
+	t.Run("no rows", func(t *testing.T) {
+		rep := collect(t, t.Context(), fakeRows{}, nil)
+		if rep.Status != apiv1.SecuritySourceStatusOk || rep.Message != "0 keys of 0 instances" {
+			t.Fatalf("%+v", rep)
+		}
+	})
+}
 
-	// A driver that panics fails its row, not the server.
-	reps = NewStorageKeyCollector(environments, fakeRows{rows: []store.InstanceStorage{row}}, func(string) (storage.Driver, error) {
-		return panicDriver{keyDriver{name: storage.DriverAWS}}, nil
-	}).Collect(t.Context())
-	if reps[0].Status != apiv1.SecuritySourceStatusError || len(reps[0].StorageKeys) != 0 || !strings.Contains(reps[0].Message, "the collector failed") {
-		t.Fatalf("panic: %+v", reps)
+// TestStorageKeysCapCalls: the collectors of one server make at most
+// maxKeyCalls provider calls at once, and one stuck environment does not
+// hold up another.
+func TestStorageKeysCapCalls(t *testing.T) {
+	var environments []envs.EnvConfig
+	var rows []store.InstanceStorage
+	for i := range maxKeyCalls + 2 {
+		rows = append(rows, storageRow(fmt.Sprintf("app%d", i), "gke", storage.DriverGCS, fmt.Sprintf("GOOGKEY%05d", i), ""))
 	}
-
-	reps = NewStorageKeyCollector(environments, fakeRows{err: errors.New("connection refused")}, nil).Collect(t.Context())
-	if len(reps) != 1 || reps[0].Status != apiv1.SecuritySourceStatusError || len(reps[0].StorageKeys) != 0 || strings.Contains(reps[0].Message, "refused") {
-		t.Fatalf("store down: %+v", reps)
+	rows = append(rows, storageRow("moimroom", "eks", storage.DriverAWS, "AKIACURRENT1", ""))
+	environments = append(environments,
+		envs.EnvConfig{Name: "gke", Provider: "gcp", Storage: &storage.Config{Driver: storage.DriverGCS}},
+		envs.EnvConfig{Name: "eks", Provider: "aws", Storage: &storage.Config{Driver: storage.DriverAWS}})
+	stuck := stuckDriver{keyDriver{name: storage.DriverGCS}, make(chan struct{})}
+	eks := keyDriver{name: storage.DriverAWS, keys: map[string][]storage.KeyInfo{"moimroom": {{ID: "AKIACURRENT1", Active: true}}}}
+	cs := NewStorageKeyCollectors(environments, fakeRows{rows: rows}, func(env string) (storage.Driver, error) {
+		if env == "gke" {
+			return stuck, nil
+		}
+		return eks, nil
+	}, nil)
+	gkeDone := make(chan Report, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	go func() { gkeDone <- cs[0].Collect(ctx)[0] }()
+	// Wait until the stuck gke calls fill every slot, then eks waits for one
+	// only as long as its own context.
+	k := cs[1].(*StorageKeyCollector)
+	for deadline := time.Now().Add(2 * time.Second); len(k.calls) < maxKeyCalls; {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d calls in flight, want %d", len(k.calls), maxKeyCalls)
+		}
+		time.Sleep(time.Millisecond)
 	}
-
-	none := NewStorageKeyCollector(environments, fakeRows{}, nil).Collect(t.Context())
-	if len(none) != 1 || none[0].Status != apiv1.SecuritySourceStatusOk || none[0].Message != "0 keys of 0 instances" {
-		t.Fatalf("no rows: %+v", none)
+	short, cancelShort := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancelShort()
+	if rep := cs[1].Collect(short)[0]; rep.StorageKeys[0].State != apiv1.StorageKeyStateUnread || !strings.Contains(*rep.StorageKeys[0].Message, "timed out") {
+		t.Fatalf("eks while every slot is taken: %+v", rep.StorageKeys)
+	}
+	gke := <-gkeDone
+	if len(gke.StorageKeys) != maxKeyCalls+2 || gke.StorageKeys[0].State != apiv1.StorageKeyStateUnread {
+		t.Fatalf("gke %+v", gke)
+	}
+	close(stuck.release)
+	// Once the stuck calls return, their slots are free again.
+	for deadline := time.Now().Add(2 * time.Second); len(k.calls) > 0; {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d slots still taken", len(k.calls))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if rep := cs[1].Collect(t.Context())[0]; rep.Status != apiv1.SecuritySourceStatusOk || rep.StorageKeys[0].State != apiv1.StorageKeyStateOk {
+		t.Fatalf("eks afterwards %+v", rep)
 	}
 }
 
 func TestCollectorsListStorageKeysOnlyWithBoth(t *testing.T) {
 	environments := []envs.EnvConfig{{Name: "eks", Provider: "aws", KubeContext: "eks", Storage: &storage.Config{Driver: storage.DriverAWS}}}
-	has := func(cs []Collector) bool {
+	count := func(cs []Collector) int {
+		n := 0
 		for _, c := range cs {
 			if _, ok := c.(*StorageKeyCollector); ok {
-				return true
+				n++
 			}
 		}
-		return false
+		return n
 	}
-	if has(Collectors(Config{Environments: environments})) {
-		t.Fatal("storage key collector without a store")
+	if n := count(Collectors(Config{Environments: environments})); n != 0 {
+		t.Fatalf("%d storage key collectors without a store", n)
 	}
-	if !has(Collectors(Config{Environments: environments, StorageRows: fakeRows{}, Storage: func(string) (storage.Driver, error) { return nil, errors.New("x") }})) {
-		t.Fatal("no storage key collector")
+	if n := count(Collectors(Config{Environments: environments, StorageRows: fakeRows{}, Storage: func(string) (storage.Driver, error) { return nil, errors.New("x") }})); n != 2 {
+		t.Fatalf("%d storage key collectors, want eks and the other environments", n)
 	}
 }

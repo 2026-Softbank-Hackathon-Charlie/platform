@@ -84,6 +84,10 @@ type gcsHTTPError int
 
 func (e gcsHTTPError) Error() string { return "Google API returned HTTP " + strconv.Itoa(int(e)) }
 
+// HTTPStatus is the HTTP status a gcs driver call failed with, or 0 for any
+// other error. It names no provider text.
+func HTTPStatus(err error) int { return gcsStatus(err) }
+
 func gcsStatus(err error) int {
 	var e gcsHTTPError
 	if errors.As(err, &e) {
@@ -488,7 +492,7 @@ func (d *gcsDriver) Keys(ctx context.Context, in Instance) ([]KeyInfo, error) {
 	}
 	out := make([]KeyInfo, 0, len(keys))
 	for _, k := range keys {
-		info := KeyInfo{ID: k.AccessID}
+		info := KeyInfo{ID: k.AccessID, Active: k.State == "ACTIVE"}
 		if t, err := time.Parse(time.RFC3339, k.TimeCreated); err == nil {
 			info.CreatedAt = t.UTC()
 		}
