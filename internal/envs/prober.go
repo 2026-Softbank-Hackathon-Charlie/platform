@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -135,6 +136,12 @@ func nodeReady(n *corev1.Node) bool {
 	return false
 }
 
+// barmanPlugin is the Barman Cloud plugin's name in a Cluster's
+// spec.plugins, and objectStoreGVR the ObjectStores it writes to (ADR 0025).
+const barmanPlugin = "barman-cloud.cloudnative-pg.io"
+
+var objectStoreGVR = schema.GroupVersionResource{Group: "barmancloud.cnpg.io", Version: "v1", Resource: "objectstores"}
+
 func (p *clusterProber) databases(ctx context.Context) ([]apiv1.DatabaseCluster, error) {
 	list, err := p.dyn.Resource(cnpg.ClusterGVR).List(ctx, metav1.ListOptions{})
 	if apierrors.IsNotFound(err) {
@@ -145,8 +152,16 @@ func (p *clusterProber) databases(ctx context.Context) ([]apiv1.DatabaseCluster,
 		return nil, err
 	}
 	out := make([]apiv1.DatabaseCluster, 0, len(list.Items))
+	servers := map[string]string{} // namespace/name -> the name its backups go under
 	for i := range list.Items {
-		out = append(out, databaseFrom(&list.Items[i]))
+		d := databaseFrom(&list.Items[i])
+		if d.Backup != nil {
+			servers[d.Namespace+"/"+d.Name] = serverName(&list.Items[i])
+		}
+		out = append(out, d)
+	}
+	if len(servers) > 0 {
+		p.backupTimes(ctx, out, servers)
 	}
 	slices.SortFunc(out, func(a, b apiv1.DatabaseCluster) int {
 		return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Name, b.Name))
@@ -176,7 +191,87 @@ func databaseFrom(obj *unstructured.Unstructured) apiv1.DatabaseCluster {
 	topo.ReplicaPrimary, _, _ = unstructured.NestedString(o, "spec", "replica", "primary")
 	enabled, _, _ := unstructured.NestedBool(o, "spec", "replica", "enabled")
 	d.Replica = enabled || !topo.IsPrimary()
+	d.Backup = backupFrom(obj)
 	return d
+}
+
+// backupFrom reads the backups of a Cluster whose WAL archiver is an enabled
+// Barman Cloud plugin, or nil. CNPG reports ContinuousArchiving True on a
+// Cluster without any archiver too, so the condition alone says nothing.
+// The times come later from the ObjectStore (backupTimes).
+func backupFrom(obj *unstructured.Unstructured) *apiv1.DatabaseBackup {
+	plugins, _, _ := unstructured.NestedSlice(obj.Object, "spec", "plugins")
+	for _, item := range plugins {
+		pl, ok := item.(map[string]any)
+		if !ok || pl["name"] != barmanPlugin || pl["isWALArchiver"] != true || pl["enabled"] == false {
+			continue
+		}
+		store, _, _ := unstructured.NestedString(pl, "parameters", "barmanObjectName")
+		if store == "" {
+			continue
+		}
+		b := &apiv1.DatabaseBackup{ObjectStore: store}
+		conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+		for _, c := range conditions {
+			if cm, ok := c.(map[string]any); ok && cm["type"] == "ContinuousArchiving" {
+				b.WalArchiving = cm["status"] == "True"
+			}
+		}
+		return b
+	}
+	return nil
+}
+
+// serverName is the name a Cluster's backups go under in its ObjectStore:
+// the plugin's serverName parameter, or the Cluster's name.
+func serverName(obj *unstructured.Unstructured) string {
+	plugins, _, _ := unstructured.NestedSlice(obj.Object, "spec", "plugins")
+	for _, item := range plugins {
+		if pl, ok := item.(map[string]any); ok && pl["name"] == barmanPlugin {
+			if v, _, _ := unstructured.NestedString(pl, "parameters", "serverName"); v != "" {
+				return v
+			}
+		}
+	}
+	return obj.GetName()
+}
+
+// backupTimes fills in the backup times of dbs from the ObjectStores'
+// status.serverRecoveryWindow, under each Cluster's server name in servers
+// (namespace/name). Any failure, such as no permission to list
+// ObjectStores, leaves the times out: the databases are still listed.
+func (p *clusterProber) backupTimes(ctx context.Context, dbs []apiv1.DatabaseCluster, servers map[string]string) {
+	stores, err := p.dyn.Resource(objectStoreGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return
+	}
+	windows := map[string]map[string]any{} // namespace/store -> serverRecoveryWindow
+	for _, s := range stores.Items {
+		if w, ok, _ := unstructured.NestedMap(s.Object, "status", "serverRecoveryWindow"); ok {
+			windows[s.GetNamespace()+"/"+s.GetName()] = w
+		}
+	}
+	at := func(w map[string]any, key string) *time.Time {
+		v, _ := w[key].(string)
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return nil
+		}
+		return &t
+	}
+	for i := range dbs {
+		b := dbs[i].Backup
+		if b == nil {
+			continue
+		}
+		w, _ := windows[dbs[i].Namespace+"/"+b.ObjectStore][servers[dbs[i].Namespace+"/"+dbs[i].Name]].(map[string]any)
+		if w == nil {
+			continue
+		}
+		b.LastSuccessfulBackup = at(w, "lastSuccessfulBackupTime")
+		b.LastFailedBackup = at(w, "lastFailedBackupTime")
+		b.FirstRecoverabilityPoint = at(w, "firstRecoverabilityPoint")
+	}
 }
 
 // describe turns a client error into a short message without request URLs,

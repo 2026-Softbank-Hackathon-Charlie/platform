@@ -2639,6 +2639,21 @@ components:
         readyInstances: { type: integer }
         currentPrimary: { type: string }
         replica: { type: boolean, description: "spec.replica.enabled, or the topology names another cluster as primary" }
+        backup: { $ref: "#/components/schemas/DatabaseBackup" }
+
+    DatabaseBackup:
+      description: >
+        Backups of a CNPG Cluster whose WAL archiver is an enabled Barman Cloud
+        plugin (ADR 0025); absent on a Cluster without one. The times come from
+        the plugin's ObjectStore and are absent when the platform cannot read it.
+      type: object
+      required: [objectStore, walArchiving]
+      properties:
+        objectStore: { type: string, description: the plugin's ObjectStore in the Cluster's namespace }
+        walArchiving: { type: boolean, description: "the Cluster's ContinuousArchiving condition is True: WAL is reaching the object store" }
+        lastSuccessfulBackup: { type: string, format: date-time }
+        lastFailedBackup: { type: string, format: date-time }
+        firstRecoverabilityPoint: { type: string, format: date-time, description: the earliest time a restore can reach }
 
     EnvironmentList:
       type: object

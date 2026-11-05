@@ -81,7 +81,7 @@ sequenceDiagram
 | `POST /v1/migrations/{runId}/switch` | operator | 전환 승인 |
 | `POST /v1/migrations/{runId}/abort` | operator | 중단. 결과는 엔진의 원복 경계를 따름 |
 | `POST /v1/migrations/{runId}/resume` | operator | interrupted, failed, aborted run 이어서 실행 |
-| `GET /v1/envs`, `GET /v1/envs/{name}` | viewer | 환경과 클러스터 실시간 상태 (노드, 버전, CNPG) |
+| `GET /v1/envs`, `GET /v1/envs/{name}` | viewer | 환경과 클러스터 실시간 상태 (노드, 버전, CNPG). Barman Cloud plugin으로 백업하는 DB는 WAL 보관 상태와 마지막 백업, 복구 가능 시작 시각(`backup`, ADR 0025). 시각은 ObjectStore를 읽으므로 서버 계정에 `objectstores.barmancloud.cnpg.io` 목록 권한이 필요하고, 없으면 시각만 빠진다 |
 | `GET /v1/traffic` | viewer | 게이트웨이 상태와 환경별 요청 통계 |
 | `GET /v1/matrix` | viewer | 6개 경로 결과표 |
 | `GET /v1/audit` | viewer | 감사 로그 (바꾸는 요청과 거부된 요청 전부) |
