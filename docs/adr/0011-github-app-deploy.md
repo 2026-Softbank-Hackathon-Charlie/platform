@@ -2,6 +2,7 @@
 
 - 상태: 채택
 - 날짜: 2026-11-03
+- 이후 바뀐 점: 서비스의 `port`를 생략할 수 있게 하고(워커), `memory`, `cpu`와 DB 연결 변수의 예약 이름을 더했다. [ADR 0024](0024-service-contract-workers-resources-db-env.md)를 본다.
 
 ## 상황
 
