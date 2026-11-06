@@ -3,9 +3,10 @@
 #
 # Before every new run (not a rollback) the server checks the target against
 # what the app needs and writes the report to the audit log ("parity"). It
-# never stops a run: mode audit is the only mode, because the secret, audit
-# and backup-restore probes do not exist yet and are always recorded as
-# probe_not_configured.
+# never stops a run: mode audit is the only mode. Secret metadata, audit
+# collector readiness and Barman backup probes are optional; see
+# parity-three-environments.yaml. Unconfigured probes are unknown, and even
+# healthy partial evidence does not prove usability, delivery or restore.
 #
 # - identity: SubjectAccessReview on the target cluster, as the app's service
 #   account, for every rule. The platform's own kube credentials for that

@@ -25,7 +25,7 @@ platform/
 
 CLI는 별도 레포 [cli](https://github.com/2026-Softbank-Hackathon-Charlie/cli)에 있습니다.
 
-이전 전 동등성·레지던시 검사는 [internal/preflight](internal/preflight/README.md)에 있습니다. **레지던시는 `PLATFORM_RESIDENCY_POLICY_FILE`을 설정하면 새 run 시작을 막는 게이트로 동작합니다**([ADR 0013](docs/adr/0013-residency-start-gate.md)). 동등성은 `PLATFORM_PARITY_FILE`을 설정하면 새 run 시작 때 대상의 RBAC와 Prometheus를 실제로 검사해 감사 로그에 남깁니다. 기록만 하고 막지 않습니다([ADR 0022](docs/adr/0022-parity-audit-mode.md)). 구현된 검사와 미검증 범위는 해당 문서에 구분합니다.
+이전 전 동등성·레지던시 검사는 [internal/preflight](internal/preflight/README.md)에 있습니다. **레지던시는 `PLATFORM_RESIDENCY_POLICY_FILE`을 설정하면 새 run 시작을 막는 게이트로 동작합니다**([ADR 0013](docs/adr/0013-residency-start-gate.md)). 동등성은 `PLATFORM_PARITY_FILE`을 설정하면 새 run 시작 때 대상의 RBAC·Prometheus와 선택적으로 Secret 메타데이터·감사 수집기 가용성·Barman 백업 상태를 실제로 검사해 감사 로그에 남깁니다([ADR 0029](docs/adr/0029-parity-resource-evidence.md)). 부분 검사 통과가 시크릿 사용·감사 전달·복구 성공을 뜻하지는 않습니다. 기록만 하고 막지 않습니다([ADR 0022](docs/adr/0022-parity-audit-mode.md)). 구현된 검사와 미검증 범위는 해당 문서에 구분합니다.
 
 AWS 관리 호스트, EKS Pod Identity, 상태 버킷(`state/`), ACM·Cloudflare(`dns/`)의 Terraform과 운영 호스트 설정은 [infra/terraform/platform/aws](https://github.com/2026-Softbank-Hackathon-Charlie/infra/tree/main/terraform/platform/aws)에서 관리합니다. 이 레포에는 [애플리케이션 배포 도우미](deploy/aws/README.md)와 로컬 개발 예시만 남습니다. `examples/envs.yaml`, `examples/apps.yaml`을 고쳐도 운영 설정은 바뀌지 않습니다. 운영 설정은 infra의 `terraform/platform/aws/host/envs.yaml`, `host/apps.yaml`을 고칩니다.
 
@@ -155,7 +155,7 @@ go run ./cmd/gateway
 | `PLATFORM_AGENT_IDLE` | 이벤트 없이 이 시간이 지난 `running` 에이전트 세션을 `cancelled`로 닫음 (기본 `30m`) |
 | `PLATFORM_RESIDENCY_POLICY_FILE` | 레지던시 정책 파일 ([예시](examples/residency-policy.yaml), [ADR 0013](docs/adr/0013-residency-start-gate.md)). 설정하면 새 run을 시작하기 전에 원본 전체 테이블 목록을 수집해 검사하고, 위반이면 409 `residency_denied`. `files`는 정책의 `buckets`에 등록된 버킷끼리만, 그리고 서버가 rclone 원격으로 측정한 위치·엔드포인트·프리픽스·복제 대상이 정책과 맞을 때만 통과([ADR 0021](docs/adr/0021-bucket-residency-measured.md)). 버킷마다 `expect`가 없으면 거부. 롤백은 면제. 비우면 검사 없음(시작 시 경고) |
 | `PLATFORM_CAPACITY_GATE` | `on`이면 새 run을 시작하기 전에 원본·대상 DB를 몇 초 동안 측정해, 대상 접속 한도가 부족하거나 replica가 `catchupTimeout` 안에 따라잡지 못하면 409 `capacity_insufficient` ([ADR 0014](docs/adr/0014-capacity-preflight.md)). 측정하지 못한 값은 막지 않음. 롤백은 면제. 기본 `off` |
-| `PLATFORM_PARITY_FILE` | 동등성 파일 ([예시](examples/parity.yaml), [ADR 0022](docs/adr/0022-parity-audit-mode.md)). 설정하면 새 run 시작 직전에 대상 클러스터에서 앱 ServiceAccount의 SubjectAccessReview와 대상 Prometheus의 scrape 상태를 검사해 감사 로그 `parity`에 남김. **막지 않음**(mode `audit`만 있음). secret·audit·backup-restore는 프로브가 없어 항상 `probe_not_configured`. 롤백은 면제. 비우면 기록 없음 |
+| `PLATFORM_PARITY_FILE` | 동등성 파일 ([예시](examples/parity.yaml), [ADR 0022](docs/adr/0022-parity-audit-mode.md)). 설정하면 새 run 시작 직전에 대상 클러스터에서 앱 ServiceAccount의 SubjectAccessReview와 대상 Prometheus의 scrape 상태를 검사해 감사 로그 `parity`에 남김. **막지 않음**(mode `audit`만 있음). [3환경 예시](examples/parity-three-environments.yaml)로 Secret 메타데이터·감사 수집기 가용성·Barman 백업 상태도 선택적으로 검사([ADR 0029](docs/adr/0029-parity-resource-evidence.md)). 미설정은 `probe_not_configured`, 시크릿 사용·감사 전달·복구 검증은 여전히 `unknown`. 롤백은 면제. 비우면 기록 없음 |
 | `PLATFORM_VERSION_GATE` | 새 run을 시작하기 전에 원본과 대상의 PostgreSQL 메이저 버전을 비교해, 다르면 409 `version_mismatch` ([ADR 0020](docs/adr/0020-pg-major-version-gate.md)). 대상은 DB에 접속되면 그 값, 아니면 manifest의 `spec.imageCatalogRef.major`나 `spec.imageName` 태그. 읽지 못하면 unknown으로 기록하고 막지 않음. 롤백은 면제. 기본 `on`, `off`로 끔 |
 | `PLATFORM_GITHUB_*`, `PLATFORM_APP_DOMAIN` | 앱을 등록하고 배포하는 GitHub App. [GitHub App 설정](#github-app-설정) 참고 |
 

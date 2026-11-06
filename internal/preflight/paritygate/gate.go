@@ -8,7 +8,9 @@ import (
 	"time"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	"k8s.io/client-go/dynamic"
 	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
+	"k8s.io/client-go/metadata"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 
@@ -34,11 +36,16 @@ var mandatory = []parity.Capability{parity.Identity, parity.Secret, parity.Audit
 // cluster, with the platform's own credentials for that cluster.
 type SARFactory func(env string) (authorizationclient.SubjectAccessReviewInterface, error)
 
+// ResourceFactory binds read clients to a registered environment's kubeconfig.
+// It must not choose a cluster from plan-supplied kubeconfig or context fields.
+type ResourceFactory func(env string) (metadata.Interface, dynamic.Interface, error)
+
 // Gate builds the probes for a plan's target and evaluates them.
 type Gate struct {
-	cfg  Config
-	sar  SARFactory
-	http *http.Client
+	cfg       Config
+	sar       SARFactory
+	http      *http.Client
+	resources ResourceFactory
 }
 
 // New returns a gate. sar may be nil (no identity probe); httpClient nil
@@ -48,6 +55,14 @@ func New(cfg Config, sar SARFactory, httpClient *http.Client) *Gate {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
 	return &Gate{cfg: cfg, sar: sar, http: httpClient}
+}
+
+// NewWithResources adds metadata-only Secret and dynamic resource readers.
+// New remains available for callers that only configure RBAC and Prometheus.
+func NewWithResources(cfg Config, sar SARFactory, httpClient *http.Client, resources ResourceFactory) *Gate {
+	g := New(cfg, sar, httpClient)
+	g.resources = resources
+	return g
 }
 
 // Check evaluates parity for starting p. The report is a record: callers
@@ -68,13 +83,13 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (parity.Report, error) {
 		Target:    target,
 		Mandatory: mandatory,
 	}
-	return parity.Evaluate(ctx, req, g.probes(target, app))
+	return parity.Evaluate(ctx, req, g.probes(target, app, p.Target.Cluster))
 }
 
 // probes builds the configured probes for target. A probe that cannot be
 // built is a failing probe (probe_failed), not a missing one, so the record
 // says it was configured but could not run.
-func (g *Gate) probes(target parity.Target, app App) map[parity.Capability]parity.Probe {
+func (g *Gate) probes(target parity.Target, app App, targetCluster string) map[parity.Capability]parity.Probe {
 	out := map[parity.Capability]parity.Probe{}
 	if len(app.RBAC) > 0 && g.sar != nil {
 		out[parity.Identity] = g.rbac(target, app)
@@ -85,6 +100,41 @@ func (g *Gate) probes(target parity.Target, app App) map[parity.Capability]parit
 			out[parity.Observability] = p
 		} else {
 			out[parity.Observability] = failing{}
+		}
+	}
+	resources := app.Environments[target.Environment]
+	collector := g.cfg.Environments[target.Environment].AuditCollector
+	if len(resources.Secrets) == 0 && resources.Backup == nil && collector == nil {
+		return out
+	}
+	var meta metadata.Interface
+	var dyn dynamic.Interface
+	if g.resources != nil {
+		var err error
+		meta, dyn, err = g.resources(target.Environment)
+		if err != nil {
+			meta, dyn = nil, nil
+		}
+	}
+	if len(resources.Secrets) > 0 {
+		out[parity.Secret] = failing{}
+		if p, err := probes.NewSecrets(target, meta, resources.Secrets); err == nil {
+			out[parity.Secret] = p
+		}
+	}
+	if collector != nil {
+		out[parity.Audit] = failing{}
+		if p, err := probes.NewAuditCollector(target, dyn, collector.Namespace, collector.Deployment); err == nil {
+			out[parity.Audit] = p
+		}
+	}
+	if b := resources.Backup; b != nil {
+		out[parity.BackupRestore] = failing{}
+		age, _ := b.maxAge()
+		if b.Cluster != targetCluster {
+			out[parity.BackupRestore] = backupTargetMismatch{}
+		} else if p, err := probes.NewBackup(target, dyn, b.Cluster, age); err == nil {
+			out[parity.BackupRestore] = p
 		}
 	}
 	return out
@@ -110,6 +160,15 @@ func (g *Gate) rbac(target parity.Target, app App) parity.Probe {
 		return failing{}
 	}
 	return p
+}
+
+type backupTargetMismatch struct{}
+
+func (backupTargetMismatch) Check(_ context.Context, target parity.Target) (parity.Result, error) {
+	return parity.Result{Capability: parity.BackupRestore, Target: target, Status: parity.Unknown,
+		Code: "backup_target_mismatch", ObservedAt: time.Now().UTC(), Checks: []parity.Check{
+			{ID: "backup-config", Status: parity.Unknown, Code: "backup_target_mismatch"},
+		}}, nil
 }
 
 // failing is a configured probe that could not be built.

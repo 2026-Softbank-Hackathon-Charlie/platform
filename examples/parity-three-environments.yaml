@@ -1,0 +1,37 @@
+# TEMPLATE ONLY — not a reviewed baseline and not evidence of live readiness.
+# Replace every replace-me-* reference after inspecting the intended cluster.
+# All environment IDs must already exist in PLATFORM_ENVS_FILE.
+# Missing kube contexts/permissions remain unknown; this never creates resources.
+# Removing an optional probe leaves probe_not_configured, NOT not_applicable.
+version: 1
+mode: audit
+environments:
+  eks: {}
+  gke: {}
+  onprem:
+    # This checks a collector Deployment only, not a k3s node audit policy.
+    # Remove if using a managed audit service or a DaemonSet (not supported).
+    auditCollector:
+      namespace: replace-me-logging
+      deployment: replace-me-audit-collector
+# Prometheus is deliberately omitted: the reachable endpoint, job and labels
+# must be reviewed per environment. See parity.yaml for its syntax.
+apps:
+  - name: replace-me-app
+    namespace: replace-me-namespace
+    environments:
+      eks:
+        secrets:
+          - {id: runtime, name: replace-me-eks-runtime}
+        backup: {cluster: replace-me-eks-db, maxAge: 26h}
+      gke:
+        secrets:
+          - {id: runtime, name: replace-me-gke-runtime}
+        backup: {cluster: replace-me-gke-db, maxAge: 26h}
+      onprem:
+        secrets:
+          - {id: runtime, name: replace-me-onprem-runtime}
+        backup: {cluster: replace-me-onprem-db, maxAge: 26h}
+# maxAge is an explicit policy, not auto-discovered RPO. Review 26h before use.
+# Keep secret-usability, audit-delivery, restore and alert-delivery unknown
+# until their end-to-end verification exists; partial passes are not parity.

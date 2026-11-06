@@ -1,5 +1,5 @@
-// Package paritygate runs the parity probes (identity via Kubernetes RBAC,
-// metrics via Prometheus) against a migration's target before it starts and
+// Package paritygate runs RBAC, Prometheus and optional resource-evidence
+// probes against a migration's target before it starts and
 // returns the report for the audit log. It only records: nothing it finds
 // stops a run. The configuration is server-owned (PLATFORM_PARITY_FILE),
 // never taken from a plan or an agent.
@@ -14,14 +14,16 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
+
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes"
 )
 
 var ErrInvalidConfig = errors.New("invalid parity configuration")
 
-// ModeAudit records the report and never blocks. It is the only mode: the
-// secret, audit and backup-restore probes do not exist yet, so a blocking
-// mode would deny every run.
+// ModeAudit records the report and never blocks. End-to-end secret usability,
+// audit delivery, restore and alert verification remain incomplete.
 const ModeAudit = "audit"
 
 // Config is the parity file.
@@ -37,7 +39,35 @@ type Config struct {
 
 // EnvProbes are an environment's probe endpoints.
 type EnvProbes struct {
-	Prometheus *Prometheus `json:"prometheus,omitempty"`
+	Prometheus     *Prometheus     `json:"prometheus,omitempty"`
+	AuditCollector *AuditCollector `json:"auditCollector,omitempty"`
+}
+
+// AuditCollector names an existing collector, not a claim of audit coverage.
+// Managed audit services without a collector Deployment remain unconfigured.
+type AuditCollector struct {
+	Namespace  string `json:"namespace"`
+	Deployment string `json:"deployment"`
+}
+
+// AppResources must be reviewed separately per environment. Names are not
+// inferred from a Plan, copied from another environment, or submitted by AI.
+type AppResources struct {
+	Secrets []probes.SecretRequirement `json:"secrets,omitempty"`
+	Backup  *Backup                    `json:"backup,omitempty"`
+}
+
+type Backup struct {
+	Cluster string `json:"cluster"`
+	MaxAge  string `json:"maxAge"`
+}
+
+func (b Backup) maxAge() (time.Duration, error) {
+	d, err := time.ParseDuration(b.MaxAge)
+	if err != nil || d < time.Minute || d > 30*24*time.Hour {
+		return 0, ErrInvalidConfig
+	}
+	return d, nil
 }
 
 // Prometheus is a Prometheus HTTP API the platform can reach without
@@ -58,7 +88,8 @@ type App struct {
 	// RBAC needs at least one allowed and one denied rule.
 	RBAC []Rule `json:"rbac,omitempty"`
 	// PrometheusJob is the scrape job of the app's targets.
-	PrometheusJob string `json:"prometheusJob,omitempty"`
+	PrometheusJob string                  `json:"prometheusJob,omitempty"`
+	Environments  map[string]AppResources `json:"environments,omitempty"`
 }
 
 // Rule is one Kubernetes operation the app must (allowed) or must not be
@@ -101,6 +132,11 @@ func (c Config) validate(envs []string) error {
 		if !slices.Contains(envs, name) {
 			return bad("environments.%s is not a registered environment", name)
 		}
+		if a := e.AuditCollector; a != nil {
+			if !id.MatchString(a.Namespace) || a.Deployment == "" || len(validation.IsDNS1123Subdomain(a.Deployment)) != 0 {
+				return bad("environments.%s.auditCollector: invalid namespace or deployment", name)
+			}
+		}
 		if p := e.Prometheus; p != nil {
 			u, err := url.Parse(p.URL)
 			if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -120,8 +156,31 @@ func (c Config) validate(envs []string) error {
 			return bad("apps[%d]: invalid or duplicate name or namespace", i)
 		}
 		names[a.Name], namespaces[a.Namespace] = true, true
-		if len(a.RBAC) == 0 && a.PrometheusJob == "" {
-			return bad("apps[%d]: needs rbac or prometheusJob", i)
+		configured := len(a.RBAC) > 0 || a.PrometheusJob != ""
+		for env, resources := range a.Environments {
+			if !slices.Contains(envs, env) {
+				return bad("apps[%d].environments: unregistered environment", i)
+			}
+			seen := map[string]bool{}
+			for _, s := range resources.Secrets {
+				if !id.MatchString(s.ID) || s.ID == "secret-usability" || seen[s.ID] || s.Name == "" || len(validation.IsDNS1123Subdomain(s.Name)) != 0 {
+					return bad("apps[%d].environments: invalid or duplicate secret reference", i)
+				}
+				seen[s.ID] = true
+				configured = true
+			}
+			if b := resources.Backup; b != nil {
+				if _, err := b.maxAge(); err != nil || b.Cluster == "" || len(validation.IsDNS1123Subdomain(b.Cluster)) != 0 {
+					return bad("apps[%d].environments: backup needs cluster and maxAge from 1m to 720h", i)
+				}
+				configured = true
+			}
+			if e := c.Environments[env]; e.AuditCollector != nil {
+				configured = true
+			}
+		}
+		if !configured {
+			return bad("apps[%d]: needs rbac, prometheusJob or environment resource checks", i)
 		}
 		if len(a.RBAC) > 0 {
 			if !id.MatchString(a.ServiceAccount) {
