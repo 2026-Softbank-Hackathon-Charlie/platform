@@ -149,7 +149,7 @@ func (s *Server) draftPlan(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", "this server has no apps configured (PLATFORM_APPS_FILE)")
 		return
 	}
-	p, err := s.d.Apps.Draft(req)
+	p, err := s.d.Apps.Draft(r.Context(), req)
 	if err != nil {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return

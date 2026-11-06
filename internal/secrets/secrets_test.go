@@ -253,3 +253,47 @@ func TestChecksum(t *testing.T) {
 		t.Fatal("two keys give the same checksum")
 	}
 }
+
+func TestDatabaseRow(t *testing.T) {
+	c := newCipher(t)
+	row, err := c.DatabaseRow("moimroom-mig", "gke", "eks", "pw-value", "CERT", "KEY-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.App != "moimroom-mig" || row.PrimaryEnv != "gke" || row.PeerEnv != "eks" || row.CACert != "CERT" ||
+		row.KeyVersion != KeyVersion || row.KeyCheck != c.KeyCheck() {
+		t.Fatalf("row = %+v", row)
+	}
+	for _, ct := range [][]byte{row.PasswordCiphertext, row.CAKeyCiphertext} {
+		if bytes.Contains(ct, []byte("value")) {
+			t.Fatal("a ciphertext holds the plain value")
+		}
+	}
+	pw, key, err := c.OpenDatabase(row)
+	if err != nil || pw != "pw-value" || key != "KEY-value" {
+		t.Fatalf("OpenDatabase = %q, %q, %v", pw, key, err)
+	}
+
+	// Another app's row, swapped fields, another key and an app secret's
+	// additional data do not decrypt.
+	moved := row
+	moved.App = "shop"
+	if _, _, err := c.OpenDatabase(moved); err == nil {
+		t.Error("a row moved to another app decrypts")
+	}
+	swapped := row
+	swapped.PasswordNonce, swapped.PasswordCiphertext = row.CAKeyNonce, row.CAKeyCiphertext
+	if _, _, err := c.OpenDatabase(swapped); err == nil {
+		t.Error("the CA key decrypts as the password")
+	}
+	other, err := NewCipher(bytes.Repeat([]byte{8}, KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := other.OpenDatabase(row); !errors.Is(err, ErrKeyMismatch) {
+		t.Errorf("another key: %v, want ErrKeyMismatch", err)
+	}
+	if _, err := c.Open("moimroom-mig", "", DatabasePassword, row.KeyVersion, row.PasswordNonce, row.PasswordCiphertext); err == nil {
+		t.Error("the password decrypts as an app secret")
+	}
+}

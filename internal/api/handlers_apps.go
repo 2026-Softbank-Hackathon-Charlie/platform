@@ -142,7 +142,18 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		Name: spec.Name, Repo: req.Repo, Branch: branch, Environments: targets, AutoDeploy: autoDeploy,
 		Spec: specJSON, SpecCommit: commit, CreatedBy: actor(r), CreatedAt: now,
 	}
-	if err := s.d.Store.CreateApp(ctx, app); err != nil {
+	db, err := s.newAppDatabase(app)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	if db != nil {
+		noteAudit(r, "dbPrimary", db.PrimaryEnv)
+		err = s.d.Store.CreateAppWithDatabase(ctx, app, *db)
+	} else {
+		err = s.d.Store.CreateApp(ctx, app)
+	}
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			s.fail(w, r, http.StatusConflict, "app_exists", fmt.Sprintf("an app named %s is already registered", spec.Name))
 			return
@@ -158,7 +169,26 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	noteAudit(r, "deployment", d.ID)
 	s.enqueue(ctx, d.ID)
 	w.Header().Set("Location", "/v1/apps/"+app.Name)
-	writeJSON(w, http.StatusCreated, apiv1.AppCreated{App: s.appView(app, nil, map[string][]store.Deployment{app.Name: {d}}), Deployment: deploymentJSON(d)})
+	writeJSON(w, http.StatusCreated, apiv1.AppCreated{App: s.appView(app, nil, map[string][]store.Deployment{app.Name: {d}}, db), Deployment: deploymentJSON(d)})
+}
+
+// newAppDatabase makes the database pair of an app being registered (ADR
+// 0030), or returns nil when it gets none: the setting is off, the app is
+// not in exactly two environments, or there is no secrets key to store the
+// pair with.
+func (s *Server) newAppDatabase(app store.App) (*store.AppDatabase, error) {
+	if !s.cfg.AppDBTopology || len(app.Environments) != 2 {
+		return nil, nil
+	}
+	if s.d.Secrets == nil {
+		s.cfg.Log.Warn("PLATFORM_APP_DB_TOPOLOGY is on, but there is no PLATFORM_SECRETS_KEY: registering the app without a database pair", "app", app.Name)
+		return nil, nil
+	}
+	db, err := deploy.NewAppDatabase(s.d.Secrets, app.Name, app.Environments, app.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("make the database pair of %s: %w", app.Name, err)
+	}
+	return &db, nil
 }
 
 // POST /v1/apps/{name}/instances: add a branch of a registered app as its
@@ -395,12 +425,12 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 		inFile[a.Name] = i
 	}
 	for _, a := range registered {
-		branches, deps, err := s.appRecords(r.Context(), a)
+		branches, deps, db, err := s.appRecords(r.Context(), a)
 		if err != nil {
 			s.internal(w, r, err)
 			return
 		}
-		deploy := s.appDeploy(a, branches, deps)
+		deploy := s.appDeploy(a, branches, deps, db)
 		if i, ok := inFile[a.Name]; ok {
 			list[i].Deploy = &deploy
 			continue
@@ -427,22 +457,23 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	branches, deps, err := s.appRecords(r.Context(), a)
+	branches, deps, db, err := s.appRecords(r.Context(), a)
 	if err != nil {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.appView(a, branches, deps))
+	writeJSON(w, http.StatusOK, s.appView(a, branches, deps, db))
 }
 
 // appRecords reads what a registered app's deploy section shows besides
-// the app: its added branches and, by instance, each instance's newest
-// deployments, newest first. That is one read for the branches and one for
-// each instance, appspec.MaxInstances at most.
-func (s *Server) appRecords(ctx context.Context, a store.App) ([]store.AppBranch, map[string][]store.Deployment, error) {
+// the app: its added branches, by instance each instance's newest
+// deployments, newest first, and its database pair (nil without one). That
+// is one read for the branches, one for each instance, appspec.MaxInstances
+// at most, and one for the pair.
+func (s *Server) appRecords(ctx context.Context, a store.App) ([]store.AppBranch, map[string][]store.Deployment, *store.AppDatabase, error) {
 	branches, err := s.d.Store.ListAppBranches(ctx, a.Name)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	instances := []string{a.Name}
 	for _, b := range branches {
@@ -451,10 +482,17 @@ func (s *Server) appRecords(ctx context.Context, a store.App) ([]store.AppBranch
 	deps := map[string][]store.Deployment{}
 	for _, in := range instances {
 		if deps[in], err = s.d.Store.ListInstanceDeployments(ctx, in, appStatusDeployments); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
-	return branches, deps, nil
+	db, err := s.d.Store.GetAppDatabase(ctx, a.Name)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return branches, deps, nil, nil
+	case err != nil:
+		return nil, nil, nil, err
+	}
+	return branches, deps, &db, nil
 }
 
 // fileApp returns the app of PLATFORM_APPS_FILE with the name.
@@ -472,9 +510,9 @@ func (s *Server) fileApp(name string) (apiv1.App, bool) {
 
 // appView is a registered app as the API shows it: the apps file's entry
 // when the file has the name, otherwise the defaults, with deploy set from
-// branches and deps as appDeploy takes them.
-func (s *Server) appView(a store.App, branches []store.AppBranch, deps map[string][]store.Deployment) apiv1.App {
-	deploy := s.appDeploy(a, branches, deps)
+// branches, deps and db as appDeploy takes them.
+func (s *Server) appView(a store.App, branches []store.AppBranch, deps map[string][]store.Deployment, db *store.AppDatabase) apiv1.App {
+	deploy := s.appDeploy(a, branches, deps, db)
 	if out, ok := s.fileApp(a.Name); ok {
 		out.Deploy = &deploy
 		return out
@@ -495,9 +533,10 @@ func registeredOnly(name string, deploy *apiv1.AppDeploy) apiv1.App {
 
 // appDeploy is a registered app's deploy section. branches are its added
 // branches, by branch name; deps are each instance's newest deployments, by
-// instance, newest first. Its branch, autoDeploy, spec, specCommit, url,
-// status and lastDeployment are the default instance's.
-func (s *Server) appDeploy(a store.App, branches []store.AppBranch, deps map[string][]store.Deployment) apiv1.AppDeploy {
+// instance, newest first; db is its database pair or nil. Its branch,
+// autoDeploy, spec, specCommit, url, status and lastDeployment are the
+// default instance's.
+func (s *Server) appDeploy(a store.App, branches []store.AppBranch, deps map[string][]store.Deployment, db *store.AppDatabase) apiv1.AppDeploy {
 	def := s.appInstance(a, defaultInstance(a), deps[a.Name])
 	out := apiv1.AppDeploy{
 		Repo: a.Repo, Branch: def.Branch, Environments: a.Environments, AutoDeploy: def.AutoDeploy,
@@ -506,6 +545,9 @@ func (s *Server) appDeploy(a store.App, branches []store.AppBranch, deps map[str
 		Instances: make([]apiv1.AppInstance, 0, 1+len(branches)),
 	}
 	out.Instances = append(out.Instances, def)
+	if db != nil {
+		out.DbTopology = &apiv1.AppDBTopology{Primary: db.PrimaryEnv, Replica: db.PeerEnv}
+	}
 	for _, b := range branches {
 		out.Instances = append(out.Instances, s.appInstance(a, b, deps[b.Instance]))
 	}

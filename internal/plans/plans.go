@@ -38,7 +38,27 @@ type Service struct {
 	capacity  CapacityGate  // nil: no capacity measurement (capacity.go)
 	parity    ParityGate    // nil: no parity record (parity.go)
 	version   VersionGate   // nil: no PostgreSQL major version check (version.go)
+
+	appDBs AppDatabases // nil: only the policy's own hosts and passwords
 }
+
+// AppDatabases are the databases of the apps registered from GitHub with a
+// database pair (ADR 0030, apps.Catalog), read on every parse so that a
+// newly registered app's plans pass without a restart.
+type AppDatabases interface {
+	// RegistryHosts returns the password variables with the hosts each may
+	// be sent to (as Policy.HostPasswordEnvs) and each app's database hosts
+	// (as Policy.AppDBHosts). The policy's own entries win.
+	RegistryHosts(ctx context.Context) (passwordHosts, appHosts map[string][]string, err error)
+	// SetRegistryPasswords puts the passwords that refs names into the
+	// server's environment, where plan.Parse expands them from.
+	SetRegistryPasswords(ctx context.Context, refs []string) error
+}
+
+// SetAppDatabases adds the registered apps' databases to the policy and has
+// their passwords put into the environment right before a plan is parsed.
+// Call before serving.
+func (s *Service) SetAppDatabases(a AppDatabases) { s.appDBs = a }
 
 // New returns a Service enforcing policy.
 func New(policy Policy, st store.Store) *Service {
@@ -48,23 +68,38 @@ func New(policy Policy, st store.Store) *Service {
 // Parse applies the policy and parses raw plan JSON. Secrets are expanded from
 // the server environment, so call it again at start time rather than caching.
 func (s *Service) Parse(raw []byte) (*plan.Plan, error) {
-	p, _, err := s.parse(raw)
+	p, _, err := s.parse(context.Background(), raw)
 	return p, err
 }
 
 // parse also returns the plan's summary, built from the plan as submitted:
-// nothing expanded from the environment ever reaches it or an error.
-func (s *Service) parse(raw []byte) (*plan.Plan, apiv1.PlanSummary, error) {
-	hosts, err := s.policy.checkRefs(raw)
+// nothing expanded from the environment ever reaches it or an error. The
+// registered apps' databases are read first, and the passwords the plan
+// may use are put into the environment once the policy allowed them.
+func (s *Service) parse(ctx context.Context, raw []byte) (*plan.Plan, apiv1.PlanSummary, error) {
+	policy := s.policy
+	if s.appDBs != nil {
+		pw, ah, err := s.appDBs.RegistryHosts(ctx)
+		if err != nil {
+			return nil, apiv1.PlanSummary{}, fmt.Errorf("read the registered apps' databases: %w", err)
+		}
+		policy = policy.withRegistered(pw, ah)
+	}
+	hosts, err := policy.checkRefs(raw)
 	if err != nil {
 		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	if s.appDBs != nil {
+		if err := s.appDBs.SetRegistryPasswords(ctx, hosts.refs); err != nil {
+			return nil, apiv1.PlanSummary{}, fmt.Errorf("provide the database passwords: %w", err)
+		}
 	}
 	// The engine's errors name fields, never expanded values.
 	p, err := plan.Parse(raw)
 	if err != nil {
 		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	if err := s.policy.checkParsed(p, hosts); err != nil {
+	if err := policy.checkParsed(p, hosts); err != nil {
 		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	return p, summarize(p, hosts), nil
@@ -80,7 +115,7 @@ func (s *Service) Submit(ctx context.Context, raw []byte, actor string) (apiv1.P
 // authenticated caller's role; an agent's plan needs a passing rehearsal
 // report before it can be approved (requireRehearsal).
 func (s *Service) SubmitAs(ctx context.Context, raw []byte, actor string, role apiv1.Role) (apiv1.PlanRecord, error) {
-	p, summary, err := s.parse(raw)
+	p, summary, err := s.parse(ctx, raw)
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}
@@ -228,7 +263,7 @@ func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 	var check ResidencyCheck
 	var capCheck CapacityCheck
 	var verCheck VersionCheck
-	p, sum, err := s.parse(row.Raw) // re-parse: secrets come from the environment at start time
+	p, sum, err := s.parse(ctx, row.Raw) // re-parse: secrets come from the environment at start time
 	if err == nil {
 		check, err = s.checkResidency(ctx, row.RollbackOf, p)
 	}
@@ -257,7 +292,7 @@ func (s *Service) Load(ctx context.Context, ref string) (*plan.Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.Parse(row.Raw)
+	p, _, err := s.parse(ctx, row.Raw)
 	if err != nil {
 		return nil, err
 	}

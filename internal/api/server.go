@@ -104,6 +104,10 @@ type Config struct {
 	// GitOpsRepo is the gitops repository (owner/name, PLATFORM_GITOPS_REPO),
 	// which never gets a push token. Default deploy.DefaultGitOpsRepo.
 	GitOpsRepo string
+	// AppDBTopology makes a database pair (ADR 0030) for every app
+	// registered in exactly two environments while Deps.Secrets is set
+	// (PLATFORM_APP_DB_TOPOLOGY=1).
+	AppDBTopology bool
 }
 
 // DefaultAppDomain is Config.AppDomain's default.

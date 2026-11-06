@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Ids and names break ties in byte order (COLLATE "C"), the same order the
@@ -33,12 +34,49 @@ func (s *Postgres) CreateApp(ctx context.Context, a App) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO apps (`+appColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+	return insertApp(ctx, s.pool, a)
+}
+
+// insertApp inserts a cleaned app with q, the pool or a transaction.
+func insertApp(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, a App) error {
+	_, err := q.Exec(ctx, `INSERT INTO apps (`+appColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		a.Name, a.Repo, a.Branch, a.Environments, a.AutoDeploy, a.Spec, a.SpecCommit, a.CreatedBy, a.CreatedAt)
 	if isUniqueViolation(err) {
 		return fmt.Errorf("%w: app %s exists", ErrConflict, a.Name)
 	}
 	return err
+}
+
+// CreateAppWithDatabase leaves the check of d's environments to the table's
+// CHECK constraint, so a refused row rolls back the app inserted before it.
+func (s *Postgres) CreateAppWithDatabase(ctx context.Context, a App, d AppDatabase) error {
+	a, err := a.Clean()
+	if err != nil {
+		return err
+	}
+	d = d.Clean()
+	d.App = a.Name
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	if err := insertApp(ctx, tx, a); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO app_databases (`+appDatabaseColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		d.App, d.PrimaryEnv, d.PeerEnv, d.KeyVersion, d.KeyCheck, d.PasswordNonce, d.PasswordCiphertext,
+		d.CACert, d.CAKeyNonce, d.CAKeyCiphertext, d.CreatedAt)
+	if isUniqueViolation(err) {
+		return fmt.Errorf("%w: app %s already has a database pair", ErrConflict, a.Name)
+	}
+	if err != nil {
+		return fmt.Errorf("store the database pair of app %s: %w", a.Name, err)
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Postgres) GetApp(ctx context.Context, name string) (App, error) {
@@ -123,6 +161,9 @@ func (s *Postgres) DeleteApp(ctx context.Context, name string) error {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM app_secrets WHERE app = $1`, name); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM app_databases WHERE app = $1`, name); err != nil {
 		return err
 	}
 	if err := deleteDeployments(ctx, tx, `app = $1`, name); err != nil {

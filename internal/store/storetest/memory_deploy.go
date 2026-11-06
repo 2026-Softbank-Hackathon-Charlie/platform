@@ -22,6 +22,7 @@ type deployMemory struct {
 	events      []store.DeploymentEvent // in Seq order
 	seq         int64
 	deliveries  map[string]bool
+	databases   map[string]store.AppDatabase // by app (ADR 0030)
 }
 
 func copyApp(a store.App) store.App {
@@ -53,6 +54,11 @@ func (m *memory) CreateApp(_ context.Context, a store.App) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.createApp(a)
+}
+
+// createApp stores a cleaned and checked app. The caller holds the mutex.
+func (m *memory) createApp(a store.App) error {
 	if _, ok := m.deploy.apps[a.Name]; ok {
 		return fmt.Errorf("%w: app %s exists", store.ErrConflict, a.Name)
 	}
@@ -63,6 +69,55 @@ func (m *memory) CreateApp(_ context.Context, a store.App) error {
 	a.CreatedAt = pgTime(a.CreatedAt)
 	m.deploy.apps[a.Name] = a
 	return nil
+}
+
+func (m *memory) CreateAppWithDatabase(_ context.Context, a store.App, d store.AppDatabase) error {
+	a, err := a.Clean()
+	if err != nil {
+		return err
+	}
+	if err := checkJSON("app spec", a.Spec); err != nil {
+		return err
+	}
+	d = d.Clean()
+	if d.PrimaryEnv == "" || d.PeerEnv == "" || d.PrimaryEnv == d.PeerEnv {
+		return fmt.Errorf("storetest: the database pair of app %s needs two different environments", a.Name)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.deploy.databases[a.Name]; ok {
+		return fmt.Errorf("%w: app %s already has a database pair", store.ErrConflict, a.Name)
+	}
+	if err := m.createApp(a); err != nil {
+		return err
+	}
+	if m.deploy.databases == nil {
+		m.deploy.databases = map[string]store.AppDatabase{}
+	}
+	d.App, d.CreatedAt = a.Name, pgTime(d.CreatedAt)
+	m.deploy.databases[d.App] = d
+	return nil
+}
+
+func (m *memory) GetAppDatabase(_ context.Context, app string) (store.AppDatabase, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.deploy.databases[app]
+	if !ok {
+		return store.AppDatabase{}, fmt.Errorf("%w: database pair of app %s", store.ErrNotFound, app)
+	}
+	return d.Clean(), nil // Clean copies the byte slices
+}
+
+func (m *memory) ListAppDatabases(_ context.Context) ([]store.AppDatabase, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]store.AppDatabase, 0, len(m.deploy.databases))
+	for _, d := range m.deploy.databases {
+		out = append(out, d.Clean())
+	}
+	slices.SortFunc(out, func(a, b store.AppDatabase) int { return cmp.Compare(a.App, b.App) })
+	return out, nil
 }
 
 func (m *memory) GetApp(_ context.Context, name string) (store.App, error) {
@@ -117,6 +172,7 @@ func (m *memory) DeleteApp(_ context.Context, name string) error {
 	}
 	delete(m.deploy.apps, name)
 	delete(m.deploy.branches, name)
+	delete(m.deploy.databases, name)
 	m.secrets.deleteSecrets(func(k secretKey) bool { return k.app == name })
 	m.deleteDeployments(func(d store.Deployment) bool { return d.App == name })
 	return nil

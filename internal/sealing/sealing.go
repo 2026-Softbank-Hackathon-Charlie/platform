@@ -28,6 +28,10 @@ const (
 	// PGBackupSecret holds the key of the app's backup bucket (ADR 0025):
 	// accessKey and secretKey.
 	PGBackupSecret = "app-pgbackup"
+	// PGCASecret holds the CA of an app's database pair (platform ADR
+	// 0030): ca.crt and ca.key. The pair's app password goes into
+	// <cluster>-app, the name CNPG would give its own app Secret.
+	PGCASecret = "app-pg-ca"
 )
 
 // MinKeyBits is the smallest RSA key ParseCert accepts. The controller

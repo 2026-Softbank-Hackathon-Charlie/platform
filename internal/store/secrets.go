@@ -135,4 +135,11 @@ type SecretStore interface {
 	// GetBackupStorage returns ErrNotFound when the app has no backup bucket
 	// in env.
 	GetBackupStorage(ctx context.Context, app, env string) (InstanceStorage, error)
+
+	// GetAppDatabase returns the database pair of an app (ADR 0030),
+	// stored by CreateAppWithDatabase. ErrNotFound when it has none.
+	GetAppDatabase(ctx context.Context, app string) (AppDatabase, error)
+	// ListAppDatabases returns every app's database pair, by app in byte
+	// order; empty, not nil, when there are none.
+	ListAppDatabases(ctx context.Context) ([]AppDatabase, error)
 }

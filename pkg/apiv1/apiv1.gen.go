@@ -1226,6 +1226,26 @@ type AppCreated struct {
 	Deployment Deployment `json:"deployment"`
 }
 
+// AppDBTopology The database pair of the app's default instance (ADR 0030), present
+// only for an app registered in exactly two environments while the
+// server sets PLATFORM_APP_DB_TOPOLOGY. Its postgres database is born
+// primary in `primary` and a streaming replica of it in `replica`, so
+// a migration can move it between the two. These are the roles the
+// databases were created with; a migration swaps them in the clusters
+// and does not change these fields. Branch instances keep their own
+// database in each environment.
+type AppDBTopology struct {
+	// Primary the environment where the database is born primary (the app's first environment)
+	//
+	// Example: gke
+	Primary string `json:"primary"`
+
+	// Replica the environment where the database is born a replica of primary
+	//
+	// Example: eks
+	Replica string `json:"replica"`
+}
+
 // AppDatabase defines model for AppDatabase.
 type AppDatabase struct {
 	// Name Example: app
@@ -1257,6 +1277,16 @@ type AppDeploy struct {
 
 	// CreatedBy the token name that registered the app
 	CreatedBy string `json:"createdBy"`
+
+	// DbTopology The database pair of the app's default instance (ADR 0030), present
+	// only for an app registered in exactly two environments while the
+	// server sets PLATFORM_APP_DB_TOPOLOGY. Its postgres database is born
+	// primary in `primary` and a streaming replica of it in `replica`, so
+	// a migration can move it between the two. These are the roles the
+	// databases were created with; a migration swaps them in the clusters
+	// and does not change these fields. Branch instances keep their own
+	// database in each environment.
+	DbTopology *AppDBTopology `json:"dbTopology,omitempty"`
 
 	// Environments The environments the app is deployed to, in PLATFORM_ENVS_FILE order.
 	//

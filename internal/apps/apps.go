@@ -90,6 +90,23 @@ type Catalog struct {
 	apps       []App
 	envs       []envs.EnvConfig // PLATFORM_ENVS_FILE order
 	gatewayURL string
+	registry   *Registry // nil: only the apps file
+}
+
+// Empty is a catalog without an apps file, for a server that drafts plans
+// only for registered apps (WithRegistry).
+func Empty(environments []envs.EnvConfig, gatewayURL string) *Catalog {
+	return &Catalog{envs: slices.Clone(environments), gatewayURL: gatewayURL}
+}
+
+// WithRegistry returns a copy of c that also drafts plans for the apps
+// registered from GitHub with a database pair (ADR 0030). The apps file's
+// entries win; List, Has, PasswordHosts, AppHosts and Buckets stay the
+// file's.
+func (c *Catalog) WithRegistry(r *Registry) *Catalog {
+	out := *c
+	out.registry = r
+	return &out
 }
 
 // New validates cfg against the registered environments (normalized, as

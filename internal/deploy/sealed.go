@@ -40,6 +40,10 @@ type Sealed struct {
 	// AppChecksum changes exactly when what the pods get changes, so the
 	// chart restarts them then; set with App.
 	AppChecksum string
+	// PGApp is the app account of the database pair (ADR 0030), SealedSecret
+	// <cluster>-app, and PGCA its CA, SealedSecret app-pg-ca; both nil
+	// without a pair.
+	PGApp, PGCA map[string]string
 }
 
 // SealedS3 is a sealed bucket key.
@@ -53,7 +57,7 @@ type SealedBackup struct {
 }
 
 func (s *Sealed) empty() bool {
-	return s == nil || (s.S3 == nil && s.PGBackup == nil && len(s.App) == 0)
+	return s == nil || (s.S3 == nil && s.PGBackup == nil && len(s.App) == 0 && len(s.PGApp) == 0 && len(s.PGCA) == 0)
 }
 
 // backupSuffix ends the name an app's backup bucket and its user are made
@@ -116,6 +120,10 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 	// take the plugin off the running database.
 	needBackup := j.d.Instance == app.Name && j.e.cfg.StorageDriver != nil &&
 		slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres })
+	db, err := j.appDatabase(ctx, app, spec)
+	if err != nil {
+		return nil, err
+	}
 	j.keys = nil
 	files := map[string][]byte{}
 	for _, env := range j.d.Environments {
@@ -128,7 +136,8 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 			backupDrv = drv
 		}
 		var sealed *Sealed
-		if needS3 || len(values) > 0 || backupDrv != nil {
+		var topology *DBTopology
+		if needS3 || len(values) > 0 || backupDrv != nil || db != nil {
 			sl, err := j.sealer(env.Env)
 			if err != nil {
 				return nil, err
@@ -161,6 +170,18 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 				}
 				sealed.AppChecksum = j.e.cfg.Secrets.Checksum(app.Name, j.d.Instance, in)
 			}
+			if db != nil {
+				if topology, err = db.topology(env.Env); err != nil {
+					return nil, err
+				}
+				ns := Namespace(j.d.Instance)
+				if sealed.PGApp, err = sl.SealAll(ns, db.cluster+"-app", db.app); err != nil {
+					return nil, fmt.Errorf("seal the database account of %s for %s: %w", j.d.Instance, env.Env, err)
+				}
+				if sealed.PGCA, err = sl.SealAll(ns, sealing.PGCASecret, db.ca); err != nil {
+					return nil, fmt.Errorf("seal the database CA of %s for %s: %w", j.d.Instance, env.Env, err)
+				}
+			}
 		}
 		envImages := images
 		if env.Env == "gke" && j.e.cfg.GKEImageRegistry != "" {
@@ -173,7 +194,7 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 				envImages[service] = j.e.cfg.GKEImageRegistry + "/" + app.Name + "/" + service + "@" + digest
 			}
 		}
-		b, err := Render(File{App: app.Name, Instance: j.d.Instance, Env: env.Env, Commit: j.d.Commit, Deployment: j.d.ID, Spec: spec, Images: envImages, Sealed: sealed})
+		b, err := Render(File{App: app.Name, Instance: j.d.Instance, Env: env.Env, Commit: j.d.Commit, Deployment: j.d.ID, Spec: spec, Images: envImages, Sealed: sealed, DBTopology: topology})
 		if err != nil {
 			return nil, err
 		}
@@ -183,6 +204,56 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 		j.note(ctx, fmt.Sprintf("sealed %d secrets of %s for %s", len(values), j.d.Instance, envNames(j.d.Environments)))
 	}
 	return files, nil
+}
+
+// sealedDatabase is what a deployment seals of an app's database pair (ADR
+// 0030), in plain text.
+type sealedDatabase struct {
+	row     store.AppDatabase
+	cluster string
+	app     map[string]string // Secret <cluster>-app
+	ca      map[string]string // Secret app-pg-ca
+}
+
+// topology is values.dbTopology of the file of env: the same in both
+// environments' files.
+func (d *sealedDatabase) topology(env string) (*DBTopology, error) {
+	if env != d.row.PrimaryEnv && env != d.row.PeerEnv {
+		return nil, fmt.Errorf("the database pair of %s is in %s and %s, not in %s", d.row.App, d.row.PrimaryEnv, d.row.PeerEnv, env)
+	}
+	return &DBTopology{Primary: d.row.PrimaryEnv, Peer: d.row.PeerEnv}, nil
+}
+
+// appDatabase returns the database pair the deployment seals: only the
+// default instance's, only with a postgres resource, and only for an app
+// that has one (registered with PLATFORM_APP_DB_TOPOLOGY in two
+// environments). nil otherwise, so the gitops files stay as they were.
+func (j *job) appDatabase(ctx context.Context, app store.App, spec appspec.Spec) (*sealedDatabase, error) {
+	i := slices.IndexFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres })
+	if j.d.Instance != app.Name || i < 0 {
+		return nil, nil
+	}
+	row, err := j.e.cfg.Store.GetAppDatabase(ctx, app.Name)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the database pair of %s: %w", app.Name, err)
+	}
+	if j.e.cfg.Secrets == nil {
+		return nil, fmt.Errorf("app %s has a database pair, but this server has no PLATFORM_SECRETS_KEY to decrypt it", app.Name)
+	}
+	password, caKey, err := j.e.cfg.Secrets.OpenDatabase(row)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt the database pair of %s: %w", app.Name, err)
+	}
+	cluster := ClusterName(app.Name, spec.Resources[i].Name)
+	return &sealedDatabase{
+		row:     row,
+		cluster: cluster,
+		app:     pgAppSecret(cluster, Namespace(j.d.Instance), password),
+		ca:      map[string]string{"ca.crt": row.CACert, "ca.key": caKey},
+	}, nil
 }
 
 // appSecretValues returns the secrets the deployment's instance gets,

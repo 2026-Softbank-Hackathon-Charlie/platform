@@ -251,3 +251,71 @@ func (c *Cipher) Checksum(app, instance string, values map[string]string) string
 	mac.Write(lengthPrefixed(parts...))
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// The fields of an app's database pair (ADR 0030) that are stored
+// encrypted.
+const (
+	DatabasePassword = "password"
+	DatabaseCAKey    = "ca.key"
+)
+
+// databaseData binds a database pair's ciphertext to its app and field. The
+// label and the fourth part keep it from ever encoding like an app secret's
+// additional data.
+func databaseData(app, field string) []byte {
+	return lengthPrefixed("app_databases", app, field, "")
+}
+
+// DatabaseRow encrypts the password and the CA key of app's database pair
+// (ADR 0030) into a row with the key check and no CreatedAt; the caller
+// sets the time.
+func (c *Cipher) DatabaseRow(app, primaryEnv, peerEnv, password, caCert, caKey string) (store.AppDatabase, error) {
+	seal := func(field, value string) ([]byte, []byte, error) {
+		nonce := make([]byte, c.aead.NonceSize())
+		if _, err := rand.Read(nonce); err != nil {
+			return nil, nil, err
+		}
+		return nonce, c.aead.Seal(nil, nonce, []byte(value), databaseData(app, field)), nil
+	}
+	pwNonce, pw, err := seal(DatabasePassword, password)
+	if err != nil {
+		return store.AppDatabase{}, err
+	}
+	keyNonce, key, err := seal(DatabaseCAKey, caKey)
+	if err != nil {
+		return store.AppDatabase{}, err
+	}
+	return store.AppDatabase{
+		App: app, PrimaryEnv: primaryEnv, PeerEnv: peerEnv, KeyVersion: KeyVersion, KeyCheck: c.keyCheck,
+		PasswordNonce: pwNonce, PasswordCiphertext: pw, CACert: caCert, CAKeyNonce: keyNonce, CAKeyCiphertext: key,
+	}, nil
+}
+
+// OpenDatabase decrypts the password and the CA key of a stored database
+// pair. A row of another key is ErrKeyMismatch; the errors never contain a
+// value.
+func (c *Cipher) OpenDatabase(d store.AppDatabase) (password, caKey string, err error) {
+	if d.KeyCheck != c.keyCheck {
+		return "", "", fmt.Errorf("database pair of %s: %w (stored with key check %q, the server's key has %q)", d.App, ErrKeyMismatch, d.KeyCheck, c.keyCheck)
+	}
+	if d.KeyVersion != KeyVersion {
+		return "", "", fmt.Errorf("database pair of %s: key version %d is not the current key (%d)", d.App, d.KeyVersion, KeyVersion)
+	}
+	open := func(field string, nonce, ct []byte) (string, error) {
+		if len(nonce) != c.aead.NonceSize() {
+			return "", fmt.Errorf("database pair of %s: stored %s nonce has %d bytes", d.App, field, len(nonce))
+		}
+		out, err := c.aead.Open(nil, nonce, ct, databaseData(d.App, field))
+		if err != nil {
+			return "", fmt.Errorf("database pair of %s: the %s does not decrypt with the secrets key", d.App, field)
+		}
+		return string(out), nil
+	}
+	if password, err = open(DatabasePassword, d.PasswordNonce, d.PasswordCiphertext); err != nil {
+		return "", "", err
+	}
+	if caKey, err = open(DatabaseCAKey, d.CAKeyNonce, d.CAKeyCiphertext); err != nil {
+		return "", "", err
+	}
+	return password, caKey, nil
+}
