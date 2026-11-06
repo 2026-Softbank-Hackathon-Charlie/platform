@@ -724,6 +724,54 @@ func (e SecurityDeployedImageState) Valid() bool {
 	}
 }
 
+// Defines values for SecurityEPSSState.
+const (
+	SecurityEPSSStateNoCve     SecurityEPSSState = "no_cve"
+	SecurityEPSSStateNotScored SecurityEPSSState = "not_scored"
+	SecurityEPSSStateScored    SecurityEPSSState = "scored"
+	SecurityEPSSStateUnknown   SecurityEPSSState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SecurityEPSSState enum.
+func (e SecurityEPSSState) Valid() bool {
+	switch e {
+	case SecurityEPSSStateNoCve:
+		return true
+	case SecurityEPSSStateNotScored:
+		return true
+	case SecurityEPSSStateScored:
+		return true
+	case SecurityEPSSStateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityExploitSourceState.
+const (
+	SecurityExploitSourceStateIdle        SecurityExploitSourceState = "idle"
+	SecurityExploitSourceStateOk          SecurityExploitSourceState = "ok"
+	SecurityExploitSourceStateStale       SecurityExploitSourceState = "stale"
+	SecurityExploitSourceStateUnavailable SecurityExploitSourceState = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the SecurityExploitSourceState enum.
+func (e SecurityExploitSourceState) Valid() bool {
+	switch e {
+	case SecurityExploitSourceStateIdle:
+		return true
+	case SecurityExploitSourceStateOk:
+		return true
+	case SecurityExploitSourceStateStale:
+		return true
+	case SecurityExploitSourceStateUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SecurityFindingKind.
 const (
 	SecurityFindingKindConfiguration SecurityFindingKind = "configuration"
@@ -763,6 +811,30 @@ func (e SecurityImageScanStatus) Valid() bool {
 	case SecurityImageScanStatusSucceeded:
 		return true
 	case SecurityImageScanStatusUnsupported:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityKEVState.
+const (
+	SecurityKEVStateListed    SecurityKEVState = "listed"
+	SecurityKEVStateNoCve     SecurityKEVState = "no_cve"
+	SecurityKEVStateNotListed SecurityKEVState = "not_listed"
+	SecurityKEVStateUnknown   SecurityKEVState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SecurityKEVState enum.
+func (e SecurityKEVState) Valid() bool {
+	switch e {
+	case SecurityKEVStateListed:
+		return true
+	case SecurityKEVStateNoCve:
+		return true
+	case SecurityKEVStateNotListed:
+		return true
+	case SecurityKEVStateUnknown:
 		return true
 	default:
 		return false
@@ -3211,6 +3283,79 @@ type SecurityDeployedImage struct {
 // - unknown: no instance label, no running or recorded digest, or the records could not be read.
 type SecurityDeployedImageState string
 
+// SecurityEPSS The FIRST Exploit Prediction Scoring System score of the CVE.
+type SecurityEPSS struct {
+	// Date the score date (YYYY-MM-DD)
+	//
+	// Example: 2026-11-06
+	Date *string `json:"date,omitempty"`
+
+	// Percentile 0..1: the share of scored CVEs with a lower or equal score
+	//
+	// Example: 0.92
+	Percentile *float64 `json:"percentile,omitempty"`
+
+	// Probability 0..1: estimated probability of exploitation activity in the next 30 days
+	//
+	// Example: 0.042
+	Probability *float64 `json:"probability,omitempty"`
+
+	// State - scored: FIRST has a score for the CVE.
+	// - not_scored: FIRST answered and has no score for the CVE.
+	// - unknown: no answer in the last 3 days; this is not "not scored".
+	// - no_cve: the vulnerability has no CVE id.
+	State SecurityEPSSState `json:"state"`
+}
+
+// SecurityEPSSState - scored: FIRST has a score for the CVE.
+// - not_scored: FIRST answered and has no score for the CVE.
+// - unknown: no answer in the last 3 days; this is not "not scored".
+// - no_cve: the vulnerability has no CVE id.
+type SecurityEPSSState string
+
+// SecurityExploitSource The state of one exploitation evidence source for this report (SEC-07).
+type SecurityExploitSource struct {
+	// CollectedAt the last successful read
+	CollectedAt *time.Time `json:"collectedAt,omitempty"`
+	Message     string     `json:"message"`
+
+	// Name cisa-kev or first-epss
+	//
+	// Example: cisa-kev
+	Name string `json:"name"`
+
+	// State - ok: read and current.
+	// - stale: the last refresh failed; values read earlier (at most 3 days old) are used.
+	// - unavailable: nothing current was read; values are unknown.
+	// - idle: nothing to look up (no CVE in the report).
+	State SecurityExploitSourceState `json:"state"`
+
+	// Version KEV catalogVersion, or the EPSS score date
+	Version *string `json:"version,omitempty"`
+}
+
+// SecurityExploitSourceState - ok: read and current.
+// - stale: the last refresh failed; values read earlier (at most 3 days old) are used.
+// - unavailable: nothing current was read; values are unknown.
+// - idle: nothing to look up (no CVE in the report).
+type SecurityExploitSourceState string
+
+// SecurityExploitation Exploitation evidence for the vulnerability's CVE (SEC-07, ADR 0034),
+// read when the report is built. It is a separate basis for priority and
+// never changes `severity`; scores are not combined. VEX is not applied.
+type SecurityExploitation struct {
+	// Cve the CVE looked up: the advisory, or its first CVE alias; absent when there is none
+	//
+	// Example: CVE-2024-6387
+	Cve *string `json:"cve,omitempty"`
+
+	// Epss The FIRST Exploit Prediction Scoring System score of the CVE.
+	Epss SecurityEPSS `json:"epss"`
+
+	// Kev The CISA Known Exploited Vulnerabilities catalog.
+	Kev SecurityKEV `json:"kev"`
+}
+
 // SecurityFinding One security or governance signal, normalised across vendors.
 type SecurityFinding struct {
 	Category SecurityCategory `json:"category"`
@@ -3320,6 +3465,37 @@ type SecurityImageScan struct {
 // - failed: the scan did not finish; `message` says why. Its image has no result.
 // - unsupported: the scanner cannot read this image (e.g. no package database).
 type SecurityImageScanStatus string
+
+// SecurityKEV The CISA Known Exploited Vulnerabilities catalog.
+type SecurityKEV struct {
+	// CatalogVersion Example: 2026.11.04
+	CatalogVersion *string `json:"catalogVersion,omitempty"`
+
+	// DateAdded YYYY-MM-DD; listed only
+	//
+	// Example: 2026-11-04
+	DateAdded *string `json:"dateAdded,omitempty"`
+
+	// DueDate the catalog's remediation due date for US federal agencies (YYYY-MM-DD); listed only
+	//
+	// Example: 2026-11-18
+	DueDate *string `json:"dueDate,omitempty"`
+
+	// Ransomware the catalog's knownRansomwareCampaignUse is Known; listed only
+	Ransomware *bool `json:"ransomware,omitempty"`
+
+	// State - listed: the CVE is in the catalog.
+	// - not_listed: a catalog read in the last 3 days does not have the CVE.
+	// - unknown: no catalog read in the last 3 days; this is not "not listed".
+	// - no_cve: the vulnerability has no CVE id, so the catalog does not apply.
+	State SecurityKEVState `json:"state"`
+}
+
+// SecurityKEVState - listed: the CVE is in the catalog.
+// - not_listed: a catalog read in the last 3 days does not have the CVE.
+// - unknown: no catalog read in the last 3 days; this is not "not listed".
+// - no_cve: the vulnerability has no CVE id, so the catalog does not apply.
+type SecurityKEVState string
 
 // SecurityOCSFExport defines model for SecurityOCSFExport.
 type SecurityOCSFExport struct {
@@ -3564,11 +3740,16 @@ type SecurityVulnerability struct {
 	// Advisory the advisory id: a CVE, or a GHSA or distribution id where there is no CVE
 	//
 	// Example: CVE-2024-6387
-	Advisory string                        `json:"advisory"`
-	Aliases  []string                      `json:"aliases"`
-	Cvss     []SecurityCVSS                `json:"cvss"`
-	Digest   string                        `json:"digest"`
-	FixState SecurityVulnerabilityFixState `json:"fixState"`
+	Advisory string         `json:"advisory"`
+	Aliases  []string       `json:"aliases"`
+	Cvss     []SecurityCVSS `json:"cvss"`
+	Digest   string         `json:"digest"`
+
+	// Exploitation Exploitation evidence for the vulnerability's CVE (SEC-07, ADR 0034),
+	// read when the report is built. It is a separate basis for priority and
+	// never changes `severity`; scores are not combined. VEX is not applied.
+	Exploitation *SecurityExploitation         `json:"exploitation,omitempty"`
+	FixState     SecurityVulnerabilityFixState `json:"fixState"`
 
 	// FixedVersions empty when the source names no fixed version; that does not mean there is no fix
 	FixedVersions []string `json:"fixedVersions"`
@@ -3595,7 +3776,9 @@ type SecurityVulnerabilityFixState string
 
 // SecurityVulnerabilityReport defines model for SecurityVulnerabilityReport.
 type SecurityVulnerabilityReport struct {
-	GeneratedAt time.Time `json:"generatedAt"`
+	// ExploitSources KEV and EPSS read state for this report (SEC-07); absent when the server does not look them up.
+	ExploitSources *[]SecurityExploitSource `json:"exploitSources,omitempty"`
+	GeneratedAt    time.Time                `json:"generatedAt"`
 
 	// RunningImages Containers of running pods outside system namespaces, by environment, namespace, workload and container. An environment whose cluster could not be read has none; see `sources` of `GET /v1/security`.
 	RunningImages []SecurityRunningImage `json:"runningImages"`

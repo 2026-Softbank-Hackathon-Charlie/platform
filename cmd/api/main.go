@@ -380,6 +380,8 @@ func main() {
 	}), security.Options{Log: log})
 	// Scans the image scan workflow posted to POST /v1/security/scans (SEC-04).
 	deps.ImageScans = security.StoredScans{Store: st}
+	// KEV and EPSS for the vulnerability report (SEC-07): public feeds, no credentials.
+	deps.Exploits = security.NewExploitIntel()
 	// A running agent session with no event for PLATFORM_AGENT_IDLE is closed
 	// as cancelled, so an agent that crashed does not leave it open forever.
 	agentIdle := agentlog.DefaultIdle

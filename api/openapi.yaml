@@ -3269,6 +3269,72 @@ components:
         severityBasis: { $ref: "#/components/schemas/SecuritySeverityBasis" }
         cvss: { type: array, items: { $ref: "#/components/schemas/SecurityCVSS" } }
         urls: { type: array, items: { type: string } }
+        exploitation: { $ref: "#/components/schemas/SecurityExploitation" }
+
+    SecurityExploitation:
+      description: |
+        Exploitation evidence for the vulnerability's CVE (SEC-07, ADR 0034),
+        read when the report is built. It is a separate basis for priority and
+        never changes `severity`; scores are not combined. VEX is not applied.
+      type: object
+      required: [kev, epss]
+      properties:
+        cve: { type: string, example: CVE-2024-6387, description: "the CVE looked up: the advisory, or its first CVE alias; absent when there is none" }
+        kev: { $ref: "#/components/schemas/SecurityKEV" }
+        epss: { $ref: "#/components/schemas/SecurityEPSS" }
+
+    SecurityKEV:
+      description: The CISA Known Exploited Vulnerabilities catalog.
+      type: object
+      required: [state]
+      properties:
+        state:
+          description: |
+            - listed: the CVE is in the catalog.
+            - not_listed: a catalog read in the last 3 days does not have the CVE.
+            - unknown: no catalog read in the last 3 days; this is not "not listed".
+            - no_cve: the vulnerability has no CVE id, so the catalog does not apply.
+          type: string
+          enum: [listed, not_listed, unknown, no_cve]
+        catalogVersion: { type: string, example: "2026.11.04" }
+        dateAdded: { type: string, example: "2026-11-04", description: "YYYY-MM-DD; listed only" }
+        dueDate: { type: string, example: "2026-11-18", description: "the catalog's remediation due date for US federal agencies (YYYY-MM-DD); listed only" }
+        ransomware: { type: boolean, description: "the catalog's knownRansomwareCampaignUse is Known; listed only" }
+
+    SecurityEPSS:
+      description: The FIRST Exploit Prediction Scoring System score of the CVE.
+      type: object
+      required: [state]
+      properties:
+        state:
+          description: |
+            - scored: FIRST has a score for the CVE.
+            - not_scored: FIRST answered and has no score for the CVE.
+            - unknown: no answer in the last 3 days; this is not "not scored".
+            - no_cve: the vulnerability has no CVE id.
+          type: string
+          enum: [scored, not_scored, unknown, no_cve]
+        probability: { type: number, format: double, example: 0.042, description: "0..1: estimated probability of exploitation activity in the next 30 days" }
+        percentile: { type: number, format: double, example: 0.92, description: "0..1: the share of scored CVEs with a lower or equal score" }
+        date: { type: string, example: "2026-11-06", description: "the score date (YYYY-MM-DD)" }
+
+    SecurityExploitSource:
+      description: The state of one exploitation evidence source for this report (SEC-07).
+      type: object
+      required: [name, state, message]
+      properties:
+        name: { type: string, example: cisa-kev, description: "cisa-kev or first-epss" }
+        state:
+          description: |
+            - ok: read and current.
+            - stale: the last refresh failed; values read earlier (at most 3 days old) are used.
+            - unavailable: nothing current was read; values are unknown.
+            - idle: nothing to look up (no CVE in the report).
+          type: string
+          enum: [ok, stale, unavailable, idle]
+        version: { type: string, description: "KEV catalogVersion, or the EPSS score date" }
+        collectedAt: { type: string, format: date-time, description: the last successful read }
+        message: { type: string }
 
     SecurityRunningImage:
       description: |
@@ -3366,6 +3432,10 @@ components:
           type: array
           items: { $ref: "#/components/schemas/SecurityRunningImage" }
         summary: { $ref: "#/components/schemas/SecurityVulnerabilitySummary" }
+        exploitSources:
+          description: KEV and EPSS read state for this report (SEC-07); absent when the server does not look them up.
+          type: array
+          items: { $ref: "#/components/schemas/SecurityExploitSource" }
 
     SecuritySource:
       type: object
