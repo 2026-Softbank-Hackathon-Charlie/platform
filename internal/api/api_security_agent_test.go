@@ -500,3 +500,41 @@ func TestAgentStreamReplaysInPages(t *testing.T) {
 		}
 	}
 }
+
+// /v1/security/controls and /v1/security/vulnerabilities read the cached
+// collection; without a scanner the vulnerabilities say so instead of
+// reporting none.
+func TestSecurityControlsAndVulnerabilities(t *testing.T) {
+	h := newHarness(t, withSecurity())
+	for _, p := range []string{"/v1/security/controls", "/v1/security/vulnerabilities"} {
+		if code, _ := h.do("GET", p, "", nil); code != 401 {
+			t.Fatalf("%s without a token: %d", p, code)
+		}
+		if code, b := h.do("GET", p+"?environment=nope", viewerToken, nil); code != 400 {
+			t.Fatalf("%s?environment=nope: %d %s", p, code, b)
+		}
+		if code, b := h.do("GET", p+"?refresh=maybe", viewerToken, nil); code != 400 {
+			t.Fatalf("%s?refresh=maybe: %d %s", p, code, b)
+		}
+	}
+	code, b := h.do("GET", "/v1/security/controls?environment=gke", viewerToken, nil)
+	r := decode[apiv1.SecurityControlReport](t, b)
+	if code != 200 || r.PolicyVersion != security.PolicyVersion || len(r.Controls) == 0 || len(r.Coverage) != 5 {
+		t.Fatalf("controls: %d %s", code, b)
+	}
+	for _, c := range r.Coverage {
+		if c.Environment != "gke" {
+			t.Fatalf("coverage outside the environment: %+v", c)
+		}
+	}
+	code, b = h.do("GET", "/v1/security/vulnerabilities", viewerToken, nil)
+	v := decode[apiv1.SecurityVulnerabilityReport](t, b)
+	if code != 200 || v.Scanner.Status != apiv1.SecurityScannerStateStatusNotConfigured || v.Vulnerabilities == nil || v.RunningImages == nil {
+		t.Fatalf("vulnerabilities: %d %s", code, b)
+	}
+
+	off := newHarness(t)
+	if code, _ := off.do("GET", "/v1/security/controls", viewerToken, nil); code != 503 {
+		t.Fatalf("no collectors: %d", code)
+	}
+}

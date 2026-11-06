@@ -28,6 +28,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -132,6 +133,9 @@ type Deps struct {
 	SourceStats SourceMeasurer
 	// Security builds the security and governance view; nil turns /v1/security off.
 	Security SecurityReporter
+	// ImageScans reads stored image scans for /v1/security/controls and
+	// /v1/security/vulnerabilities; nil reports the scanner as not configured.
+	ImageScans security.ScanResults
 	// Agents is the AI agent's activity log; nil turns /v1/agent off.
 	Agents AgentLog
 	// Deployer runs deployments; nil leaves them queued.
@@ -265,6 +269,8 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /{$}", "", s.root)
 	s.route("GET /v1/security", viewer, s.security)
 	s.route("GET /v1/security/ocsf", viewer, s.securityOCSF)
+	s.route("GET /v1/security/controls", viewer, s.securityControls)
+	s.route("GET /v1/security/vulnerabilities", viewer, s.securityVulnerabilities)
 	s.route("POST /v1/agent/sessions", agent, s.createAgentSession)
 	s.route("GET /v1/agent/sessions", viewer, s.listAgentSessions)
 	s.route("GET /v1/agent/sessions/{id}", viewer, s.getAgentSession)

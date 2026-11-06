@@ -235,6 +235,7 @@ type partial struct {
 	mu       sync.Mutex
 	src      Source
 	findings []apiv1.SecurityFinding
+	evals    []Evaluation
 	errs     []string
 	status   apiv1.SecuritySourceStatus // worst failure so far
 	message  string                     // what was read, when nothing failed
@@ -246,6 +247,19 @@ func (p *partial) add(f apiv1.SecurityFinding) {
 	p.mu.Lock()
 	p.findings = append(p.findings, f)
 	p.mu.Unlock()
+}
+
+// eval records one control evaluation (ADR 0029).
+func (p *partial) eval(check, asset string, result apiv1.SecurityControlResult, reason string) {
+	p.mu.Lock()
+	p.evals = append(p.evals, Evaluation{Check: check, Asset: asset, Result: result, Reason: reason})
+	p.mu.Unlock()
+}
+
+// unknown records that a check could not read asset because op failed.
+func (p *partial) unknown(check, asset, op string, err error) {
+	_, msg := awsError(op, err)
+	p.eval(check, asset, apiv1.SecurityControlResultUnknown, msg)
 }
 
 func (p *partial) fail(op string, err error) {
@@ -269,7 +283,7 @@ func (p *partial) failed() bool {
 func (p *partial) report() Report {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	r := Report{Source: p.src, Findings: p.findings, Status: apiv1.SecuritySourceStatusOk, Message: p.message}
+	r := Report{Source: p.src, Findings: p.findings, Evaluations: p.evals, Status: apiv1.SecuritySourceStatusOk, Message: p.message}
 	if len(p.errs) > 0 {
 		r.Status, r.Message = p.status, strings.Join(p.errs, "; ")
 	}
@@ -307,18 +321,26 @@ func (c *AWSCollector) checkIAM(ctx context.Context, cl awsClients, account stri
 	root := "arn:aws:iam::" + account + ":root"
 	if sum, err := cl.iam.GetAccountSummary(ctx, &iam.GetAccountSummaryInput{}); err != nil {
 		p.fail("iam GetAccountSummary", err)
+		p.unknown("aws.root-mfa", root, "iam GetAccountSummary", err)
+		p.unknown("aws.root-access-key", root, "iam GetAccountSummary", err)
 	} else {
 		if sum.SummaryMap[string(iamtypes.SummaryKeyTypeAccountMFAEnabled)] == 0 {
+			p.eval("aws.root-mfa", root, apiv1.SecurityControlResultFail, "the account summary reports AccountMFAEnabled 0")
 			p.add(apiv1.SecurityFinding{Check: "aws.root-mfa", Category: apiv1.SecurityCategoryIdentity, Severity: apiv1.SecuritySeverityCritical,
 				Title: "Root user has no MFA", Resource: root,
 				Detail:         "The account's root user can sign in with a password alone.",
 				Recommendation: "Add an MFA device to the root user and keep its credentials offline."})
+		} else {
+			p.eval("aws.root-mfa", root, apiv1.SecurityControlResultPass, "the account summary reports AccountMFAEnabled 1")
 		}
 		if sum.SummaryMap[string(iamtypes.SummaryKeyTypeAccountAccessKeysPresent)] > 0 {
+			p.eval("aws.root-access-key", root, apiv1.SecurityControlResultFail, "the account summary reports root access keys")
 			p.add(apiv1.SecurityFinding{Check: "aws.root-access-key", Category: apiv1.SecurityCategoryIdentity, Severity: apiv1.SecuritySeverityCritical,
 				Title: "Root user has access keys", Resource: root,
 				Detail:         "The root user has an access key, which can do anything in the account and cannot be limited by a policy.",
 				Recommendation: "Delete the root access keys and use IAM roles."})
+		} else {
+			p.eval("aws.root-access-key", root, apiv1.SecurityControlResultPass, "the account summary reports no root access keys")
 		}
 	}
 
@@ -328,6 +350,8 @@ func (c *AWSCollector) checkIAM(ctx context.Context, cl awsClients, account stri
 		page, err := pg.NextPage(ctx)
 		if err != nil {
 			p.fail("iam ListUsers", err)
+			p.unknown("aws.user-mfa", AllAssets, "iam ListUsers", err)
+			p.unknown("aws.access-key-age", AllAssets, "iam ListUsers", err)
 			break
 		}
 		users = append(users, page.Users...)
@@ -351,15 +375,22 @@ func (c *AWSCollector) checkUser(ctx context.Context, api iamAPI, u iamtypes.Use
 	_, err := api.GetLoginProfile(ctx, &iam.GetLoginProfileInput{UserName: &name})
 	var noProfile *iamtypes.NoSuchEntityException
 	switch {
-	case errors.As(err, &noProfile): // no console password
+	case errors.As(err, &noProfile):
+		p.eval("aws.user-mfa", arn, apiv1.SecurityControlResultNotApplicable, "the user has no console password")
 	case err != nil:
 		p.fail("iam GetLoginProfile", err)
+		p.unknown("aws.user-mfa", arn, "iam GetLoginProfile", err)
 	default:
 		mfa, err := api.ListMFADevices(ctx, &iam.ListMFADevicesInput{UserName: &name})
-		if err != nil {
+		switch {
+		case err != nil:
 			p.fail("iam ListMFADevices", err)
-		} else if len(mfa.MFADevices) == 0 {
-			p.add(apiv1.SecurityFinding{Check: "aws.user-mfa", Category: apiv1.SecurityCategoryIdentity, Severity: apiv1.SecuritySeverityHigh,
+			p.unknown("aws.user-mfa", arn, "iam ListMFADevices", err)
+		case len(mfa.MFADevices) > 0:
+			p.eval("aws.user-mfa", arn, apiv1.SecurityControlResultPass, fmt.Sprintf("the user has a console password and %s", many(len(mfa.MFADevices), "MFA device", "MFA devices")))
+		default:
+			p.eval("aws.user-mfa", arn, apiv1.SecurityControlResultFail, "the user has a console password and no MFA device")
+			p.add(apiv1.SecurityFinding{Check: "aws.user-mfa", Category: apiv1.SecurityCategoryIdentity, Severity: apiv1.SecuritySeverityMedium,
 				Title: "Console user without MFA", Resource: arn,
 				Detail:         fmt.Sprintf("IAM user %s can sign in to the console with a password and has no MFA device.", name),
 				Recommendation: "Require MFA for the user, or remove the console password and use SSO."})
@@ -367,17 +398,23 @@ func (c *AWSCollector) checkUser(ctx context.Context, api iamAPI, u iamtypes.Use
 	}
 
 	now := c.now()
+	active, old := 0, 0
 	pg := iam.NewListAccessKeysPaginator(api, &iam.ListAccessKeysInput{UserName: &name})
 	for pg.HasMorePages() {
 		page, err := pg.NextPage(ctx)
 		if err != nil {
 			p.fail("iam ListAccessKeys", err)
+			p.unknown("aws.access-key-age", arn, "iam ListAccessKeys", err)
 			return
 		}
 		for _, k := range page.AccessKeyMetadata {
+			if k.Status == iamtypes.StatusTypeActive {
+				active++
+			}
 			if k.Status != iamtypes.StatusTypeActive || k.CreateDate == nil || now.Sub(*k.CreateDate) <= accessKeyMaxAge {
 				continue
 			}
+			old++
 			key := maskKey(aws.ToString(k.AccessKeyId))
 			// The full key id only goes into the hashed finding id.
 			p.add(apiv1.SecurityFinding{Id: aws.ToString(k.AccessKeyId), Check: "aws.access-key-age", Category: apiv1.SecurityCategoryIdentity, Severity: apiv1.SecuritySeverityMedium,
@@ -385,6 +422,14 @@ func (c *AWSCollector) checkUser(ctx context.Context, api iamAPI, u iamtypes.Use
 				Detail:         fmt.Sprintf("Active access key %s of IAM user %s was created %d days ago.", key, name, int(now.Sub(*k.CreateDate).Hours()/24)),
 				Recommendation: "Rotate the key, or replace it with a role or SSO credentials."})
 		}
+	}
+	switch {
+	case active == 0:
+		p.eval("aws.access-key-age", arn, apiv1.SecurityControlResultNotApplicable, "the user has no active access key")
+	case old > 0:
+		p.eval("aws.access-key-age", arn, apiv1.SecurityControlResultFail, fmt.Sprintf("%d of %s are older than 90 days", old, many(active, "active access key", "active access keys")))
+	default:
+		p.eval("aws.access-key-age", arn, apiv1.SecurityControlResultPass, many(active, "active access key is", "active access keys are")+" 90 days old or younger")
 	}
 }
 
@@ -398,10 +443,6 @@ func maskKey(id string) string {
 
 // --- EC2 ---
 
-// Ports that must not be open to the internet: SSH, RDP, PostgreSQL, the
-// Kubernetes API and the gateway admin API.
-var sensitivePorts = []int32{22, 3389, 5432, 6443, 9901}
-
 func (c *AWSCollector) checkEC2(ctx context.Context, cl awsClients, _ string) Report {
 	p := newPartial(awsSource("aws-ec2"))
 	n := 0
@@ -410,22 +451,42 @@ func (c *AWSCollector) checkEC2(ctx context.Context, cl awsClients, _ string) Re
 		page, err := pg.NextPage(ctx)
 		if err != nil {
 			p.fail("ec2 DescribeSecurityGroups", err)
+			p.unknown("aws.sg-open-ingress", AllAssets, "ec2 DescribeSecurityGroups", err)
 			break
 		}
 		for _, sg := range page.SecurityGroups {
 			n++
+			failing, open := 0, 0
 			for _, perm := range sg.IpPermissions {
 				if f, ok := openIngress(sg, perm); ok {
 					p.add(f)
+					open++
+					if f.Severity != apiv1.SecuritySeverityInfo {
+						failing++
+					}
 				}
+			}
+			id := aws.ToString(sg.GroupId)
+			switch {
+			case failing > 0:
+				p.eval("aws.sg-open-ingress", id, apiv1.SecurityControlResultFail, fmt.Sprintf("%s open to 0.0.0.0/0 or ::/0 beyond TCP 80 and 443", many(failing, "ingress rule is", "ingress rules are")))
+			case open > 0:
+				p.eval("aws.sg-open-ingress", id, apiv1.SecurityControlResultPass, "only TCP 80 or 443 is open to the internet")
+			default:
+				p.eval("aws.sg-open-ingress", id, apiv1.SecurityControlResultPass, "no ingress rule from 0.0.0.0/0 or ::/0")
 			}
 		}
 	}
+	ebs := "ebs-encryption-by-default/" + c.region
 	if out, err := cl.ec2.GetEbsEncryptionByDefault(ctx, &ec2.GetEbsEncryptionByDefaultInput{}); err != nil {
 		p.fail("ec2 GetEbsEncryptionByDefault", err)
-	} else if !aws.ToBool(out.EbsEncryptionByDefault) {
+		p.unknown("aws.ebs-default-encryption", ebs, "ec2 GetEbsEncryptionByDefault", err)
+	} else if aws.ToBool(out.EbsEncryptionByDefault) {
+		p.eval("aws.ebs-default-encryption", ebs, apiv1.SecurityControlResultPass, "EBS encryption by default is on in "+c.region)
+	} else {
+		p.eval("aws.ebs-default-encryption", ebs, apiv1.SecurityControlResultFail, "EBS encryption by default is off in "+c.region)
 		p.add(apiv1.SecurityFinding{Check: "aws.ebs-default-encryption", Category: apiv1.SecurityCategoryData, Severity: apiv1.SecuritySeverityMedium,
-			Title: "EBS encryption by default is off", Resource: "ebs-encryption-by-default/" + c.region,
+			Title: "EBS encryption by default is off", Resource: ebs,
 			Detail:         fmt.Sprintf("New EBS volumes in %s are not encrypted unless each one asks for it.", c.region),
 			Recommendation: "Turn on EBS encryption by default for the region."})
 	}
@@ -433,8 +494,11 @@ func (c *AWSCollector) checkEC2(ctx context.Context, cl awsClients, _ string) Re
 	return p.report()
 }
 
-// openIngress reports an ingress rule open to 0.0.0.0/0 or ::/0: high for all
-// traffic or a sensitive port, info for HTTP or HTTPS alone, medium otherwise.
+// openIngress reports an ingress rule open to 0.0.0.0/0 or ::/0 (ADR 0029):
+// critical for all traffic or a TCP range with a port AWS Security Hub
+// EC2.19 blocks, high for another TCP port (EC2.18), info for TCP 80 or 443
+// alone (EC2.18's authorized ports), medium for UDP and low for ICMP (the
+// platform's rules: neither control sets them).
 func openIngress(sg ec2types.SecurityGroup, perm ec2types.IpPermission) (apiv1.SecurityFinding, bool) {
 	var from []string
 	for _, r := range perm.IpRanges {
@@ -458,26 +522,32 @@ func openIngress(sg ec2types.SecurityGroup, perm ec2types.IpPermission) (apiv1.S
 	}
 	what := proto + " " + ports
 	sev := apiv1.SecuritySeverityMedium
+	basis := platformRule("unrestricted UDP: neither EC2.18 (no default authorized UDP ports) nor EC2.19 sets a level, so the platform uses medium")
 	rec := "Restrict the source range to the addresses that need it."
+	blocked := slices.ContainsFunc(ec219Ports, func(p int32) bool { return lo <= p && p <= hi })
 	switch {
 	case proto == "all":
-		what, ports, sev = "all traffic", "all", apiv1.SecuritySeverityHigh
+		what, ports, sev, basis = "all traffic", "all", apiv1.SecuritySeverityCritical, vendorControl(awsEC219)
 	case proto == "icmp" || proto == "icmpv6":
 		what, ports, sev = proto, "all", apiv1.SecuritySeverityLow
-	case proto == "tcp" && slices.ContainsFunc(sensitivePorts, func(p int32) bool { return lo <= p && p <= hi }):
-		sev = apiv1.SecuritySeverityHigh
+		basis = platformRule("unrestricted ICMP: no AWS control sets a level, so the platform uses low")
+	case proto == "tcp" && blocked:
+		sev, basis = apiv1.SecuritySeverityCritical, vendorControl(awsEC219)
 	case proto == "tcp" && lo == hi && (lo == 80 || lo == 443):
 		sev = apiv1.SecuritySeverityInfo
+		basis = platformRule("TCP 80 or 443 is an authorized port of EC2.18; the platform keeps it as information")
 		rec = "Expected for a public web endpoint; keep it to ports 80 and 443."
+	case proto == "tcp":
+		sev, basis = apiv1.SecuritySeverityHigh, vendorControl(awsEC218)
 	}
-	if sev == apiv1.SecuritySeverityHigh {
+	if sev == apiv1.SecuritySeverityHigh || sev == apiv1.SecuritySeverityCritical {
 		rec = "Allow only known addresses, or reach the port through SSM Session Manager, Tailscale or the gateway."
 	}
 	id := aws.ToString(sg.GroupId)
 	// Two ICMP rules both read "icmp/all": the raw protocol, ports and CIDRs
 	// tell them apart.
 	key := fmt.Sprintf("%s/%d-%d/%s", aws.ToString(perm.IpProtocol), lo, hi, strings.Join(from, ","))
-	return apiv1.SecurityFinding{Id: key, Check: "aws.sg-open-ingress", Category: apiv1.SecurityCategoryNetwork, Severity: sev,
+	return apiv1.SecurityFinding{Id: key, Check: "aws.sg-open-ingress", Category: apiv1.SecurityCategoryNetwork, Severity: sev, SeverityBasis: &basis,
 		Title: "Security group allows " + what + " from the internet", Resource: id + "/" + proto + "/" + ports,
 		Detail: fmt.Sprintf("Security group %s (%s) in %s allows inbound %s from %s.",
 			id, aws.ToString(sg.GroupName), aws.ToString(sg.VpcId), what, strings.Join(from, " and ")),
@@ -504,12 +574,15 @@ func protocolName(p string) string {
 
 func (c *AWSCollector) checkCloudTrail(ctx context.Context, cl awsClients, _ string) Report {
 	p := newPartial(awsSource("aws-cloudtrail"))
+	resource := "cloudtrail/" + c.region
 	out, err := cl.cloudtrail.DescribeTrails(ctx, &cloudtrail.DescribeTrailsInput{IncludeShadowTrails: aws.Bool(true)})
 	if err != nil {
 		p.fail("cloudtrail DescribeTrails", err)
+		p.unknown("aws.cloudtrail-logging", resource, "cloudtrail DescribeTrails", err)
 		return p.report()
 	}
 	var logging []string
+	multiRegion := false
 	for _, t := range out.TrailList {
 		st, err := cl.cloudtrail.GetTrailStatus(ctx, &cloudtrail.GetTrailStatusInput{Name: t.TrailARN})
 		if err != nil {
@@ -518,9 +591,25 @@ func (c *AWSCollector) checkCloudTrail(ctx context.Context, cl awsClients, _ str
 		}
 		if aws.ToBool(st.IsLogging) {
 			logging = append(logging, aws.ToString(t.Name))
+			multiRegion = multiRegion || aws.ToBool(t.IsMultiRegionTrail)
 		}
 	}
-	resource := "cloudtrail/" + c.region
+	switch {
+	case len(logging) > 0:
+		reason := "logging: " + strings.Join(logging, ", ")
+		if multiRegion {
+			reason += " (one is multi-region)"
+		} else {
+			reason += " (none is multi-region)"
+		}
+		p.eval("aws.cloudtrail-logging", resource, apiv1.SecurityControlResultPass, reason+"; event selectors are not read")
+	case len(out.TrailList) == 0:
+		p.eval("aws.cloudtrail-logging", resource, apiv1.SecurityControlResultFail, "no trail applies to "+c.region)
+	case p.failed():
+		p.eval("aws.cloudtrail-logging", resource, apiv1.SecurityControlResultUnknown, "no trail read so far is logging, and the status of some trails could not be read")
+	default:
+		p.eval("aws.cloudtrail-logging", resource, apiv1.SecurityControlResultFail, many(len(out.TrailList), "trail applies", "trails apply")+" and none is logging")
+	}
 	switch {
 	case len(out.TrailList) == 0:
 		p.add(apiv1.SecurityFinding{Check: "aws.cloudtrail-logging", Category: apiv1.SecurityCategoryLogging, Severity: apiv1.SecuritySeverityHigh,
@@ -548,9 +637,11 @@ func (c *AWSCollector) checkGuardDuty(ctx context.Context, cl awsClients, _ stri
 	det, err := cl.guardduty.ListDetectors(ctx, &guardduty.ListDetectorsInput{})
 	if err != nil {
 		p.fail("guardduty ListDetectors", err)
+		p.unknown("aws.guardduty-enabled", resource, "guardduty ListDetectors", err)
 		return p.report()
 	}
 	if len(det.DetectorIds) == 0 {
+		p.eval("aws.guardduty-enabled", resource, apiv1.SecurityControlResultFail, "no detector in "+c.region)
 		p.add(apiv1.SecurityFinding{Check: "aws.guardduty-enabled", Category: apiv1.SecurityCategoryThreat, Severity: apiv1.SecuritySeverityHigh,
 			Title: "GuardDuty disabled", Resource: resource,
 			Detail:         fmt.Sprintf("There is no GuardDuty detector in %s, so CloudTrail, VPC flow and DNS logs are not watched for threats.", c.region),
@@ -562,9 +653,13 @@ func (c *AWSCollector) checkGuardDuty(ctx context.Context, cl awsClients, _ stri
 	status := "status unknown"
 	if d, err := cl.guardduty.GetDetector(ctx, &guardduty.GetDetectorInput{DetectorId: &id}); err != nil {
 		p.fail("guardduty GetDetector", err)
+		p.unknown("aws.guardduty-enabled", resource, "guardduty GetDetector", err)
 	} else {
 		status = strings.ToLower(string(d.Status))
-		if d.Status != gdtypes.DetectorStatusEnabled {
+		if d.Status == gdtypes.DetectorStatusEnabled {
+			p.eval("aws.guardduty-enabled", resource, apiv1.SecurityControlResultPass, "the detector in "+c.region+" is enabled")
+		} else {
+			p.eval("aws.guardduty-enabled", resource, apiv1.SecurityControlResultFail, "the detector in "+c.region+" is "+status)
 			p.add(apiv1.SecurityFinding{Check: "aws.guardduty-enabled", Category: apiv1.SecurityCategoryThreat, Severity: apiv1.SecuritySeverityHigh,
 				Title: "GuardDuty detector suspended", Resource: resource,
 				Detail:         fmt.Sprintf("The GuardDuty detector in %s is %s and produces no findings.", c.region, status),
@@ -614,7 +709,13 @@ func guardDutySeverity(s float64) apiv1.SecuritySeverity {
 }
 
 func guardDutyFinding(f gdtypes.Finding) apiv1.SecurityFinding {
+	score := aws.ToFloat64(f.Severity)
+	basis := Basis(apiv1.SecuritySeverityBasisTypeVendor, IssuerGuardDuty, "GuardDuty's severity bands: 1.0-3.9 low, 4.0-6.9 medium, 7.0-8.9 high, 9.0-10.0 critical")
+	basis.SourceScore, basis.SourceFindingId = &score, f.Id
+	gdURL := "https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_findings-severity.html"
+	basis.SourceUrl = &gdURL
 	out := apiv1.SecurityFinding{
+		SeverityBasis:  &basis,
 		Id:             aws.ToString(f.Id), // one instance can have several findings of a type
 		Check:          "guardduty." + aws.ToString(f.Type),
 		Category:       apiv1.SecurityCategoryThreat,
@@ -659,6 +760,7 @@ func (c *AWSCollector) checkSecurityHub(ctx context.Context, cl awsClients, _ st
 	var notFound *shtypes.ResourceNotFoundException
 	switch {
 	case errors.As(err, &notEnabled) || errors.As(err, &notFound):
+		p.eval("aws.securityhub-enabled", "securityhub/"+c.region, apiv1.SecurityControlResultFail, "Security Hub is not enabled in "+c.region)
 		p.add(apiv1.SecurityFinding{Check: "aws.securityhub-enabled", Category: apiv1.SecurityCategoryLogging, Severity: apiv1.SecuritySeverityInfo,
 			Title: "Security Hub is not enabled", Resource: "securityhub/" + c.region,
 			Detail:         fmt.Sprintf("Security Hub is not enabled in %s, so the AWS Foundational Security Best Practices are not evaluated.", c.region),
@@ -667,8 +769,10 @@ func (c *AWSCollector) checkSecurityHub(ctx context.Context, cl awsClients, _ st
 		return p.report()
 	case err != nil:
 		p.fail("securityhub DescribeHub", err)
+		p.unknown("aws.securityhub-enabled", "securityhub/"+c.region, "securityhub DescribeHub", err)
 		return p.report()
 	}
+	p.eval("aws.securityhub-enabled", "securityhub/"+c.region, apiv1.SecurityControlResultPass, "Security Hub is enabled in "+c.region)
 	// Most severe first, without the GuardDuty findings read above.
 	eq := func(vs ...string) []shtypes.StringFilter {
 		out := make([]shtypes.StringFilter, len(vs))
@@ -712,10 +816,22 @@ var hubSeverity = map[shtypes.SeverityLabel]apiv1.SecuritySeverity{
 
 func hubFinding(f shtypes.AwsSecurityFinding) apiv1.SecurityFinding {
 	sev := apiv1.SecuritySeverityInfo
+	basis := Basis(apiv1.SecuritySeverityBasisTypeVendor, IssuerSecurityHub, "the finding's own severity label")
+	basis.SourceFindingId = f.Id
 	if f.Severity != nil {
 		if s, ok := hubSeverity[f.Severity.Label]; ok {
 			sev = s
 		}
+		label := string(f.Severity.Label)
+		basis.SourceSeverity = &label
+		if f.Severity.Normalized != nil {
+			n := float64(*f.Severity.Normalized)
+			basis.SourceScore = &n
+		}
+	}
+	if f.Compliance != nil && f.Compliance.SecurityControlId != nil {
+		r := "the finding's own severity label; Security Hub control " + aws.ToString(f.Compliance.SecurityControlId)
+		basis.Reason = &r
 	}
 	resource, rtype := aws.ToString(f.Id), ""
 	if len(f.Resources) > 0 {
@@ -727,6 +843,7 @@ func hubFinding(f shtypes.AwsSecurityFinding) apiv1.SecurityFinding {
 		rec = strings.TrimSpace(aws.ToString(r.Text) + " " + aws.ToString(r.Url))
 	}
 	out := apiv1.SecurityFinding{
+		SeverityBasis:  &basis,
 		Id:             aws.ToString(f.Id), // the finding ARN
 		Check:          "securityhub." + aws.ToString(f.GeneratorId),
 		Category:       hubCategory(f.Types, rtype),
@@ -776,6 +893,7 @@ func (c *AWSCollector) checkS3(ctx context.Context, cl awsClients, account strin
 	var none *s3ctypes.NoSuchPublicAccessBlockConfiguration
 	switch {
 	case errors.As(err, &none):
+		p.eval("aws.s3-public-access-block", resource, apiv1.SecurityControlResultFail, "the account has no public access block")
 		p.add(apiv1.SecurityFinding{Check: "aws.s3-public-access-block", Category: apiv1.SecurityCategoryData, Severity: apiv1.SecuritySeverityMedium,
 			Title: "S3 account public access block is not set", Resource: resource,
 			Detail:         "The account has no S3 public access block, so a bucket policy or ACL can make a bucket public.",
@@ -783,6 +901,7 @@ func (c *AWSCollector) checkS3(ctx context.Context, cl awsClients, account strin
 		p.message = "no account-level public access block"
 	case err != nil:
 		p.fail("s3control GetPublicAccessBlock", err)
+		p.unknown("aws.s3-public-access-block", resource, "s3control GetPublicAccessBlock", err)
 	default:
 		cfg := out.PublicAccessBlockConfiguration
 		var off []string
@@ -797,6 +916,11 @@ func (c *AWSCollector) checkS3(ctx context.Context, cl awsClients, account strin
 		}
 		if cfg == nil || !aws.ToBool(cfg.RestrictPublicBuckets) {
 			off = append(off, "RestrictPublicBuckets")
+		}
+		if len(off) == 0 {
+			p.eval("aws.s3-public-access-block", resource, apiv1.SecurityControlResultPass, "all four settings are on")
+		} else {
+			p.eval("aws.s3-public-access-block", resource, apiv1.SecurityControlResultFail, "off: "+strings.Join(off, ", "))
 		}
 		if len(off) > 0 {
 			p.add(apiv1.SecurityFinding{Check: "aws.s3-public-access-block", Category: apiv1.SecurityCategoryData, Severity: apiv1.SecuritySeverityMedium,

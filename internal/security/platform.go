@@ -198,10 +198,19 @@ func deniedFinding(g *deniedGroup) apiv1.SecurityFinding {
 func (c *PlatformCollector) config() Report {
 	rep := Report{Source: platformSource("platform-config"), Status: apiv1.SecuritySourceStatusOk, Message: "server settings read"}
 	if len(c.dsnHostSuffixes) == 0 {
+		rep.Evaluations = append(rep.Evaluations, Evaluation{Check: "platform.dsn-hosts", Asset: "PLATFORM_DSN_HOST_SUFFIXES", Result: apiv1.SecurityControlResultFail, Reason: "the setting is empty"})
 		rep.Findings = append(rep.Findings, apiv1.SecurityFinding{Check: "platform.dsn-hosts", Category: apiv1.SecurityCategoryData, Severity: apiv1.SecuritySeverityMedium,
 			Title: "Plan database hosts are not restricted", Resource: "PLATFORM_DSN_HOST_SUFFIXES",
 			Detail:         "PLATFORM_DSN_HOST_SUFFIXES is empty, so a submitted plan may point its DSN at any host and the server would send the database password there. Approvers must check dbHost in each plan.",
 			Recommendation: "Set PLATFORM_DSN_HOST_SUFFIXES to the database host suffixes in use, e.g. .ts.net."})
+	}
+	if len(c.dsnHostSuffixes) > 0 {
+		rep.Evaluations = append(rep.Evaluations, Evaluation{Check: "platform.dsn-hosts", Asset: "PLATFORM_DSN_HOST_SUFFIXES", Result: apiv1.SecurityControlResultPass, Reason: many(len(c.dsnHostSuffixes), "host suffix", "host suffixes") + " set"})
+	}
+	if c.gateway {
+		rep.Evaluations = append(rep.Evaluations, Evaluation{Check: "platform.gateway", Asset: "PLATFORM_GATEWAY_URL", Result: apiv1.SecurityControlResultPass, Reason: "the setting is not empty"})
+	} else {
+		rep.Evaluations = append(rep.Evaluations, Evaluation{Check: "platform.gateway", Asset: "PLATFORM_GATEWAY_URL", Result: apiv1.SecurityControlResultFail, Reason: "the setting is empty"})
 	}
 	if !c.gateway {
 		rep.Findings = append(rep.Findings, apiv1.SecurityFinding{Check: "platform.gateway", Category: apiv1.SecurityCategoryNetwork, Severity: apiv1.SecuritySeverityInfo,

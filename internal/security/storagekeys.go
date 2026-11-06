@@ -92,6 +92,7 @@ type rowResult struct {
 	keys     []apiv1.StorageKey
 	findings []apiv1.SecurityFinding
 	fail     string // why the provider was not read; "" when it was
+	eval     *Evaluation
 }
 
 // Collect reads the records of the collector's environments and, for each,
@@ -145,6 +146,9 @@ func (c *StorageKeyCollector) Collect(ctx context.Context) []Report {
 	for _, r := range results {
 		rep.StorageKeys = append(rep.StorageKeys, r.keys...)
 		rep.Findings = append(rep.Findings, r.findings...)
+		if r.eval != nil {
+			rep.Evaluations = append(rep.Evaluations, *r.eval)
+		}
 		if r.fail != "" {
 			fails = append(fails, r.fail)
 		}
@@ -182,7 +186,7 @@ func (c *StorageKeyCollector) readRow(ctx context.Context, row store.InstanceSto
 		for i := range out {
 			out[i].State, out[i].CreatedAt, out[i].Message = apiv1.StorageKeyStateUnread, nil, &why
 		}
-		return rowResult{keys: out, fail: why}
+		return rowResult{keys: out, fail: why, eval: &Evaluation{Check: CheckUnrecordedKey, Asset: "bucket/" + row.Bucket, Result: apiv1.SecurityControlResultUnknown, Reason: why}}
 	}
 	defer func() {
 		if v := recover(); v != nil {
@@ -259,6 +263,12 @@ func (c *StorageKeyCollector) readRow(ctx context.Context, row store.InstanceSto
 		}
 	}
 	res.keys = slices.Concat(recorded, extra)
+	ev := Evaluation{Check: CheckUnrecordedKey, Asset: "bucket/" + row.Bucket, Result: apiv1.SecurityControlResultPass,
+		Reason: fmt.Sprintf("%s of instance %s read; every one is recorded", many(len(found), "key", "keys"), row.Instance)}
+	if len(extra) > 0 {
+		ev.Result, ev.Reason = apiv1.SecurityControlResultFail, fmt.Sprintf("%s of instance %s not recorded by the platform", many(len(extra), "key is", "keys are"), row.Instance)
+	}
+	res.eval = &ev
 	return res
 }
 

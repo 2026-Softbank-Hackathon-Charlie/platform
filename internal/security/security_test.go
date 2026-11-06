@@ -159,7 +159,7 @@ func TestFilter(t *testing.T) {
 			finding("c", apiv1.SecuritySeverityCritical, "r3"), finding("d", apiv1.SecuritySeverityInfo, "r4"),
 		}},
 		{Source: cfg, Status: apiv1.SecuritySourceStatusOk, CheckedAt: t0},
-	}), "", "")
+	}).Report, "", "")
 
 	var order []string
 	for _, f := range rep.Findings {

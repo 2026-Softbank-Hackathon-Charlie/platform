@@ -172,7 +172,7 @@ func TestStorageKeys(t *testing.T) {
 
 	// The keys go through the report and its environment filter; the
 	// severity filter does not drop them.
-	rep := assemble(t0, reps)
+	rep := assemble(t0, reps).Report
 	if len(rep.StorageKeys) != 6 || len(rep.Findings) != 1 || rep.Findings[0].Id == "AKIAHANDMADE" {
 		t.Fatalf("report keys %d, findings %+v", len(rep.StorageKeys), rep.Findings)
 	}
