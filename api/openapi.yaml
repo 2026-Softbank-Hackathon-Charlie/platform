@@ -817,7 +817,7 @@ paths:
       operationId: getSecurityControls
       description: |
         The platform's control catalog and every evaluation of it, from the
-        same collection and cache as `GET /v1/security` (ADR 0029). Each
+        same collection and cache as `GET /v1/security` (ADR 0034). Each
         control is one check with its condition, the asset it evaluates, its
         official references (exact or partial) and what it does not
         establish. Each evaluation is pass, fail, unknown or not_applicable
@@ -856,7 +856,7 @@ paths:
       operationId: getSecurityVulnerabilities
       description: |
         Package vulnerabilities of image digests and the running containers
-        that use them (ADR 0029). Scans run outside the request (CI or a
+        that use them (ADR 0034). Scans run outside the request (CI or a
         worker); this endpoint only reads stored results and the clusters'
         running images, from the same collection and cache as
         `GET /v1/security`.
@@ -891,7 +891,7 @@ paths:
       tags: [security]
       operationId: submitSecurityScan
       description: |
-        Stores one scan of one running image digest (SEC-04, ADR 0029). The
+        Stores one scan of one running image digest (SEC-04, ADR 0034). The
         platform's image scan workflow runs Grype outside the API and posts
         each result here; the API never scans. A succeeded scan carries
         Grype's JSON report, which the platform parses and normalises
@@ -3001,7 +3001,7 @@ components:
 
     SecurityFindingKind:
       description: |
-        Set on every finding by servers that implement ADR 0029.
+        Set on every finding by servers that implement ADR 0034.
         - configuration: a setting checked against a control.
         - threat: a detection of activity (GuardDuty, Security Hub threat types).
         - governance: the platform's own rules about its requests and records (audit denials, unrecorded bucket keys, server settings).
@@ -3020,7 +3020,7 @@ components:
 
     SecuritySeverityBasis:
       description: |
-        Where a severity came from (ADR 0029). The source's own value is kept
+        Where a severity came from (ADR 0034). The source's own value is kept
         as given and never overwritten; `severity` is the platform's
         normalised label for sorting and filtering.
       type: object
@@ -3199,7 +3199,7 @@ components:
         distro: { type: string, example: debian-12 }
 
     SecurityImageScan:
-      description: One scan of one image digest by the platform's scanner (ADR 0029).
+      description: One scan of one image digest by the platform's scanner (ADR 0034).
       type: object
       required: [id, digest, status, scanner]
       properties:
@@ -3273,7 +3273,7 @@ components:
     SecurityRunningImage:
       description: |
         One container of a running workload and the image it runs, read from
-        the cluster (ADR 0029). The tag in `image` is for display; the digest
+        the cluster (ADR 0034). The tag in `image` is for display; the digest
         identifies the image.
       type: object
       required: [environment, namespace, workload, container, image, scanState]

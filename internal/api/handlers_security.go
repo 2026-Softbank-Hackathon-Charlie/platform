@@ -76,7 +76,7 @@ func (s *Server) securityReport(w http.ResponseWriter, r *http.Request) (apiv1.S
 }
 
 // GET /v1/security/controls?environment=&refresh=: the HopCharlie control
-// catalog, each control's evaluations and per-domain coverage (ADR 0029).
+// catalog, each control's evaluations and per-domain coverage (ADR 0034).
 func (s *Server) securityControls(w http.ResponseWriter, r *http.Request) {
 	if col, env, ok := s.securityCollection(w, r); ok {
 		writeJSON(w, http.StatusOK, security.ControlReport(col, env, s.d.ImageScans))
@@ -84,7 +84,7 @@ func (s *Server) securityControls(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /v1/security/vulnerabilities?environment=&refresh=: running images,
-// their scan state and the vulnerabilities of stored scans (ADR 0029). It only
+// their scan state and the vulnerabilities of stored scans (ADR 0034). It only
 // reads stored scans; it never scans.
 func (s *Server) securityVulnerabilities(w http.ResponseWriter, r *http.Request) {
 	if col, env, ok := s.securityCollection(w, r); ok {
