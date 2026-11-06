@@ -47,6 +47,7 @@ func Conformance(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"Copies", testCopies},
 	}
 	cases = append(cases, planToolsCases...)
+	cases = append(cases, scanCases...)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()

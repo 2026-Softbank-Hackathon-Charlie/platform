@@ -700,6 +700,30 @@ func (e SecurityControlResult) Valid() bool {
 	}
 }
 
+// Defines values for SecurityDeployedImageState.
+const (
+	SecurityDeployedImageStateMatch    SecurityDeployedImageState = "match"
+	SecurityDeployedImageStateMismatch SecurityDeployedImageState = "mismatch"
+	SecurityDeployedImageStateNoRecord SecurityDeployedImageState = "no_record"
+	SecurityDeployedImageStateUnknown  SecurityDeployedImageState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SecurityDeployedImageState enum.
+func (e SecurityDeployedImageState) Valid() bool {
+	switch e {
+	case SecurityDeployedImageStateMatch:
+		return true
+	case SecurityDeployedImageStateMismatch:
+		return true
+	case SecurityDeployedImageStateNoRecord:
+		return true
+	case SecurityDeployedImageStateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SecurityFindingKind.
 const (
 	SecurityFindingKindConfiguration SecurityFindingKind = "configuration"
@@ -790,6 +814,27 @@ func (e SecurityRunningImageScanState) Valid() bool {
 	case SecurityRunningImageScanStateScanned:
 		return true
 	case SecurityRunningImageScanStateUnknownDigest:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityScanSubmissionStatus.
+const (
+	SecurityScanSubmissionStatusFailed      SecurityScanSubmissionStatus = "failed"
+	SecurityScanSubmissionStatusSucceeded   SecurityScanSubmissionStatus = "succeeded"
+	SecurityScanSubmissionStatusUnsupported SecurityScanSubmissionStatus = "unsupported"
+)
+
+// Valid indicates whether the value is a known member of the SecurityScanSubmissionStatus enum.
+func (e SecurityScanSubmissionStatus) Valid() bool {
+	switch e {
+	case SecurityScanSubmissionStatusFailed:
+		return true
+	case SecurityScanSubmissionStatusSucceeded:
+		return true
+	case SecurityScanSubmissionStatusUnsupported:
 		return true
 	default:
 		return false
@@ -3137,6 +3182,35 @@ type SecurityControlReport struct {
 // - not_applicable: the condition does not apply to the asset (e.g. MFA for a user with no console password). Not part of the denominator.
 type SecurityControlResult string
 
+// SecurityDeployedImage The running digest compared with the platform's deployment record of
+// the instance (SEC-05): the latest deployment that reached the
+// environment (healthy or degraded) and its image for the service named
+// like the container. Digests are compared as recorded; an image index
+// and a platform manifest of the same image have different digests, so a
+// mismatch says what differs, not that the image is foreign.
+type SecurityDeployedImage struct {
+	DeploymentId *string `json:"deploymentId,omitempty"`
+
+	// Digest the digest in that image
+	Digest *string `json:"digest,omitempty"`
+
+	// Image the image the deployment recorded for the service
+	Image  *string `json:"image,omitempty"`
+	Reason *string `json:"reason,omitempty"`
+
+	// State - match: the running digest is the deployed one.
+	// - mismatch: the running digest differs from the deployed one.
+	// - no_record: no deployment of the instance reached this environment, or it has no service of this name.
+	// - unknown: no instance label, no running or recorded digest, or the records could not be read.
+	State SecurityDeployedImageState `json:"state"`
+}
+
+// SecurityDeployedImageState - match: the running digest is the deployed one.
+// - mismatch: the running digest differs from the deployed one.
+// - no_record: no deployment of the instance reached this environment, or it has no service of this name.
+// - unknown: no instance label, no running or recorded digest, or the records could not be read.
+type SecurityDeployedImageState string
+
 // SecurityFinding One security or governance signal, normalised across vendors.
 type SecurityFinding struct {
 	Category SecurityCategory `json:"category"`
@@ -3318,6 +3392,14 @@ type SecurityRunningImage struct {
 	App       *string `json:"app,omitempty"`
 	Container string  `json:"container"`
 
+	// Deployed The running digest compared with the platform's deployment record of
+	// the instance (SEC-05): the latest deployment that reached the
+	// environment (healthy or degraded) and its image for the service named
+	// like the container. Digests are compared as recorded; an image index
+	// and a platform manifest of the same image have different digests, so a
+	// mismatch says what differs, not that the image is foreign.
+	Deployed *SecurityDeployedImage `json:"deployed,omitempty"`
+
 	// Digest the digest the kubelet reports in the container status; absent when the runtime gave none
 	Digest      *string `json:"digest,omitempty"`
 	Environment string  `json:"environment"`
@@ -3347,6 +3429,36 @@ type SecurityRunningImage struct {
 // - not_scanned: no scan of the digest exists.
 // - unknown_digest: the runtime reported no digest, so no scan can be matched.
 type SecurityRunningImageScanState string
+
+// SecurityScanSubmission One scan result of the image scan workflow (SEC-04).
+type SecurityScanSubmission struct {
+	// Digest the running digest the scan is for, as the runtime reported it
+	//
+	// Example: sha256:4c2e...
+	Digest     string     `json:"digest"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+
+	// Image the reference that was scanned: a repository and `@digest`
+	//
+	// Example: registry.example/app@sha256:4c2e...
+	Image string `json:"image"`
+
+	// Message why a scan failed or is unsupported
+	Message *string `json:"message,omitempty"`
+
+	// Report Grype's JSON report (`grype -o json`), required when status is succeeded
+	Report *map[string]interface{} `json:"report,omitempty"`
+
+	// ScannerVersion the Grype version; a succeeded scan takes it from the report
+	//
+	// Example: 0.121.0
+	ScannerVersion *string                      `json:"scannerVersion,omitempty"`
+	StartedAt      *time.Time                   `json:"startedAt,omitempty"`
+	Status         SecurityScanSubmissionStatus `json:"status"`
+}
+
+// SecurityScanSubmissionStatus defines model for SecurityScanSubmission.Status.
+type SecurityScanSubmissionStatus string
 
 // SecurityScannerState defines model for SecurityScannerState.
 type SecurityScannerState struct {
@@ -3508,7 +3620,10 @@ type SecurityVulnerabilitySeverity string
 type SecurityVulnerabilitySummary struct {
 	Advisories         int `json:"advisories"`
 	AffectedContainers int `json:"affectedContainers"`
-	Images             int `json:"images"`
+
+	// DriftedContainers running containers whose digest differs from the deployed one (deployed.state mismatch); absent when deployment records are not compared
+	DriftedContainers *int `json:"driftedContainers,omitempty"`
+	Images            int  `json:"images"`
 
 	// NotScannedContainers running containers whose digest has no succeeded scan (not_scanned, scan_failed or unknown_digest)
 	NotScannedContainers int `json:"notScannedContainers"`
@@ -4024,6 +4139,9 @@ type RejectPlanJSONRequestBody = ReviewRequest
 
 // InspectBucketJSONRequestBody defines body for InspectBucket for application/json ContentType.
 type InspectBucketJSONRequestBody = BucketInspectRequest
+
+// SubmitSecurityScanJSONRequestBody defines body for SubmitSecurityScan for application/json ContentType.
+type SubmitSecurityScanJSONRequestBody = SecurityScanSubmission
 
 // ReceiveGitHubWebhookJSONRequestBody defines body for ReceiveGitHubWebhook for application/json ContentType.
 type ReceiveGitHubWebhookJSONRequestBody ReceiveGitHubWebhookJSONBody

@@ -279,6 +279,8 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/security/ocsf", viewer, s.securityOCSF)
 	s.route("GET /v1/security/controls", viewer, s.securityControls)
 	s.route("GET /v1/security/vulnerabilities", viewer, s.securityVulnerabilities)
+	// The image scan workflow posts what Grype found; the API only stores it (SEC-04).
+	s.route("POST /v1/security/scans", agent, s.submitSecurityScan)
 	s.route("POST /v1/agent/sessions", agent, s.createAgentSession)
 	s.route("GET /v1/agent/sessions", viewer, s.listAgentSessions)
 	s.route("GET /v1/agent/sessions/{id}", viewer, s.getAgentSession)
