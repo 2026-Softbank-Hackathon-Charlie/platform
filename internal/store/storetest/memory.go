@@ -36,6 +36,7 @@ type memory struct {
 	deploy  deployMemory    // apps, deployments, their events and webhook deliveries (memory_deploy.go)
 	auth    authMemory      // sessions and device logins (memory_auth.go)
 	secrets secretsMemory   // app secrets and instance storage (memory_secrets.go)
+	scans   scansMemory     // the latest scan of each image digest (memory_scans.go)
 }
 
 // NewMemory returns an empty in-memory store with the same semantics as the

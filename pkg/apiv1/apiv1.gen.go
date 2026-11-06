@@ -820,6 +820,27 @@ func (e SecurityRunningImageScanState) Valid() bool {
 	}
 }
 
+// Defines values for SecurityScanSubmissionStatus.
+const (
+	SecurityScanSubmissionStatusFailed      SecurityScanSubmissionStatus = "failed"
+	SecurityScanSubmissionStatusSucceeded   SecurityScanSubmissionStatus = "succeeded"
+	SecurityScanSubmissionStatusUnsupported SecurityScanSubmissionStatus = "unsupported"
+)
+
+// Valid indicates whether the value is a known member of the SecurityScanSubmissionStatus enum.
+func (e SecurityScanSubmissionStatus) Valid() bool {
+	switch e {
+	case SecurityScanSubmissionStatusFailed:
+		return true
+	case SecurityScanSubmissionStatusSucceeded:
+		return true
+	case SecurityScanSubmissionStatusUnsupported:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SecurityScannerStateStatus.
 const (
 	SecurityScannerStateStatusConnected     SecurityScannerStateStatus = "connected"
@@ -3409,6 +3430,36 @@ type SecurityRunningImage struct {
 // - unknown_digest: the runtime reported no digest, so no scan can be matched.
 type SecurityRunningImageScanState string
 
+// SecurityScanSubmission One scan result of the image scan workflow (SEC-04).
+type SecurityScanSubmission struct {
+	// Digest the running digest the scan is for, as the runtime reported it
+	//
+	// Example: sha256:4c2e...
+	Digest     string     `json:"digest"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+
+	// Image the reference that was scanned: a repository and `@digest`
+	//
+	// Example: registry.example/app@sha256:4c2e...
+	Image string `json:"image"`
+
+	// Message why a scan failed or is unsupported
+	Message *string `json:"message,omitempty"`
+
+	// Report Grype's JSON report (`grype -o json`), required when status is succeeded
+	Report *map[string]interface{} `json:"report,omitempty"`
+
+	// ScannerVersion the Grype version; a succeeded scan takes it from the report
+	//
+	// Example: 0.121.0
+	ScannerVersion *string                      `json:"scannerVersion,omitempty"`
+	StartedAt      *time.Time                   `json:"startedAt,omitempty"`
+	Status         SecurityScanSubmissionStatus `json:"status"`
+}
+
+// SecurityScanSubmissionStatus defines model for SecurityScanSubmission.Status.
+type SecurityScanSubmissionStatus string
+
 // SecurityScannerState defines model for SecurityScannerState.
 type SecurityScannerState struct {
 	Message *string `json:"message,omitempty"`
@@ -4088,6 +4139,9 @@ type RejectPlanJSONRequestBody = ReviewRequest
 
 // InspectBucketJSONRequestBody defines body for InspectBucket for application/json ContentType.
 type InspectBucketJSONRequestBody = BucketInspectRequest
+
+// SubmitSecurityScanJSONRequestBody defines body for SubmitSecurityScan for application/json ContentType.
+type SubmitSecurityScanJSONRequestBody = SecurityScanSubmission
 
 // ReceiveGitHubWebhookJSONRequestBody defines body for ReceiveGitHubWebhook for application/json ContentType.
 type ReceiveGitHubWebhookJSONRequestBody ReceiveGitHubWebhookJSONBody

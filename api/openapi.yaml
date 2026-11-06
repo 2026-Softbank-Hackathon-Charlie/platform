@@ -886,6 +886,37 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
 
+  /v1/security/scans:
+    post:
+      tags: [security]
+      operationId: submitSecurityScan
+      description: |
+        Stores one scan of one running image digest (SEC-04, ADR 0029). The
+        platform's image scan workflow runs Grype outside the API and posts
+        each result here; the API never scans. A succeeded scan carries
+        Grype's JSON report, which the platform parses and normalises
+        (severity as the advisory's source gave it, CVSS kept as given). A
+        failed or unsupported scan carries `message` and no report, and its
+        image counts as not scanned, never as zero vulnerabilities. A new scan
+        of a digest replaces its earlier one. The body may be up to 32 MiB.
+        Roles: agent, operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecurityScanSubmission" }
+      responses:
+        "201":
+          description: The stored scan.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityImageScan" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
   /v1/agent/sessions:
     post:
       tags: [agent]
@@ -3199,6 +3230,25 @@ components:
         packages: { type: integer, description: packages in the image's SBOM }
         resultSha256: { type: string, description: hash of the scanner's original result kept by the platform }
         message: { type: string }
+
+    SecurityScanSubmission:
+      description: One scan result of the image scan workflow (SEC-04).
+      type: object
+      required: [image, digest, status]
+      properties:
+        image: { type: string, example: "registry.example/app@sha256:4c2e...", description: "the reference that was scanned: a repository and `@digest`" }
+        digest: { type: string, example: "sha256:4c2e...", description: "the running digest the scan is for, as the runtime reported it" }
+        status:
+          type: string
+          enum: [succeeded, failed, unsupported]
+        message: { type: string, description: why a scan failed or is unsupported }
+        scannerVersion: { type: string, example: 0.121.0, description: "the Grype version; a succeeded scan takes it from the report" }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        report:
+          type: object
+          additionalProperties: true
+          description: "Grype's JSON report (`grype -o json`), required when status is succeeded"
 
     SecurityVulnerability:
       description: One advisory matched to one package of one scanned image digest.

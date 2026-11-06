@@ -160,4 +160,5 @@ type Store interface {
 	DeployStore // apps from GitHub, their added branches, deployments and their events, webhook deliveries (deploy.go)
 	AuthStore   // console sessions, CLI tokens and device logins (auth.go)
 	SecretStore // app secrets and the buckets and keys made for instances (secrets.go)
+	ScanStore   // the latest image scan of each digest (scans.go)
 }
