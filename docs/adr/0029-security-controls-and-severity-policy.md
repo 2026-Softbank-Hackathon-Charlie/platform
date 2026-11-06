@@ -60,6 +60,6 @@ Security Hub CSPM 통제 문서(2026-11-06 확인)에 맞췄다.
 - 스캐너는 Grype 하나다. 버전과 체크섬을 workflow(`.github/workflows/scan-images.yml`)에 고정한다. self-hosted runner에서 매시간 돈다. 실행 중 digest를 `GET /v1/security/vulnerabilities`로 읽고, `repository@digest`를 스캔한다. 결과는 `POST /v1/security/scans`(role agent, 전용 토큰)로 보낸다. API는 저장과 조회만 하고 스캔하지 않는다.
 - API가 Grype JSON을 해석한다. 심각도는 advisory 출처(배포판, NVD, GitHub)가 준 값을 vendor 근거로 둔다. 값이 없으면 unknown이다. CVSS는 받은 그대로 나열할 뿐, 심각도로 바꾸지 않는다. 원본 보고서는 gzip으로 보관하고 sha256을 함께 남긴다.
 - 저장은 digest마다 최신 스캔 하나다(`image_scans`). 더 늦게 끝난 스캔이 이미 있으면 받지 않는다(409). 7일보다 오래된 스캔은 세지 않으므로, 그 컨테이너는 미검사로 보인다.
-- 끌어올 수 없는 digest는 failed로 저장한다. 0건으로 저장하지 않는다. 스캐너는 자기 리전의 ECR 자격만 가진다. ECR에도 같은 digest가 있으면 GKE 쪽 사본도 digest가 같아 함께 덮인다. Artifact Registry에만 있는 이미지는 실패로 보인다.
+- 끌어올 수 없는 digest는 failed로 저장한다. 0건으로 저장하지 않는다. 스캐너는 자기 리전의 ECR 자격과, GitHub OIDC로 받은 Artifact Registry 읽기 토큰(`hopcharlie-apps`, `charlie-apps` 저장소 reader, infra ADR 0065)을 가진다. GCP 변수가 없으면 Artifact Registry 이미지는 실패로 보인다.
 - 멀티 아키텍처 index는 runner 플랫폼(linux/amd64)의 manifest를 스캔한다. 스캔의 digest는 실행 중 digest(index)로 두고, `message`에 실제 manifest를 남긴다.
 - SEC-05: 실행 중 digest와 그 환경에 도달한 최신 배포 기록의 digest를 비교한다(`runningImages[].deployed`). 기록을 읽지 못하면 unknown이며, match로 보지 않는다.
