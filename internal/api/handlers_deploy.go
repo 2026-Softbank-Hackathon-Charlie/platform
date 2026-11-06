@@ -354,6 +354,9 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 	err := s.d.Remover.RemoveApp(context.WithoutCancel(r.Context()), name)
 	switch {
 	case err == nil:
+		if s.d.DBRoutes != nil {
+			s.d.DBRoutes.Removed(name)
+		}
 		w.WriteHeader(http.StatusAccepted)
 	case errors.Is(err, store.ErrNotFound):
 		s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")

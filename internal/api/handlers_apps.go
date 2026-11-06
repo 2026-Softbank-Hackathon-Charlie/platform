@@ -161,6 +161,9 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
+	if db != nil && s.d.DBRoutes != nil {
+		s.d.DBRoutes.Added(*db)
+	}
 	d := newDeployment(app, defaultInstance(app), branch, commit, apiv1.DeploymentTriggerRegister, actor(r), now)
 	if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
 		s.internal(w, r, err)

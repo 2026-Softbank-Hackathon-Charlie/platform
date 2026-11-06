@@ -164,6 +164,8 @@ func (s *Server) draftPlan(w http.ResponseWriter, r *http.Request) {
 	} else {
 		reason := apiv1.PlanDraftResultSourceStatsReasonNotMeasured
 		res.SourceStatsReason = &reason
+		s.cfg.Log.Warn("draft: the source database could not be measured: its password variable is unset or it cannot be reached; for an app registered a few minutes ago the management route to its database may still be being made, so draft again later",
+			"app", req.App, "source", req.Source)
 	}
 	noteAudit(r, "sourceStats", res.SourceStats != nil)
 	writeJSON(w, http.StatusOK, res)
