@@ -117,11 +117,25 @@ func TestSecurityExceptions(t *testing.T) {
 	if f := decode[apiv1.SecurityReport](t, b).Findings[0]; f.Exception == nil || f.Severity != apiv1.SecuritySeverityHigh {
 		t.Fatalf("finding exception: %s", b)
 	}
-	_, b = h.do("GET", "/v1/security/ocsf", viewerToken, nil)
-	var exp struct{ Findings []security.OCSFFinding }
-	if err := json.Unmarshal(b, &exp); err != nil || len(exp.Findings) != 1 || exp.Findings[0].StatusID != 3 || exp.Findings[0].Status != "Suppressed" ||
-		exp.Findings[0].StatusDetail != strings.Repeat("가", 500) {
+	code, b = h.do("GET", "/v1/security/ocsf", viewerToken, nil)
+	var exp struct {
+		Findings        []security.OCSFFinding
+		Vulnerabilities []security.OCSFVulnerabilityFinding
+		Controls        []security.OCSFFinding
+	}
+	if err := json.Unmarshal(b, &exp); err != nil || code != 200 || len(exp.Findings) != 1 || exp.Findings[0].StatusID != 3 || exp.Findings[0].Status != "Suppressed" ||
+		exp.Findings[0].StatusDetail != strings.Repeat("가", 500) || exp.Controls == nil {
 		t.Fatalf("ocsf: %s", b)
+	}
+	// The vulnerability is suppressed with the reason, keeps its severity and
+	// its KEV listing.
+	if len(exp.Vulnerabilities) != 1 {
+		t.Fatalf("ocsf vulnerabilities: %s", b)
+	}
+	if e := exp.Vulnerabilities[0]; e.ClassUID != 2002 || e.FindingInfo.UID != vulnID || e.StatusID != 3 || e.Status != "Suppressed" ||
+		e.StatusDetail != "patched in the next release" || e.SeverityID != 4 || len(e.Vulnerabilities) != 1 ||
+		e.Vulnerabilities[0].IsExploitAvailable == nil || !*e.Vulnerabilities[0].IsExploitAvailable || e.Vulnerabilities[0].CVE.EPSS != nil {
+		t.Fatalf("ocsf vulnerability: %s", b)
 	}
 	code, b = h.do("GET", "/v1/security/exceptions", viewerToken, nil)
 	// Both were created within the clock's resolution, so their order is
