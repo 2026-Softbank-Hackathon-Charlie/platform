@@ -88,7 +88,13 @@ func (s *Server) securityControls(w http.ResponseWriter, r *http.Request) {
 // reads stored scans; it never scans.
 func (s *Server) securityVulnerabilities(w http.ResponseWriter, r *http.Request) {
 	if col, env, ok := s.securityCollection(w, r); ok {
-		writeJSON(w, http.StatusOK, security.VulnerabilityReport(col, env, s.d.ImageScans))
+		rep := security.VulnerabilityReport(col, env, s.d.ImageScans)
+		var recs security.DeploymentRecords
+		if s.d.Store != nil {
+			recs = s.d.Store
+		}
+		security.CompareDeployed(r.Context(), &rep, recs)
+		writeJSON(w, http.StatusOK, rep)
 	}
 }
 
