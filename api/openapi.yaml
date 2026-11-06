@@ -917,6 +917,73 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
 
+  /v1/security/exceptions:
+    get:
+      tags: [security]
+      operationId: listSecurityExceptions
+      description: |
+        Every security exception, active, expired and revoked (SEC-08, ADR
+        0034). Roles: viewer, agent, operator.
+      responses:
+        "200":
+          description: The exceptions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityExceptionList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [security]
+      operationId: createSecurityException
+      description: |
+        Records a time-limited exception for one finding or vulnerability
+        (SEC-08, ADR 0034). It never changes severity. `reason` is 1-500
+        characters after trimming. `expiresAt` is after now and at most 30
+        days later, or at most 7 days for a vulnerability whose CVE is
+        KEV-listed. 409 when the target already has an active exception.
+        Roles: operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecurityExceptionRequest" }
+      responses:
+        "201":
+          description: The stored exception.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityException" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/security/exceptions/{id}:
+    delete:
+      tags: [security]
+      operationId: revokeSecurityException
+      description: |
+        Revokes an exception now (SEC-08). The record is kept with
+        `revokedAt` and `revokedBy`. 409 when it is already revoked.
+        Roles: operator.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The revoked exception.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityException" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
   /v1/agent/sessions:
     post:
       tags: [agent]
@@ -2998,6 +3065,7 @@ components:
             Security Hub) and for audit denials, which no catalog control
             evaluates.
         severityBasis: { $ref: "#/components/schemas/SecuritySeverityBasis" }
+        exception: { $ref: "#/components/schemas/SecurityException", description: "the active exception, if any" }
 
     SecurityFindingKind:
       description: |
@@ -3250,6 +3318,43 @@ components:
           additionalProperties: true
           description: "Grype's JSON report (`grype -o json`), required when status is succeeded"
 
+    SecurityException:
+      description: |
+        An operator's time-limited exception for one finding or vulnerability
+        (SEC-08, ADR 0034). It never changes severity. Active while not revoked
+        and before expiresAt; a severity change does not end it.
+      type: object
+      required: [id, targetType, targetId, reason, expiresAt, createdBy, createdAt]
+      properties:
+        id: { type: string, example: sx_3f2a9c1b }
+        targetType: { $ref: "#/components/schemas/SecurityExceptionTarget" }
+        targetId: { type: string, description: "a SecurityFinding id or a SecurityVulnerability id" }
+        reason: { type: string }
+        expiresAt: { type: string, format: date-time }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        revokedAt: { type: string, format: date-time }
+        revokedBy: { type: string }
+
+    SecurityExceptionTarget:
+      type: string
+      enum: [finding, vulnerability]
+
+    SecurityExceptionRequest:
+      type: object
+      required: [targetType, targetId, reason, expiresAt]
+      properties:
+        targetType: { $ref: "#/components/schemas/SecurityExceptionTarget" }
+        targetId: { type: string }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        expiresAt: { type: string, format: date-time, description: "after now and at most 30 days later; at most 7 days for a KEV-listed vulnerability" }
+
+    SecurityExceptionList:
+      type: object
+      required: [exceptions]
+      properties:
+        exceptions: { type: array, items: { $ref: "#/components/schemas/SecurityException" } }
+
     SecurityVulnerability:
       description: One advisory matched to one package of one scanned image digest.
       type: object
@@ -3270,6 +3375,7 @@ components:
         cvss: { type: array, items: { $ref: "#/components/schemas/SecurityCVSS" } }
         urls: { type: array, items: { type: string } }
         exploitation: { $ref: "#/components/schemas/SecurityExploitation" }
+        exception: { $ref: "#/components/schemas/SecurityException", description: "the active exception, if any" }
 
     SecurityExploitation:
       description: |
