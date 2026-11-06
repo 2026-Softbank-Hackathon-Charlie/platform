@@ -1,9 +1,9 @@
 package fileguard
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -69,52 +69,27 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 }
 
 type snapshot struct {
-	dir     string
-	objects []object
-	reviews []Review
-	report  Report
+	root      string
+	dir       string
+	inventory inventory
+	reviews   []Review
+	report    Report
 }
 
 func (s *snapshot) close() error {
-	if os.RemoveAll(s.dir) != nil {
+	if os.RemoveAll(s.root) != nil {
 		return ErrCleanup
 	}
 	return nil
 }
 
 func take(ctx context.Context, source string, reviews []Review, execute command) (_ *snapshot, err error) {
-	var listing bytes.Buffer
-	if err := execute(ctx, &boundedWriter{&listing, 8 << 20}, "lsjson", source, "--recursive", "--files-only", "--no-modtime"); err != nil {
-		return nil, ErrRead
-	}
-	var objects []object
-	if json.Unmarshal(listing.Bytes(), &objects) != nil || objects == nil {
-		return nil, ErrRead
-	}
-	if len(objects) > MaxObjects {
-		return nil, ErrLimit
-	}
-	slices.SortFunc(objects, func(a, b object) int { return strings.Compare(a.Path, b.Path) })
-	var total int64
-	seen := map[string]bool{}
-	for _, o := range objects {
-		// Case-folded collisions are denied on every OS, not silently overwritten
-		// on Windows. Directories are created by us, never copied as links.
-		key := strings.ToLower(o.Path)
-		if o.IsDir || !safePath(o.Path) || seen[key] {
-			return nil, ErrPath
-		}
-		seen[key] = true
-		if o.Size < 0 || o.Size > MaxObjectBytes || o.Size > MaxTotalBytes-total {
-			return nil, ErrLimit
-		}
-		total += o.Size
-	}
-	dir, err := os.MkdirTemp("", "hopcharlie-inspect-")
+	root, err := os.MkdirTemp("", "hopcharlie-inspect-")
 	if err != nil {
 		return nil, ErrRead
 	}
-	s := &snapshot{dir: dir, objects: objects, reviews: slices.Clone(reviews)}
+	dir := filepath.Join(root, "data")
+	s := &snapshot{root: root, dir: dir, reviews: slices.Clone(reviews)}
 	defer func() {
 		if err != nil {
 			if e := s.close(); e != nil {
@@ -122,29 +97,103 @@ func take(ctx context.Context, source string, reviews []Review, execute command)
 			}
 		}
 	}()
-	// MkdirTemp is mode 0700 on Unix. On Windows the service account must own
-	// a private TEMP directory/ACL; chmod alone cannot establish Windows ACLs.
-	for _, o := range objects {
-		name := filepath.Join(dir, filepath.FromSlash(o.Path))
-		if os.MkdirAll(filepath.Dir(name), 0700) != nil {
-			return nil, ErrPath
-		}
-		f, openErr := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if openErr != nil {
-			return nil, ErrPath
-		}
-		w := &boundedWriter{f, o.Size}
-		copyErr := execute(ctx, w, "cat", strings.TrimRight(source, "/")+"/"+o.Path)
-		closeErr := f.Close()
-		if copyErr != nil || closeErr != nil || w.remaining != 0 {
-			return nil, ErrRead
-		}
+	if os.Mkdir(dir, 0700) != nil {
+		return nil, ErrRead
 	}
-	s.report, err = scan(ctx, dir, objects, reviews)
+	meta := filepath.Join(root, "initial")
+	if os.Mkdir(meta, 0700) != nil {
+		return nil, ErrRead
+	}
+	s.inventory, err = makeInventory(ctx, source, meta, execute)
 	if err != nil {
 		return nil, err
 	}
+	// The exact validated list is literal, never globbed. rclone's bounded
+	// transfer pool reuses connections; a hard total byte limit also applies if
+	// a source changes size. Missing/oversize/partial files fail inspection.
+	if err = downloadInventory(ctx, source, s, execute); err != nil {
+		return nil, err
+	}
+	// A second complete enumeration detects additions/deletions/size changes.
+	// It is not an atomic source snapshot; only the inspected staging is sent.
+	after := filepath.Join(root, "after")
+	if os.Mkdir(after, 0700) != nil {
+		return nil, ErrRead
+	}
+	now, err := makeInventory(ctx, source, after, execute)
+	if err != nil {
+		return nil, err
+	}
+	if !sameInventory(s.inventory, now) {
+		return nil, ErrChanged
+	}
+	manifestName := filepath.Join(root, "inspected.tmp")
+	manifest, openErr := os.OpenFile(manifestName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if openErr != nil {
+		return nil, ErrRead
+	}
+	s.report, err = scanEach(ctx, dir, s.inventory.walk, reviews, &boundedWriter{manifest, 16 << 20})
+	closeErr := manifest.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil || os.Rename(manifestName, filepath.Join(root, "inspected.json")) != nil {
+		return nil, ErrRead
+	}
 	return s, nil
+}
+
+func downloadInventory(ctx context.Context, source string, s *snapshot, execute command) error {
+	window := make([]object, 0, inventoryChunk)
+	var staged int64
+	flush := func() error {
+		if len(window) == 0 {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ErrRead
+		}
+		paths := filepath.Join(s.root, "files.txt")
+		f, err := os.OpenFile(paths, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		if err != nil {
+			return ErrRead
+		}
+		for _, o := range window {
+			if _, err := io.WriteString(f, o.Path+"\n"); err != nil {
+				f.Close()
+				return ErrRead
+			}
+		}
+		if f.Close() != nil {
+			return ErrRead
+		}
+		remaining := MaxTotalBytes - staged
+		if remaining == 0 {
+			remaining = 1
+		} // zero-length objects still need materializing
+		if execute(ctx, io.Discard, "copy", source, s.dir, "--files-from-raw", paths, "--ignore-times", "--no-traverse", "--transfers", "4", "--checkers", "4", "--buffer-size", "1Mi", "--multi-thread-streams", "0", "--max-backlog", "256", "--max-transfer", fmt.Sprintf("%dB", remaining), "--cutoff-mode", "HARD", "--retries", "1", "--low-level-retries", "1") != nil {
+			return ErrRead
+		}
+		for _, o := range window {
+			info, err := os.Lstat(filepath.Join(s.dir, filepath.FromSlash(o.Path)))
+			if err != nil || !info.Mode().IsRegular() || info.Size() != o.Size {
+				return ErrChanged
+			}
+			staged += o.Size
+		}
+		window = window[:0]
+		return nil
+	}
+	if err := s.inventory.walk(func(o object) error {
+		window = append(window, o)
+		if len(window) == inventoryChunk {
+			return flush()
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return flush()
 }
 
 func readObject(dir string, o object) ([]byte, error) {
@@ -176,10 +225,10 @@ func (s *snapshot) verify(ctx context.Context) error {
 		}
 		return nil
 	})
-	if err != nil || count != len(s.objects) {
+	if err != nil || count != s.inventory.count {
 		return ErrChanged
 	}
-	r, err := scan(ctx, s.dir, s.objects, s.reviews)
+	r, err := scanEach(ctx, s.dir, s.inventory.walk, s.reviews)
 	if err != nil || r.ManifestDigest != s.report.ManifestDigest {
 		return ErrChanged
 	}
