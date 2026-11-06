@@ -805,6 +805,40 @@ func TestCanaryPassThenAutoSwitch(t *testing.T) {
 	}
 }
 
+// An app without users: the runner's probe reads through the gateway fill
+// every step, so the canary judges the target instead of failing on 0 requests.
+func TestCanaryProbesAQuietApp(t *testing.T) {
+	var mu sync.Mutex
+	var urls []string
+	var h *harness
+	h = newHarness(t, func(_ *harness, rc *runs.Config, _ *Deps) {
+		rc.Probe = func(_ context.Context, u string) error {
+			mu.Lock()
+			urls = append(urls, u)
+			mu.Unlock()
+			h.traffic.mu.Lock()
+			s := h.traffic.stats["eks"]
+			s.Requests++
+			s.P95Millis = 30
+			h.traffic.stats["eks"] = s
+			h.traffic.mu.Unlock()
+			return nil
+		}
+	})
+	h.traffic.stats["eks"] = apiv1.BackendStats{}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true), Canary: &apiv1.CanaryOptions{Weights: []int{100}, StepDuration: ptr("200ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+	if run.Canary.Passed == nil || !*run.Canary.Passed {
+		t.Fatalf("canary: %+v", run.Canary.Steps)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(urls) < 20 || urls[0] != gatewayURL {
+		t.Fatalf("probes: %d, first %q", len(urls), urls[0])
+	}
+}
+
 func TestCanaryNeedsGateway(t *testing.T) {
 	h := newHarness(t)
 	ref := h.approved(planJSON("p1", "a", "b", false)) // gateway mode none

@@ -110,7 +110,19 @@ type Config struct {
 	// request counts and observe act on the app the engine holds and routes.
 	// Nil uses Traffic for every run.
 	TrafficAt func(gatewayURL string) Traffic
+	// Probe sends one synthetic read (GET /) through the gateway's public proxy
+	// to the app whose admin scope is gatewayURL. During every canary step the
+	// runner sends probeFactor x the gate's minimum requests, spread over the
+	// step, so that an app without users still gets the target judged on real
+	// requests through the real route. The gate counts them like any request.
+	// Nil sends none: a quiet app then fails the canary for too few requests.
+	Probe func(ctx context.Context, gatewayURL string) error
 }
+
+// probeFactor is how many synthetic reads per canary step the runner sends,
+// in multiples of the gate's minimum requests: at a 50% step about half reach
+// the target, which then still clears the minimum.
+const probeFactor = 3
 
 // StartOptions describe a new run.
 type StartOptions struct {
@@ -615,14 +627,18 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 		}
 		l.emitPlatform(EventCanaryStep, "", fmt.Sprintf("%d%% of reads to %s", w, dst), map[string]any{"weight": w, "readWeights": weights})
 
+		probeDone := r.probe(ctx, l, probeFactor*int(*opts.Gate.MinRequests), stepDur)
 		select {
 		case <-ctx.Done():
+			probeDone()
 			return false, "aborted during the canary"
 		case <-r.stopCh:
+			probeDone()
 			l.markInterrupted()
 			return false, "the platform is shutting down"
 		case <-time.After(stepDur):
 		}
+		probeDone()
 
 		var ts apiv1.TrafficState
 		err := r.withTimeout(func(c context.Context) error {
@@ -671,6 +687,41 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 	}
 	l.setCanaryPassed(true)
 	return true, ""
+}
+
+// probe sends n synthetic reads spread over d through Config.Probe, for a run
+// whose plan routes through the gateway. The returned func stops the sends and
+// waits for them, so none lands after the step's stats are read.
+func (r *Runner) probe(ctx context.Context, l *live, n int, d time.Duration) func() {
+	if r.cfg.Probe == nil || l.plan.Gateway.Mode != "http" || l.plan.Gateway.URL == "" || n <= 0 {
+		return func() {}
+	}
+	pctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		every := d / time.Duration(n)
+		t := time.NewTicker(every)
+		defer t.Stop()
+		failed := 0
+		for i := 0; i < n; i++ {
+			// a send that cannot finish before the step ends would only count in the next one
+			c, cancelOne := context.WithTimeout(pctx, every*2)
+			if err := r.cfg.Probe(c, l.plan.Gateway.URL); err != nil && pctx.Err() == nil {
+				failed++
+			}
+			cancelOne()
+			select {
+			case <-pctx.Done():
+				return
+			case <-t.C:
+			}
+		}
+		if failed > 0 {
+			r.cfg.Log.Warn("canary probe requests failed to reach the gateway", "run", l.id, "failed", failed, "of", n)
+		}
+	}()
+	return func() { cancel(); <-done }
 }
 
 func (r *Runner) canaryFail(l *live, step apiv1.CanaryStep, reason string) (bool, string) {

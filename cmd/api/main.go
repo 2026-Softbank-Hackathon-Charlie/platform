@@ -229,6 +229,12 @@ func main() {
 		rcfg.TrafficAt = func(u string) runs.Traffic {
 			return &gateway.Client{BaseURL: u, Token: gw.Token, HTTP: gw.HTTP}
 		}
+		// With the public proxy known, the canary sends synthetic reads through
+		// it, so that an app without users still has its target judged.
+		if proxy := os.Getenv("PLATFORM_GATEWAY_PROXY_URL"); proxy != "" {
+			p := &gateway.Prober{ProxyURL: proxy, AppDomain: os.Getenv("PLATFORM_APP_DOMAIN"), HTTP: &http.Client{Timeout: 5 * time.Second}}
+			rcfg.Probe = p.Probe
+		}
 	}
 	planSvc := plans.New(policy, st)
 	planSvc.SetStateDir(*stateDir)
