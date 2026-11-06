@@ -17,6 +17,7 @@ import (
 	"time"
 
 	enginegw "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/gateway"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
 const testDomain = "hopcharlie.dev"
@@ -660,8 +661,15 @@ func TestSecondAppWithEngineClient(t *testing.T) {
 	if r := recv(t, pending); r.status != http.StatusOK || r.backend != "eks" || shop["eks"].got("during-fence") != 1 {
 		t.Fatalf("held write: %+v", r)
 	}
-	st, err := tg.client.App("shop").State(ctx, 0)
-	if err != nil || st.WriteBackend != "eks" || st.Totals["eks"].Requests != 1 || st.Totals["gke"].Requests != 1 {
+	// The client can get the held write's response before the gateway counts
+	// it, so wait for the count instead of reading it once.
+	var st apiv1.TrafficState
+	var err error
+	waitFor(t, "held write counted", func() bool {
+		st, err = tg.client.App("shop").State(ctx, 0)
+		return err == nil && st.InFlight.Writes == 0 && st.Totals["eks"].Requests == 1
+	})
+	if st.WriteBackend != "eks" || st.Totals["gke"].Requests != 1 {
 		t.Fatalf("shop state: %+v %v", st, err)
 	}
 	if st := tg.g.state(defaultWindow); st.WriteBackend != "gke" || st.Totals["gke"].Requests != 0 {
