@@ -101,11 +101,15 @@ type scanner struct {
 }
 
 func (s *scanner) inspect(ctx context.Context, data []byte, depth int) ([]string, error) {
+	h := sha256.Sum256(data)
+	return s.inspectDigest(ctx, data, depth, hex.EncodeToString(h[:]))
+}
+
+func (s *scanner) inspectDigest(ctx context.Context, data []byte, depth int, digest string) ([]string, error) {
 	if ctx.Err() != nil {
 		return nil, ErrRead
 	}
-	h := sha256.Sum256(data)
-	review := s.reviews[hex.EncodeToString(h[:])]
+	review := s.reviews[digest]
 	labels := []string{"global"}
 	if review != "" {
 		labels = append(labels, review)
@@ -221,6 +225,17 @@ func plainText(b []byte) bool {
 }
 
 func scan(ctx context.Context, dir string, objects []object, reviews []Review) (Report, error) {
+	return scanEach(ctx, dir, func(visit func(object) error) error {
+		for _, o := range objects {
+			if err := visit(o); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, reviews)
+}
+
+func scanEach(ctx context.Context, dir string, walk objectWalk, reviews []Review, outputs ...io.Writer) (Report, error) {
 	s := scanner{reviews: map[string]string{}, findings: map[string]int{}}
 	for _, r := range reviews {
 		if !ValidReview(r) || s.reviews[r.SHA256] != "" {
@@ -229,36 +244,60 @@ func scan(ctx context.Context, dir string, objects []object, reviews []Review) (
 		s.reviews[r.SHA256] = r.Label
 	}
 	r := Report{Rules: RulesVersion, Findings: s.findings, Labels: []string{}}
-	manifest := []entry{}
-	for _, o := range objects {
+	manifest := sha256.New()
+	var sink io.Writer = manifest
+	if len(outputs) > 0 {
+		sink = io.MultiWriter(manifest, outputs[0])
+	}
+	if _, err := io.WriteString(sink, `{"Rules":"`+RulesVersion+`","Entries":[`); err != nil {
+		return Report{}, ErrRead
+	}
+	labels := map[string]bool{}
+	err := walk(func(o object) error {
 		if ctx.Err() != nil {
-			return Report{}, ErrRead
+			return ErrRead
 		}
 		// readObject uses a bounded reader and rejects links/non-regular files.
 		b, err := readObject(dir, o)
 		if err != nil {
-			return Report{}, err
+			return err
 		}
-		ls, err := s.inspect(ctx, b, 0)
+		h := sha256.Sum256(b)
+		digest := hex.EncodeToString(h[:])
+		ls, err := s.inspectDigest(ctx, b, 0, digest)
 		if err != nil {
-			return Report{}, err
+			return err
 		}
 		ls = append(ls, s.textLabels([]byte(o.Path))...)
 		slices.Sort(ls)
 		ls = slices.Compact(ls)
-		h := sha256.Sum256(b)
-		manifest = append(manifest, entry{Path: o.Path, SHA256: hex.EncodeToString(h[:]), Labels: ls})
+		if r.Objects > 0 {
+			if _, err := io.WriteString(sink, ","); err != nil {
+				return ErrRead
+			}
+		}
+		raw, _ := json.Marshal(entry{Path: o.Path, SHA256: digest, Labels: ls})
+		if _, err := sink.Write(raw); err != nil {
+			return ErrRead
+		}
 		r.Objects++
 		r.Bytes += int64(len(b))
-		r.Labels = append(r.Labels, ls...)
+		for _, label := range ls {
+			labels[label] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return Report{}, err
+	}
+	for label := range labels {
+		r.Labels = append(r.Labels, label)
 	}
 	slices.Sort(r.Labels)
 	r.Labels = slices.Compact(r.Labels)
-	raw, _ := json.Marshal(struct {
-		Rules   string
-		Entries []entry
-	}{RulesVersion, manifest})
-	h := sha256.Sum256(raw)
-	r.ManifestDigest = hex.EncodeToString(h[:])
+	if _, err := io.WriteString(sink, "]}"); err != nil {
+		return Report{}, ErrRead
+	}
+	r.ManifestDigest = hex.EncodeToString(manifest.Sum(nil))
 	return r, nil
 }

@@ -1,0 +1,89 @@
+=== RUN   TestRealStagingDiskFull
+    disk_linux_test.go:18: requires isolated small tmpfs
+--- SKIP: TestRealStagingDiskFull (0.00s)
+=== RUN   TestDiskInventorySortAndCrossChunkCollision
+--- PASS: TestDiskInventorySortAndCrossChunkCollision (0.02s)
+=== RUN   TestPartialOrFailedEnumerationIsNotComplete
+--- PASS: TestPartialOrFailedEnumerationIsNotComplete (0.00s)
+=== RUN   TestEnumerationChangesAndDownloadFailurePreventUpload
+=== RUN   TestEnumerationChangesAndDownloadFailurePreventUpload/added
+=== RUN   TestEnumerationChangesAndDownloadFailurePreventUpload/removed
+=== RUN   TestEnumerationChangesAndDownloadFailurePreventUpload/size
+=== RUN   TestEnumerationChangesAndDownloadFailurePreventUpload/disk-full
+=== RUN   TestEnumerationChangesAndDownloadFailurePreventUpload/cancelled
+--- PASS: TestEnumerationChangesAndDownloadFailurePreventUpload (0.01s)
+    --- PASS: TestEnumerationChangesAndDownloadFailurePreventUpload/added (0.00s)
+    --- PASS: TestEnumerationChangesAndDownloadFailurePreventUpload/removed (0.00s)
+    --- PASS: TestEnumerationChangesAndDownloadFailurePreventUpload/size (0.00s)
+    --- PASS: TestEnumerationChangesAndDownloadFailurePreventUpload/disk-full (0.00s)
+    --- PASS: TestEnumerationChangesAndDownloadFailurePreventUpload/cancelled (0.00s)
+=== RUN   TestStreamingManifestKeepsLegacyDigest
+--- PASS: TestStreamingManifestKeepsLegacyDigest (0.00s)
+=== RUN   TestInventoryMutationCannotChangeUploadedSet
+--- PASS: TestInventoryMutationCannotChangeUploadedSet (0.00s)
+=== RUN   TestStreamingObjectCapAndCancelledCleanup
+--- PASS: TestStreamingObjectCapAndCancelledCleanup (0.07s)
+=== RUN   TestTextAndZIPFindings
+=== RUN   TestTextAndZIPFindings/text
+=== RUN   TestTextAndZIPFindings/zip
+=== RUN   TestTextAndZIPFindings/nested
+--- PASS: TestTextAndZIPFindings (0.00s)
+    --- PASS: TestTextAndZIPFindings/text (0.00s)
+    --- PASS: TestTextAndZIPFindings/zip (0.00s)
+    --- PASS: TestTextAndZIPFindings/nested (0.00s)
+=== RUN   TestUnsupportedBytesRequireExactReview
+--- PASS: TestUnsupportedBytesRequireExactReview (0.00s)
+=== RUN   TestArchiveFailClosed
+=== RUN   TestArchiveFailClosed/hidden_trailer
+=== RUN   TestArchiveFailClosed/depth
+=== RUN   TestArchiveFailClosed/oversize_expansion
+=== RUN   TestArchiveFailClosed/traversal
+=== RUN   TestArchiveFailClosed/backslash
+=== RUN   TestArchiveFailClosed/binary_member
+=== RUN   TestArchiveFailClosed/extra_metadata
+=== RUN   TestArchiveFailClosed/corrupt
+--- PASS: TestArchiveFailClosed (0.06s)
+    --- PASS: TestArchiveFailClosed/hidden_trailer (0.00s)
+    --- PASS: TestArchiveFailClosed/depth (0.00s)
+    --- PASS: TestArchiveFailClosed/oversize_expansion (0.00s)
+    --- PASS: TestArchiveFailClosed/traversal (0.00s)
+    --- PASS: TestArchiveFailClosed/backslash (0.00s)
+    --- PASS: TestArchiveFailClosed/binary_member (0.00s)
+    --- PASS: TestArchiveFailClosed/extra_metadata (0.00s)
+    --- PASS: TestArchiveFailClosed/corrupt (0.00s)
+=== RUN   TestNamesAndContentBindManifest
+--- PASS: TestNamesAndContentBindManifest (0.00s)
+=== RUN   TestPortablePaths
+--- PASS: TestPortablePaths (0.00s)
+=== RUN   TestOnlyInspectedSnapshotIsUploaded
+--- PASS: TestOnlyInspectedSnapshotIsUploaded (0.00s)
+=== RUN   TestEveryPassRescansAndDenialPreventsUpload
+--- PASS: TestEveryPassRescansAndDenialPreventsUpload (0.01s)
+=== RUN   TestSnapshotMutationPreventsUpload
+--- PASS: TestSnapshotMutationPreventsUpload (0.00s)
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted/lsjson
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted/copy
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted/sync
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted/check
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted/traversal
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted/duplicate
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted/negative
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted/size
+=== RUN   TestTransferFailuresAndLimitsAreClosedAndRedacted/count
+--- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted (0.02s)
+    --- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted/lsjson (0.00s)
+    --- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted/copy (0.00s)
+    --- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted/sync (0.00s)
+    --- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted/check (0.00s)
+    --- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted/traversal (0.00s)
+    --- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted/duplicate (0.00s)
+    --- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted/negative (0.00s)
+    --- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted/size (0.00s)
+    --- PASS: TestTransferFailuresAndLimitsAreClosedAndRedacted/count (0.00s)
+=== RUN   TestGlobalRcloneFlagsCannotChangeInspectedSet
+--- PASS: TestGlobalRcloneFlagsCannotChangeInspectedSet (0.00s)
+=== RUN   TestLocalRcloneIntegration
+--- PASS: TestLocalRcloneIntegration (3.71s)
+PASS
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard	3.924s

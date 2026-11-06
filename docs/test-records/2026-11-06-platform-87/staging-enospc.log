@@ -1,0 +1,4 @@
+=== RUN   TestRealStagingDiskFull
+--- PASS: TestRealStagingDiskFull (0.82s)
+PASS
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard	0.829s
