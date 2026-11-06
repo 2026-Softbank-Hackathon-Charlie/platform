@@ -174,6 +174,7 @@ operations:
 
       - 첨부가 있는 계획을 revision 없이 승인하거나, 검토 후 첨부가 올라와 revision이 바뀌었으면 409 plan_state_conflict다.
       - 이미 승인된 계획을 다시 승인해도 아무 변화가 없다.
+      - 서버가 검사를 끄지 않았으면 원본 DB가 API가 실행되는 곳에서 닿는지 먼저 본다. 이름이 해석되지 않거나(dns), 포트에 연결되지 않거나(tcp), 로그인이 거절되면(auth) 409 db_unreachable이고(message에 상태와 이유 코드만, 주소는 없다) 계획은 승인 대기로 남는다. 시작한 뒤 precheck에서 실패하는 일을 승인 단계로 당긴 것이다. 대상은 아직 없을 수 있어 보지 않고, 판단하지 못하면 막지 않는다.
   rejectPlan:
     summary: 계획 거절
     role: operator

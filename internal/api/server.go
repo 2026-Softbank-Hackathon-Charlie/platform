@@ -587,6 +587,13 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 			noteAudit(r, "pgVersion", mm.Result)
 		}
 		s.fail(w, r, http.StatusConflict, "version_mismatch", err.Error())
+	case errors.Is(err, plans.ErrDBUnreachable):
+		// The result holds statuses and codes only, never an address.
+		var ur *plans.DBUnreachable
+		if errors.As(err, &ur) {
+			noteAudit(r, "reach", ur.Result)
+		}
+		s.fail(w, r, http.StatusConflict, "db_unreachable", err.Error())
 	default:
 		s.internal(w, r, err)
 	}

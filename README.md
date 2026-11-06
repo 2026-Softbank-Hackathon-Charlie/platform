@@ -159,6 +159,7 @@ go run ./cmd/gateway
 | `PLATFORM_CAPACITY_GATE` | `on`이면 새 run을 시작하기 전에 원본·대상 DB를 몇 초 동안 측정해, 대상 접속 한도가 부족하거나 replica가 `catchupTimeout` 안에 따라잡지 못하면 409 `capacity_insufficient` ([ADR 0014](docs/adr/0014-capacity-preflight.md)). 측정하지 못한 값은 막지 않음. 롤백은 면제. 기본 `off` |
 | `PLATFORM_PARITY_FILE` | 동등성 파일 ([예시](examples/parity.yaml), [ADR 0022](docs/adr/0022-parity-audit-mode.md)). 설정하면 새 run 시작 직전에 대상 클러스터에서 앱 ServiceAccount의 SubjectAccessReview와 대상 Prometheus의 scrape 상태를 검사해 감사 로그 `parity`에 남김. **막지 않음**(mode `audit`만 있음). [3환경 예시](examples/parity-three-environments.yaml)로 Secret 메타데이터·감사 수집기 가용성·Barman 백업 상태도 선택적으로 검사([ADR 0029](docs/adr/0029-parity-resource-evidence.md)). 미설정은 `probe_not_configured`, 시크릿 사용·감사 전달·복구 검증은 여전히 `unknown`. 롤백은 면제. 비우면 기록 없음 |
 | `PLATFORM_VERSION_GATE` | 새 run을 시작하기 전에 원본과 대상의 PostgreSQL 메이저 버전을 비교해, 다르면 409 `version_mismatch` ([ADR 0020](docs/adr/0020-pg-major-version-gate.md)). 대상은 DB에 접속되면 그 값, 아니면 manifest의 `spec.imageCatalogRef.major`나 `spec.imageName` 태그. 읽지 못하면 unknown으로 기록하고 막지 않음. 롤백은 면제. 기본 `on`, `off`로 끔 |
+| `PLATFORM_REACH_GATE` | 계획을 승인할 때 원본 DB가 API가 실행되는 곳에서 닿는지 본다. 이름이 해석되지 않거나 포트에 연결되지 않거나 로그인이 거절되면 409 `db_unreachable`이고 계획은 승인 대기로 남는다 ([ADR 0032](docs/adr/0032-source-reachability-at-approval.md)). 대상은 아직 없을 수 있어 막지 않고, 판단하지 못하면 막지 않는다. 기본 `on`, `off`로 끔 |
 | `PLATFORM_GITHUB_*`, `PLATFORM_APP_DOMAIN` | 앱을 등록하고 배포하는 GitHub App. [GitHub App 설정](#github-app-설정) 참고 |
 
 ### 관리자 비밀번호 해시
