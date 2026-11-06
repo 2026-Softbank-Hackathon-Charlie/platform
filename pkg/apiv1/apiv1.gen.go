@@ -748,6 +748,24 @@ func (e SecurityEPSSState) Valid() bool {
 	}
 }
 
+// Defines values for SecurityExceptionTarget.
+const (
+	SecurityExceptionTargetFinding       SecurityExceptionTarget = "finding"
+	SecurityExceptionTargetVulnerability SecurityExceptionTarget = "vulnerability"
+)
+
+// Valid indicates whether the value is a known member of the SecurityExceptionTarget enum.
+func (e SecurityExceptionTarget) Valid() bool {
+	switch e {
+	case SecurityExceptionTargetFinding:
+		return true
+	case SecurityExceptionTargetVulnerability:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SecurityExploitSourceState.
 const (
 	SecurityExploitSourceStateIdle        SecurityExploitSourceState = "idle"
@@ -3313,6 +3331,42 @@ type SecurityEPSS struct {
 // - no_cve: the vulnerability has no CVE id.
 type SecurityEPSSState string
 
+// SecurityException An operator's time-limited exception for one finding or vulnerability
+// (SEC-08, ADR 0034). It never changes severity. Active while not revoked
+// and before expiresAt; a severity change does not end it.
+type SecurityException struct {
+	CreatedAt time.Time `json:"createdAt"`
+	CreatedBy string    `json:"createdBy"`
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Id Example: sx_3f2a9c1b
+	Id        string     `json:"id"`
+	Reason    string     `json:"reason"`
+	RevokedAt *time.Time `json:"revokedAt,omitempty"`
+	RevokedBy *string    `json:"revokedBy,omitempty"`
+
+	// TargetId a SecurityFinding id or a SecurityVulnerability id
+	TargetId   string                  `json:"targetId"`
+	TargetType SecurityExceptionTarget `json:"targetType"`
+}
+
+// SecurityExceptionList defines model for SecurityExceptionList.
+type SecurityExceptionList struct {
+	Exceptions []SecurityException `json:"exceptions"`
+}
+
+// SecurityExceptionRequest defines model for SecurityExceptionRequest.
+type SecurityExceptionRequest struct {
+	// ExpiresAt after now and at most 30 days later; at most 7 days for a KEV-listed vulnerability
+	ExpiresAt  time.Time               `json:"expiresAt"`
+	Reason     string                  `json:"reason"`
+	TargetId   string                  `json:"targetId"`
+	TargetType SecurityExceptionTarget `json:"targetType"`
+}
+
+// SecurityExceptionTarget defines model for SecurityExceptionTarget.
+type SecurityExceptionTarget string
+
 // SecurityExploitSource The state of one exploitation evidence source for this report (SEC-07).
 type SecurityExploitSource struct {
 	// CollectedAt the last successful read
@@ -3380,6 +3434,11 @@ type SecurityFinding struct {
 	//
 	// Example: gke
 	Environment string `json:"environment"`
+
+	// Exception An operator's time-limited exception for one finding or vulnerability
+	// (SEC-08, ADR 0034). It never changes severity. Active while not revoked
+	// and before expiresAt; a severity change does not end it.
+	Exception *SecurityException `json:"exception,omitempty"`
 
 	// Id stable across collections: a hash of environment, source, check, resource and, where it has one, the vendor's own finding id (GuardDuty finding id, Security Hub finding ARN) or the rule's protocol, ports and CIDRs
 	Id string `json:"id"`
@@ -3744,6 +3803,11 @@ type SecurityVulnerability struct {
 	Aliases  []string       `json:"aliases"`
 	Cvss     []SecurityCVSS `json:"cvss"`
 	Digest   string         `json:"digest"`
+
+	// Exception An operator's time-limited exception for one finding or vulnerability
+	// (SEC-08, ADR 0034). It never changes severity. Active while not revoked
+	// and before expiresAt; a severity change does not end it.
+	Exception *SecurityException `json:"exception,omitempty"`
 
 	// Exploitation Exploitation evidence for the vulnerability's CVE (SEC-07, ADR 0034),
 	// read when the report is built. It is a separate basis for priority and
@@ -4322,6 +4386,9 @@ type RejectPlanJSONRequestBody = ReviewRequest
 
 // InspectBucketJSONRequestBody defines body for InspectBucket for application/json ContentType.
 type InspectBucketJSONRequestBody = BucketInspectRequest
+
+// CreateSecurityExceptionJSONRequestBody defines body for CreateSecurityException for application/json ContentType.
+type CreateSecurityExceptionJSONRequestBody = SecurityExceptionRequest
 
 // SubmitSecurityScanJSONRequestBody defines body for SubmitSecurityScan for application/json ContentType.
 type SubmitSecurityScanJSONRequestBody = SecurityScanSubmission

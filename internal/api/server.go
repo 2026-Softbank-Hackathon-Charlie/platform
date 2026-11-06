@@ -296,6 +296,10 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/security/vulnerabilities", viewer, s.securityVulnerabilities)
 	// The image scan workflow posts what Grype found; the API only stores it (SEC-04).
 	s.route("POST /v1/security/scans", agent, s.submitSecurityScan)
+	// Time-limited exceptions for findings and vulnerabilities (SEC-08).
+	s.route("GET /v1/security/exceptions", viewer, s.listSecurityExceptions)
+	s.route("POST /v1/security/exceptions", operator, s.createSecurityException)
+	s.route("DELETE /v1/security/exceptions/{id}", operator, s.revokeSecurityException)
 	s.route("POST /v1/agent/sessions", agent, s.createAgentSession)
 	s.route("GET /v1/agent/sessions", viewer, s.listAgentSessions)
 	s.route("GET /v1/agent/sessions/{id}", viewer, s.getAgentSession)

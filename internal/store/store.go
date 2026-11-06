@@ -155,10 +155,11 @@ type Store interface {
 	// Close releases connections.
 	Close()
 
-	PlanTools   // written-records streams and plan attachments (written.go)
-	AgentStore  // agent sessions and events (agent.go)
-	DeployStore // apps from GitHub, their added branches, deployments and their events, webhook deliveries (deploy.go)
-	AuthStore   // console sessions, CLI tokens and device logins (auth.go)
-	SecretStore // app secrets and the buckets and keys made for instances (secrets.go)
-	ScanStore   // the latest image scan of each digest (scans.go)
+	PlanTools      // written-records streams and plan attachments (written.go)
+	AgentStore     // agent sessions and events (agent.go)
+	DeployStore    // apps from GitHub, their added branches, deployments and their events, webhook deliveries (deploy.go)
+	AuthStore      // console sessions, CLI tokens and device logins (auth.go)
+	SecretStore    // app secrets and the buckets and keys made for instances (secrets.go)
+	ScanStore      // the latest image scan of each digest (scans.go)
+	ExceptionStore // security exceptions (exceptions.go)
 }

@@ -18,6 +18,7 @@ const (
 	ocsfDetection        = 2004
 	ocsfActivityCreate   = 1 // activity_id: Create
 	ocsfStatusNew        = 1 // status_id: New
+	ocsfStatusSuppressed = 3 // status_id: Suppressed (an active exception, SEC-08)
 	ocsfRule             = 1 // analytic.type_id: Rule
 	ocsfComplianceWarn   = 2 // compliance.status_id: Warning
 	ocsfComplianceFail   = 3 // compliance.status_id: Fail
@@ -39,6 +40,8 @@ type OCSFFinding struct {
 	Severity     string `json:"severity"`
 	StatusID     int    `json:"status_id"`
 	Status       string `json:"status"`
+	// StatusDetail is the reason of the finding's active exception.
+	StatusDetail string `json:"status_detail,omitempty"`
 	// Time is when the source reported the finding, in epoch milliseconds.
 	Time        int64              `json:"time"`
 	Message     string             `json:"message,omitempty"`
@@ -140,6 +143,10 @@ func OCSF(f apiv1.SecurityFinding) OCSFFinding {
 			Product:  OCSFProduct{Name: "HopCharlie", VendorName: "team-charlie"},
 			Profiles: []string{"cloud"},
 		},
+	}
+	if f.Exception != nil {
+		// An operator accepted the risk until the exception ends; severity stays.
+		e.StatusID, e.Status, e.StatusDetail = ocsfStatusSuppressed, "Suppressed", f.Exception.Reason
 	}
 	if f.Resource != "" {
 		e.Resources = []OCSFResource{{UID: f.Resource, Labels: []string{"environment:" + f.Environment}}}
