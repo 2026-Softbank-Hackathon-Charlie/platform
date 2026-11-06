@@ -112,9 +112,17 @@ func TestConcurrentCallersShareOneCollection(t *testing.T) {
 	}
 
 	// A caller that gives up gets its context error; the collection goes on.
+	// The collector blocks so that only the context is ready: with one that
+	// returns at once, select may pick the finished collection instead.
+	hold := make(chan struct{})
+	defer close(hold)
+	slow := &fakeCollector{srcs: []Source{src}, fn: func(context.Context) []Report {
+		<-hold
+		return []Report{{Source: src, Status: apiv1.SecuritySourceStatusOk}}
+	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := New([]Collector{c}, Options{}).Report(ctx, false); err == nil {
+	if _, err := New([]Collector{slow}, Options{}).Report(ctx, false); err == nil {
 		t.Fatal("cancelled caller got no error")
 	}
 }
