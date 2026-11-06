@@ -1,17 +1,23 @@
 // Command app is the E2E test backend. run.sh starts one per environment,
 // each connected to that environment's CNPG database, behind the gateway.
 //
-//	POST /items {"id":"..."}  insert a row; 201
+//	POST /items {"id":"..."}  insert a row; 201, also when the id already exists
 //	GET  /items/{id}          200 when the row exists, 404 when it does not
 //	GET  /healthz             200 when the database answers (the gateway's health check)
-//	PUT  /_fault?status=500&delayMs=1200&method=GET   inject a fault (failure scenarios)
+//	PUT  /_fault?status=500&delayMs=1200&method=GET&dropEvery=5   inject a fault (failure scenarios)
 //	DELETE /_fault            clear it
+//
+// Writes are idempotent by the client's id: a retry of a write that was
+// committed but whose answer was lost inserts nothing and answers 201 again,
+// so a client may retry any failed write with the same id (platform ADR 0028).
 //
 // Database errors are 500, so the gateway counts them as failed requests.
 // A fault applies to /items requests of the given method (all methods when
-// empty): wait delayMs, then answer status when it is not 0. /healthz is never
-// faulted, so the gateway keeps the backend in rotation and the gate sees the
-// fault. The driver calls /_fault on the app's own port, not through the gateway.
+// empty): wait delayMs, then answer status when it is not 0. dropEvery N
+// commits every Nth POST and then closes the connection without an answer: the
+// write exists but its client never hears so. /healthz is never faulted, so the
+// gateway keeps the backend in rotation and the gate sees the fault. The driver
+// calls /_fault on the app's own port, not through the gateway.
 package main
 
 import (
@@ -47,9 +53,21 @@ func main() {
 
 	var fmu sync.Mutex
 	var fault struct {
-		status int
-		delay  time.Duration
-		method string
+		status    int
+		delay     time.Duration
+		method    string
+		dropEvery int
+		posts     int
+	}
+	// dropAnswer reports whether this committed write's answer is to be lost.
+	dropAnswer := func() bool {
+		fmu.Lock()
+		defer fmu.Unlock()
+		if fault.dropEvery <= 0 {
+			return false
+		}
+		fault.posts++
+		return fault.posts%fault.dropEvery == 0
 	}
 	faulted := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -74,15 +92,17 @@ func main() {
 		q := r.URL.Query()
 		status, _ := strconv.Atoi(q.Get("status"))
 		delay, _ := strconv.Atoi(q.Get("delayMs"))
+		drop, _ := strconv.Atoi(q.Get("dropEvery"))
 		fmu.Lock()
 		fault.status, fault.delay, fault.method = status, time.Duration(delay)*time.Millisecond, q.Get("method")
+		fault.dropEvery, fault.posts = drop, 0
 		fmu.Unlock()
-		log.Printf("fault set: status=%d delay=%dms method=%q", status, delay, q.Get("method"))
+		log.Printf("fault set: status=%d delay=%dms method=%q dropEvery=%d", status, delay, q.Get("method"), drop)
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("DELETE /_fault", func(w http.ResponseWriter, r *http.Request) {
 		fmu.Lock()
-		fault.status, fault.delay, fault.method = 0, 0, ""
+		fault.status, fault.delay, fault.method, fault.dropEvery = 0, 0, "", 0
 		fmu.Unlock()
 		log.Printf("fault cleared")
 		w.WriteHeader(http.StatusNoContent)
@@ -106,10 +126,19 @@ func main() {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		if _, err := db.Exec(ctx, "INSERT INTO items (id) VALUES ($1)", in.ID); err != nil {
+		if _, err := db.Exec(ctx, "INSERT INTO items (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", in.ID); err != nil {
 			log.Printf("insert %s: %v", in.ID, err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if dropAnswer() {
+			// Committed, but the client never gets the answer.
+			if hj, ok := w.(http.Hijacker); ok {
+				if conn, _, err := hj.Hijack(); err == nil {
+					conn.Close()
+					return
+				}
+			}
 		}
 		w.WriteHeader(http.StatusCreated)
 	}))

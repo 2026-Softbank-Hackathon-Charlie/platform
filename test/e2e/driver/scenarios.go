@@ -14,6 +14,12 @@ package main
 //	                  automatic rollback run (slo-guard) succeeded, writes and
 //	                  reads back on the source, every acknowledged write on the
 //	                  source.
+//	lost-response     no migration: for 20s the source app commits every 5th
+//	                  write and then drops the connection, so the client never
+//	                  hears that it succeeded. Want: every such write retried
+//	                  with the same id and answered, no write failed, and
+//	                  exactly one row per acknowledged write (no duplicate, no
+//	                  row the client does not know of).
 
 import (
 	"context"
@@ -32,20 +38,27 @@ const (
 	scenarioMigrate         = "migrate"
 	scenarioCanaryFault     = "canary-fault"
 	scenarioObserveRollback = "observe-rollback"
+	scenarioLostResponse    = "lost-response"
 )
 
 type scenario struct {
 	name                      string
 	targetApp, gwAdmin, gwTok string
+	sourceApp                 string
 	sourceDSN                 string
 	injected                  bool
 	injectedAt                time.Time
 }
 
-func newScenario(name, targetApp, gwAdmin, gwTok, sourceDSN string) (*scenario, error) {
-	s := &scenario{name: name, targetApp: strings.TrimRight(targetApp, "/"), gwAdmin: strings.TrimRight(gwAdmin, "/"), gwTok: gwTok, sourceDSN: sourceDSN}
+func newScenario(name, sourceApp, targetApp, gwAdmin, gwTok, sourceDSN string) (*scenario, error) {
+	s := &scenario{name: name, sourceApp: strings.TrimRight(sourceApp, "/"), targetApp: strings.TrimRight(targetApp, "/"),
+		gwAdmin: strings.TrimRight(gwAdmin, "/"), gwTok: gwTok, sourceDSN: sourceDSN}
 	switch name {
 	case scenarioMigrate:
+	case scenarioLostResponse:
+		if s.sourceApp == "" || sourceDSN == "" {
+			return nil, fmt.Errorf("%s needs -source-app and E2E_SOURCE_DSN", name)
+		}
 	case scenarioCanaryFault, scenarioObserveRollback:
 		if s.targetApp == "" || s.gwAdmin == "" || gwTok == "" || sourceDSN == "" {
 			return nil, fmt.Errorf("%s needs -target-app, -gateway-admin, E2E_GATEWAY_TOKEN and E2E_SOURCE_DSN", name)
@@ -108,7 +121,11 @@ func (s *scenario) clearFault() {
 }
 
 func (s *scenario) fault(method, path string) error {
-	req, err := http.NewRequest(method, s.targetApp+path, nil)
+	app := s.targetApp
+	if s.name == scenarioLostResponse {
+		app = s.sourceApp
+	}
+	req, err := http.NewRequest(method, app+path, nil)
 	if err != nil {
 		return err
 	}
@@ -121,6 +138,55 @@ func (s *scenario) fault(method, path string) error {
 		return fmt.Errorf("%s %s: %s", method, path, resp.Status)
 	}
 	return nil
+}
+
+// lostResponse runs the lost-response scenario: no migration, only the load
+// against the current primary while the source app drops every 5th answer
+// after committing. It reports and says whether the scenario passed.
+func (s *scenario) lostResponse(ctx context.Context, l *load, stopLoad func()) bool {
+	ok := true
+	fail := func(format string, a ...any) {
+		ok = false
+		fmt.Printf("FAIL: "+format+"\n", a...)
+	}
+	if err := s.inject("dropEvery=5&method=POST", "every 5th write is committed, then its answer is dropped"); err != nil {
+		fail("%v", err)
+		stopLoad()
+		return false
+	}
+	time.Sleep(20 * time.Second)
+	s.clearFault()
+	time.Sleep(2 * time.Second)
+	stopLoad()
+
+	fmt.Println("== result (" + s.name + ")")
+	fmt.Printf("client writes  ok=%d failed=%d\n", l.writeOK.Load(), l.writeFail.Load())
+	fmt.Printf("write retries  first attempt failed=%d, completed by a retry=%d, retry attempts=%d\n",
+		l.writeFirstFail.Load(), l.writeRecovered.Load(), l.writeRetried.Load())
+	if n := l.writeFail.Load(); n != 0 {
+		fail("%d writes failed after retries", n)
+	}
+	if l.writeRecovered.Load() == 0 {
+		fail("no answer was dropped and retried; the fault did not take effect")
+	}
+	found, err := countOnTarget(ctx, s.sourceDSN, l.keys)
+	if err != nil {
+		fail("count acknowledged writes: %v", err)
+		return false
+	}
+	all, err := countWithPrefix(ctx, s.sourceDSN, l.nonce+"-")
+	if err != nil {
+		fail("count this run's rows: %v", err)
+		return false
+	}
+	fmt.Printf("rows           %d acknowledged writes, %d of them in the database, %d rows from this run in all\n", len(l.keys), found, all)
+	if found != int64(len(l.keys)) {
+		fail("%d acknowledged writes are missing", int64(len(l.keys))-found)
+	}
+	if all != int64(len(l.keys)) {
+		fail("%d rows exist that no acknowledged write accounts for (duplicates or unknown commits)", all-int64(len(l.keys)))
+	}
+	return ok
 }
 
 type gatewayState struct {
@@ -205,6 +271,8 @@ func (s *scenario) finish(ctx context.Context, op *client.Client, runID string, 
 	}
 	fmt.Printf("client writes  ok=%d failed=%d; longest gap without a successful write %s\n",
 		l.writeOK.Load(), l.writeFail.Load(), l.maxGap.Round(time.Millisecond))
+	fmt.Printf("write retries  first attempt failed=%d, completed by a retry=%d, retry attempts=%d\n",
+		l.writeFirstFail.Load(), l.writeRecovered.Load(), l.writeRetried.Load())
 	fmt.Printf("client reads   ok=%d notFound=%d failed=%d; by backend %v\n",
 		l.readOK.Load(), l.readMissing.Load(), l.readFail.Load(), l.byBackend)
 

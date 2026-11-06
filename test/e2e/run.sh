@@ -139,12 +139,13 @@ wait_http "http://127.0.0.1:$API_PORT/healthz"
 
 # Failure scenarios first: each ends with the source as primary again, so the
 # normal migration runs last on the same clusters (see driver/scenarios.go).
-for scenario in ${SCENARIOS:-canary-fault observe-rollback migrate}; do
+for scenario in ${SCENARIOS:-lost-response canary-fault observe-rollback migrate}; do
   echo "== scenario $scenario (under load)"
   E2E_AGENT_TOKEN=$agent_token E2E_OPERATOR_TOKEN=$op_token E2E_GATEWAY_TOKEN=$gw_token \
     E2E_TARGET_DSN=$(dsn "$DST_DB_PORT") E2E_SOURCE_DSN=$(dsn "$SRC_DB_PORT") \
     "$bin/driver$exe" -api "http://127.0.0.1:$API_PORT" -gateway "http://127.0.0.1:$GW_PORT" \
     -gateway-admin "http://127.0.0.1:$GW_ADMIN_PORT" -target-app "http://127.0.0.1:$DST_APP_PORT" \
+    -source-app "http://127.0.0.1:$SRC_APP_PORT" \
     -scenario "$scenario" -plan "$here/plan.json" -manifest "$here/target.yaml"
 done
 
