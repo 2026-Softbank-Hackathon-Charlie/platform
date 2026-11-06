@@ -43,9 +43,15 @@ type Policy struct {
 	// GatewayTokenEnv is the variable gateway.token may reference, as
 	// "${GatewayTokenEnv}" and nothing else. Empty allows no token.
 	GatewayTokenEnv string
-	// GatewayURL is the only gateway a plan may target in "http" mode.
-	// Empty means http mode is rejected.
+	// GatewayURL is the only gateway a plan may target in "http" mode: its
+	// admin root (the gateway's default app) or one app's scope under it,
+	// GatewayAppURL (ADR 0012). Empty means http mode is rejected.
 	GatewayURL string
+	// AppDBHosts maps each registered app to its database hosts ("host:port")
+	// in every environment (apps.Catalog.AppHosts). A plan whose databases
+	// belong to an app must use that app's gateway scope, and an app's scope
+	// only fits a plan whose source and target databases are both the app's.
+	AppDBHosts map[string][]string
 	// DSNHostSuffixes, when set, restricts database hosts (e.g. ".ts.net").
 	DSNHostSuffixes []string
 	// RcloneFlags lists allowed rclone flag names (without values).
@@ -137,7 +143,11 @@ type expandedFields struct {
 
 // dbHosts are the "host:port" the DSNs connect to, read from the plan as
 // submitted. Empty when a DSN is missing.
-type dbHosts struct{ source, target string }
+// all holds every host of both DSNs, fallback hosts included.
+type dbHosts struct {
+	source, target string
+	all            []string
+}
 
 // checkRefs runs before plan.Parse, which expands the environment.
 func (p Policy) checkRefs(raw []byte) (dbHosts, error) {
@@ -146,12 +156,18 @@ func (p Policy) checkRefs(raw []byte) (dbHosts, error) {
 		return dbHosts{}, fmt.Errorf("decode plan: %w", err)
 	}
 	var h dbHosts
-	var err error
-	if h.source, err = p.checkDSN("source", f.Source.DSN); err != nil {
-		return dbHosts{}, err
-	}
-	if h.target, err = p.checkDSN("target", f.Target.DSN); err != nil {
-		return dbHosts{}, err
+	for _, d := range []struct {
+		role, dsn string
+		first     *string
+	}{{"source", f.Source.DSN, &h.source}, {"target", f.Target.DSN, &h.target}} {
+		hosts, err := p.checkDSN(d.role, d.dsn)
+		if err != nil {
+			return dbHosts{}, err
+		}
+		if len(hosts) > 0 {
+			*d.first = hosts[0]
+		}
+		h.all = append(h.all, hosts...)
 	}
 	if strings.Contains(f.Gateway.URL, "$") {
 		return dbHosts{}, fmt.Errorf("gateway.url must not reference environment variables")
@@ -169,34 +185,35 @@ var dsnRef = regexp.MustCompile(`^(postgres(?:ql)?://[^:@/?#$]*):\$\{([^}]*)\}(@
 // dsnPlaceholder stands in for the password while the template is parsed.
 const dsnPlaceholder = "password"
 
-// checkDSN checks the DSN as submitted and returns its host:port.
-func (p Policy) checkDSN(role, dsn string) (string, error) {
+// checkDSN checks the DSN as submitted and returns its hosts ("host:port"),
+// the first one and then the fallbacks.
+func (p Policy) checkDSN(role, dsn string) ([]string, error) {
 	if dsn == "" {
-		return "", nil // plan.Parse reports the missing DSN
+		return nil, nil // plan.Parse reports the missing DSN
 	}
 	if !strings.HasPrefix(dsn, "postgres://") && !strings.HasPrefix(dsn, "postgresql://") {
-		return "", fmt.Errorf("%s.dsn must be a postgres:// URL", role)
+		return nil, fmt.Errorf("%s.dsn must be a postgres:// URL", role)
 	}
 	onlyPassword := fmt.Errorf("%s.dsn may reference an environment variable only as its whole password, as in postgres://user:${VAR}@host:5432/db", role)
 	tmpl, ref := dsn, ""
 	if strings.Contains(dsn, "$") {
 		m := dsnRef.FindStringSubmatch(dsn)
 		if m == nil {
-			return "", onlyPassword
+			return nil, onlyPassword
 		}
 		tmpl, ref = m[1]+":"+dsnPlaceholder+m[3], m[2]
 	}
 	// Errors never echo the DSN: it may hold a literal password.
 	u, err := url.Parse(tmpl)
 	if err != nil || u.Host == "" {
-		return "", fmt.Errorf("%s.dsn is not a postgres:// URL with a host", role)
+		return nil, fmt.Errorf("%s.dsn is not a postgres:// URL with a host", role)
 	}
 	if pw, _ := u.User.Password(); ref != "" && pw != dsnPlaceholder {
-		return "", onlyPassword
+		return nil, onlyPassword
 	}
 	cfg, err := pgconn.ParseConfig(tmpl)
 	if err != nil {
-		return "", fmt.Errorf("%s.dsn is not a valid PostgreSQL connection string", role)
+		return nil, fmt.Errorf("%s.dsn is not a valid PostgreSQL connection string", role)
 	}
 	hosts := []string{net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port)))}
 	for _, fb := range cfg.Fallbacks {
@@ -206,16 +223,16 @@ func (p Policy) checkDSN(role, dsn string) (string, error) {
 		for _, hp := range hosts {
 			h, _, _ := net.SplitHostPort(hp)
 			if !slices.ContainsFunc(p.DSNHostSuffixes, func(s string) bool { return strings.HasSuffix(h, s) }) {
-				return "", fmt.Errorf("%s.dsn host %q is not an allowed database host", role, h)
+				return nil, fmt.Errorf("%s.dsn host %q is not an allowed database host", role, h)
 			}
 		}
 	}
 	if ref != "" {
 		if err := p.checkPasswordRef(role, ref, hosts); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	return hosts[0], nil
+	return hosts, nil
 }
 
 // checkPasswordRef allows ref as the password of a DSN connecting to hosts.
@@ -236,7 +253,7 @@ func (p Policy) checkPasswordRef(role, ref string, hosts []string) error {
 }
 
 // checkParsed validates fields that reach the filesystem, processes or network.
-func (p Policy) checkParsed(pl *plan.Plan) error {
+func (p Policy) checkParsed(pl *plan.Plan, hosts dbHosts) error {
 	if !planID.MatchString(pl.ID) {
 		return fmt.Errorf("id %q must be lowercase letters, digits and '-' (at most 63)", pl.ID)
 	}
@@ -280,11 +297,64 @@ func (p Policy) checkParsed(pl *plan.Plan) error {
 		if p.GatewayURL == "" {
 			return fmt.Errorf("gateway.mode http is disabled on this server")
 		}
-		if strings.TrimRight(pl.Gateway.URL, "/") != strings.TrimRight(p.GatewayURL, "/") {
-			return fmt.Errorf("gateway.url must be the platform gateway")
+		if err := p.checkGatewayScope(pl.Gateway.URL, hosts); err != nil {
+			return err
 		}
 	}
+	if pl.Target.App != nil {
+		// Cold mode (ADR 0012 of the engine) scales a workload and sends smoke
+		// requests to a URL from the plan; the policy has no rules for those yet.
+		return fmt.Errorf("target.app is not accepted by this server yet")
+	}
 	return nil
+}
+
+// GatewayAppURL is the admin URL of one app's scope in the gateway at root
+// (ADR 0012): the engine and the runner use it as the gateway's base URL and
+// then act on that app alone.
+func GatewayAppURL(root, app string) string {
+	return strings.TrimRight(root, "/") + "/apps/" + app
+}
+
+// checkGatewayScope decides the plan's app from every host of both DSNs,
+// fallback hosts included. No host of a registered app: only the gateway
+// admin root (the default app). Hosts of one app: every host must be that
+// app's and gateway.url exactly GatewayAppURL of it, never the root. Hosts
+// of several apps: refused. Anything else would hold or route the wrong
+// app's traffic.
+func (p Policy) checkGatewayScope(raw string, hosts dbHosts) error {
+	u := strings.TrimRight(raw, "/")
+	var owners []string
+	for app, appHosts := range p.AppDBHosts {
+		if slices.ContainsFunc(hosts.all, func(h string) bool { return hasHost(appHosts, h) }) {
+			owners = append(owners, app)
+		}
+	}
+	slices.Sort(owners)
+	switch len(owners) {
+	case 0:
+		if u != strings.TrimRight(p.GatewayURL, "/") {
+			return fmt.Errorf("gateway.url must be the platform gateway: the plan's databases belong to no registered app")
+		}
+		return nil
+	case 1:
+	default:
+		return fmt.Errorf("the plan's databases belong to several apps (%s); a plan moves one app", strings.Join(owners, ", "))
+	}
+	app := owners[0]
+	for _, h := range hosts.all {
+		if !hasHost(p.AppDBHosts[app], h) {
+			return fmt.Errorf("every database host of a plan for app %s must be the app's; %s is not", app, h)
+		}
+	}
+	if u != GatewayAppURL(p.GatewayURL, app) {
+		return fmt.Errorf("gateway.url must be the platform gateway's scope of app %s (%s), not the gateway root or another scope", app, GatewayAppURL(p.GatewayURL, app))
+	}
+	return nil
+}
+
+func hasHost(hosts []string, h string) bool {
+	return h != "" && slices.ContainsFunc(hosts, func(a string) bool { return strings.EqualFold(a, h) })
 }
 
 func safeRelPath(field, p string) error {

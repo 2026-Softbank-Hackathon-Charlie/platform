@@ -147,7 +147,7 @@ func (r *Runner) observe(ctx context.Context, l *live) string {
 		var ts apiv1.TrafficState
 		err := r.withTimeout(func(c context.Context) error {
 			var err error
-			ts, err = r.cfg.Traffic.State(c, window)
+			ts, err = l.traffic.State(c, window)
 			return err
 		})
 		var gate apiv1.GateResult

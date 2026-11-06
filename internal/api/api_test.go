@@ -60,6 +60,11 @@ type fakeEngine struct {
 	st     engine.State
 	failAt string                   // this step fails
 	block  map[string]chan struct{} // these steps wait until the channel is closed
+
+	halt bool // a failure halts the run (promotion was requested)
+	// resumeErr is what ResumeHalted answers; resumed counts its calls.
+	resumeErr error
+	resumed   int
 }
 
 func newFakeState(id, planID string) engine.State {
@@ -104,8 +109,26 @@ func (f *fakeEngine) RunStep(ctx context.Context, name string) error {
 	if f.st.Outcome == engine.OutcomeFailed {
 		f.st.Outcome = engine.OutcomeRunning
 	}
+	halted := f.st.Outcome == engine.OutcomeHalted
 	f.mu.Unlock()
+	if halted { // like the engine: only ResumeHalted continues a halted run
+		return fmt.Errorf("run %s is halted; start a new run", f.id)
+	}
 	return f.step(ctx, name)
+}
+
+func (f *fakeEngine) ResumeHalted(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumed++
+	if f.st.Outcome != engine.OutcomeHalted {
+		return fmt.Errorf("run %s is %s, not halted", f.id, f.st.Outcome)
+	}
+	if f.resumeErr != nil {
+		return f.resumeErr
+	}
+	f.st.Outcome, f.st.FailureStep, f.st.FailureError = engine.OutcomeRunning, "", ""
+	return nil
 }
 
 func (f *fakeEngine) step(ctx context.Context, name string) error {
@@ -150,7 +173,9 @@ func (f *fakeEngine) fail(name string, err error) error {
 	f.st.Steps[name].Status = engine.StatusFailed
 	f.st.Steps[name].Error = err.Error()
 	f.st.FailureStep, f.st.FailureError = name, err.Error()
-	if f.st.WritesHeld {
+	if f.halt {
+		f.st.Outcome, f.st.PromoteRequested = engine.OutcomeHalted, true
+	} else if f.st.WritesHeld {
 		f.st.Outcome = engine.OutcomeRolledBack
 	} else {
 		f.st.Outcome = engine.OutcomeFailed
@@ -321,6 +346,10 @@ func (h *harness) factory(p *plan.Plan, o engine.Options) (runs.Engine, error) {
 			return nil, fmt.Errorf("run %s not found", o.RunID)
 		}
 		f := &fakeEngine{id: o.RunID, emit: o.Emit, st: old.deepState(), block: map[string]chan struct{}{}}
+		if h.setup != nil {
+			h.setup(f)
+			h.setup = nil
+		}
 		h.engines[o.RunID] = f
 		return f, nil
 	}
@@ -830,6 +859,95 @@ func TestStepFailureBeforeFenceThenResume(t *testing.T) {
 		t.Fatalf("resume: %d %s", code, b)
 	}
 	h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+}
+
+// A halted run resumes through the same endpoint once the engine confirms
+// the promotion (engine.ResumeHalted); while it cannot, the run stays halted.
+func TestHaltedRunResumesAfterEngineConfirms(t *testing.T) {
+	h := newHarness(t)
+	h.setup = func(f *fakeEngine) { f.failAt, f.halt = engine.StepCutover, true }
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true)})
+	h.waitRun(id, ended(apiv1.RunStatusHalted))
+
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/resume", viewerToken, nil); code != 403 {
+		t.Fatalf("viewer resume: %d %s", code, b)
+	}
+	h.setup = func(f *fakeEngine) { f.resumeErr = errors.New("target is not the topology primary") }
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/resume", opToken, nil); code != 200 {
+		t.Fatalf("resume: %d %s", code, b)
+	}
+	run := h.waitRun(id, ended(apiv1.RunStatusHalted))
+	if r := deref(run.StatusReason); !strings.Contains(r, "resume after halt refused") || !strings.Contains(r, "not the topology primary") {
+		t.Fatalf("reason: %q", r)
+	}
+	if run.Phase != apiv1.RunPhaseDone || run.Engine.Steps[engine.StepCutover].Status != apiv1.StepStatusFailed {
+		t.Fatalf("refused resume ran steps: %+v", run)
+	}
+
+	if code, b := h.do("POST", "/v1/migrations/"+id+"/resume", opToken, nil); code != 200 {
+		t.Fatalf("resume: %d %s", code, b)
+	}
+	h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+	h.mu.Lock()
+	resumed := h.engines[id].resumed
+	h.mu.Unlock()
+	if resumed != 1 {
+		t.Fatalf("ResumeHalted calls on the last engine = %d", resumed)
+	}
+
+	_, b := h.do("GET", "/v1/audit", opToken, nil)
+	if n := strings.Count(string(b), `"afterHalt":true`); n != 2 {
+		t.Fatalf("resumes after halt in the audit log = %d: %s", n, b)
+	}
+}
+
+// A restart during a resume after halt leaves the run interrupted (Recover)
+// while the engine is still halted, or already running again if ResumeHalted
+// had finished. Both resume.
+func TestHaltedResumeCutShortByRestartResumes(t *testing.T) {
+	for _, engineResumed := range []bool{false, true} {
+		h := newHarness(t)
+		h.setup = func(f *fakeEngine) { f.failAt, f.halt = engine.StepCutover, true }
+		ref := h.approved(planJSON("p1", "a", "b", false))
+		id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true)})
+		h.waitRun(id, ended(apiv1.RunStatusHalted))
+
+		// What the store holds when the process dies during the resume.
+		row, err := h.store.GetRun(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc := decode[apiv1.Run](t, row.Doc)
+		doc.Status, doc.EndedAt = apiv1.RunStatusRunning, nil
+		row.Doc, _ = json.Marshal(doc)
+		row.Status = string(doc.Status)
+		if err := h.store.UpdateRun(context.Background(), row); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := h.runner.Recover(context.Background()); n != 1 || err != nil {
+			t.Fatalf("recover: %d %v", n, err)
+		}
+		if run := h.waitRun(id, status(apiv1.RunStatusInterrupted)); run.Engine.Outcome != apiv1.EngineOutcomeHalted {
+			t.Fatalf("engine outcome after recover = %s", run.Engine.Outcome)
+		}
+
+		if engineResumed {
+			h.setup = func(f *fakeEngine) {
+				f.st.Outcome, f.st.FailureStep, f.st.FailureError = engine.OutcomeRunning, "", ""
+			}
+		}
+		if code, b := h.do("POST", "/v1/migrations/"+id+"/resume", opToken, nil); code != 200 {
+			t.Fatalf("engineResumed=%t: resume: %d %s", engineResumed, code, b)
+		}
+		h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+		h.mu.Lock()
+		resumed := h.engines[id].resumed
+		h.mu.Unlock()
+		if want := map[bool]int{false: 1, true: 0}[engineResumed]; resumed != want {
+			t.Fatalf("engineResumed=%t: ResumeHalted calls = %d, want %d", engineResumed, resumed, want)
+		}
+	}
 }
 
 func TestAbortDuringFirstCanaryStepRestoresReads(t *testing.T) {

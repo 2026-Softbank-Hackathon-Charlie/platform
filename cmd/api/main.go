@@ -182,6 +182,7 @@ func main() {
 			fatal("PLATFORM_APPS_FILE", "err", err)
 		}
 		policy.HostPasswordEnvs = appCat.PasswordHosts()
+		policy.AppDBHosts = appCat.AppHosts()
 	}
 
 	// Buckets files may move between: the apps' buckets and any listed here.
@@ -220,6 +221,11 @@ func main() {
 	rcfg := runs.Config{StateDir: *stateDir, Store: st, Log: log}
 	if gw != nil {
 		rcfg.Traffic = gw
+		// A plan's gateway.url is the root or an app's scope (plans.Policy):
+		// canary, request counts and observe use the same scope as the engine.
+		rcfg.TrafficAt = func(u string) runs.Traffic {
+			return &gateway.Client{BaseURL: u, Token: gw.Token, HTTP: gw.HTTP}
+		}
 	}
 	runner := runs.New(runCtx, rcfg)
 	planSvc := plans.New(policy, st)
@@ -299,6 +305,7 @@ func main() {
 	deps.SourceStats = capacity.Prober{}
 	if gw != nil {
 		deps.Traffic = gw
+		deps.TrafficApp = func(app string) api.Traffic { return gw.App(app) }
 	}
 	// The security view reads every cluster, the AWS account and our own audit
 	// log; GCP and Cloudflare are reported as not connected.

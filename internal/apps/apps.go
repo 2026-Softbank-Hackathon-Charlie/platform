@@ -176,6 +176,24 @@ func (c *Catalog) PasswordHosts() map[string][]string {
 	return out
 }
 
+// AppHosts maps every app to its database hosts ("host:port") in all its
+// environments, for the plan policy (plans.Policy.AppDBHosts): a plan between
+// an app's databases must use that app's gateway scope.
+func (c *Catalog) AppHosts() map[string][]string {
+	out := map[string][]string{}
+	for _, a := range c.apps {
+		var hosts []string
+		for _, e := range a.Environments {
+			if h := hostPort(e); !slices.Contains(hosts, h) {
+				hosts = append(hosts, h)
+			}
+		}
+		slices.Sort(hosts)
+		out[a.Name] = hosts
+	}
+	return out
+}
+
 // Buckets returns every bucket of every app, for the plan policy
 // (plans.Policy.Buckets): files may only move between registered buckets.
 func (c *Catalog) Buckets() []string {
@@ -220,6 +238,12 @@ func (c *Catalog) List() []apiv1.App {
 		out = append(out, item)
 	}
 	return out
+}
+
+// Has reports whether name is a registered app.
+func (c *Catalog) Has(name string) bool {
+	_, ok := c.app(name)
+	return ok
 }
 
 func (c *Catalog) app(name string) (App, bool) {

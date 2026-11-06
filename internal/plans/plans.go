@@ -64,7 +64,7 @@ func (s *Service) parse(raw []byte) (*plan.Plan, apiv1.PlanSummary, error) {
 	if err != nil {
 		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	if err := s.policy.checkParsed(p); err != nil {
+	if err := s.policy.checkParsed(p, hosts); err != nil {
 		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	return p, summarize(p, hosts), nil

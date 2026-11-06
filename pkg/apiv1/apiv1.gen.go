@@ -2004,7 +2004,9 @@ type EnginePlan struct {
 		SourceBackend *string                `json:"sourceBackend,omitempty"`
 		TargetBackend *string                `json:"targetBackend,omitempty"`
 		Token         *string                `json:"token,omitempty"`
-		Url           *string                `json:"url,omitempty"`
+
+		// Url The platform gateway's admin URL (PLATFORM_GATEWAY_URL) for a plan whose databases belong to no registered app (the gateway's default app), otherwise exactly `<PLATFORM_GATEWAY_URL>/apps/<app>` of the app that owns both databases. Drafts use the app's scope.
+		Url *string `json:"url,omitempty"`
 	} `json:"gateway,omitempty"`
 	Id         string             `json:"id"`
 	Source     EnginePlanEndpoint `json:"source"`
@@ -2015,7 +2017,12 @@ type EnginePlan struct {
 
 		// MaxDowntime Example: 3m
 		MaxDowntime *string `json:"maxDowntime,omitempty"`
-		MaxLagBytes *int64  `json:"maxLagBytes,omitempty"`
+
+		// MaxFenceGate Longest the fence gate may take; delta times a rehearsal of it before writes are held. Default 20s.
+		//
+		// Example: 20s
+		MaxFenceGate *string `json:"maxFenceGate,omitempty"`
+		MaxLagBytes  *int64  `json:"maxLagBytes,omitempty"`
 
 		// SwitchoverTimeout Example: 2m
 		SwitchoverTimeout *string `json:"switchoverTimeout,omitempty"`
@@ -2063,7 +2070,7 @@ type EngineState struct {
 	RunId            string  `json:"runId"`
 	SourceDemoted    bool    `json:"sourceDemoted"`
 
-	// Steps Keyed by step: precheck, prepare, presync, delta, fence, switchover, cutover, verify, finalize.
+	// Steps Keyed by step: precheck, prepare, presync, delta, fence, switchover, start-target, cutover, verify, finalize. start-target starts a cold plan's target app; other plans skip it. Runs from before it existed have no start-target record until resumed.
 	Steps           map[string]StepRecord `json:"steps"`
 	TrafficOnTarget bool                  `json:"trafficOnTarget"`
 	UpdatedAt       time.Time             `json:"updatedAt"`
@@ -2216,7 +2223,7 @@ type MatrixRoute struct {
 	// awaiting_switch: data is in sync; waiting for an operator to call /switch.
 	// succeeded: traffic and data are on the target and verified.
 	// rolled_back: the source serves traffic again; nothing was lost.
-	// halted: the target was asked to promote and something failed; an operator decides.
+	// halted: the target was asked to promote and something failed; an operator decides (resume continues it once the engine confirms the promotion).
 	// failed: failed before anything irreversible; can be resumed.
 	// aborted: stopped by an operator before anything irreversible; can be resumed.
 	// interrupted: the server restarted while the run was active; can be resumed.
@@ -2497,7 +2504,7 @@ type Run struct {
 	// Phase sync: precheck, prepare, presync, delta.
 	// canary: read traffic share on the target.
 	// awaiting_switch: waiting for /switch.
-	// cutover: fence, switchover, cutover (writes are held here).
+	// cutover: fence, switchover, start-target, cutover (writes are held here).
 	// verify: verify, finalize.
 	// observe: optional; the cutover succeeded and the target's traffic is
 	//   watched against the gate before the run ends (ObserveOptions).
@@ -2522,7 +2529,7 @@ type Run struct {
 	// awaiting_switch: data is in sync; waiting for an operator to call /switch.
 	// succeeded: traffic and data are on the target and verified.
 	// rolled_back: the source serves traffic again; nothing was lost.
-	// halted: the target was asked to promote and something failed; an operator decides.
+	// halted: the target was asked to promote and something failed; an operator decides (resume continues it once the engine confirms the promotion).
 	// failed: failed before anything irreversible; can be resumed.
 	// aborted: stopped by an operator before anything irreversible; can be resumed.
 	// interrupted: the server restarted while the run was active; can be resumed.
@@ -2570,7 +2577,7 @@ type RunList struct {
 // RunPhase sync: precheck, prepare, presync, delta.
 // canary: read traffic share on the target.
 // awaiting_switch: waiting for /switch.
-// cutover: fence, switchover, cutover (writes are held here).
+// cutover: fence, switchover, start-target, cutover (writes are held here).
 // verify: verify, finalize.
 // observe: optional; the cutover succeeded and the target's traffic is
 //
@@ -2610,7 +2617,7 @@ type RunResult struct {
 // awaiting_switch: data is in sync; waiting for an operator to call /switch.
 // succeeded: traffic and data are on the target and verified.
 // rolled_back: the source serves traffic again; nothing was lost.
-// halted: the target was asked to promote and something failed; an operator decides.
+// halted: the target was asked to promote and something failed; an operator decides (resume continues it once the engine confirms the promotion).
 // failed: failed before anything irreversible; can be resumed.
 // aborted: stopped by an operator before anything irreversible; can be resumed.
 // interrupted: the server restarted while the run was active; can be resumed.
@@ -3147,6 +3154,9 @@ type GetSecurityOCSFParams struct {
 type GetTrafficParams struct {
 	// Window Statistics window, a duration between 1s and 5m.
 	Window *string `form:"window,omitempty" json:"window,omitempty"`
+
+	// App An app registered on this server (GET /v1/apps). Any other name is 400.
+	App *string `form:"app,omitempty" json:"app,omitempty"`
 }
 
 // ReceiveGitHubWebhookJSONBody defines parameters for ReceiveGitHubWebhook.

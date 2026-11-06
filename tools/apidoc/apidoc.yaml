@@ -229,7 +229,10 @@ operations:
   resumeMigration:
     summary: 중단된 run 이어서 실행
     role: operator
-    notes: interrupted(서버 재시작), failed, aborted 상태의 run을 이어서 실행한다. 이미 성공한 단계는 건너뛴다. 시작할 때와 마찬가지로 계획의 written-records 스트림에 레코드가 있어야 한다.
+    notes: |-
+      interrupted(서버 재시작), failed, aborted 상태의 run을 이어서 실행한다. 이미 성공한 단계는 건너뛴다. 시작할 때와 마찬가지로 계획의 written-records 스트림에 레코드가 있어야 한다.
+
+      halted인 run도 이어서 실행한다. 엔진이 먼저 target 승격이 끝났고 다른 primary가 없는지(target이 토폴로지 primary이고 쓰기 가능하며 안정됐고, source가 target을 따르며 recovery 상태인지) 확인한 뒤 switchover를 끝난 것으로 치고 끝나지 않은 첫 단계부터 이어 간다. 확인하지 못하면 run은 그 이유를 statusReason에 담고 다시 halted로 끝난다. 승격을 요청하기 전에 halted된 run도 같은 방식으로 거절된다.
   rollbackMigration:
     summary: 성공한 run 원클릭 롤백 (202)
     role: operator
@@ -268,7 +271,7 @@ operations:
   getTraffic:
     summary: 게이트웨이 상태와 요청 통계
     role: 모든 역할
-    notes: 트래픽 게이트웨이의 현재 상태와 요청 통계를 돌려준다. 게이트웨이가 설정되지 않았으면 503 gateway_not_configured, 응답하지 않으면 502 gateway_unreachable이다. TrafficState, RouteRequest, WeightsRequest는 게이트웨이 자체 관리 API에서도 같은 타입으로 쓴다.
+    notes: 트래픽 게이트웨이의 현재 상태와 요청 통계를 돌려준다. 게이트웨이가 설정되지 않았으면 503 gateway_not_configured, 응답하지 않으면 502 gateway_unreachable이다. TrafficState, RouteRequest, WeightsRequest는 게이트웨이 자체 관리 API에서도 같은 타입으로 쓴다. app이 없으면 게이트웨이의 기본 앱을, 있으면 그 앱의 범위(`<gateway>/apps/<app>`)를 읽는다. 앱을 이전하는 run의 트래픽은 이 범위에 있다.
   listAudit:
     summary: 감사 로그 (최신순)
     role: 모든 역할
@@ -475,6 +478,7 @@ params:
   Last-Event-ID: 마지막으로 받은 이벤트의 seq. 그 뒤부터 재생한다
   after: seq가 이 값보다 큰 이벤트부터 재생한다. Last-Event-ID와 같다
   window: 통계 구간, 1s에서 5m 사이
+  app@getTraffic: '이 서버에 등록한 앱 (GET /v1/apps, 예: moimroom). 다른 이름이면 400'
   limit@listAudit: 돌려받을 항목 수
   before: id가 이 값보다 작은 항목만 (페이지 넘김)
   environment: '이 환경만 (예: gke, aws-account, platform). 모르는 이름이면 400'
@@ -724,7 +728,7 @@ fields:
   EnginePlan.files.flags: rclone 플래그. 허용된 플래그만 통과한다
   EnginePlan.files.rclone: '"rclone"이거나 생략한다. remote 자격 증명은 서버 환경 변수(`RCLONE_CONFIG_<REMOTE>_*`)에서 가져온다'
   EnginePlan.gateway.mode: http면 게이트웨이 관리 API로 트래픽을 옮기고, none이면 건너뛴다 (리허설, 수동)
-  EnginePlan.gateway.url: 게이트웨이 관리 API 주소
+  EnginePlan.gateway.url: 게이트웨이 관리 API 주소(PLATFORM_GATEWAY_URL). 등록한 앱의 DB를 옮기는 계획이면 정확히 그 앱의 범위 `<PLATFORM_GATEWAY_URL>/apps/<app>`이어야 하고, 어느 앱의 DB도 아니면 관리 API 주소 그대로(게이트웨이의 기본 앱)다. 초안은 앱의 범위를 쓴다
   EnginePlan.gateway.token: '`${GATEWAY_TOKEN}`만 허용한다'
   EnginePlan.gateway.sourceBackend: 기본값은 source.env
   EnginePlan.gateway.targetBackend: 기본값은 target.env
@@ -736,6 +740,7 @@ fields:
   EnginePlan.thresholds.catchupTimeout: 복제 지연을 따라잡는 제한 시간, 기본값 10m
   EnginePlan.thresholds.switchoverTimeout: switchover 제한 시간, 기본값 2m
   EnginePlan.thresholds.maxDowntime: 허용하는 최대 쓰기 중단 시간, 기본값 3m
+  EnginePlan.thresholds.maxFenceGate: fence 게이트에 허용하는 최대 시간. delta가 쓰기를 붙잡기 전에 미리 재 본다. 기본값 20s
   EnginePlanEndpoint.env: 환경 이름
   EnginePlanEndpoint.kubeconfig: 서버 정책상 kubeconfig 경로는 쓸 수 없다
   EnginePlanEndpoint.context: kube context
@@ -780,7 +785,7 @@ fields:
   RunResult.verified: verify 보고서에 문제가 없다
   CanaryStep.weight: 이 step의 target 읽기 비율(%)
   CanaryStep.verdict: 'ok: 통과했다. inconclusive: 마지막이 아닌 step에서 요청이 너무 적었고 canary는 계속됐다. failed: run이 롤백됐다'
-  EngineState.steps: '단계 이름이 키다: precheck, prepare, presync, delta, fence, switchover, cutover, verify, finalize'
+  EngineState.steps: '단계 이름이 키다: precheck, prepare, presync, delta, fence, switchover, start-target, cutover, verify, finalize. start-target은 cold 계획의 target 앱을 띄우고, 다른 계획은 건너뛴다. 이 단계가 생기기 전의 run에는 이어서 실행하기 전까지 start-target 기록이 없다'
   EngineState.writesHeld: 게이트웨이가 쓰기를 붙잡고 있다
   EngineState.fenceLsn: 쓰기를 붙잡은 시점의 LSN
   EngineState.sourceDemoted: source가 강등됐다
@@ -979,7 +984,7 @@ enums:
     awaiting_switch: 데이터가 동기화됐고 운영자의 /switch를 기다린다
     succeeded: 트래픽과 데이터가 target에 있고 검증을 통과했다
     rolled_back: source가 다시 트래픽을 받는다. 잃은 데이터는 없다
-    halted: target 승격을 요청한 뒤 실패했다. 운영자가 판단한다
+    halted: target 승격을 요청한 뒤 실패했다. 운영자가 판단한다 (엔진이 승격을 확인하면 resume으로 이어 간다)
     failed: 되돌릴 수 없는 단계 전에 실패했다. resume 가능
     aborted: 되돌릴 수 없는 단계 전에 운영자가 멈췄다. resume 가능
     interrupted: run이 활성 상태일 때 서버가 재시작됐다. resume 가능
@@ -987,7 +992,7 @@ enums:
     sync: precheck, prepare, presync, delta
     canary: 읽기 트래픽 일부를 target으로 보낸다
     awaiting_switch: /switch를 기다린다
-    cutover: fence, switchover, cutover (여기서 쓰기를 붙잡는다)
+    cutover: fence, switchover, start-target, cutover (여기서 쓰기를 붙잡는다)
     verify: verify, finalize
     observe: 선택. 전환 성공 후 target 트래픽을 게이트로 관찰한다
     done: run이 끝났다

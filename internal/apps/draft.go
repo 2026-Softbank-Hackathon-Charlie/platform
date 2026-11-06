@@ -21,7 +21,8 @@ var ErrInvalid = errors.New("invalid draft request")
 //   - context is each environment's kubeContext; namespace, cluster and DSN come from the app
 //   - the DSN reads the password as ${passwordEnv}, expanded on the server at start
 //   - files are moved when both environments have a bucket, unless req.Files is false
-//   - the gateway is the platform gateway (mode http) when the server has one, otherwise none
+//   - the gateway is the app's scope in the platform gateway, <gateway>/apps/<app>
+//     (mode http), when the server has one, otherwise none
 func (c *Catalog) Draft(req apiv1.PlanDraftRequest) (apiv1.EnginePlan, error) {
 	a, ok := c.app(req.App)
 	if !ok {
@@ -59,7 +60,9 @@ func (c *Catalog) Draft(req apiv1.PlanDraftRequest) (apiv1.EnginePlan, error) {
 		srcEnv, _ := c.env(req.Source)
 		dstEnv, _ := c.env(req.Target)
 		g.Mode = ptr(apiv1.EnginePlanGatewayModeHttp)
-		g.Url, g.Token = ptr(c.gatewayURL), ptr("${GATEWAY_TOKEN}")
+		// The app's own scope in the gateway (ADR 0012): the root would hold
+		// and route the gateway's default app instead.
+		g.Url, g.Token = ptr(plans.GatewayAppURL(c.gatewayURL, a.Name)), ptr("${GATEWAY_TOKEN}")
 		g.SourceBackend, g.TargetBackend = ptr(srcEnv.GatewayBackend), ptr(dstEnv.GatewayBackend)
 	} else {
 		g.Mode = ptr(apiv1.EnginePlanGatewayModeNone)
