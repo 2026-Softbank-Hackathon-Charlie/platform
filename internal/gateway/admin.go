@@ -33,6 +33,7 @@ func (g *Gateway) adminMux() http.Handler {
 		h       func(*router, http.ResponseWriter, *http.Request)
 	}{
 		{"GET /v1/state", (*router).handleState},
+		{"GET /v1/ai/requests", (*router).handleAIRequests},
 		{"POST /v1/writes/hold", (*router).handleHold},
 		{"POST /v1/writes/release", (*router).handleRelease},
 		{"POST /v1/route", (*router).handleRoute},
