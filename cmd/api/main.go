@@ -305,6 +305,7 @@ func main() {
 	deps.SourceStats = capacity.Prober{}
 	if gw != nil {
 		deps.Traffic = gw
+		deps.TrafficApp = func(app string) api.Traffic { return gw.App(app) }
 	}
 	// The security view reads every cluster, the AWS account and our own audit
 	// log; GCP and Cloudflare are reported as not connected.

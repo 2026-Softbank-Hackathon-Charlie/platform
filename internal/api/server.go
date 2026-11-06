@@ -119,6 +119,10 @@ type Deps struct {
 	Envs  Envs
 	// Traffic is nil when no gateway is configured.
 	Traffic Traffic
+	// TrafficApp returns the gateway client of one app's scope
+	// (<gateway>/apps/<app>, ADR 0012) for GET /v1/traffic?app=. Nil refuses
+	// the parameter.
+	TrafficApp func(app string) Traffic
 	// EnvNotFound is the error Envs.Get returns for an unknown name.
 	EnvNotFound error
 	// Apps drafts plans from PLATFORM_APPS_FILE; nil when the file is not set.

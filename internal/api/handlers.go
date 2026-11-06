@@ -362,9 +362,18 @@ func (s *Server) traffic(w http.ResponseWriter, r *http.Request) {
 		}
 		window = d
 	}
+	traffic := s.d.Traffic
+	if app := r.URL.Query().Get("app"); app != "" {
+		// Only an app from the apps file: the same names plans use as gateway scopes.
+		if s.d.Apps == nil || s.d.TrafficApp == nil || !s.d.Apps.Has(app) {
+			s.fail(w, r, http.StatusBadRequest, "invalid_request", "app must be an app registered on this server (GET /v1/apps)")
+			return
+		}
+		traffic = s.d.TrafficApp(app)
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	ts, err := s.d.Traffic.State(ctx, window)
+	ts, err := traffic.State(ctx, window)
 	if err != nil {
 		s.cfg.Log.Warn("gateway state", "err", err)
 		s.fail(w, r, http.StatusBadGateway, "gateway_unreachable", "could not read the traffic gateway state")

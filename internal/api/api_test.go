@@ -902,6 +902,54 @@ func TestHaltedRunResumesAfterEngineConfirms(t *testing.T) {
 	}
 }
 
+// A restart during a resume after halt leaves the run interrupted (Recover)
+// while the engine is still halted, or already running again if ResumeHalted
+// had finished. Both resume.
+func TestHaltedResumeCutShortByRestartResumes(t *testing.T) {
+	for _, engineResumed := range []bool{false, true} {
+		h := newHarness(t)
+		h.setup = func(f *fakeEngine) { f.failAt, f.halt = engine.StepCutover, true }
+		ref := h.approved(planJSON("p1", "a", "b", false))
+		id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true)})
+		h.waitRun(id, ended(apiv1.RunStatusHalted))
+
+		// What the store holds when the process dies during the resume.
+		row, err := h.store.GetRun(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc := decode[apiv1.Run](t, row.Doc)
+		doc.Status, doc.EndedAt = apiv1.RunStatusRunning, nil
+		row.Doc, _ = json.Marshal(doc)
+		row.Status = string(doc.Status)
+		if err := h.store.UpdateRun(context.Background(), row); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := h.runner.Recover(context.Background()); n != 1 || err != nil {
+			t.Fatalf("recover: %d %v", n, err)
+		}
+		if run := h.waitRun(id, status(apiv1.RunStatusInterrupted)); run.Engine.Outcome != apiv1.EngineOutcomeHalted {
+			t.Fatalf("engine outcome after recover = %s", run.Engine.Outcome)
+		}
+
+		if engineResumed {
+			h.setup = func(f *fakeEngine) {
+				f.st.Outcome, f.st.FailureStep, f.st.FailureError = engine.OutcomeRunning, "", ""
+			}
+		}
+		if code, b := h.do("POST", "/v1/migrations/"+id+"/resume", opToken, nil); code != 200 {
+			t.Fatalf("engineResumed=%t: resume: %d %s", engineResumed, code, b)
+		}
+		h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+		h.mu.Lock()
+		resumed := h.engines[id].resumed
+		h.mu.Unlock()
+		if want := map[bool]int{false: 1, true: 0}[engineResumed]; resumed != want {
+			t.Fatalf("engineResumed=%t: ResumeHalted calls = %d, want %d", engineResumed, resumed, want)
+		}
+	}
+}
+
 func TestAbortDuringFirstCanaryStepRestoresReads(t *testing.T) {
 	h := newHarness(t)
 	ref := h.approved(planJSON("p1", "a", "b", true))

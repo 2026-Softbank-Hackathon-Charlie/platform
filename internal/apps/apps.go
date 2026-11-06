@@ -240,6 +240,12 @@ func (c *Catalog) List() []apiv1.App {
 	return out
 }
 
+// Has reports whether name is a registered app.
+func (c *Catalog) Has(name string) bool {
+	_, ok := c.app(name)
+	return ok
+}
+
 func (c *Catalog) app(name string) (App, bool) {
 	for _, a := range c.apps {
 		if a.Name == name {

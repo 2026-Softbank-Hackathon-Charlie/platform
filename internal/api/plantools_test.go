@@ -460,6 +460,37 @@ func TestDraftedPlanRunsOnTheAppGatewayScope(t *testing.T) {
 	}
 }
 
+// GET /v1/traffic?app= reads that app's gateway scope; without it, the
+// default app as before. Only apps registered on the server are accepted.
+func TestTrafficOfOneApp(t *testing.T) {
+	var asked []string
+	h := newHarness(t, withApps(gatewayURL), func(h *harness, rc *runs.Config, d *Deps) {
+		d.TrafficApp = func(app string) Traffic {
+			asked = append(asked, app)
+			return h.traffic
+		}
+	})
+	if code, b := h.do("GET", "/v1/traffic?app=moimroom", viewerToken, nil); code != 200 {
+		t.Fatalf("app traffic: %d %s", code, b)
+	}
+	if code, b := h.do("GET", "/v1/traffic", viewerToken, nil); code != 200 {
+		t.Fatalf("default traffic: %d %s", code, b)
+	}
+	for _, q := range []string{"nope", "moimroom%2Fv1", "..%2Fx"} {
+		if code, b := h.do("GET", "/v1/traffic?app="+q, viewerToken, nil); code != 400 || errCode(t, b) != "invalid_request" {
+			t.Fatalf("app %s: %d %s", q, code, b)
+		}
+	}
+	if fmt.Sprint(asked) != "[moimroom]" {
+		t.Fatalf("TrafficApp calls = %v", asked)
+	}
+	// Without an apps file no app is registered.
+	h2 := newHarness(t)
+	if code, b := h2.do("GET", "/v1/traffic?app=moimroom", viewerToken, nil); code != 400 {
+		t.Fatalf("app traffic without apps: %d %s", code, b)
+	}
+}
+
 // fakeSource answers MeasureSource and records the DSN it was given.
 type fakeSource struct {
 	mu   sync.Mutex

@@ -345,7 +345,9 @@ func (r *Runner) drive(ctx context.Context, l *live) {
 		r.maybeAutoRollback(l)
 	}()
 
-	if l.resumeHalted {
+	// The engine's own state decides: after a restart that came between
+	// ResumeHalted and the next save of the run, the engine is no longer halted.
+	if l.resumeHalted && l.eng.State().Outcome == engine.OutcomeHalted {
 		if err := l.eng.ResumeHalted(ctx); err != nil {
 			// The engine keeps the run halted; so does the run.
 			r.ended(l, fmt.Errorf("resume after halt refused: %w", err))
@@ -854,7 +856,9 @@ func (r *Runner) Resume(ctx context.Context, id, actor string, p *plan.Plan) (ap
 	if err != nil {
 		return apiv1.Run{}, err
 	}
-	halted := doc.Status == apiv1.RunStatusHalted
+	// A halted run whose resume was cut short by a restart is interrupted
+	// (Recover) while its engine is still halted: it resumes the same way.
+	halted := doc.Status == apiv1.RunStatusHalted || doc.Engine.Outcome == apiv1.EngineOutcomeHalted
 	resumable := []apiv1.RunStatus{apiv1.RunStatusInterrupted, apiv1.RunStatusFailed, apiv1.RunStatusAborted}
 	if !halted && !slices.Contains(resumable, doc.Status) {
 		return apiv1.Run{}, fmt.Errorf("%w: run is %s; only interrupted, failed, aborted or halted runs resume", ErrWrongStatus, doc.Status)

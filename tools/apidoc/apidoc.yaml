@@ -271,7 +271,7 @@ operations:
   getTraffic:
     summary: 게이트웨이 상태와 요청 통계
     role: 모든 역할
-    notes: 트래픽 게이트웨이의 현재 상태와 요청 통계를 돌려준다. 게이트웨이가 설정되지 않았으면 503 gateway_not_configured, 응답하지 않으면 502 gateway_unreachable이다. TrafficState, RouteRequest, WeightsRequest는 게이트웨이 자체 관리 API에서도 같은 타입으로 쓴다.
+    notes: 트래픽 게이트웨이의 현재 상태와 요청 통계를 돌려준다. 게이트웨이가 설정되지 않았으면 503 gateway_not_configured, 응답하지 않으면 502 gateway_unreachable이다. TrafficState, RouteRequest, WeightsRequest는 게이트웨이 자체 관리 API에서도 같은 타입으로 쓴다. app이 없으면 게이트웨이의 기본 앱을, 있으면 그 앱의 범위(`<gateway>/apps/<app>`)를 읽는다. 앱을 이전하는 run의 트래픽은 이 범위에 있다.
   listAudit:
     summary: 감사 로그 (최신순)
     role: 모든 역할
@@ -478,6 +478,7 @@ params:
   Last-Event-ID: 마지막으로 받은 이벤트의 seq. 그 뒤부터 재생한다
   after: seq가 이 값보다 큰 이벤트부터 재생한다. Last-Event-ID와 같다
   window: 통계 구간, 1s에서 5m 사이
+  app@getTraffic: '이 서버에 등록한 앱 (GET /v1/apps, 예: moimroom). 다른 이름이면 400'
   limit@listAudit: 돌려받을 항목 수
   before: id가 이 값보다 작은 항목만 (페이지 넘김)
   environment: '이 환경만 (예: gke, aws-account, platform). 모르는 이름이면 400'

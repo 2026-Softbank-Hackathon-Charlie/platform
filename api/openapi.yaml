@@ -644,13 +644,21 @@ paths:
     get:
       tags: [traffic]
       operationId: getTraffic
-      description: The traffic gateway's live state and request statistics.
+      description: |
+        The traffic gateway's live state and request statistics. Without
+        `app`, the gateway's default app; with it, that app's scope
+        (`<gateway>/apps/<app>`), which a migration of the app holds and routes.
       parameters:
         - name: window
           in: query
           required: false
           description: Statistics window, a duration between 1s and 5m.
           schema: { type: string, default: "10s" }
+        - name: app
+          in: query
+          required: false
+          description: An app registered on this server (GET /v1/apps). Any other name is 400.
+          schema: { type: string, example: moimroom }
       responses:
         "200":
           description: Gateway state.

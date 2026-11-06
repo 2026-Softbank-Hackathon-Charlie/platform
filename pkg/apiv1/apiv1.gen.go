@@ -3154,6 +3154,9 @@ type GetSecurityOCSFParams struct {
 type GetTrafficParams struct {
 	// Window Statistics window, a duration between 1s and 5m.
 	Window *string `form:"window,omitempty" json:"window,omitempty"`
+
+	// App An app registered on this server (GET /v1/apps). Any other name is 400.
+	App *string `form:"app,omitempty" json:"app,omitempty"`
 }
 
 // ReceiveGitHubWebhookJSONBody defines parameters for ReceiveGitHubWebhook.
