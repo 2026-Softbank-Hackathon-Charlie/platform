@@ -50,6 +50,9 @@ type AppDatabases interface {
 	// be sent to (as Policy.HostPasswordEnvs) and each app's database hosts
 	// (as Policy.AppDBHosts). The policy's own entries win.
 	RegistryHosts(ctx context.Context) (passwordHosts, appHosts map[string][]string, err error)
+	// RegistryBuckets returns the buckets their plans' files may move
+	// between (as Policy.Buckets), added to the policy's own.
+	RegistryBuckets(ctx context.Context) ([]string, error)
 	// SetRegistryPasswords puts the passwords that refs names into the
 	// server's environment, where plan.Parse expands them from.
 	SetRegistryPasswords(ctx context.Context, refs []string) error
@@ -83,7 +86,11 @@ func (s *Service) parse(ctx context.Context, raw []byte) (*plan.Plan, apiv1.Plan
 		if err != nil {
 			return nil, apiv1.PlanSummary{}, fmt.Errorf("read the registered apps' databases: %w", err)
 		}
-		policy = policy.withRegistered(pw, ah)
+		buckets, err := s.appDBs.RegistryBuckets(ctx)
+		if err != nil {
+			return nil, apiv1.PlanSummary{}, fmt.Errorf("read the registered apps' buckets: %w", err)
+		}
+		policy = policy.withRegistered(pw, ah, buckets)
 	}
 	hosts, err := policy.checkRefs(raw)
 	if err != nil {

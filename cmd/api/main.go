@@ -246,6 +246,13 @@ func main() {
 	default:
 		fatal("PLATFORM_APP_DB_TOPOLOGY must be 1 or 0", "value", v)
 	}
+	// Optional (ADR 0032): registered apps' files move between their
+	// buckets through rclone remotes named after the environments, which
+	// use the platform's own identities.
+	appFiles, err := apps.EnableFiles(os.Getenv("PLATFORM_APP_FILES"), envCfg.Environments, os.LookupEnv, os.Setenv)
+	if err != nil {
+		fatal("PLATFORM_APP_FILES", "err", err)
+	}
 	// Plans for those apps: drafted from the store, their database hosts and
 	// password variables allowed and their passwords put into the
 	// environment on every parse, so a new app needs no restart.
@@ -261,7 +268,12 @@ func main() {
 		if appCat == nil {
 			appCat = apps.Empty(envCfg.Environments, policy.GatewayURL)
 		}
-		appCat = appCat.WithRegistry(&apps.Registry{Store: st, Secrets: secretsKey, HostTemplates: tmpls})
+		reg := &apps.Registry{Store: st, Secrets: secretsKey, HostTemplates: tmpls}
+		if appFiles != nil {
+			reg.BucketPrefixes = appFiles.BucketPrefixes
+			log.Info("registered apps' files enabled", "remotesSet", appFiles.Set, "remotesKept", appFiles.Kept)
+		}
+		appCat = appCat.WithRegistry(reg)
 		planSvc.SetAppDatabases(appCat)
 		for env := range tmpls {
 			appDBEnvs = append(appDBEnvs, env)
