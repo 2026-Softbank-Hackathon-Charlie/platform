@@ -53,7 +53,28 @@ type Report struct {
 	Findings  []apiv1.SecurityFinding
 	// StorageKeys are the bucket keys the source lists (StorageKeyCollector).
 	StorageKeys []apiv1.StorageKey
+	// Evaluations are the catalog controls the source evaluated (ADR 0029).
+	// A check whose read failed reports its assets as unknown; a source
+	// that reports none for a control of its own while not ok gets one
+	// unknown evaluation of every asset ("*").
+	Evaluations []Evaluation
+	// Images are the containers of running pods (KubeCollector).
+	Images []apiv1.SecurityRunningImage
 }
+
+// Evaluation is one catalog control evaluated on one asset. Findings of the
+// same check whose resource is the asset, or starts with the asset and "/",
+// belong to it.
+type Evaluation struct {
+	Check  string
+	Asset  string
+	Result apiv1.SecurityControlResult
+	Reason string
+}
+
+// AllAssets is the asset of an evaluation that stands for every asset of a
+// source that could not be read.
+const AllAssets = "*"
 
 // Collector reads one or more sources.
 type Collector interface {
@@ -93,16 +114,25 @@ type Service struct {
 	opt        Options
 
 	mu      sync.Mutex
-	latest  *apiv1.SecurityReport // nil before the first collection
-	started time.Time             // when the latest collection started
+	latest  *Collection // nil before the first collection
+	started time.Time   // when the latest collection started
 	expires time.Time
 	flight  *flight
 }
 
+// Collection is one collection of every source: the report of
+// GET /v1/security (unfiltered), the control evaluations and the running
+// images. It must not be modified.
+type Collection struct {
+	Report      apiv1.SecurityReport
+	Evaluations []apiv1.SecurityControlEvaluation
+	Images      []apiv1.SecurityRunningImage
+}
+
 // flight is one collection shared by every caller that asked while it ran.
 type flight struct {
-	done   chan struct{}
-	report apiv1.SecurityReport // set before done is closed
+	done chan struct{}
+	col  Collection // set before done is closed
 }
 
 // New returns a Service over collectors. It reads nothing until asked.
@@ -131,6 +161,13 @@ func New(collectors []Collector, opt Options) *Service {
 // share it. The result is unfiltered (see Filter) and must not be modified.
 // The only error is ctx's.
 func (s *Service) Report(ctx context.Context, refresh bool) (apiv1.SecurityReport, error) {
+	c, err := s.Collection(ctx, refresh)
+	return c.Report, err
+}
+
+// Collection is Report with the control evaluations and running images of
+// the same collection.
+func (s *Service) Collection(ctx context.Context, refresh bool) (Collection, error) {
 	s.mu.Lock()
 	now := s.opt.Now()
 	f := s.flight
@@ -138,9 +175,9 @@ func (s *Service) Report(ctx context.Context, refresh bool) (apiv1.SecurityRepor
 		cached := s.latest != nil && now.Before(s.expires)
 		throttled := s.latest != nil && now.Sub(s.started) < s.opt.MinRefresh
 		if cached && (!refresh || throttled) {
-			rep := *s.latest
+			c := *s.latest
 			s.mu.Unlock()
-			return rep, nil
+			return c, nil
 		}
 		f = &flight{done: make(chan struct{})}
 		s.flight, s.started = f, now
@@ -150,10 +187,10 @@ func (s *Service) Report(ctx context.Context, refresh bool) (apiv1.SecurityRepor
 
 	select {
 	case <-f.done:
-		return f.report, nil
+		return f.col, nil
 	case <-ctx.Done():
 		// The collection keeps running for the other callers and the cache.
-		return apiv1.SecurityReport{}, ctx.Err()
+		return Collection{}, ctx.Err()
 	}
 }
 
@@ -167,12 +204,13 @@ func (s *Service) collect(f *flight) {
 		wg.Go(func() { results[i] = s.run(c) })
 	}
 	wg.Wait()
-	rep := Filter(assemble(generated, slices.Concat(results...)), "", "")
+	col := assemble(generated, slices.Concat(results...))
+	col.Report = Filter(col.Report, "", "")
 
 	s.mu.Lock()
-	s.latest, s.expires, s.flight = &rep, s.opt.Now().Add(s.opt.TTL), nil
+	s.latest, s.expires, s.flight = &col, s.opt.Now().Add(s.opt.TTL), nil
 	s.mu.Unlock()
-	f.report = rep
+	f.col = col
 	close(f.done)
 }
 
@@ -226,26 +264,34 @@ func failed(srcs []Source, status apiv1.SecuritySourceStatus, msg string) []Repo
 	return out
 }
 
-// assemble fills in the finding fields that come from the source and builds
-// the unfiltered report. Sources keep collector order; findings are sorted.
-func assemble(generated time.Time, reps []Report) apiv1.SecurityReport {
+// assemble fills in the finding fields that come from the source, gives
+// every finding its kind, control and severity basis, links the control
+// evaluations to their findings and builds the unfiltered report. Sources
+// keep collector order; findings are sorted.
+func assemble(generated time.Time, reps []Report) Collection {
 	out := apiv1.SecurityReport{GeneratedAt: generated, Sources: []apiv1.SecuritySource{}, Findings: []apiv1.SecurityFinding{}, StorageKeys: []apiv1.StorageKey{}}
+	col := Collection{Evaluations: []apiv1.SecurityControlEvaluation{}, Images: []apiv1.SecurityRunningImage{}}
 	for _, r := range reps {
 		out.StorageKeys = append(out.StorageKeys, r.StorageKeys...)
+		col.Images = append(col.Images, r.Images...)
 		src := apiv1.SecuritySource{Name: r.Name, Provider: r.Provider, Environment: r.Environment, Status: r.Status, CheckedAt: r.CheckedAt}
 		if r.Message != "" {
 			msg := r.Message
 			src.Message = &msg
 		}
 		out.Sources = append(out.Sources, src)
+		var findings []apiv1.SecurityFinding
 		for _, f := range r.Findings {
 			f.Environment, f.Provider, f.Source = r.Environment, r.Provider, r.Name
 			f.Id = FindingID(r.Environment, r.Name, f.Check, f.Resource, f.Id)
 			if f.ObservedAt.IsZero() {
 				f.ObservedAt = r.CheckedAt
 			}
-			out.Findings = append(out.Findings, f)
+			classify(&f)
+			findings = append(findings, f)
 		}
+		out.Findings = append(out.Findings, findings...)
+		col.Evaluations = append(col.Evaluations, evaluations(r, findings)...)
 	}
 	slices.SortFunc(out.Findings, func(a, b apiv1.SecurityFinding) int {
 		return cmp.Or(
@@ -257,7 +303,97 @@ func assemble(generated time.Time, reps []Report) apiv1.SecurityReport {
 			cmp.Compare(a.Id, b.Id),
 		)
 	})
+	col.Report = out
+	return col
+}
+
+// classify sets a finding's kind and, for a check of the catalog, its
+// control and the control's severity basis unless the collector set a more
+// specific one (a vendor's score, one rule of a varying control).
+func classify(f *apiv1.SecurityFinding) {
+	kind := apiv1.SecurityFindingKindConfiguration
+	switch {
+	case f.Category == apiv1.SecurityCategoryThreat && f.Check != "aws.guardduty-enabled" && f.Check != "aws.securityhub-enabled":
+		kind = apiv1.SecurityFindingKindThreat
+	case strings.HasPrefix(f.Check, "platform.") || f.Check == CheckUnrecordedKey:
+		kind = apiv1.SecurityFindingKindGovernance
+	}
+	f.Kind = &kind
+	if c, ok := ControlFor(f.Check); ok {
+		id := c.Id
+		f.ControlId = &id
+		if f.SeverityBasis == nil {
+			b := c.SeverityBasis
+			f.SeverityBasis = &b
+		}
+	}
+	if f.SeverityBasis == nil { // every finding says where its severity comes from
+		b := platformRule("rule of the platform's own check " + f.Check)
+		f.SeverityBasis = &b
+	}
+}
+
+// evaluations turns a source's evaluations into API evaluations linked to
+// its findings, and adds one unknown evaluation of every asset for each of
+// the source's controls it did not evaluate while not ok.
+func evaluations(r Report, findings []apiv1.SecurityFinding) []apiv1.SecurityControlEvaluation {
+	var out []apiv1.SecurityControlEvaluation
+	done := map[string]bool{}
+	for _, e := range r.Evaluations {
+		c, ok := ControlFor(e.Check)
+		if !ok {
+			continue
+		}
+		done[c.Id] = true
+		ev := apiv1.SecurityControlEvaluation{
+			Id:          EvaluationID(r.Environment, c.Id, e.Asset),
+			ControlId:   c.Id,
+			Environment: r.Environment,
+			Source:      r.Name,
+			Asset:       e.Asset,
+			Result:      e.Result,
+			Reason:      e.Reason,
+			EvaluatedAt: r.CheckedAt,
+			FindingIds:  []string{},
+		}
+		for _, f := range findings {
+			if f.Check == e.Check && (f.Resource == e.Asset || strings.HasPrefix(f.Resource, e.Asset+"/")) {
+				ev.FindingIds = append(ev.FindingIds, f.Id)
+			}
+		}
+		out = append(out, ev)
+	}
+	if r.Status != apiv1.SecuritySourceStatusOk {
+		for _, c := range catalog {
+			if c.Source != r.Name || done[c.Id] || !appliesTo(c, r.Provider) {
+				continue
+			}
+			reason := "the source could not be read"
+			if r.Message != "" {
+				reason += ": " + r.Message
+			}
+			out = append(out, apiv1.SecurityControlEvaluation{
+				Id: EvaluationID(r.Environment, c.Id, AllAssets), ControlId: c.Id, Environment: r.Environment, Source: r.Name,
+				Asset: AllAssets, Result: apiv1.SecurityControlResultUnknown, Reason: reason, EvaluatedAt: r.CheckedAt, FindingIds: []string{},
+			})
+		}
+	}
+	slices.SortStableFunc(out, func(a, b apiv1.SecurityControlEvaluation) int {
+		return cmp.Or(cmp.Compare(a.ControlId, b.ControlId), cmp.Compare(a.Asset, b.Asset))
+	})
 	return out
+}
+
+// appliesTo reports whether a control can apply to a source of a provider:
+// the AWS account controls only to AWS.
+func appliesTo(c apiv1.SecurityControl, p apiv1.SecurityProvider) bool {
+	return !strings.HasPrefix(c.Check, "aws.") || p == apiv1.SecurityProviderAws
+}
+
+// EvaluationID is stable across collections.
+func EvaluationID(environment, control, asset string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{environment, control, asset}, "\x00")))
+	return "se_" + hex.EncodeToString(sum[:8])
 }
 
 // FindingID is stable across collections. The environment is part of it, so

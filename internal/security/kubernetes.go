@@ -1,6 +1,7 @@
 package security
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -87,26 +88,33 @@ func (c *KubeCollector) Collect(ctx context.Context) []Report {
 		return []Report{rep}
 	}
 
-	k := kubeChecks{findings: map[string]apiv1.SecurityFinding{}}
+	k := newKubeChecks(c.env.Name)
 	var errs []string
+	unread := func(op string, err error, checks ...string) {
+		msg := envs.DescribeError(op, err)
+		errs = append(errs, msg)
+		for _, ch := range checks {
+			k.eval(ch, AllAssets, apiv1.SecurityControlResultUnknown, msg)
+		}
+	}
 	pods, err := listPods(ctx, kube)
 	if err != nil {
-		errs = append(errs, envs.DescribeError("list pods", err))
+		unread("list pods", err, slices.Concat(podChecks, []string{"k8s.no-network-policy"})...)
 	} else {
 		k.pods(pods)
 		if pols, err := kube.NetworkingV1().NetworkPolicies("").List(ctx, metav1.ListOptions{}); err != nil {
-			errs = append(errs, envs.DescribeError("list network policies", err))
+			unread("list network policies", err, "k8s.no-network-policy")
 		} else {
 			k.networkPolicies(pods, pols.Items)
 		}
 	}
 	if crbs, err := kube.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{}); err != nil {
-		errs = append(errs, envs.DescribeError("list cluster role bindings", err))
+		unread("list cluster role bindings", err, "k8s.cluster-admin")
 	} else {
 		k.clusterAdmins(crbs.Items)
 	}
 	if svcs, err := kube.CoreV1().Services("").List(ctx, metav1.ListOptions{}); err != nil {
-		errs = append(errs, envs.DescribeError("list services", err))
+		unread("list services", err, "k8s.load-balancer", "k8s.node-port")
 	} else {
 		k.services(svcs.Items)
 	}
@@ -114,6 +122,7 @@ func (c *KubeCollector) Collect(ctx context.Context) []Report {
 	for _, f := range k.findings {
 		rep.Findings = append(rep.Findings, f)
 	}
+	rep.Evaluations, rep.Images = k.evaluations(), k.images
 	rep.Status = apiv1.SecuritySourceStatusOk
 	rep.Message = fmt.Sprintf("Kubernetes %s, %s checked outside system namespaces", v.GitVersion, many(k.checked, "running pod", "running pods"))
 	if len(errs) > 0 {
@@ -142,8 +151,47 @@ func listPods(ctx context.Context, kube kubernetes.Interface) ([]corev1.Pod, err
 // kubeChecks collects findings keyed by check and resource, so the replicas
 // of one workload give one finding.
 type kubeChecks struct {
+	env      string
 	findings map[string]apiv1.SecurityFinding
 	checked  int
+	// evals holds one evaluation per check and asset; a failure overrides
+	// the pass another replica of the workload gave.
+	evals     map[[2]string]Evaluation
+	images    []apiv1.SecurityRunningImage
+	imageSeen map[string]bool
+}
+
+// podChecks are the checks evaluated on every running workload.
+var podChecks = []string{"k8s.privileged", "k8s.host-network", "k8s.host-pid", "k8s.host-ipc", "k8s.host-path", "k8s.run-as-non-root", "k8s.no-limits"}
+
+func newKubeChecks(env string) *kubeChecks {
+	return &kubeChecks{env: env, findings: map[string]apiv1.SecurityFinding{}, evals: map[[2]string]Evaluation{}, imageSeen: map[string]bool{}}
+}
+
+// eval records an evaluation; fail wins over pass for the same asset.
+func (k *kubeChecks) eval(check, asset string, result apiv1.SecurityControlResult, reason string) {
+	key := [2]string{check, asset}
+	if old, ok := k.evals[key]; ok && (old.Result == apiv1.SecurityControlResultFail || result == apiv1.SecurityControlResultPass) {
+		return
+	}
+	k.evals[key] = Evaluation{Check: check, Asset: asset, Result: result, Reason: reason}
+}
+
+// addAt records a finding about asset and fails its evaluation.
+func (k *kubeChecks) addAt(asset string, f apiv1.SecurityFinding) {
+	k.add(f)
+	k.eval(f.Check, asset, apiv1.SecurityControlResultFail, f.Title)
+}
+
+func (k *kubeChecks) evaluations() []Evaluation {
+	out := make([]Evaluation, 0, len(k.evals))
+	for _, e := range k.evals {
+		out = append(out, e)
+	}
+	slices.SortFunc(out, func(a, b Evaluation) int {
+		return cmp.Or(strings.Compare(a.Check, b.Check), strings.Compare(a.Asset, b.Asset))
+	})
+	return out
 }
 
 func (k *kubeChecks) add(f apiv1.SecurityFinding) {
@@ -181,20 +229,24 @@ func (k *kubeChecks) pods(pods []corev1.Pod) {
 		k.checked++
 		w := p.Namespace + "/" + workload(p)
 		spec := &p.Spec
+		for _, ch := range podChecks {
+			k.eval(ch, w, apiv1.SecurityControlResultPass, "pod "+p.Name+" was read and the condition holds")
+		}
+		k.runningImages(p, w)
 		if spec.HostNetwork {
-			k.add(apiv1.SecurityFinding{Check: "k8s.host-network", Category: apiv1.SecurityCategoryNetwork, Severity: apiv1.SecuritySeverityMedium,
+			k.addAt(w, apiv1.SecurityFinding{Check: "k8s.host-network", Category: apiv1.SecurityCategoryNetwork, Severity: apiv1.SecuritySeverityMedium,
 				Title: "Pod uses the host network", Resource: w,
 				Detail:         fmt.Sprintf("%s (pod %s) shares the node's network namespace and can bind any node port.", w, p.Name),
 				Recommendation: "Use the pod network and a Service unless the pod must bind node ports."})
 		}
 		if spec.HostPID {
-			k.add(apiv1.SecurityFinding{Check: "k8s.host-pid", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityHigh,
+			k.addAt(w, apiv1.SecurityFinding{Check: "k8s.host-pid", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityHigh,
 				Title: "Pod shares the host PID namespace", Resource: w,
 				Detail:         fmt.Sprintf("%s (pod %s) can see and signal every process on the node.", w, p.Name),
 				Recommendation: "Remove hostPID."})
 		}
 		if spec.HostIPC {
-			k.add(apiv1.SecurityFinding{Check: "k8s.host-ipc", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityHigh,
+			k.addAt(w, apiv1.SecurityFinding{Check: "k8s.host-ipc", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityHigh,
 				Title: "Pod shares the host IPC namespace", Resource: w,
 				Detail:         fmt.Sprintf("%s (pod %s) can read and write the shared memory of every process on the node.", w, p.Name),
 				Recommendation: "Remove hostIPC."})
@@ -203,7 +255,7 @@ func (k *kubeChecks) pods(pods []corev1.Pod) {
 			if v.HostPath == nil {
 				continue
 			}
-			k.add(apiv1.SecurityFinding{Check: "k8s.host-path", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityMedium,
+			k.addAt(w, apiv1.SecurityFinding{Check: "k8s.host-path", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityMedium,
 				Title: "Pod mounts a host path", Resource: w + "/" + v.Name,
 				Detail:         fmt.Sprintf("%s mounts the node path %s as volume %q.", w, v.HostPath.Path, v.Name),
 				Recommendation: "Use a PersistentVolume, a ConfigMap or an emptyDir instead of a node path."})
@@ -212,13 +264,13 @@ func (k *kubeChecks) pods(pods []corev1.Pod) {
 			r := w + "/" + ctr.name
 			sc := ctr.sc
 			if sc != nil && isTrue(sc.Privileged) {
-				k.add(apiv1.SecurityFinding{Check: "k8s.privileged", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityHigh,
+				k.addAt(w, apiv1.SecurityFinding{Check: "k8s.privileged", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityHigh,
 					Title: "Privileged container", Resource: r,
 					Detail:         fmt.Sprintf("Container %q of %s runs privileged: it has every capability and the node's devices.", ctr.name, w),
 					Recommendation: "Drop privileged and add only the capabilities the container needs."})
 			}
 			if mayRunAsRoot(spec.SecurityContext, sc) {
-				k.add(apiv1.SecurityFinding{Check: "k8s.run-as-non-root", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityLow,
+				k.addAt(w, apiv1.SecurityFinding{Check: "k8s.run-as-non-root", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityLow,
 					Title: "Container may run as root", Resource: r,
 					Detail:         fmt.Sprintf("Container %q of %s may run as root: runAsNonRoot is not true and runAsUser is not a non-zero uid, in the container or the pod.", ctr.name, w),
 					Recommendation: "Set securityContext.runAsNonRoot: true and a non-zero runAsUser."})
@@ -226,7 +278,7 @@ func (k *kubeChecks) pods(pods []corev1.Pod) {
 		}
 		for _, ctr := range spec.Containers { // init containers end before the app starts
 			if len(ctr.Resources.Limits) == 0 {
-				k.add(apiv1.SecurityFinding{Check: "k8s.no-limits", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityLow,
+				k.addAt(w, apiv1.SecurityFinding{Check: "k8s.no-limits", Category: apiv1.SecurityCategoryWorkload, Severity: apiv1.SecuritySeverityLow,
 					Title: "Container has no resource limits", Resource: w + "/" + ctr.Name,
 					Detail:         fmt.Sprintf("Container %q of %s sets no cpu or memory limit, so it can starve the node.", ctr.Name, w),
 					Recommendation: "Set resources.limits for memory (and cpu where it matters)."})
@@ -288,9 +340,10 @@ func (k *kubeChecks) networkPolicies(pods []corev1.Pod, pols []networkingv1.Netw
 	}
 	for ns, n := range running {
 		if covered[ns] {
+			k.eval("k8s.no-network-policy", ns, apiv1.SecurityControlResultPass, "the namespace has a NetworkPolicy; whether it denies by default and is enforced is not checked")
 			continue
 		}
-		k.add(apiv1.SecurityFinding{Check: "k8s.no-network-policy", Category: apiv1.SecurityCategoryNetwork, Severity: apiv1.SecuritySeverityMedium,
+		k.addAt(ns, apiv1.SecurityFinding{Check: "k8s.no-network-policy", Category: apiv1.SecurityCategoryNetwork, Severity: apiv1.SecuritySeverityMedium,
 			Title: "Namespace has no NetworkPolicy", Resource: ns,
 			Detail:         fmt.Sprintf("Namespace %s runs %d pods and has no NetworkPolicy, so any pod in the cluster can reach them.", ns, n),
 			Recommendation: "Add a default-deny NetworkPolicy and allow only the traffic the namespace needs."})
@@ -327,6 +380,8 @@ func systemSubject(s rbacv1.Subject) bool {
 }
 
 func (k *kubeChecks) clusterAdmins(crbs []rbacv1.ClusterRoleBinding) {
+	k.eval("k8s.cluster-admin", "ClusterRoleBinding", apiv1.SecurityControlResultPass,
+		fmt.Sprintf("%s read; cluster-admin is bound only to system identities", many(len(crbs), "ClusterRoleBinding", "ClusterRoleBindings")))
 	for _, b := range crbs {
 		if b.RoleRef.Kind != "ClusterRole" || b.RoleRef.Name != "cluster-admin" {
 			continue
@@ -343,7 +398,7 @@ func (k *kubeChecks) clusterAdmins(crbs []rbacv1.ClusterRoleBinding) {
 			if broad(s.Name) {
 				sev = apiv1.SecuritySeverityCritical
 			}
-			k.add(apiv1.SecurityFinding{Check: "k8s.cluster-admin", Category: apiv1.SecurityCategoryIdentity, Severity: sev,
+			k.addAt("ClusterRoleBinding", apiv1.SecurityFinding{Check: "k8s.cluster-admin", Category: apiv1.SecurityCategoryIdentity, Severity: sev,
 				Title: "cluster-admin bound to " + who, Resource: "ClusterRoleBinding/" + b.Name + "/" + who,
 				Detail:         fmt.Sprintf("ClusterRoleBinding %s gives %s full control of the cluster.", b.Name, who),
 				Recommendation: "Bind a narrower ClusterRole, or a Role in the namespaces it needs."})
@@ -357,17 +412,19 @@ func (k *kubeChecks) services(svcs []corev1.Service) {
 			continue
 		}
 		r := s.Namespace + "/Service/" + s.Name
+		k.eval("k8s.load-balancer", r, apiv1.SecurityControlResultPass, "type "+string(s.Spec.Type))
+		k.eval("k8s.node-port", r, apiv1.SecurityControlResultPass, "type "+string(s.Spec.Type))
 		switch s.Spec.Type {
 		case corev1.ServiceTypeLoadBalancer:
 			detail := fmt.Sprintf("Service %s/%s has a cloud load balancer", s.Namespace, s.Name)
 			if len(s.Spec.LoadBalancerSourceRanges) > 0 {
 				detail += " restricted to " + strings.Join(s.Spec.LoadBalancerSourceRanges, ", ")
 			}
-			k.add(apiv1.SecurityFinding{Check: "k8s.load-balancer", Category: apiv1.SecurityCategoryNetwork, Severity: apiv1.SecuritySeverityMedium,
+			k.addAt(r, apiv1.SecurityFinding{Check: "k8s.load-balancer", Category: apiv1.SecurityCategoryNetwork, Severity: apiv1.SecuritySeverityMedium,
 				Title: "Service exposed through a load balancer", Resource: r, Detail: detail + ports(s.Spec.Ports) + ".",
 				Recommendation: "Route users through the gateway, or restrict loadBalancerSourceRanges."})
 		case corev1.ServiceTypeNodePort:
-			k.add(apiv1.SecurityFinding{Check: "k8s.node-port", Category: apiv1.SecurityCategoryNetwork, Severity: apiv1.SecuritySeverityLow,
+			k.addAt(r, apiv1.SecurityFinding{Check: "k8s.node-port", Category: apiv1.SecurityCategoryNetwork, Severity: apiv1.SecuritySeverityLow,
 				Title: "Service exposed on node ports", Resource: r,
 				Detail:         fmt.Sprintf("Service %s/%s opens a port on every node%s.", s.Namespace, s.Name, ports(s.Spec.Ports)),
 				Recommendation: "Use a ClusterIP Service behind the gateway or an Ingress."})

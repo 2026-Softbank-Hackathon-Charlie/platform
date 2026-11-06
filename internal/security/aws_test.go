@@ -242,16 +242,16 @@ func TestAWSFreshAccount(t *testing.T) {
 	want := map[string][]string{
 		"aws-iam": {
 			"critical aws.root-mfa arn:aws:iam::123456789012:root",
-			"high aws.user-mfa arn:aws:iam::123456789012:user/alice",
 			"medium aws.access-key-age arn:aws:iam::123456789012:user/ci/access-key/****WXYZ",
+			"medium aws.user-mfa arn:aws:iam::123456789012:user/alice", // IAM.5 is Medium
 		},
 		"aws-ec2": {
-			"high aws.sg-open-ingress sg-ssh/tcp/22",
-			"high aws.sg-open-ingress sg-wide/all/all",
+			"critical aws.sg-open-ingress sg-ssh/tcp/22",         // EC2.19 blocks 22
+			"critical aws.sg-open-ingress sg-wide/all/all",       // all ports include EC2.19's
+			"critical aws.sg-open-ingress sg-wide/tcp/1000-2000", // includes 1433 and 1434
 			"info aws.sg-open-ingress sg-web/tcp/443",
 			"info aws.sg-open-ingress sg-web/tcp/80",
 			"medium aws.ebs-default-encryption ebs-encryption-by-default/ap-northeast-2",
-			"medium aws.sg-open-ingress sg-wide/tcp/1000-2000",
 		},
 		"aws-cloudtrail":  {"high aws.cloudtrail-logging cloudtrail/ap-northeast-2"},
 		"aws-guardduty":   {"high aws.guardduty-enabled guardduty/ap-northeast-2"},
@@ -452,7 +452,7 @@ func TestFindingIDsAreUnique(t *testing.T) {
 	for _, name := range awsSources {
 		batch = append(batch, reps[name])
 	}
-	rep := assemble(t0, batch)
+	rep := assemble(t0, batch).Report
 	ids := map[string]string{}
 	shared := map[string]int{}
 	for _, f := range rep.Findings {
@@ -472,7 +472,14 @@ func TestFindingIDsAreUnique(t *testing.T) {
 	if len(rep.Findings) != 13 || n != 4 {
 		t.Fatalf("%d findings, %d check and resource pairs shared; the batch needs 13 and 4:\n%v", len(rep.Findings), n, shared)
 	}
-	if again := assemble(t0, batch); fmt.Sprint(again.Findings) != fmt.Sprint(rep.Findings) {
+	idList := func(fs []apiv1.SecurityFinding) string {
+		var out []string
+		for _, f := range fs {
+			out = append(out, f.Id)
+		}
+		return strings.Join(out, ",")
+	}
+	if again := assemble(t0, batch).Report; idList(again.Findings) != idList(rep.Findings) {
 		t.Fatal("ids differ between two collections of the same account")
 	}
 }

@@ -795,6 +795,81 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
 
+  /v1/security/controls:
+    get:
+      tags: [security]
+      operationId: getSecurityControls
+      description: |
+        The platform's control catalog and every evaluation of it, from the
+        same collection and cache as `GET /v1/security` (ADR 0029). Each
+        control is one check with its condition, the asset it evaluates, its
+        official references (exact or partial) and what it does not
+        establish. Each evaluation is pass, fail, unknown or not_applicable
+        for one asset.
+
+        A source that answered is not a pass, and no findings are not a pass:
+        a control passes only on an asset the check read. Assets of a source
+        that could not be read are one `unknown` evaluation with asset `*`.
+        `coverage` counts by environment and domain, with not_applicable
+        left out of the denominator, and says which domains have no control
+        in an environment yet. There is no overall score. Error codes as for
+        `/v1/security`.
+      parameters:
+        - name: environment
+          in: query
+          required: false
+          schema: { type: string }
+        - name: refresh
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Controls, evaluations and coverage.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityControlReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/security/vulnerabilities:
+    get:
+      tags: [security]
+      operationId: getSecurityVulnerabilities
+      description: |
+        Package vulnerabilities of image digests and the running containers
+        that use them (ADR 0029). Scans run outside the request (CI or a
+        worker); this endpoint only reads stored results and the clusters'
+        running images, from the same collection and cache as
+        `GET /v1/security`.
+
+        `scanner.status` not_configured means no scan results are connected:
+        empty `scans` and `vulnerabilities` then mean "not scanned", not "no
+        vulnerabilities". A running container whose digest has no succeeded
+        scan is counted in `summary.notScannedContainers`. Error codes as for
+        `/v1/security`.
+      parameters:
+        - name: environment
+          in: query
+          required: false
+          schema: { type: string }
+        - name: refresh
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Scans, vulnerabilities and running images.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityVulnerabilityReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
   /v1/agent/sessions:
     post:
       tags: [agent]
@@ -2857,6 +2932,340 @@ components:
         detail: { type: string }
         recommendation: { type: string }
         observedAt: { type: string, format: date-time, description: "when the source reported it, or when it was read" }
+        kind: { $ref: "#/components/schemas/SecurityFindingKind" }
+        controlId:
+          type: string
+          example: HC-IDN-03
+          description: |
+            The control of the platform's catalog (`GET /v1/security/controls`)
+            whose check produced the finding. Absent for vendor detections and
+            vendor posture findings that are passed through (GuardDuty,
+            Security Hub) and for audit denials, which no catalog control
+            evaluates.
+        severityBasis: { $ref: "#/components/schemas/SecuritySeverityBasis" }
+
+    SecurityFindingKind:
+      description: |
+        Set on every finding by servers that implement ADR 0029.
+        - configuration: a setting checked against a control.
+        - threat: a detection of activity (GuardDuty, Security Hub threat types).
+        - governance: the platform's own rules about its requests and records (audit denials, unrecorded bucket keys, server settings).
+        - vulnerability: a package vulnerability in an image; these are listed by `GET /v1/security/vulnerabilities`, not in `findings`.
+      type: string
+      enum: [configuration, threat, governance, vulnerability]
+
+    SecuritySeverityBasisType:
+      description: |
+        Who decided the normalised `severity`.
+        - vendor: the vendor's own label or score, either of the finding (GuardDuty, Security Hub) or of the vendor control the check matches exactly (e.g. AWS Security Hub IAM.5).
+        - cvss: the CVSS base score of an advisory (vulnerabilities only).
+        - platform_policy: a rule of the platform's versioned security policy (`policy`). It is not an official rating, even where it uses the same level as a related vendor control the check only partly matches.
+      type: string
+      enum: [vendor, cvss, platform_policy]
+
+    SecuritySeverityBasis:
+      description: |
+        Where a severity came from (ADR 0029). The source's own value is kept
+        as given and never overwritten; `severity` is the platform's
+        normalised label for sorting and filtering.
+      type: object
+      required: [type, issuer, policy]
+      properties:
+        type: { $ref: "#/components/schemas/SecuritySeverityBasisType" }
+        issuer: { type: string, example: AWS Security Hub CSPM, description: "who issued the source value, or HopCharlie for platform_policy" }
+        sourceSeverity: { type: string, example: HIGH, description: "the source's label or value exactly as given" }
+        sourceScore: { type: number, format: double, example: 8, description: "the source's numeric score (GuardDuty 1.0-10.0, a CVSS base score)" }
+        sourceFindingId: { type: string, description: "the vendor's own finding id or ARN" }
+        sourceUrl: { type: string, description: "the official page of the vendor control or advisory the value comes from" }
+        policy: { type: string, example: "hopcharlie-security-policy/2026-11-06.1", description: the version of the platform's control catalog and mapping rules that produced `severity` }
+        reason: { type: string, description: "why this basis applies, e.g. which vendor control matches exactly or why a platform rule was used" }
+
+    SecurityControlDomain:
+      description: |
+        The five areas of the common controls. A domain is a grouping, not a
+        check: it is never a unit of a pass rate.
+        - identity: least privilege and strong authentication.
+        - data: encryption and data exposure.
+        - logging: audit logs and threat monitoring.
+        - policy: secure configuration of workloads and network.
+        - vulnerability: vulnerability management of running images.
+      type: string
+      enum: [identity, data, logging, policy, vulnerability]
+
+    SecurityControlResult:
+      description: |
+        - pass: the check read the asset and its condition holds.
+        - fail: the check read the asset and its condition does not hold; `findingIds` name the findings.
+        - unknown: the asset could not be read (no answer, denied, not connected). It is never counted as pass.
+        - not_applicable: the condition does not apply to the asset (e.g. MFA for a user with no console password). Not part of the denominator.
+      type: string
+      enum: [pass, fail, unknown, not_applicable]
+
+    SecurityControlRelation:
+      description: |
+        - exact: the check reads the same condition, scope and exceptions as the referenced control.
+        - partial: the check covers part of it (fewer conditions, another scope, other exceptions); passing it does not mean passing the referenced control.
+      type: string
+      enum: [exact, partial]
+
+    SecurityControlReference:
+      type: object
+      required: [framework, version, id, url, relation]
+      properties:
+        framework: { type: string, example: AWS Security Hub CSPM, description: "NIST SP 800-53, AWS Security Hub CSPM, Kubernetes Pod Security Standards or CIS Kubernetes Benchmark" }
+        version: { type: string, example: "control reference as of 2026-11-06" }
+        id: { type: string, example: IAM.5 }
+        title: { type: string }
+        url: { type: string, example: "https://docs.aws.amazon.com/securityhub/latest/userguide/iam-controls.html#iam-5" }
+        relation: { $ref: "#/components/schemas/SecurityControlRelation" }
+        severity: { type: string, example: Medium, description: "the referenced control's own severity, when its publisher gives one" }
+        note: { type: string, description: "what differs, for a partial match" }
+
+    SecurityControl:
+      description: One control of the platform's catalog, checked by one check.
+      type: object
+      required: [id, title, domain, check, source, asset, condition, mapping, references, failSeverity, severityBasis, limitations]
+      properties:
+        id: { type: string, example: HC-IDN-03 }
+        title: { type: string }
+        domain: { $ref: "#/components/schemas/SecurityControlDomain" }
+        check: { type: string, example: aws.user-mfa, description: "the `check` of the findings it produces" }
+        source: { type: string, example: aws-iam, description: the source that evaluates it }
+        asset: { type: string, example: IAM user with a console password, description: what one evaluation is about }
+        condition: { type: string, description: when an asset passes }
+        mapping:
+          description: The closest relation among `references`; unmapped when there is none and the control is the platform's own rule.
+          type: string
+          enum: [exact, partial, unmapped]
+        references:
+          type: array
+          items: { $ref: "#/components/schemas/SecurityControlReference" }
+        failSeverity: { type: string, example: medium, description: "the severity of a failing asset's finding, or `varies` when it depends on the finding (see severityBasis.reason)" }
+        severityBasis: { $ref: "#/components/schemas/SecuritySeverityBasis" }
+        limitations:
+          description: What the check does not establish.
+          type: array
+          items: { type: string }
+
+    SecurityControlEvaluation:
+      description: One control evaluated on one asset of one environment.
+      type: object
+      required: [id, controlId, environment, source, asset, result, reason, evaluatedAt, findingIds]
+      properties:
+        id: { type: string, description: "stable across collections: a hash of environment, control and asset" }
+        controlId: { type: string }
+        environment: { type: string }
+        source: { type: string }
+        asset: { type: string, example: "arn:aws:iam::123456789012:user/alice", description: "the asset, or `*` when the whole source could not be read" }
+        result: { $ref: "#/components/schemas/SecurityControlResult" }
+        reason: { type: string, description: "the evidence read, or why the result is unknown or not applicable" }
+        evaluatedAt: { type: string, format: date-time }
+        findingIds:
+          description: The findings of a failing evaluation.
+          type: array
+          items: { type: string }
+
+    SecurityControlCounts:
+      description: |
+        Evaluations by result. `applicable` is pass + fail + unknown and is the
+        denominator; not_applicable is left out of it. `evaluated` is pass +
+        fail.
+      type: object
+      required: [applicable, evaluated, pass, fail, unknown, notApplicable]
+      properties:
+        applicable: { type: integer }
+        evaluated: { type: integer }
+        pass: { type: integer }
+        fail: { type: integer }
+        unknown: { type: integer }
+        notApplicable: { type: integer }
+
+    SecurityControlCoverage:
+      description: The evaluations of one environment and domain.
+      type: object
+      required: [environment, domain, state, counts]
+      properties:
+        environment: { type: string }
+        domain: { $ref: "#/components/schemas/SecurityControlDomain" }
+        state:
+          description: |
+            - evaluated: at least one catalog control of the domain applies to the environment and was evaluated.
+            - not_connected: controls apply but their source is not connected or could not be read; every evaluation is unknown.
+            - unsupported: no catalog control of the domain applies to this environment yet; `reason` says what is not checked. It is not a pass.
+          type: string
+          enum: [evaluated, not_connected, unsupported]
+        reason: { type: string }
+        counts: { $ref: "#/components/schemas/SecurityControlCounts" }
+
+    SecurityControlReport:
+      type: object
+      required: [generatedAt, policyVersion, controls, evaluations, coverage]
+      properties:
+        generatedAt: { type: string, format: date-time, description: "when the sources were read (as `SecurityReport.generatedAt`)" }
+        policyVersion: { type: string, example: "hopcharlie-security-policy/2026-11-06.1" }
+        controls:
+          type: array
+          items: { $ref: "#/components/schemas/SecurityControl" }
+        evaluations:
+          description: By environment (in the order of the sources), then control, then asset.
+          type: array
+          items: { $ref: "#/components/schemas/SecurityControlEvaluation" }
+        coverage:
+          description: One row per environment and domain, in the order of the sources and of the domain enum.
+          type: array
+          items: { $ref: "#/components/schemas/SecurityControlCoverage" }
+
+    SecurityVulnerabilitySeverity:
+      description: |
+        The normalised severity of a package vulnerability. `unknown` means no
+        source gave a severity or score; it is not low and not none.
+        `negligible` is a distribution's own label below low.
+      type: string
+      enum: [critical, high, medium, low, negligible, unknown]
+
+    SecurityCVSS:
+      description: One CVSS score of an advisory as its source gave it. Versions are not converted into each other.
+      type: object
+      required: [source, version, vector, baseScore]
+      properties:
+        source: { type: string, example: nvd@nist.gov, description: "who published the score (NVD, a CNA, a distribution)" }
+        version: { type: string, example: "3.1" }
+        vector: { type: string, example: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }
+        baseScore: { type: number, format: double, example: 9.8 }
+
+    SecurityPackage:
+      type: object
+      required: [name, version, type]
+      properties:
+        name: { type: string, example: openssl }
+        version: { type: string, example: 3.0.13-1~deb12u1, description: the installed version }
+        type: { type: string, example: deb, description: "the package ecosystem: deb, apk, rpm, go-module, npm, python, java-archive, ..." }
+        purl: { type: string, example: "pkg:deb/debian/openssl@3.0.13-1~deb12u1?distro=debian-12" }
+        distro: { type: string, example: debian-12 }
+
+    SecurityImageScan:
+      description: One scan of one image digest by the platform's scanner (ADR 0029).
+      type: object
+      required: [id, digest, status, scanner]
+      properties:
+        id: { type: string }
+        image: { type: string, example: "registry.example/app@sha256:4c2e...", description: the reference that was scanned }
+        digest: { type: string, example: "sha256:4c2e...", description: "the manifest digest that was scanned (for a multi-arch index, the platform manifest)" }
+        platform: { type: string, example: linux/amd64 }
+        status:
+          description: |
+            - succeeded: the scan finished; zero vulnerabilities means none were matched with this database, not that the image is safe.
+            - failed: the scan did not finish; `message` says why. Its image has no result.
+            - unsupported: the scanner cannot read this image (e.g. no package database).
+          type: string
+          enum: [succeeded, failed, unsupported]
+        scanner:
+          type: object
+          required: [name, version]
+          properties:
+            name: { type: string, example: grype }
+            version: { type: string }
+        database:
+          type: object
+          properties:
+            builtAt: { type: string, format: date-time, description: when the vulnerability database was built }
+            schemaVersion: { type: string }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        packages: { type: integer, description: packages in the image's SBOM }
+        resultSha256: { type: string, description: hash of the scanner's original result kept by the platform }
+        message: { type: string }
+
+    SecurityVulnerability:
+      description: One advisory matched to one package of one scanned image digest.
+      type: object
+      required: [id, scanId, digest, advisory, aliases, package, fixedVersions, fixState, severity, severityBasis, cvss, urls]
+      properties:
+        id: { type: string, description: "stable: a hash of digest, advisory and the package's purl or name, version and type" }
+        scanId: { type: string }
+        digest: { type: string }
+        advisory: { type: string, example: CVE-2024-6387, description: "the advisory id: a CVE, or a GHSA or distribution id where there is no CVE" }
+        aliases: { type: array, items: { type: string } }
+        package: { $ref: "#/components/schemas/SecurityPackage" }
+        fixedVersions: { type: array, items: { type: string }, description: "empty when the source names no fixed version; that does not mean there is no fix" }
+        fixState:
+          type: string
+          enum: [fixed, not_fixed, wont_fix, unknown]
+        severity: { $ref: "#/components/schemas/SecurityVulnerabilitySeverity" }
+        severityBasis: { $ref: "#/components/schemas/SecuritySeverityBasis" }
+        cvss: { type: array, items: { $ref: "#/components/schemas/SecurityCVSS" } }
+        urls: { type: array, items: { type: string } }
+
+    SecurityRunningImage:
+      description: |
+        One container of a running workload and the image it runs, read from
+        the cluster (ADR 0029). The tag in `image` is for display; the digest
+        identifies the image.
+      type: object
+      required: [environment, namespace, workload, container, image, scanState]
+      properties:
+        environment: { type: string }
+        namespace: { type: string }
+        workload: { type: string, example: Deployment/web }
+        container: { type: string }
+        app: { type: string, description: "the app, from the label app.kubernetes.io/part-of that the platform's app chart sets; absent when the pod lacks the chart's labels" }
+        instance: { type: string, description: "the app instance (ADR 0015), from the label app.kubernetes.io/instance when it equals the namespace; absent otherwise" }
+        image: { type: string, description: the image the pod spec names }
+        digest: { type: string, description: "the digest the kubelet reports in the container status; absent when the runtime gave none" }
+        scanId: { type: string, description: the latest scan of `digest` }
+        scanState:
+          description: |
+            - scanned: a succeeded scan of the digest exists.
+            - scan_failed: the latest scan of the digest failed or was unsupported.
+            - not_scanned: no scan of the digest exists.
+            - unknown_digest: the runtime reported no digest, so no scan can be matched.
+          type: string
+          enum: [scanned, scan_failed, not_scanned, unknown_digest]
+
+    SecurityScannerState:
+      type: object
+      required: [status]
+      properties:
+        status:
+          description: |
+            - connected: the platform reads scan results.
+            - not_configured: no scanner results are connected; `scans` and `vulnerabilities` are empty and this means "not scanned", not "no vulnerabilities".
+            - error: results could not be read; `message` says why.
+          type: string
+          enum: [connected, not_configured, error]
+        message: { type: string }
+
+    SecurityVulnerabilitySummary:
+      description: |
+        Separate counts, each with its own unit: distinct advisories, distinct
+        scanned digests, running containers of a scanned digest with at least
+        one vulnerability, and advisory-package-digest occurrences.
+      type: object
+      required: [advisories, images, affectedContainers, occurrences, notScannedContainers]
+      properties:
+        advisories: { type: integer }
+        images: { type: integer }
+        affectedContainers: { type: integer }
+        occurrences: { type: integer }
+        notScannedContainers: { type: integer, description: "running containers whose digest has no succeeded scan (not_scanned, scan_failed or unknown_digest)" }
+
+    SecurityVulnerabilityReport:
+      type: object
+      required: [generatedAt, scanner, scans, vulnerabilities, runningImages, summary]
+      properties:
+        generatedAt: { type: string, format: date-time }
+        scanner: { $ref: "#/components/schemas/SecurityScannerState" }
+        scans:
+          type: array
+          items: { $ref: "#/components/schemas/SecurityImageScan" }
+        vulnerabilities:
+          type: array
+          items: { $ref: "#/components/schemas/SecurityVulnerability" }
+        runningImages:
+          description: Containers of running pods outside system namespaces, by environment, namespace, workload and container. An environment whose cluster could not be read has none; see `sources` of `GET /v1/security`.
+          type: array
+          items: { $ref: "#/components/schemas/SecurityRunningImage" }
+        summary: { $ref: "#/components/schemas/SecurityVulnerabilitySummary" }
 
     SecuritySource:
       type: object

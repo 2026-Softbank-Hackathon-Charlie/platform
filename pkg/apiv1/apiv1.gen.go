@@ -589,6 +589,162 @@ func (e SecurityCategory) Valid() bool {
 	}
 }
 
+// Defines values for SecurityControlMapping.
+const (
+	SecurityControlMappingExact    SecurityControlMapping = "exact"
+	SecurityControlMappingPartial  SecurityControlMapping = "partial"
+	SecurityControlMappingUnmapped SecurityControlMapping = "unmapped"
+)
+
+// Valid indicates whether the value is a known member of the SecurityControlMapping enum.
+func (e SecurityControlMapping) Valid() bool {
+	switch e {
+	case SecurityControlMappingExact:
+		return true
+	case SecurityControlMappingPartial:
+		return true
+	case SecurityControlMappingUnmapped:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityControlCoverageState.
+const (
+	SecurityControlCoverageStateEvaluated    SecurityControlCoverageState = "evaluated"
+	SecurityControlCoverageStateNotConnected SecurityControlCoverageState = "not_connected"
+	SecurityControlCoverageStateUnsupported  SecurityControlCoverageState = "unsupported"
+)
+
+// Valid indicates whether the value is a known member of the SecurityControlCoverageState enum.
+func (e SecurityControlCoverageState) Valid() bool {
+	switch e {
+	case SecurityControlCoverageStateEvaluated:
+		return true
+	case SecurityControlCoverageStateNotConnected:
+		return true
+	case SecurityControlCoverageStateUnsupported:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityControlDomain.
+const (
+	SecurityControlDomainData          SecurityControlDomain = "data"
+	SecurityControlDomainIdentity      SecurityControlDomain = "identity"
+	SecurityControlDomainLogging       SecurityControlDomain = "logging"
+	SecurityControlDomainPolicy        SecurityControlDomain = "policy"
+	SecurityControlDomainVulnerability SecurityControlDomain = "vulnerability"
+)
+
+// Valid indicates whether the value is a known member of the SecurityControlDomain enum.
+func (e SecurityControlDomain) Valid() bool {
+	switch e {
+	case SecurityControlDomainData:
+		return true
+	case SecurityControlDomainIdentity:
+		return true
+	case SecurityControlDomainLogging:
+		return true
+	case SecurityControlDomainPolicy:
+		return true
+	case SecurityControlDomainVulnerability:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityControlRelation.
+const (
+	SecurityControlRelationExact   SecurityControlRelation = "exact"
+	SecurityControlRelationPartial SecurityControlRelation = "partial"
+)
+
+// Valid indicates whether the value is a known member of the SecurityControlRelation enum.
+func (e SecurityControlRelation) Valid() bool {
+	switch e {
+	case SecurityControlRelationExact:
+		return true
+	case SecurityControlRelationPartial:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityControlResult.
+const (
+	SecurityControlResultFail          SecurityControlResult = "fail"
+	SecurityControlResultNotApplicable SecurityControlResult = "not_applicable"
+	SecurityControlResultPass          SecurityControlResult = "pass"
+	SecurityControlResultUnknown       SecurityControlResult = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SecurityControlResult enum.
+func (e SecurityControlResult) Valid() bool {
+	switch e {
+	case SecurityControlResultFail:
+		return true
+	case SecurityControlResultNotApplicable:
+		return true
+	case SecurityControlResultPass:
+		return true
+	case SecurityControlResultUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityFindingKind.
+const (
+	SecurityFindingKindConfiguration SecurityFindingKind = "configuration"
+	SecurityFindingKindGovernance    SecurityFindingKind = "governance"
+	SecurityFindingKindThreat        SecurityFindingKind = "threat"
+	SecurityFindingKindVulnerability SecurityFindingKind = "vulnerability"
+)
+
+// Valid indicates whether the value is a known member of the SecurityFindingKind enum.
+func (e SecurityFindingKind) Valid() bool {
+	switch e {
+	case SecurityFindingKindConfiguration:
+		return true
+	case SecurityFindingKindGovernance:
+		return true
+	case SecurityFindingKindThreat:
+		return true
+	case SecurityFindingKindVulnerability:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityImageScanStatus.
+const (
+	SecurityImageScanStatusFailed      SecurityImageScanStatus = "failed"
+	SecurityImageScanStatusSucceeded   SecurityImageScanStatus = "succeeded"
+	SecurityImageScanStatusUnsupported SecurityImageScanStatus = "unsupported"
+)
+
+// Valid indicates whether the value is a known member of the SecurityImageScanStatus enum.
+func (e SecurityImageScanStatus) Valid() bool {
+	switch e {
+	case SecurityImageScanStatusFailed:
+		return true
+	case SecurityImageScanStatusSucceeded:
+		return true
+	case SecurityImageScanStatusUnsupported:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SecurityProvider.
 const (
 	SecurityProviderAws        SecurityProvider = "aws"
@@ -610,6 +766,51 @@ func (e SecurityProvider) Valid() bool {
 	case SecurityProviderOnprem:
 		return true
 	case SecurityProviderPlatform:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityRunningImageScanState.
+const (
+	SecurityRunningImageScanStateNotScanned    SecurityRunningImageScanState = "not_scanned"
+	SecurityRunningImageScanStateScanFailed    SecurityRunningImageScanState = "scan_failed"
+	SecurityRunningImageScanStateScanned       SecurityRunningImageScanState = "scanned"
+	SecurityRunningImageScanStateUnknownDigest SecurityRunningImageScanState = "unknown_digest"
+)
+
+// Valid indicates whether the value is a known member of the SecurityRunningImageScanState enum.
+func (e SecurityRunningImageScanState) Valid() bool {
+	switch e {
+	case SecurityRunningImageScanStateNotScanned:
+		return true
+	case SecurityRunningImageScanStateScanFailed:
+		return true
+	case SecurityRunningImageScanStateScanned:
+		return true
+	case SecurityRunningImageScanStateUnknownDigest:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityScannerStateStatus.
+const (
+	SecurityScannerStateStatusConnected     SecurityScannerStateStatus = "connected"
+	SecurityScannerStateStatusError         SecurityScannerStateStatus = "error"
+	SecurityScannerStateStatusNotConfigured SecurityScannerStateStatus = "not_configured"
+)
+
+// Valid indicates whether the value is a known member of the SecurityScannerStateStatus enum.
+func (e SecurityScannerStateStatus) Valid() bool {
+	switch e {
+	case SecurityScannerStateStatusConnected:
+		return true
+	case SecurityScannerStateStatusError:
+		return true
+	case SecurityScannerStateStatusNotConfigured:
 		return true
 	default:
 		return false
@@ -643,6 +844,27 @@ func (e SecuritySeverity) Valid() bool {
 	}
 }
 
+// Defines values for SecuritySeverityBasisType.
+const (
+	SecuritySeverityBasisTypeCvss           SecuritySeverityBasisType = "cvss"
+	SecuritySeverityBasisTypePlatformPolicy SecuritySeverityBasisType = "platform_policy"
+	SecuritySeverityBasisTypeVendor         SecuritySeverityBasisType = "vendor"
+)
+
+// Valid indicates whether the value is a known member of the SecuritySeverityBasisType enum.
+func (e SecuritySeverityBasisType) Valid() bool {
+	switch e {
+	case SecuritySeverityBasisTypeCvss:
+		return true
+	case SecuritySeverityBasisTypePlatformPolicy:
+		return true
+	case SecuritySeverityBasisTypeVendor:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SecuritySourceStatus.
 const (
 	SecuritySourceStatusError         SecuritySourceStatus = "error"
@@ -661,6 +883,60 @@ func (e SecuritySourceStatus) Valid() bool {
 	case SecuritySourceStatusOk:
 		return true
 	case SecuritySourceStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityVulnerabilityFixState.
+const (
+	SecurityVulnerabilityFixStateFixed    SecurityVulnerabilityFixState = "fixed"
+	SecurityVulnerabilityFixStateNotFixed SecurityVulnerabilityFixState = "not_fixed"
+	SecurityVulnerabilityFixStateUnknown  SecurityVulnerabilityFixState = "unknown"
+	SecurityVulnerabilityFixStateWontFix  SecurityVulnerabilityFixState = "wont_fix"
+)
+
+// Valid indicates whether the value is a known member of the SecurityVulnerabilityFixState enum.
+func (e SecurityVulnerabilityFixState) Valid() bool {
+	switch e {
+	case SecurityVulnerabilityFixStateFixed:
+		return true
+	case SecurityVulnerabilityFixStateNotFixed:
+		return true
+	case SecurityVulnerabilityFixStateUnknown:
+		return true
+	case SecurityVulnerabilityFixStateWontFix:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityVulnerabilitySeverity.
+const (
+	SecurityVulnerabilitySeverityCritical   SecurityVulnerabilitySeverity = "critical"
+	SecurityVulnerabilitySeverityHigh       SecurityVulnerabilitySeverity = "high"
+	SecurityVulnerabilitySeverityLow        SecurityVulnerabilitySeverity = "low"
+	SecurityVulnerabilitySeverityMedium     SecurityVulnerabilitySeverity = "medium"
+	SecurityVulnerabilitySeverityNegligible SecurityVulnerabilitySeverity = "negligible"
+	SecurityVulnerabilitySeverityUnknown    SecurityVulnerabilitySeverity = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SecurityVulnerabilitySeverity enum.
+func (e SecurityVulnerabilitySeverity) Valid() bool {
+	switch e {
+	case SecurityVulnerabilitySeverityCritical:
+		return true
+	case SecurityVulnerabilitySeverityHigh:
+		return true
+	case SecurityVulnerabilitySeverityLow:
+		return true
+	case SecurityVulnerabilitySeverityMedium:
+		return true
+	case SecurityVulnerabilitySeverityNegligible:
+		return true
+	case SecurityVulnerabilitySeverityUnknown:
 		return true
 	default:
 		return false
@@ -2616,8 +2892,213 @@ type RunResult struct {
 // interrupted: the server restarted while the run was active; can be resumed.
 type RunStatus string
 
+// SecurityCVSS One CVSS score of an advisory as its source gave it. Versions are not converted into each other.
+type SecurityCVSS struct {
+	// BaseScore Example: 9.8
+	BaseScore float64 `json:"baseScore"`
+
+	// Source who published the score (NVD, a CNA, a distribution)
+	//
+	// Example: nvd@nist.gov
+	Source string `json:"source"`
+
+	// Vector Example: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+	Vector string `json:"vector"`
+
+	// Version Example: 3.1
+	Version string `json:"version"`
+}
+
 // SecurityCategory defines model for SecurityCategory.
 type SecurityCategory string
+
+// SecurityControl One control of the platform's catalog, checked by one check.
+type SecurityControl struct {
+	// Asset what one evaluation is about
+	//
+	// Example: IAM user with a console password
+	Asset string `json:"asset"`
+
+	// Check the `check` of the findings it produces
+	//
+	// Example: aws.user-mfa
+	Check string `json:"check"`
+
+	// Condition when an asset passes
+	Condition string `json:"condition"`
+
+	// Domain The five areas of the common controls. A domain is a grouping, not a
+	// check: it is never a unit of a pass rate.
+	// - identity: least privilege and strong authentication.
+	// - data: encryption and data exposure.
+	// - logging: audit logs and threat monitoring.
+	// - policy: secure configuration of workloads and network.
+	// - vulnerability: vulnerability management of running images.
+	Domain SecurityControlDomain `json:"domain"`
+
+	// FailSeverity the severity of a failing asset's finding, or `varies` when it depends on the finding (see severityBasis.reason)
+	//
+	// Example: medium
+	FailSeverity string `json:"failSeverity"`
+
+	// Id Example: HC-IDN-03
+	Id string `json:"id"`
+
+	// Limitations What the check does not establish.
+	Limitations []string `json:"limitations"`
+
+	// Mapping The closest relation among `references`; unmapped when there is none and the control is the platform's own rule.
+	Mapping    SecurityControlMapping     `json:"mapping"`
+	References []SecurityControlReference `json:"references"`
+
+	// SeverityBasis Where a severity came from (ADR 0029). The source's own value is kept
+	// as given and never overwritten; `severity` is the platform's
+	// normalised label for sorting and filtering.
+	SeverityBasis SecuritySeverityBasis `json:"severityBasis"`
+
+	// Source the source that evaluates it
+	//
+	// Example: aws-iam
+	Source string `json:"source"`
+	Title  string `json:"title"`
+}
+
+// SecurityControlMapping The closest relation among `references`; unmapped when there is none and the control is the platform's own rule.
+type SecurityControlMapping string
+
+// SecurityControlCounts Evaluations by result. `applicable` is pass + fail + unknown and is the
+// denominator; not_applicable is left out of it. `evaluated` is pass +
+// fail.
+type SecurityControlCounts struct {
+	Applicable    int `json:"applicable"`
+	Evaluated     int `json:"evaluated"`
+	Fail          int `json:"fail"`
+	NotApplicable int `json:"notApplicable"`
+	Pass          int `json:"pass"`
+	Unknown       int `json:"unknown"`
+}
+
+// SecurityControlCoverage The evaluations of one environment and domain.
+type SecurityControlCoverage struct {
+	// Counts Evaluations by result. `applicable` is pass + fail + unknown and is the
+	// denominator; not_applicable is left out of it. `evaluated` is pass +
+	// fail.
+	Counts SecurityControlCounts `json:"counts"`
+
+	// Domain The five areas of the common controls. A domain is a grouping, not a
+	// check: it is never a unit of a pass rate.
+	// - identity: least privilege and strong authentication.
+	// - data: encryption and data exposure.
+	// - logging: audit logs and threat monitoring.
+	// - policy: secure configuration of workloads and network.
+	// - vulnerability: vulnerability management of running images.
+	Domain      SecurityControlDomain `json:"domain"`
+	Environment string                `json:"environment"`
+	Reason      *string               `json:"reason,omitempty"`
+
+	// State - evaluated: at least one catalog control of the domain applies to the environment and was evaluated.
+	// - not_connected: controls apply but their source is not connected or could not be read; every evaluation is unknown.
+	// - unsupported: no catalog control of the domain applies to this environment yet; `reason` says what is not checked. It is not a pass.
+	State SecurityControlCoverageState `json:"state"`
+}
+
+// SecurityControlCoverageState - evaluated: at least one catalog control of the domain applies to the environment and was evaluated.
+// - not_connected: controls apply but their source is not connected or could not be read; every evaluation is unknown.
+// - unsupported: no catalog control of the domain applies to this environment yet; `reason` says what is not checked. It is not a pass.
+type SecurityControlCoverageState string
+
+// SecurityControlDomain The five areas of the common controls. A domain is a grouping, not a
+// check: it is never a unit of a pass rate.
+// - identity: least privilege and strong authentication.
+// - data: encryption and data exposure.
+// - logging: audit logs and threat monitoring.
+// - policy: secure configuration of workloads and network.
+// - vulnerability: vulnerability management of running images.
+type SecurityControlDomain string
+
+// SecurityControlEvaluation One control evaluated on one asset of one environment.
+type SecurityControlEvaluation struct {
+	// Asset the asset, or `*` when the whole source could not be read
+	//
+	// Example: arn:aws:iam::123456789012:user/alice
+	Asset       string    `json:"asset"`
+	ControlId   string    `json:"controlId"`
+	Environment string    `json:"environment"`
+	EvaluatedAt time.Time `json:"evaluatedAt"`
+
+	// FindingIds The findings of a failing evaluation.
+	FindingIds []string `json:"findingIds"`
+
+	// Id stable across collections: a hash of environment, control and asset
+	Id string `json:"id"`
+
+	// Reason the evidence read, or why the result is unknown or not applicable
+	Reason string `json:"reason"`
+
+	// Result - pass: the check read the asset and its condition holds.
+	// - fail: the check read the asset and its condition does not hold; `findingIds` name the findings.
+	// - unknown: the asset could not be read (no answer, denied, not connected). It is never counted as pass.
+	// - not_applicable: the condition does not apply to the asset (e.g. MFA for a user with no console password). Not part of the denominator.
+	Result SecurityControlResult `json:"result"`
+	Source string                `json:"source"`
+}
+
+// SecurityControlReference defines model for SecurityControlReference.
+type SecurityControlReference struct {
+	// Framework NIST SP 800-53, AWS Security Hub CSPM, Kubernetes Pod Security Standards or CIS Kubernetes Benchmark
+	//
+	// Example: AWS Security Hub CSPM
+	Framework string `json:"framework"`
+
+	// Id Example: IAM.5
+	Id string `json:"id"`
+
+	// Note what differs, for a partial match
+	Note *string `json:"note,omitempty"`
+
+	// Relation - exact: the check reads the same condition, scope and exceptions as the referenced control.
+	// - partial: the check covers part of it (fewer conditions, another scope, other exceptions); passing it does not mean passing the referenced control.
+	Relation SecurityControlRelation `json:"relation"`
+
+	// Severity the referenced control's own severity, when its publisher gives one
+	//
+	// Example: Medium
+	Severity *string `json:"severity,omitempty"`
+	Title    *string `json:"title,omitempty"`
+
+	// Url Example: https://docs.aws.amazon.com/securityhub/latest/userguide/iam-controls.html#iam-5
+	Url string `json:"url"`
+
+	// Version Example: control reference as of 2026-11-06
+	Version string `json:"version"`
+}
+
+// SecurityControlRelation - exact: the check reads the same condition, scope and exceptions as the referenced control.
+// - partial: the check covers part of it (fewer conditions, another scope, other exceptions); passing it does not mean passing the referenced control.
+type SecurityControlRelation string
+
+// SecurityControlReport defines model for SecurityControlReport.
+type SecurityControlReport struct {
+	Controls []SecurityControl `json:"controls"`
+
+	// Coverage One row per environment and domain, in the order of the sources and of the domain enum.
+	Coverage []SecurityControlCoverage `json:"coverage"`
+
+	// Evaluations By environment (in the order of the sources), then control, then asset.
+	Evaluations []SecurityControlEvaluation `json:"evaluations"`
+
+	// GeneratedAt when the sources were read (as `SecurityReport.generatedAt`)
+	GeneratedAt time.Time `json:"generatedAt"`
+
+	// PolicyVersion Example: hopcharlie-security-policy/2026-11-06.1
+	PolicyVersion string `json:"policyVersion"`
+}
+
+// SecurityControlResult - pass: the check read the asset and its condition holds.
+// - fail: the check read the asset and its condition does not hold; `findingIds` name the findings.
+// - unknown: the asset could not be read (no answer, denied, not connected). It is never counted as pass.
+// - not_applicable: the condition does not apply to the asset (e.g. MFA for a user with no console password). Not part of the denominator.
+type SecurityControlResult string
 
 // SecurityFinding One security or governance signal, normalised across vendors.
 type SecurityFinding struct {
@@ -2626,8 +3107,18 @@ type SecurityFinding struct {
 	// Check the rule that produced the finding
 	//
 	// Example: k8s.privileged
-	Check  string `json:"check"`
-	Detail string `json:"detail"`
+	Check string `json:"check"`
+
+	// ControlId The control of the platform's catalog (`GET /v1/security/controls`)
+	// whose check produced the finding. Absent for vendor detections and
+	// vendor posture findings that are passed through (GuardDuty,
+	// Security Hub) and for audit denials, which no catalog control
+	// evaluates.
+	//
+	//
+	// Example: HC-IDN-03
+	ControlId *string `json:"controlId,omitempty"`
+	Detail    string  `json:"detail"`
 
 	// Environment an environment name, or aws-account, or platform
 	//
@@ -2636,6 +3127,13 @@ type SecurityFinding struct {
 
 	// Id stable across collections: a hash of environment, source, check, resource and, where it has one, the vendor's own finding id (GuardDuty finding id, Security Hub finding ARN) or the rule's protocol, ports and CIDRs
 	Id string `json:"id"`
+
+	// Kind Set on every finding by servers that implement ADR 0029.
+	// - configuration: a setting checked against a control.
+	// - threat: a detection of activity (GuardDuty, Security Hub threat types).
+	// - governance: the platform's own rules about its requests and records (audit denials, unrecorded bucket keys, server settings).
+	// - vulnerability: a package vulnerability in an image; these are listed by `GET /v1/security/vulnerabilities`, not in `findings`.
+	Kind *SecurityFindingKind `json:"kind,omitempty"`
 
 	// ObservedAt when the source reported it, or when it was read
 	ObservedAt     time.Time        `json:"observedAt"`
@@ -2646,12 +3144,71 @@ type SecurityFinding struct {
 	Resource string           `json:"resource"`
 	Severity SecuritySeverity `json:"severity"`
 
+	// SeverityBasis Where a severity came from (ADR 0029). The source's own value is kept
+	// as given and never overwritten; `severity` is the platform's
+	// normalised label for sorting and filtering.
+	SeverityBasis *SecuritySeverityBasis `json:"severityBasis,omitempty"`
+
 	// Source kubernetes, aws-iam, aws-ec2, aws-cloudtrail, aws-guardduty, aws-securityhub, aws-s3, platform-audit, platform-config, storage-keys
 	//
 	// Example: aws-guardduty
 	Source string `json:"source"`
 	Title  string `json:"title"`
 }
+
+// SecurityFindingKind Set on every finding by servers that implement ADR 0029.
+// - configuration: a setting checked against a control.
+// - threat: a detection of activity (GuardDuty, Security Hub threat types).
+// - governance: the platform's own rules about its requests and records (audit denials, unrecorded bucket keys, server settings).
+// - vulnerability: a package vulnerability in an image; these are listed by `GET /v1/security/vulnerabilities`, not in `findings`.
+type SecurityFindingKind string
+
+// SecurityImageScan One scan of one image digest by the platform's scanner (ADR 0029).
+type SecurityImageScan struct {
+	Database *struct {
+		// BuiltAt when the vulnerability database was built
+		BuiltAt       *time.Time `json:"builtAt,omitempty"`
+		SchemaVersion *string    `json:"schemaVersion,omitempty"`
+	} `json:"database,omitempty"`
+
+	// Digest the manifest digest that was scanned (for a multi-arch index, the platform manifest)
+	//
+	// Example: sha256:4c2e...
+	Digest     string     `json:"digest"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	Id         string     `json:"id"`
+
+	// Image the reference that was scanned
+	//
+	// Example: registry.example/app@sha256:4c2e...
+	Image   *string `json:"image,omitempty"`
+	Message *string `json:"message,omitempty"`
+
+	// Packages packages in the image's SBOM
+	Packages *int `json:"packages,omitempty"`
+
+	// Platform Example: linux/amd64
+	Platform *string `json:"platform,omitempty"`
+
+	// ResultSha256 hash of the scanner's original result kept by the platform
+	ResultSha256 *string `json:"resultSha256,omitempty"`
+	Scanner      struct {
+		// Name Example: grype
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	} `json:"scanner"`
+	StartedAt *time.Time `json:"startedAt,omitempty"`
+
+	// Status - succeeded: the scan finished; zero vulnerabilities means none were matched with this database, not that the image is safe.
+	// - failed: the scan did not finish; `message` says why. Its image has no result.
+	// - unsupported: the scanner cannot read this image (e.g. no package database).
+	Status SecurityImageScanStatus `json:"status"`
+}
+
+// SecurityImageScanStatus - succeeded: the scan finished; zero vulnerabilities means none were matched with this database, not that the image is safe.
+// - failed: the scan did not finish; `message` says why. Its image has no result.
+// - unsupported: the scanner cannot read this image (e.g. no package database).
+type SecurityImageScanStatus string
 
 // SecurityOCSFExport defines model for SecurityOCSFExport.
 type SecurityOCSFExport struct {
@@ -2668,6 +3225,28 @@ type SecurityOCSFExport struct {
 	//
 	// Example: 1.9.0
 	OcsfVersion string `json:"ocsfVersion"`
+}
+
+// SecurityPackage defines model for SecurityPackage.
+type SecurityPackage struct {
+	// Distro Example: debian-12
+	Distro *string `json:"distro,omitempty"`
+
+	// Name Example: openssl
+	Name string `json:"name"`
+
+	// Purl Example: pkg:deb/debian/openssl@3.0.13-1~deb12u1?distro=debian-12
+	Purl *string `json:"purl,omitempty"`
+
+	// Type the package ecosystem: deb, apk, rpm, go-module, npm, python, java-archive, ...
+	//
+	// Example: deb
+	Type string `json:"type"`
+
+	// Version the installed version
+	//
+	// Example: 3.0.13-1~deb12u1
+	Version string `json:"version"`
 }
 
 // SecurityProvider defines model for SecurityProvider.
@@ -2694,8 +3273,107 @@ type SecurityReport struct {
 	Summary     SecuritySummary `json:"summary"`
 }
 
+// SecurityRunningImage One container of a running workload and the image it runs, read from
+// the cluster (ADR 0029). The tag in `image` is for display; the digest
+// identifies the image.
+type SecurityRunningImage struct {
+	// App the app, from the label app.kubernetes.io/part-of that the platform's app chart sets; absent when the pod lacks the chart's labels
+	App       *string `json:"app,omitempty"`
+	Container string  `json:"container"`
+
+	// Digest the digest the kubelet reports in the container status; absent when the runtime gave none
+	Digest      *string `json:"digest,omitempty"`
+	Environment string  `json:"environment"`
+
+	// Image the image the pod spec names
+	Image string `json:"image"`
+
+	// Instance the app instance (ADR 0015), from the label app.kubernetes.io/instance when it equals the namespace; absent otherwise
+	Instance  *string `json:"instance,omitempty"`
+	Namespace string  `json:"namespace"`
+
+	// ScanId the latest scan of `digest`
+	ScanId *string `json:"scanId,omitempty"`
+
+	// ScanState - scanned: a succeeded scan of the digest exists.
+	// - scan_failed: the latest scan of the digest failed or was unsupported.
+	// - not_scanned: no scan of the digest exists.
+	// - unknown_digest: the runtime reported no digest, so no scan can be matched.
+	ScanState SecurityRunningImageScanState `json:"scanState"`
+
+	// Workload Example: Deployment/web
+	Workload string `json:"workload"`
+}
+
+// SecurityRunningImageScanState - scanned: a succeeded scan of the digest exists.
+// - scan_failed: the latest scan of the digest failed or was unsupported.
+// - not_scanned: no scan of the digest exists.
+// - unknown_digest: the runtime reported no digest, so no scan can be matched.
+type SecurityRunningImageScanState string
+
+// SecurityScannerState defines model for SecurityScannerState.
+type SecurityScannerState struct {
+	Message *string `json:"message,omitempty"`
+
+	// Status - connected: the platform reads scan results.
+	// - not_configured: no scanner results are connected; `scans` and `vulnerabilities` are empty and this means "not scanned", not "no vulnerabilities".
+	// - error: results could not be read; `message` says why.
+	Status SecurityScannerStateStatus `json:"status"`
+}
+
+// SecurityScannerStateStatus - connected: the platform reads scan results.
+// - not_configured: no scanner results are connected; `scans` and `vulnerabilities` are empty and this means "not scanned", not "no vulnerabilities".
+// - error: results could not be read; `message` says why.
+type SecurityScannerStateStatus string
+
 // SecuritySeverity defines model for SecuritySeverity.
 type SecuritySeverity string
+
+// SecuritySeverityBasis Where a severity came from (ADR 0029). The source's own value is kept
+// as given and never overwritten; `severity` is the platform's
+// normalised label for sorting and filtering.
+type SecuritySeverityBasis struct {
+	// Issuer who issued the source value, or HopCharlie for platform_policy
+	//
+	// Example: AWS Security Hub CSPM
+	Issuer string `json:"issuer"`
+
+	// Policy the version of the platform's control catalog and mapping rules that produced `severity`
+	//
+	// Example: hopcharlie-security-policy/2026-11-06.1
+	Policy string `json:"policy"`
+
+	// Reason why this basis applies, e.g. which vendor control matches exactly or why a platform rule was used
+	Reason *string `json:"reason,omitempty"`
+
+	// SourceFindingId the vendor's own finding id or ARN
+	SourceFindingId *string `json:"sourceFindingId,omitempty"`
+
+	// SourceScore the source's numeric score (GuardDuty 1.0-10.0, a CVSS base score)
+	//
+	// Example: 8
+	SourceScore *float64 `json:"sourceScore,omitempty"`
+
+	// SourceSeverity the source's label or value exactly as given
+	//
+	// Example: HIGH
+	SourceSeverity *string `json:"sourceSeverity,omitempty"`
+
+	// SourceUrl the official page of the vendor control or advisory the value comes from
+	SourceUrl *string `json:"sourceUrl,omitempty"`
+
+	// Type Who decided the normalised `severity`.
+	// - vendor: the vendor's own label or score, either of the finding (GuardDuty, Security Hub) or of the vendor control the check matches exactly (e.g. AWS Security Hub IAM.5).
+	// - cvss: the CVSS base score of an advisory (vulnerabilities only).
+	// - platform_policy: a rule of the platform's versioned security policy (`policy`). It is not an official rating, even where it uses the same level as a related vendor control the check only partly matches.
+	Type SecuritySeverityBasisType `json:"type"`
+}
+
+// SecuritySeverityBasisType Who decided the normalised `severity`.
+// - vendor: the vendor's own label or score, either of the finding (GuardDuty, Security Hub) or of the vendor control the check matches exactly (e.g. AWS Security Hub IAM.5).
+// - cvss: the CVSS base score of an advisory (vulnerabilities only).
+// - platform_policy: a rule of the platform's versioned security policy (`policy`). It is not an official rating, even where it uses the same level as a related vendor control the check only partly matches.
+type SecuritySeverityBasisType string
 
 // SecuritySource defines model for SecuritySource.
 type SecuritySource struct {
@@ -2730,6 +3408,74 @@ type SecuritySummary struct {
 	// ByEnvironment Counts per environment; every environment with a source appears, even with no findings.
 	ByEnvironment map[string]SeverityCounts `json:"byEnvironment"`
 	BySeverity    SeverityCounts            `json:"bySeverity"`
+}
+
+// SecurityVulnerability One advisory matched to one package of one scanned image digest.
+type SecurityVulnerability struct {
+	// Advisory the advisory id: a CVE, or a GHSA or distribution id where there is no CVE
+	//
+	// Example: CVE-2024-6387
+	Advisory string                        `json:"advisory"`
+	Aliases  []string                      `json:"aliases"`
+	Cvss     []SecurityCVSS                `json:"cvss"`
+	Digest   string                        `json:"digest"`
+	FixState SecurityVulnerabilityFixState `json:"fixState"`
+
+	// FixedVersions empty when the source names no fixed version; that does not mean there is no fix
+	FixedVersions []string `json:"fixedVersions"`
+
+	// Id stable: a hash of digest, advisory and the package's purl or name, version and type
+	Id      string          `json:"id"`
+	Package SecurityPackage `json:"package"`
+	ScanId  string          `json:"scanId"`
+
+	// Severity The normalised severity of a package vulnerability. `unknown` means no
+	// source gave a severity or score; it is not low and not none.
+	// `negligible` is a distribution's own label below low.
+	Severity SecurityVulnerabilitySeverity `json:"severity"`
+
+	// SeverityBasis Where a severity came from (ADR 0029). The source's own value is kept
+	// as given and never overwritten; `severity` is the platform's
+	// normalised label for sorting and filtering.
+	SeverityBasis SecuritySeverityBasis `json:"severityBasis"`
+	Urls          []string              `json:"urls"`
+}
+
+// SecurityVulnerabilityFixState defines model for SecurityVulnerability.FixState.
+type SecurityVulnerabilityFixState string
+
+// SecurityVulnerabilityReport defines model for SecurityVulnerabilityReport.
+type SecurityVulnerabilityReport struct {
+	GeneratedAt time.Time `json:"generatedAt"`
+
+	// RunningImages Containers of running pods outside system namespaces, by environment, namespace, workload and container. An environment whose cluster could not be read has none; see `sources` of `GET /v1/security`.
+	RunningImages []SecurityRunningImage `json:"runningImages"`
+	Scanner       SecurityScannerState   `json:"scanner"`
+	Scans         []SecurityImageScan    `json:"scans"`
+
+	// Summary Separate counts, each with its own unit: distinct advisories, distinct
+	// scanned digests, running containers of a scanned digest with at least
+	// one vulnerability, and advisory-package-digest occurrences.
+	Summary         SecurityVulnerabilitySummary `json:"summary"`
+	Vulnerabilities []SecurityVulnerability      `json:"vulnerabilities"`
+}
+
+// SecurityVulnerabilitySeverity The normalised severity of a package vulnerability. `unknown` means no
+// source gave a severity or score; it is not low and not none.
+// `negligible` is a distribution's own label below low.
+type SecurityVulnerabilitySeverity string
+
+// SecurityVulnerabilitySummary Separate counts, each with its own unit: distinct advisories, distinct
+// scanned digests, running containers of a scanned digest with at least
+// one vulnerability, and advisory-package-digest occurrences.
+type SecurityVulnerabilitySummary struct {
+	Advisories         int `json:"advisories"`
+	AffectedContainers int `json:"affectedContainers"`
+	Images             int `json:"images"`
+
+	// NotScannedContainers running containers whose digest has no succeeded scan (not_scanned, scan_failed or unknown_digest)
+	NotScannedContainers int `json:"notScannedContainers"`
+	Occurrences          int `json:"occurrences"`
 }
 
 // ServiceInfo defines model for ServiceInfo.
@@ -3136,11 +3882,23 @@ type GetSecurityParams struct {
 	Refresh  *bool             `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 
+// GetSecurityControlsParams defines parameters for GetSecurityControls.
+type GetSecurityControlsParams struct {
+	Environment *string `form:"environment,omitempty" json:"environment,omitempty"`
+	Refresh     *bool   `form:"refresh,omitempty" json:"refresh,omitempty"`
+}
+
 // GetSecurityOCSFParams defines parameters for GetSecurityOCSF.
 type GetSecurityOCSFParams struct {
 	Environment *string           `form:"environment,omitempty" json:"environment,omitempty"`
 	Severity    *SecuritySeverity `form:"severity,omitempty" json:"severity,omitempty"`
 	Refresh     *bool             `form:"refresh,omitempty" json:"refresh,omitempty"`
+}
+
+// GetSecurityVulnerabilitiesParams defines parameters for GetSecurityVulnerabilities.
+type GetSecurityVulnerabilitiesParams struct {
+	Environment *string `form:"environment,omitempty" json:"environment,omitempty"`
+	Refresh     *bool   `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 
 // GetTrafficParams defines parameters for GetTraffic.
