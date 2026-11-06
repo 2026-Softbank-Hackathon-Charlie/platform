@@ -26,6 +26,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
@@ -387,6 +388,13 @@ func main() {
 	deps.Secrets = secretsKey
 	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }
 	go agents.RunSweeper(runCtx, agentIdle, log)
+	// Optional (ADR 0030): the management cluster's routes to registered apps' databases.
+	if dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log); err != nil {
+		fatal("PLATFORM_APP_DB_ROUTE_*", "err", err)
+	} else if dbRoutes != nil {
+		deps.DBRoutes = dbRoutes
+		go dbRoutes.Run(runCtx)
+	}
 	// Optional: the GitHub App that apps are registered and deployed from.
 	gh, err := github.FromEnv(os.Getenv)
 	if err != nil {

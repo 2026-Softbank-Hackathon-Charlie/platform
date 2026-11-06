@@ -2655,11 +2655,11 @@ type PlanDraftResult struct {
 	// sessions x 1.2.
 	SourceStats *SourceStats `json:"sourceStats,omitempty"`
 
-	// SourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query.
+	// SourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query. For an app registered with a database pair, an unreachable database usually means the management cluster's route to it is still being made (a few minutes after registration); draft again later.
 	SourceStatsReason *PlanDraftResultSourceStatsReason `json:"sourceStatsReason,omitempty"`
 }
 
-// PlanDraftResultSourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query.
+// PlanDraftResultSourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query. For an app registered with a database pair, an unreachable database usually means the management cluster's route to it is still being made (a few minutes after registration); draft again later.
 type PlanDraftResultSourceStatsReason string
 
 // PlanEndpoint The non-secret view of a plan endpoint.

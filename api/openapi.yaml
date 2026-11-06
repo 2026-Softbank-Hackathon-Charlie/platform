@@ -3721,7 +3721,7 @@ components:
         sourceStatsReason:
           type: string
           enum: [not_measured]
-          description: Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query.
+          description: Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query. For an app registered with a database pair, an unreachable database usually means the management cluster's route to it is still being made (a few minutes after registration); draft again later.
 
     SourceStats:
       description: |
