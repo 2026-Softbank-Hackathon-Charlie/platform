@@ -6,7 +6,18 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+// ProbeClient is the HTTP client for Prober. It does not follow redirects: a
+// redirect (say / to /login) is the answer the gateway counted, and following
+// it would count again or leave through the public address.
+func ProbeClient() *http.Client {
+	return &http.Client{
+		Timeout:       10 * time.Second, // each read also has the runner's own, shorter timeout
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
 
 // Prober sends synthetic reads through the gateway's public proxy, for the
 // canary of an app that has no users (runs.Config.Probe). Each read is a

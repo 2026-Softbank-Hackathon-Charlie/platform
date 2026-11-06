@@ -16,7 +16,7 @@ func TestProbeAddressesTheAppScope(t *testing.T) {
 		hosts <- r.Host
 	}))
 	defer srv.Close()
-	p := &Prober{ProxyURL: srv.URL, AppDomain: "hopcharlie.dev", HTTP: srv.Client()}
+	p := &Prober{ProxyURL: srv.URL, AppDomain: "hopcharlie.dev", HTTP: ProbeClient()}
 
 	if err := p.Probe(context.Background(), "http://hopcharlie-gateway:9901/apps/moimroom-mig"); err != nil {
 		t.Fatal(err)
@@ -30,5 +30,21 @@ func TestProbeAddressesTheAppScope(t *testing.T) {
 	}
 	if h := <-hosts; h != srv.Listener.Addr().String() {
 		t.Fatalf("root host = %q", h)
+	}
+}
+
+func TestProbeDoesNotFollowRedirects(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Redirect(w, r, "/login", http.StatusFound)
+	}))
+	defer srv.Close()
+	p := &Prober{ProxyURL: srv.URL, HTTP: ProbeClient()}
+	if err := p.Probe(context.Background(), "http://gw:9901/apps/a"); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("requests = %d, want 1 (no redirect followed)", hits)
 	}
 }

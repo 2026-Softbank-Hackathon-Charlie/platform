@@ -232,7 +232,7 @@ func main() {
 		// With the public proxy known, the canary sends synthetic reads through
 		// it, so that an app without users still has its target judged.
 		if proxy := os.Getenv("PLATFORM_GATEWAY_PROXY_URL"); proxy != "" {
-			p := &gateway.Prober{ProxyURL: proxy, AppDomain: os.Getenv("PLATFORM_APP_DOMAIN"), HTTP: &http.Client{Timeout: 5 * time.Second}}
+			p := &gateway.Prober{ProxyURL: proxy, AppDomain: os.Getenv("PLATFORM_APP_DOMAIN"), HTTP: gateway.ProbeClient()}
 			rcfg.Probe = p.Probe
 		}
 	}

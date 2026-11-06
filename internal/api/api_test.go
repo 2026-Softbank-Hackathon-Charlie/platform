@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -836,6 +837,40 @@ func TestCanaryProbesAQuietApp(t *testing.T) {
 	defer mu.Unlock()
 	if len(urls) < 20 || urls[0] != gatewayURL {
 		t.Fatalf("probes: %d, first %q", len(urls), urls[0])
+	}
+}
+
+// A read slower than the step is waited for, not cut: the gateway would count a
+// cut request (499) as no error with a short latency, hiding a slow target.
+func TestCanaryWaitsForSlowProbes(t *testing.T) {
+	var started, finished atomic.Int64
+	var h *harness
+	h = newHarness(t, func(_ *harness, rc *runs.Config, _ *Deps) {
+		rc.Probe = func(ctx context.Context, _ string) error {
+			started.Add(1)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(150 * time.Millisecond):
+			}
+			finished.Add(1)
+			h.traffic.mu.Lock()
+			s := h.traffic.stats["eks"]
+			s.Requests++
+			h.traffic.stats["eks"] = s
+			h.traffic.mu.Unlock()
+			return nil
+		}
+	})
+	h.traffic.stats["eks"] = apiv1.BackendStats{}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true), Canary: &apiv1.CanaryOptions{Weights: []int{100}, StepDuration: ptr("100ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+	if run.Canary.Passed == nil || !*run.Canary.Passed {
+		t.Fatalf("canary: %+v", run.Canary.Steps)
+	}
+	if s, f := started.Load(), finished.Load(); s < 20 || s != f {
+		t.Fatalf("probes started %d, finished %d: every started read must finish before the gate", s, f)
 	}
 }
 
