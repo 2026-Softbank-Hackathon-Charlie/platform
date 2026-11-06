@@ -132,3 +132,18 @@ func TestVulnerabilityCVE(t *testing.T) {
 		t.Fatalf("got %q", c)
 	}
 }
+
+func TestWarmReadsTheKEVCatalogOnce(t *testing.T) {
+	f := &exploitFake{}
+	x, _ := newExploitTest(t, f)
+	x.Warm(t.Context())
+	if !x.KEVListed("CVE-2024-6387") || f.kevCalls.Load() != 1 || f.epssCalls.Load() != 0 {
+		t.Fatalf("after Warm: listed %v, KEV calls %d, EPSS calls %d", x.KEVListed("CVE-2024-6387"), f.kevCalls.Load(), f.epssCalls.Load())
+	}
+	x.Warm(t.Context()) // the catalog is fresh: no second read
+	if f.kevCalls.Load() != 1 {
+		t.Fatalf("KEV calls %d", f.kevCalls.Load())
+	}
+	var nilIntel *ExploitIntel
+	nilIntel.Warm(t.Context())
+}

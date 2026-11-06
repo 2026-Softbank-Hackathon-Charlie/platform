@@ -12,9 +12,19 @@ import (
 const securityExceptionColumns = `id, target_type, target_id, reason, created_by, expires_at, created_at, revoked_at, coalesce(revoked_by, '')`
 
 // CreateSecurityException inserts e unless its target has an active exception
-// at e.CreatedAt, in one statement.
+// at e.CreatedAt. Under READ COMMITTED two concurrent inserts could both pass
+// NOT EXISTS, so a transaction lock on the target serialises them.
 func (s *Postgres) CreateSecurityException(ctx context.Context, e SecurityException) error {
-	tag, err := s.pool.Exec(ctx, `INSERT INTO security_exceptions (id, target_type, target_id, reason, created_by, expires_at, created_at)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text || '/' || $2::text, 0))`, e.TargetType, e.TargetID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO security_exceptions (id, target_type, target_id, reason, created_by, expires_at, created_at)
 		SELECT $1, $2, $3, $4, $5, $6, $7
 		WHERE NOT EXISTS (SELECT 1 FROM security_exceptions
 			WHERE target_type = $2 AND target_id = $3 AND revoked_at IS NULL AND expires_at > $7)`,
@@ -28,7 +38,7 @@ func (s *Postgres) CreateSecurityException(ctx context.Context, e SecurityExcept
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%w: %s %s has an active exception", ErrConflict, e.TargetType, e.TargetID)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *Postgres) RevokeSecurityException(ctx context.Context, id, by string, at time.Time) (SecurityException, error) {

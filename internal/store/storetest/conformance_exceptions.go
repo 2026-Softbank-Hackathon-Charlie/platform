@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ var exceptionCases = []struct {
 	{"SecurityExceptionActiveDuplicate", testSecurityExceptionActiveDuplicate},
 	{"SecurityExceptionAfterExpiry", testSecurityExceptionAfterExpiry},
 	{"SecurityExceptionRevoke", testSecurityExceptionRevoke},
+	{"SecurityExceptionConcurrent", testSecurityExceptionConcurrent},
 }
 
 // securityException is created at minute n and expires at minute n+expires.
@@ -112,5 +114,28 @@ func testSecurityExceptionRevoke(t *testing.T, s store.Store) {
 	list, _ := s.ListSecurityExceptions(ctx)
 	if len(list) != 1 || list[0].RevokedBy != "bob" || list[0].RevokedAt == nil || !list[0].RevokedAt.Equal(at(5).Truncate(time.Microsecond)) {
 		t.Fatalf("list %+v", list)
+	}
+}
+
+// Two operators (or a double click) creating an exception for one target at
+// once: exactly one is stored.
+func testSecurityExceptionConcurrent(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	const n = 16
+	errs := make([]error, n)
+	parallel(n, func(i int) {
+		errs[i] = s.CreateSecurityException(ctx, securityException(fmt.Sprintf("sx_%d", i), "vulnerability", "v1", 1, 60))
+	})
+	stored := 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			stored++
+		case !errors.Is(err, store.ErrConflict):
+			t.Fatalf("goroutine %d: %v", i, err)
+		}
+	}
+	if got, _ := s.ListSecurityExceptions(ctx); stored != 1 || len(got) != 1 {
+		t.Fatalf("%d creates succeeded, %d rows stored; want 1", stored, len(got))
 	}
 }

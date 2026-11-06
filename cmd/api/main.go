@@ -382,6 +382,9 @@ func main() {
 	deps.ImageScans = security.StoredScans{Store: st}
 	// KEV and EPSS for the vulnerability report (SEC-07): public feeds, no credentials.
 	deps.Exploits = security.NewExploitIntel()
+	// Read the KEV catalog now, off the request path, so the 7-day exception
+	// limit for KEV-listed CVEs (SEC-08) holds right after a restart.
+	go deps.Exploits.Warm(ctx)
 	// A running agent session with no event for PLATFORM_AGENT_IDLE is closed
 	// as cancelled, so an agent that crashed does not leave it open forever.
 	agentIdle := agentlog.DefaultIdle

@@ -92,6 +92,9 @@ func (s *Server) checkException(in apiv1.SecurityExceptionRequest, now time.Time
 	if !ok {
 		return "unknown vulnerability " + in.TargetId
 	}
+	// KEVListed reads only the cache, which the server warms at startup and
+	// every vulnerability report refreshes. When it holds no catalog (the
+	// read failed, no egress, or older than 72h) the 30-day rule applies.
 	if cve := security.VulnerabilityCVE(v); s.d.Exploits.KEVListed(cve) && in.ExpiresAt.Sub(now) > maxKEVExceptionTTL {
 		return cve + " is in the CISA KEV catalog: expiresAt must be at most 7 days from now"
 	}
