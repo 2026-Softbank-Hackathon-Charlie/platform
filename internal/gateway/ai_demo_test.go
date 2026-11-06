@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -447,46 +448,73 @@ func TestAIDemoFailureAndNoRetry(t *testing.T) {
 	}
 }
 
+func TestAIDemoExpiredBeforeAdmission(t *testing.T) {
+	calls := 0
+	g := aiTestGateway(t, "http://gcp", "http://laptop", aiRT(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return nil, r.Context().Err()
+	}))
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	r := httptest.NewRequest("POST", "http://gateway/api/chat", strings.NewReader(aiTestBody)).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer ai-secret")
+	r.Header.Set("X-Request-Id", "expired")
+	w := httptest.NewRecorder()
+	g.Proxy().ServeHTTP(w, r)
+	if w.Code != 504 || w.Header().Get("X-Hop-Backend") != "" || calls != 0 || g.ai != nil || g.inflightWrites != 0 {
+		t.Fatalf("expired request admitted: status=%d headers=%v calls=%d ai=%+v inflight=%d", w.Code, w.Header(), calls, g.ai, g.inflightWrites)
+	}
+}
+
 func TestAIDemoDeadlineAndCancellation(t *testing.T) {
 	for _, deadline := range []bool{true, false} {
 		t.Run(fmt.Sprint("deadline=", deadline), func(t *testing.T) {
-			entered := make(chan struct{})
-			calls := 0
-			transport := aiRT(func(r *http.Request) (*http.Response, error) {
-				calls++
-				close(entered)
-				<-r.Context().Done()
-				return nil, r.Context().Err()
+			// Fake time advances only after admission and transport dispatch block.
+			synctest.Test(t, func(t *testing.T) {
+				entered := make(chan struct{})
+				calls := 0
+				transport := aiRT(func(r *http.Request) (*http.Response, error) {
+					calls++
+					close(entered)
+					<-r.Context().Done()
+					return nil, r.Context().Err()
+				})
+				g := aiTestGateway(t, "http://gcp", "http://laptop", transport)
+				var ctx context.Context
+				var cancel context.CancelFunc
+				if deadline {
+					ctx, cancel = context.WithTimeout(context.Background(), 40*time.Millisecond)
+				} else {
+					ctx, cancel = context.WithCancel(context.Background())
+				}
+				defer cancel()
+				r := httptest.NewRequest("POST", "http://gateway/api/chat", strings.NewReader(aiTestBody)).WithContext(ctx)
+				r.Header.Set("Authorization", "Bearer ai-secret")
+				r.Header.Set("X-Request-Id", "cancel")
+				w := httptest.NewRecorder()
+				done := make(chan struct{})
+				go func() { g.Proxy().ServeHTTP(w, r); close(done) }()
+				aiWait(t, entered)
+				g.mu.Lock()
+				active, inflight := g.ai.active["gcp"], g.inflightWrites
+				g.mu.Unlock()
+				if ctx.Err() != nil || active != 1 || inflight != 1 {
+					t.Fatalf("request not active before termination: err=%v active=%d inflight=%d", ctx.Err(), active, inflight)
+				}
+				if !deadline {
+					cancel()
+				}
+				aiWait(t, done)
+				g.mu.Lock()
+				defer g.mu.Unlock()
+				rec := g.ai.records[0]
+				if calls != 1 || g.ai.active["gcp"] != 0 || g.inflightWrites != 0 || rec.Outcome != "aborted" || rec.FinishedAt == nil {
+					t.Fatalf("cancellation lost: calls=%d active=%v rec=%+v", calls, g.ai.active, rec)
+				}
+				if deadline && w.Code != 504 {
+					t.Fatalf("deadline status=%d", w.Code)
+				}
 			})
-			g := aiTestGateway(t, "http://gcp", "http://laptop", transport)
-			var ctx context.Context
-			var cancel context.CancelFunc
-			if deadline {
-				ctx, cancel = context.WithTimeout(context.Background(), 40*time.Millisecond)
-			} else {
-				ctx, cancel = context.WithCancel(context.Background())
-			}
-			defer cancel()
-			r := httptest.NewRequest("POST", "http://gateway/api/chat", strings.NewReader(aiTestBody)).WithContext(ctx)
-			r.Header.Set("Authorization", "Bearer ai-secret")
-			r.Header.Set("X-Request-Id", "cancel")
-			w := httptest.NewRecorder()
-			done := make(chan struct{})
-			go func() { g.Proxy().ServeHTTP(w, r); close(done) }()
-			aiWait(t, entered)
-			if !deadline {
-				cancel()
-			}
-			aiWait(t, done)
-			g.mu.Lock()
-			defer g.mu.Unlock()
-			rec := g.ai.records[0]
-			if calls != 1 || g.ai.active["gcp"] != 0 || rec.Outcome != "aborted" || rec.FinishedAt == nil {
-				t.Fatalf("cancellation lost: calls=%d active=%v rec=%+v", calls, g.ai.active, rec)
-			}
-			if deadline && w.Code != 504 {
-				t.Fatalf("deadline status=%d", w.Code)
-			}
 		})
 	}
 }
