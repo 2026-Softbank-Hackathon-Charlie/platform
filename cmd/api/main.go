@@ -42,8 +42,10 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"golang.org/x/term"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
+	"k8s.io/client-go/metadata"
 )
 
 func main() {
@@ -555,5 +557,12 @@ func parityGate(path string, envSvc *envs.Service) (*paritygate.Gate, error) {
 		}
 		return k.AuthorizationV1().SubjectAccessReviews(), nil
 	}
-	return paritygate.New(cfg, sar, nil), nil
+	resources := func(env string) (metadata.Interface, dynamic.Interface, error) {
+		c, ok := envSvc.Config(env)
+		if !ok {
+			return nil, nil, errors.New("unknown environment")
+		}
+		return envs.NewReadClients(c, 10*time.Second)
+	}
+	return paritygate.NewWithResources(cfg, sar, nil, resources), nil
 }

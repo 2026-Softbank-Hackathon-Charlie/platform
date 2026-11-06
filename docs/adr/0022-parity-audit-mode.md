@@ -36,6 +36,10 @@
 - 시작이 최대 30초 늦어질 수 있다(보통 1초 미만).
 - 플랫폼의 kube 자격 증명이 대상 클러스터에서 SubjectAccessReview를 만들 수 있어야 한다. 없으면 identity는 `unknown`(`rbac_incomplete` 또는 `probe_failed`)으로 기록된다.
 
+## 2026-11-06 보완
+
+[ADR 0029](0029-parity-resource-evidence.md)에서 Secret 메타데이터, 감사 수집기 Deployment 가용성, Barman 백업 상태의 선택적 프로브를 추가했다. 위의 "프로브가 없다"는 도입 당시 상황이다. 설정이 없으면 계속 `probe_not_configured`이며, 부분 증거가 정상이어도 시크릿 사용·감사 전달·복구 시험은 `unknown`으로 남는다. 기록 전용 결정은 유지한다.
+
 ## 차단 모드로 가려면
 
 - secret, audit, backup-restore 프로브
