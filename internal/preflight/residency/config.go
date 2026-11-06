@@ -28,6 +28,9 @@ type Config struct {
 	// Buckets plans may copy files between. Optional: without an entry, a plan
 	// that copies files is denied.
 	Buckets []Bucket `json:"buckets,omitempty"`
+	// InspectionEnvironment attests where this API's temporary staging storage
+	// resides. Unknown content must be inspected in KR, also in the APAC set.
+	InspectionEnvironment string `json:"inspectionEnvironment,omitempty"`
 }
 
 // Bucket is a registered object bucket. Environment is where the bucket is
@@ -46,7 +49,8 @@ type Bucket struct {
 	// a cluster's tables. When set, the source's listed prefixes must match
 	// it exactly, each prefix's label applies to its objects, and Label
 	// covers only objects directly under the bucket path.
-	Prefixes []ClassifiedPrefix `json:"prefixes,omitempty"`
+	Prefixes      []ClassifiedPrefix        `json:"prefixes,omitempty"`
+	ReviewedFiles []preflight.ContentReview `json:"reviewedFiles,omitempty"`
 }
 
 // BucketExpect is what the measured bucket must show. A provider-hosted
@@ -104,7 +108,17 @@ var (
 )
 
 // ValidBucket reports whether s is a bucket the policy can name.
-func ValidBucket(s string) bool { return len(s) <= 512 && bucketID.MatchString(s) }
+func ValidBucket(s string) bool {
+	if len(s) > 512 || !bucketID.MatchString(s) {
+		return false
+	}
+	for _, segment := range strings.Split(s, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
 
 // ValidPrefix reports whether s is a first-level prefix the policy can name.
 func ValidPrefix(s string) bool { return prefixID.MatchString(s) }
@@ -177,6 +191,18 @@ func (c Config) normalized() (Config, error) {
 			return bad(fmt.Sprintf("apacCountries[%d]: invalid or duplicate entry", i))
 		}
 		seenCountries[country] = true
+	}
+	if c.InspectionEnvironment != "" {
+		found := false
+		for _, e := range out.Environments {
+			if e.ID == c.InspectionEnvironment && e.Country == "KR" && slices.Contains(out.APACCountries, "KR") {
+				found = true
+			}
+		}
+		if !found {
+			return bad("inspectionEnvironment must identify a KR environment included in apacCountries")
+		}
+		out.InspectionEnvironment = c.InspectionEnvironment
 	}
 	seenScopes := map[preflight.ClusterScope]bool{}
 	for i, entry := range c.Catalog {
@@ -260,5 +286,14 @@ func normalizedBucket(b Bucket) (Bucket, error) {
 		out.Prefixes = append(out.Prefixes, p)
 	}
 	slices.SortFunc(out.Prefixes, func(a, b ClassifiedPrefix) int { return cmp.Compare(a.Prefix, b.Prefix) })
+	seenHashes := map[string]bool{}
+	for _, r := range b.ReviewedFiles {
+		if !preflight.ValidContentReview(r) || seenHashes[r.SHA256] {
+			return Bucket{}, errors.New("reviewedFiles: invalid or duplicate digest or unsupported label")
+		}
+		seenHashes[r.SHA256] = true
+		out.ReviewedFiles = append(out.ReviewedFiles, r)
+	}
+	slices.SortFunc(out.ReviewedFiles, func(a, b preflight.ContentReview) int { return cmp.Compare(a.SHA256, b.SHA256) })
 	return out, nil
 }

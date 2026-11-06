@@ -562,6 +562,9 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 		var denied *plans.ResidencyDenied
 		if errors.As(err, &denied) {
 			noteAudit(r, "residencyDigest", denied.Verdict.PolicyDigest)
+			if denied.Verdict.Content != nil {
+				noteAudit(r, "residencyContent", denied.Verdict.Content)
+			}
 			noteAudit(r, "residencyReasons", plans.ReasonTexts(denied.Verdict.Reasons))
 			if len(denied.Verdict.Buckets) > 0 {
 				noteAudit(r, "residencyBuckets", plans.BucketEvidence(denied.Verdict.Buckets))
@@ -635,6 +638,9 @@ func noteResidency(r *http.Request, c plans.ResidencyCheck) {
 		return
 	}
 	noteAudit(r, "residency", c.Outcome)
+	if c.Content != nil {
+		noteAudit(r, "residencyContent", c.Content)
+	}
 	if c.PolicyDigest != "" {
 		noteAudit(r, "residencyDigest", c.PolicyDigest)
 	}

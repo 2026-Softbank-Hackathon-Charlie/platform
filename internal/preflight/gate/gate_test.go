@@ -18,6 +18,7 @@ import (
 
 const policy = `
 version: 1
+inspectionEnvironment: onprem-kr
 environments:
   - {id: onprem-kr, country: KR}
   - {id: eks-kr, country: KR}
@@ -100,7 +101,7 @@ func newGate(t *testing.T, label string, c Collector) *Gate {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.WithProber(newProber())
+	g.WithProber(newProber()).WithContentInspector(cleanInspector{})
 	if len(g.PolicyDigest()) != 64 {
 		t.Fatalf("digest %q", g.PolicyDigest())
 	}
@@ -246,7 +247,7 @@ func TestCheckMeasuresBuckets(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr := newProber()
-	g.WithProber(pr)
+	g.WithProber(pr).WithContentInspector(cleanInspector{})
 	o := pr.obs["s3:photos"]
 
 	v, err := g.Check(context.Background(), p)
@@ -308,7 +309,7 @@ func TestInspect(t *testing.T) {
 	o := pr.obs["s3:photos"]
 	o.Prefixes = []string{"", "kyc/", "rooms/"}
 	pr.obs["s3:photos"] = o
-	g.WithProber(pr)
+	g.WithProber(pr).WithContentInspector(cleanInspector{})
 
 	in, err := g.Inspect(context.Background(), "s3:photos", "")
 	if err != nil {

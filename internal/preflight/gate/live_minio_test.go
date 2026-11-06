@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -29,6 +30,9 @@ func TestLiveGateWithMinIO(t *testing.T) {
 	if a == "" || b == "" || key == "" {
 		t.Skip("BUCKETPROBE_MINIO_* not set")
 	}
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone is required for real content inspection")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	suffix := time.Now().Format("150405")
@@ -42,7 +46,7 @@ func TestLiveGateWithMinIO(t *testing.T) {
 			t.Fatal(err)
 		}
 		if x.bucket == src {
-			for _, k := range []string{"rooms/1.jpg", "hosts/900101-1234567.jpg"} {
+			for _, k := range []string{"rooms/1.txt", "hosts/photo.txt"} {
 				if _, err := c.PutObject(ctx, src, k, bytes.NewReader([]byte("x")), 1, minio.PutObjectOptions{}); err != nil {
 					t.Fatal(err)
 				}
@@ -55,12 +59,16 @@ func TestLiveGateWithMinIO(t *testing.T) {
 		vars["RCLONE_CONFIG_"+remote+"_ENDPOINT"] = "http://" + ep
 		vars["RCLONE_CONFIG_"+remote+"_ACCESS_KEY_ID"], vars["RCLONE_CONFIG_"+remote+"_SECRET_ACCESS_KEY"] = key, secret
 	}
+	for k, v := range vars {
+		t.Setenv(k, v)
+	} // real rclone must read the same remotes as the real prober
 	prober := bucketprobe.Prober{Getenv: func(k string) string { return vars[k] }}
 
 	check := func(network, prefixes string) []string {
 		t.Helper()
 		doc := strings.NewReplacer("SRC", src, "DST", dst, "NET", network, "PREFIXES", prefixes).Replace(`
 version: 1
+inspectionEnvironment: onprem-kr
 environments: [{id: onprem-kr, country: KR}, {id: eks-kr, country: KR}, {id: eks-jp, country: JP}]
 apacCountries: [KR, JP]
 catalog:

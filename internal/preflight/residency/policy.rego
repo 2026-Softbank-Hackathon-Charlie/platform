@@ -220,6 +220,14 @@ carried contains {"id": m.id, "source": m.files.source, "target": m.files.target
 	e.prefix in m.files.sourceObserved.prefixes
 }
 
+# File inspection can only add to carried labels. The same onward-replication
+# rules below therefore apply to detected and operator-reviewed classifications.
+carried contains {"id": m.id, "source": m.files.source, "target": m.files.target, "label": label, "prefix": ""} if {
+	some m in input.movements
+	bucket_entry(m.files.source)
+	some label in object.get(m.files, "contentLabels", [])
+}
+
 target_allows(c) if {
 	dst := bucket_entry(c.target)
 	country_allowed(c.label, env_country(dst.environment))
