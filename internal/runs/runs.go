@@ -22,6 +22,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
@@ -110,7 +111,19 @@ type Config struct {
 	// request counts and observe act on the app the engine holds and routes.
 	// Nil uses Traffic for every run.
 	TrafficAt func(gatewayURL string) Traffic
+	// Probe sends one synthetic read (GET /) through the gateway's public proxy
+	// to the app whose admin scope is gatewayURL. During every canary step the
+	// runner sends probeFactor x the gate's minimum requests, spread over the
+	// step, so that an app without users still gets the target judged on real
+	// requests through the real route. The gate counts them like any request.
+	// Nil sends none: a quiet app then fails the canary for too few requests.
+	Probe func(ctx context.Context, gatewayURL string) error
 }
+
+// probeFactor is how many synthetic reads per canary step the runner sends,
+// in multiples of the gate's minimum requests: at a 50% step about half reach
+// the target, which then still clears the minimum.
+const probeFactor = 3
 
 // StartOptions describe a new run.
 type StartOptions struct {
@@ -615,19 +628,28 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 		}
 		l.emitPlatform(EventCanaryStep, "", fmt.Sprintf("%d%% of reads to %s", w, dst), map[string]any{"weight": w, "readWeights": weights})
 
+		stepStart := time.Now()
+		probe := r.probe(ctx, l, probeFactor*int(*opts.Gate.MinRequests), stepDur, probeTimeout(*opts.Gate.MaxP95Millis))
 		select {
 		case <-ctx.Done():
+			probe.stop()
 			return false, "aborted during the canary"
 		case <-r.stopCh:
+			probe.stop()
 			l.markInterrupted()
 			return false, "the platform is shutting down"
 		case <-time.After(stepDur):
 		}
+		// Let the reads in flight finish, so a slow target counts with its real
+		// latency instead of as a cut request, then judge everything the step sent.
+		probe.wait()
+		// whole seconds rounded up, so the step's first reads stay in; the gateway keeps 300s
+		window := min(max(time.Since(stepStart).Truncate(time.Second)+time.Second, stepDur), 300*time.Second)
 
 		var ts apiv1.TrafficState
 		err := r.withTimeout(func(c context.Context) error {
 			var err error
-			ts, err = l.traffic.State(c, stepDur)
+			ts, err = l.traffic.State(c, window)
 			return err
 		})
 		var gate apiv1.GateResult
@@ -671,6 +693,82 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 	}
 	l.setCanaryPassed(true)
 	return true, ""
+}
+
+// maxProbes caps the synthetic reads of one canary step.
+const maxProbes = 300
+
+// probeTimeout is how long one synthetic read may take: twice the gate's p95
+// limit, so that a slow target shows its latency over the limit instead of
+// being cut short. The gateway records a cut request (499) as no error.
+func probeTimeout(maxP95Millis int) time.Duration {
+	return 2 * time.Duration(maxP95Millis) * time.Millisecond
+}
+
+// probing is the synthetic reads of one canary step.
+type probing struct {
+	cancel context.CancelFunc
+	sent   chan struct{} // closed once every read was started
+	wg     *sync.WaitGroup
+}
+
+// wait lets the reads already started finish (each within its timeout) and
+// starts no more.
+func (p probing) wait() {
+	if p.cancel == nil {
+		return
+	}
+	p.cancel()
+	<-p.sent
+	p.wg.Wait()
+}
+
+// stop is wait for a step that ends early. An abort cancels the run's context
+// and so cuts the reads; on a shutdown they finish within their timeout.
+func (p probing) stop() { p.wait() }
+
+// probe starts n synthetic reads spread over d through Config.Probe, for a run
+// whose plan routes through the gateway. Each read runs on its own, so a slow
+// target does not slow the sending.
+func (r *Runner) probe(ctx context.Context, l *live, n int, d, timeout time.Duration) probing {
+	if r.cfg.Probe == nil || l.plan.Gateway.Mode != "http" || l.plan.Gateway.URL == "" || n <= 0 || d <= 0 {
+		return probing{}
+	}
+	n = min(n, maxProbes)
+	sendCtx, cancel := context.WithCancel(ctx)
+	p := probing{cancel: cancel, sent: make(chan struct{}), wg: &sync.WaitGroup{}}
+	var failed atomic.Int64
+	go func() {
+		defer close(p.sent)
+		every := max(d/time.Duration(n), time.Millisecond)
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for i := 0; i < n; i++ {
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				// the run's context, not sendCtx: ending the step stops new reads, not those in flight
+				c, cancelOne := context.WithTimeout(ctx, timeout)
+				defer cancelOne()
+				if err := r.cfg.Probe(c, l.plan.Gateway.URL); err != nil && ctx.Err() == nil {
+					failed.Add(1)
+				}
+			}()
+			select {
+			case <-sendCtx.Done():
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	go func() {
+		<-p.sent
+		p.wg.Wait()
+		if f := failed.Load(); f > 0 {
+			r.cfg.Log.Warn("canary probe reads failed", "run", l.id, "failed", f, "of", n)
+		}
+	}()
+	return p
 }
 
 func (r *Runner) canaryFail(l *live, step apiv1.CanaryStep, reason string) (bool, string) {
