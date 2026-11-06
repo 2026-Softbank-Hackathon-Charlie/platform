@@ -41,6 +41,14 @@ func TestExampleFileLoads(t *testing.T) {
 	if got := c.PasswordHosts(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("PasswordHosts = %v, want %v", got, want)
 	}
+	wantHosts := map[string][]string{"moimroom": {
+		"moimroom-db-eks-rw.moimroom.eks.ts.net:5432",
+		"moimroom-db-gke-rw.moimroom.gke.ts.net:5432",
+		"moimroom-db-onprem-rw.moimroom.onprem.ts.net:5432",
+	}}
+	if got := c.AppHosts(); !reflect.DeepEqual(got, wantHosts) {
+		t.Fatalf("AppHosts = %v, want %v", got, wantHosts)
+	}
 	wantBuckets := []string{"gcs:moimroom-photos-gke", "minio:moimroom-photos", "s3:moimroom-photos-eks"}
 	if got := c.Buckets(); !reflect.DeepEqual(got, wantBuckets) {
 		t.Fatalf("Buckets = %v, want %v", got, wantBuckets)
@@ -76,7 +84,7 @@ func TestDraftFromExample(t *testing.T) {
 	}
 	got, _ := json.Marshal(p)
 	want := `{"files":{"source":"gcs:moimroom-photos-gke","target":"s3:moimroom-photos-eks"},` +
-		`"gateway":{"mode":"http","sourceBackend":"gke","targetBackend":"eks","token":"${GATEWAY_TOKEN}","url":"http://gateway.ts.net:9901"},` +
+		`"gateway":{"mode":"http","sourceBackend":"gke","targetBackend":"eks","token":"${GATEWAY_TOKEN}","url":"http://gateway.ts.net:9901/apps/moimroom"},` +
 		`"id":"moimroom-gke-to-eks",` +
 		`"source":{"cluster":"moimroom-db-gke","context":"gke-hopcharlie","dsn":"postgres://app:${GKE_MOIMROOM_PGPASSWORD}@moimroom-db-gke-rw.moimroom.gke.ts.net:5432/app?sslmode=require","env":"gke","namespace":"moimroom"},` +
 		`"target":{"cluster":"moimroom-db-eks","context":"eks-hopcharlie","dsn":"postgres://app:${EKS_MOIMROOM_PGPASSWORD}@moimroom-db-eks-rw.moimroom.eks.ts.net:5432/app?sslmode=require","env":"eks","namespace":"moimroom"},` +
@@ -119,6 +127,12 @@ func TestDraftRejects(t *testing.T) {
 			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
 		}
 	}
+	// Each app's draft uses its own gateway scope.
+	c.gatewayURL = "http://gw:9901/"
+	if p, err := c.Draft(apiv1.PlanDraftRequest{App: "solo", Source: "gke", Target: "eks"}); err != nil || *p.Gateway.Url != "http://gw:9901/apps/solo" {
+		t.Fatalf("solo's gateway url = %v, %v", p.Gateway.Url, err)
+	}
+	c.gatewayURL = ""
 	// Without an explicit files: true, a missing bucket just leaves files out.
 	p, err := c.Draft(apiv1.PlanDraftRequest{App: "solo", Source: "gke", Target: "eks"})
 	if err != nil || p.Files != nil {

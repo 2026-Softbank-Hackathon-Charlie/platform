@@ -291,6 +291,9 @@ func (s *Server) resumeMigration(w http.ResponseWriter, r *http.Request) {
 		s.runError(w, r, err)
 		return
 	}
+	if cur.Status == apiv1.RunStatusHalted {
+		noteAudit(r, "afterHalt", true)
+	}
 	p, err := s.d.Plans.Load(ctx, cur.PlanRef)
 	if err != nil {
 		s.planError(w, r, err)

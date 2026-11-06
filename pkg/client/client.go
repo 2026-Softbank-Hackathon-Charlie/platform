@@ -239,7 +239,7 @@ func (c *Client) AbortMigration(ctx context.Context, runID, reason string) (*api
 		body: apiv1.AbortRequest{Reason: optional(reason)}})
 }
 
-// ResumeMigration continues an interrupted, failed or aborted run.
+// ResumeMigration continues an interrupted, failed, aborted or halted run.
 func (c *Client) ResumeMigration(ctx context.Context, runID string) (*apiv1.Run, error) {
 	return call[apiv1.Run](ctx, c, request{method: http.MethodPost, path: "/v1/migrations/%s/resume", params: []string{runID}})
 }

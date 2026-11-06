@@ -115,6 +115,67 @@ func TestPolicyRejects(t *testing.T) {
 	}
 }
 
+// gateway.url is the gateway root only for databases no registered app owns,
+// and otherwise exactly the scope of the app that owns both (ADR 0012).
+func TestGatewayScopeFollowsThePlansApp(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.GatewayURL = "http://gateway.ts.net:9901/"
+	policy.AppDBHosts = map[string][]string{
+		"shop":  {"db-eks.shop.ts.net:5432", "DB-GKE.shop.ts.net:5432"},
+		"other": {"db-other.ts.net:5432"},
+		"half":  {"db-gke.half.ts.net:5432"},
+	}
+	gw := func(url string) []byte {
+		return planJSON(`"gateway": {"mode":"http","url":"` + url + `","token":"${GATEWAY_TOKEN}"}`)
+	}
+	moveHosts := func(raw []byte, src, dst string) []byte {
+		s := strings.Replace(string(raw), "db-gke.shop.ts.net", src, 1)
+		return []byte(strings.Replace(s, "db-eks.shop.ts.net", dst, 1))
+	}
+	ok := map[string][]byte{
+		"own app's scope":             gw("http://gateway.ts.net:9901/apps/shop"),
+		"own app's scope, slash":      gw("http://gateway.ts.net:9901/apps/shop/"),
+		"root for unregistered hosts": moveHosts(gw("http://gateway.ts.net:9901"), "db-a.ts.net", "db-b.ts.net"),
+	}
+	for name, raw := range ok {
+		if _, err := newService(policy).Submit(ctx, raw, "x"); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	bad := map[string]struct {
+		raw  []byte
+		want string
+	}{
+		"root for an app's plan":    {gw("http://gateway.ts.net:9901"), "not the gateway root"},
+		"another app's scope":       {gw("http://gateway.ts.net:9901/apps/other"), "scope of app shop (http://gateway.ts.net:9901/apps/shop)"},
+		"unknown app's scope":       {gw("http://gateway.ts.net:9901/apps/nope"), "scope of app shop"},
+		"extra path":                {gw("http://gateway.ts.net:9901/apps/shop/v1"), "scope of app shop"},
+		"query":                     {gw("http://gateway.ts.net:9901/apps/shop?x=1"), "scope of app shop"},
+		"scope on another host":     {gw("http://evil.example.com/apps/shop"), "scope of app shop"},
+		"scope for unowned hosts":   {moveHosts(gw("http://gateway.ts.net:9901/apps/shop"), "db-a.ts.net", "db-b.ts.net"), "owns both"},
+		"root, one app's database":  {moveHosts(gw("http://gateway.ts.net:9901"), "db-gke.half.ts.net", "db-b.ts.net"), "(half), not the gateway root"},
+		"half app's scope, one db":  {moveHosts(gw("http://gateway.ts.net:9901/apps/half"), "db-gke.half.ts.net", "db-b.ts.net"), "owns both"},
+		"two apps' databases mixed": {moveHosts(gw("http://gateway.ts.net:9901/apps/shop"), "db-gke.shop.ts.net", "db-other.ts.net"), "owns both"},
+	}
+	for name, tc := range bad {
+		_, err := newService(policy).Submit(ctx, tc.raw, "x")
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+}
+
+func TestTargetAppIsRefused(t *testing.T) {
+	raw := []byte(strings.Replace(string(planJSON(`"gateway": {"mode":"http","url":"http://gw:9901","token":"${GATEWAY_TOKEN}"}`)), `"cluster":"db-eks"`,
+		`"cluster":"db-eks","app":{"mode":"cold","kind":"Deployment","name":"web","replicas":1,"smokeUrl":"http://web:8080","smoke":[{"method":"GET","path":"/"}]}`, 1))
+	policy := DefaultPolicy()
+	policy.GatewayURL = "http://gw:9901"
+	_, err := newService(policy).Submit(ctx, raw, "x")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "target.app is not accepted") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestGatewayHTTPDisabledWithoutConfiguredURL(t *testing.T) {
 	_, err := newService(DefaultPolicy()).Submit(ctx, planJSON(`"gateway": {"mode":"http","url":"http://gw:9901"}`), "x")
 	if err == nil || !strings.Contains(err.Error(), "disabled") {

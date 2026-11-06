@@ -39,6 +39,9 @@ import (
 type Engine interface {
 	RunID() string
 	RunStep(ctx context.Context, name string) error
+	// ResumeHalted checks that a halted run's promotion went through and lets
+	// RunStep continue it (ADR 0013 of the engine).
+	ResumeHalted(ctx context.Context) error
 	State() engine.State
 	Close()
 }
@@ -98,6 +101,12 @@ type Config struct {
 	PollInterval time.Duration
 	// MinCanaryStep is the shortest allowed canary step (default 5s; tests lower it).
 	MinCanaryStep time.Duration
+	// TrafficAt returns the admin client for a plan's gateway.url, which the
+	// plan policy allows to be the gateway root or one app's scope under it
+	// (ADR 0012). A run with a gateway.mode http plan uses it, so its canary,
+	// request counts and observe act on the app the engine holds and routes.
+	// Nil uses Traffic for every run.
+	TrafficAt func(gatewayURL string) Traffic
 }
 
 // StartOptions describe a new run.
@@ -158,6 +167,10 @@ type live struct {
 	stream   string // the written-records stream verify reads, if any (written.go)
 	cancel   context.CancelFunc
 	done     chan struct{} // closed once everything is persisted and subscribers are closed
+	traffic  Traffic       // the gateway scope of this run (Runner.traffic); nil = no gateway
+	// resumeHalted: the run halted after promotion and an operator resumed
+	// it; drive asks the engine to confirm the promotion first.
+	resumeHalted bool
 
 	mu          sync.Mutex // guards the fields below
 	doc         apiv1.Run
@@ -209,12 +222,12 @@ func (r *Runner) Start(ctx context.Context, o StartOptions) (apiv1.Run, error) {
 	if o.RollbackOf != "" {
 		doc.RollbackOf = &o.RollbackOf
 	}
-	return r.launch(ctx, o.Plan, "", doc)
+	return r.launch(ctx, o.Plan, "", doc, false)
 }
 
 // launch creates the engine (new run when runID is empty, resumed otherwise),
 // stores the run document and starts the background goroutines.
-func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc apiv1.Run) (apiv1.Run, error) {
+func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc apiv1.Run, resumeHalted bool) (apiv1.Run, error) {
 	if err := r.requireWritten(ctx, p); err != nil {
 		return apiv1.Run{}, err
 	}
@@ -222,11 +235,13 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 	l := &live{
 		plan:     p,
 		clusters: keys,
+		traffic:  r.traffic(p),
 		done:     make(chan struct{}),
 		subs:     map[chan apiv1.RunEvent]struct{}{},
 		switchCh: make(chan struct{}),
 	}
 	l.q.init()
+	l.resumeHalted = resumeHalted
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -271,6 +286,18 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 	go func() { defer r.wg.Done(); r.writer(l) }()
 	go func() { defer r.wg.Done(); r.drive(runCtx, l) }()
 	return l.snapshot(), nil
+}
+
+// traffic is the gateway client a run of p uses: the scope its gateway.url
+// names when the plan uses the gateway, otherwise Traffic.
+func (r *Runner) traffic(p *plan.Plan) Traffic {
+	if r.cfg.Traffic == nil {
+		return nil
+	}
+	if p.Gateway.Mode == "http" && r.cfg.TrafficAt != nil {
+		return r.cfg.TrafficAt(p.Gateway.URL)
+	}
+	return r.cfg.Traffic
 }
 
 func (r *Runner) canaryOptions(p *plan.Plan, in *apiv1.CanaryOptions) (*apiv1.CanaryOptions, error) {
@@ -318,7 +345,16 @@ func (r *Runner) drive(ctx context.Context, l *live) {
 		r.maybeAutoRollback(l)
 	}()
 
-	if r.cfg.Traffic != nil {
+	if l.resumeHalted {
+		if err := l.eng.ResumeHalted(ctx); err != nil {
+			// The engine keeps the run halted; so does the run.
+			r.ended(l, fmt.Errorf("resume after halt refused: %w", err))
+			return
+		}
+		l.syncEngine()
+	}
+
+	if l.traffic != nil {
 		r.captureTrafficBase(l)
 		stop := make(chan struct{})
 		defer close(stop)
@@ -477,14 +513,14 @@ var stepPhase = map[string]apiv1.RunPhase{
 	engine.StepPrecheck: apiv1.RunPhaseSync, engine.StepPrepare: apiv1.RunPhaseSync,
 	engine.StepPresync: apiv1.RunPhaseSync, engine.StepDelta: apiv1.RunPhaseSync,
 	engine.StepFence: apiv1.RunPhaseCutover, engine.StepSwitchover: apiv1.RunPhaseCutover,
-	engine.StepCutover: apiv1.RunPhaseCutover, engine.StepVerify: apiv1.RunPhaseVerify,
+	engine.StepStartTarget: apiv1.RunPhaseCutover, engine.StepCutover: apiv1.RunPhaseCutover, engine.StepVerify: apiv1.RunPhaseVerify,
 	engine.StepFinalize: apiv1.RunPhaseVerify,
 }
 
 // finish records the final numbers, puts canary reads back if traffic did not
 // move, flushes events, closes subscribers and forgets the run.
 func (r *Runner) finish(l *live) {
-	if r.cfg.Traffic != nil {
+	if l.traffic != nil {
 		r.updateTraffic(l)
 	}
 	st := engineState(l.eng.State())
@@ -562,7 +598,7 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 		l.mu.Lock()
 		l.readsMoved = true // before the call: a timeout may still have applied it
 		l.mu.Unlock()
-		if err := r.withTimeout(func(c context.Context) error { return r.cfg.Traffic.SetReadWeights(c, weights) }); err != nil {
+		if err := r.withTimeout(func(c context.Context) error { return l.traffic.SetReadWeights(c, weights) }); err != nil {
 			return r.canaryFail(l, step, "could not set read weights: "+err.Error())
 		}
 		l.emitPlatform(EventCanaryStep, "", fmt.Sprintf("%d%% of reads to %s", w, dst), map[string]any{"weight": w, "readWeights": weights})
@@ -579,7 +615,7 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 		var ts apiv1.TrafficState
 		err := r.withTimeout(func(c context.Context) error {
 			var err error
-			ts, err = r.cfg.Traffic.State(c, stepDur)
+			ts, err = l.traffic.State(c, stepDur)
 			return err
 		})
 		var gate apiv1.GateResult
@@ -671,12 +707,12 @@ func gateMessage(w int, v apiv1.CanaryStepVerdict, g apiv1.GateResult) string {
 // resetReads sends every read back to the source after a canary that did not
 // end in a cutover.
 func (r *Runner) resetReads(l *live) {
-	if r.cfg.Traffic == nil {
+	if l.traffic == nil {
 		return
 	}
 	src := l.plan.Gateway.SourceBackend
 	err := r.withTimeout(func(c context.Context) error {
-		return r.cfg.Traffic.SetReadWeights(c, map[string]int{src: 100})
+		return l.traffic.SetReadWeights(c, map[string]int{src: 100})
 	})
 	if err != nil {
 		l.emitPlatform(engine.EventLog, "", "WARNING: could not move reads back to the source: "+err.Error(), nil)
@@ -697,7 +733,7 @@ func (r *Runner) captureTrafficBase(l *live) {
 	var ts apiv1.TrafficState
 	err := r.withTimeout(func(c context.Context) error {
 		var err error
-		ts, err = r.cfg.Traffic.State(c, 10*time.Second)
+		ts, err = l.traffic.State(c, 10*time.Second)
 		return err
 	})
 	if err != nil {
@@ -735,7 +771,7 @@ func (r *Runner) updateTraffic(l *live) bool {
 	var ts apiv1.TrafficState
 	if err := r.withTimeout(func(c context.Context) error {
 		var err error
-		ts, err = r.cfg.Traffic.State(c, 10*time.Second)
+		ts, err = l.traffic.State(c, 10*time.Second)
 		return err
 	}); err != nil {
 		return false
@@ -804,6 +840,9 @@ func (r *Runner) Abort(ctx context.Context, id, actor, reason string) (apiv1.Run
 
 // Resume continues an interrupted, failed or aborted run with a fresh engine
 // that loads the run's state file. Steps that already succeeded are skipped.
+// A halted run resumes only after the engine confirms the target's promotion
+// went through and it is the only primary (engine.ResumeHalted); otherwise it
+// ends halted again with the engine's reason.
 func (r *Runner) Resume(ctx context.Context, id, actor string, p *plan.Plan) (apiv1.Run, error) {
 	r.mu.Lock()
 	_, active := r.live[id]
@@ -815,18 +854,24 @@ func (r *Runner) Resume(ctx context.Context, id, actor string, p *plan.Plan) (ap
 	if err != nil {
 		return apiv1.Run{}, err
 	}
+	halted := doc.Status == apiv1.RunStatusHalted
 	resumable := []apiv1.RunStatus{apiv1.RunStatusInterrupted, apiv1.RunStatusFailed, apiv1.RunStatusAborted}
-	if !slices.Contains(resumable, doc.Status) {
-		return apiv1.Run{}, fmt.Errorf("%w: run is %s; only interrupted, failed or aborted runs resume", ErrWrongStatus, doc.Status)
+	if !halted && !slices.Contains(resumable, doc.Status) {
+		return apiv1.Run{}, fmt.Errorf("%w: run is %s; only interrupted, failed, aborted or halted runs resume", ErrWrongStatus, doc.Status)
 	}
-	if o := doc.Engine.Outcome; o != apiv1.EngineOutcomeRunning && o != apiv1.EngineOutcomeFailed {
+	if o := doc.Engine.Outcome; halted && o != apiv1.EngineOutcomeHalted {
+		return apiv1.Run{}, fmt.Errorf("%w: engine outcome is %s", ErrWrongStatus, o)
+	} else if !halted && o != apiv1.EngineOutcomeRunning && o != apiv1.EngineOutcomeFailed {
 		return apiv1.Run{}, fmt.Errorf("%w: engine outcome is %s", ErrWrongStatus, o)
 	}
 	reason := "resumed by " + actor
+	if halted {
+		reason = "resumed after halt by " + actor
+	}
 	doc.Status, doc.StatusReason = apiv1.RunStatusRunning, &reason
 	doc.EndedAt, doc.AbortedBy, doc.AbortReason = nil, nil, nil
 	doc.UpdatedAt = r.now()
-	return r.launch(ctx, p, id, doc)
+	return r.launch(ctx, p, id, doc, halted)
 }
 
 // InterruptWaiting makes every run stop waiting, now and later: runs in
@@ -1157,7 +1202,7 @@ func (r *Runner) apply(l *live, ev apiv1.RunEvent) {
 	if ev.Kind == engine.EventStepStarted && ev.Step != nil {
 		next := l.doc.Phase
 		switch *ev.Step {
-		case engine.StepFence, engine.StepSwitchover, engine.StepCutover:
+		case engine.StepFence, engine.StepSwitchover, engine.StepStartTarget, engine.StepCutover:
 			next = apiv1.RunPhaseCutover
 		case engine.StepVerify, engine.StepFinalize:
 			next = apiv1.RunPhaseVerify

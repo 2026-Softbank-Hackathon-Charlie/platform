@@ -110,6 +110,7 @@ func withApps(gateway string) option {
 		policy := plans.DefaultPolicy()
 		policy.GatewayURL = gateway
 		policy.HostPasswordEnvs = cat.PasswordHosts()
+		policy.AppDBHosts = cat.AppHosts()
 		policy.Buckets = cat.Buckets()
 		d.Plans = plans.New(policy, h.store)
 		d.Plans.SetStateDir(rc.StateDir)
@@ -373,7 +374,7 @@ func TestAppsAndPlanDrafts(t *testing.T) {
 	if d.Id != "moimroom-gke-to-eks" || deref(d.Source.Context) != "gke-ctx" || d.Target.Cluster != "moimroom-db-eks" ||
 		d.Source.Dsn != "postgres://app:${GKE_MOIMROOM_PGPASSWORD}@moimroom-db-gke-rw.moimroom.gke.ts.net:5432/app?sslmode=require" ||
 		d.Files == nil || d.Files.Target != "s3:moimroom-photos-eks" ||
-		deref(d.Gateway.Url) != gatewayURL || deref(d.Gateway.TargetBackend) != "eks" || deref(d.Verify.WrittenRecords) != "stream:moimroom-demo" {
+		deref(d.Gateway.Url) != gatewayURL+"/apps/moimroom" || deref(d.Gateway.TargetBackend) != "eks" || deref(d.Verify.WrittenRecords) != "stream:moimroom-demo" {
 		t.Fatalf("draft: %s", b)
 	}
 	// The draft is accepted as is.
@@ -415,6 +416,47 @@ func TestAppsAndPlanDrafts(t *testing.T) {
 	}
 	if code, b := h3.do("POST", "/v1/plans/draft", agentToken, map[string]any{"app": "moimroom", "source": "gke", "target": "eks"}); code != 400 {
 		t.Fatalf("draft without a file: %d %s", code, b)
+	}
+}
+
+// A drafted plan targets the app's gateway scope, and the run's canary talks
+// to that scope (runs.Config.TrafficAt), not to the gateway's default app.
+func TestDraftedPlanRunsOnTheAppGatewayScope(t *testing.T) {
+	var mu sync.Mutex
+	var urls []string
+	h := newHarness(t, withApps(gatewayURL), func(h *harness, rc *runs.Config, d *Deps) {
+		rc.TrafficAt = func(u string) runs.Traffic {
+			mu.Lock()
+			urls = append(urls, u)
+			mu.Unlock()
+			return h.traffic
+		}
+	})
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 500, P95Millis: 50}
+	code, b := h.do("POST", "/v1/plans/draft", agentToken, map[string]any{"app": "moimroom", "source": "gke", "target": "eks"})
+	if code != 200 {
+		t.Fatalf("draft: %d %s", code, b)
+	}
+	ref := h.approved(string(b))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true), Canary: &apiv1.CanaryOptions{Weights: []int{50}, StepDuration: ptr("20ms")}})
+	h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+	mu.Lock()
+	got := fmt.Sprint(urls)
+	mu.Unlock()
+	if got != "["+gatewayURL+"/apps/moimroom]" {
+		t.Fatalf("TrafficAt calls = %s", got)
+	}
+	h.traffic.mu.Lock()
+	n := len(h.traffic.weights)
+	h.traffic.mu.Unlock()
+	if n == 0 {
+		t.Fatal("the canary did not use the app's scope")
+	}
+
+	// The same databases with the gateway root (the default app) are refused.
+	root := strings.Replace(string(b), gatewayURL+"/apps/moimroom", gatewayURL, 1)
+	if code, b := h.do("POST", "/v1/plans", agentToken, root); code != 400 || !strings.Contains(string(b), "not the gateway root") {
+		t.Fatalf("root scope for moimroom: %d %s", code, b)
 	}
 }
 

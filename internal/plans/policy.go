@@ -43,9 +43,15 @@ type Policy struct {
 	// GatewayTokenEnv is the variable gateway.token may reference, as
 	// "${GatewayTokenEnv}" and nothing else. Empty allows no token.
 	GatewayTokenEnv string
-	// GatewayURL is the only gateway a plan may target in "http" mode.
-	// Empty means http mode is rejected.
+	// GatewayURL is the only gateway a plan may target in "http" mode: its
+	// admin root (the gateway's default app) or one app's scope under it,
+	// GatewayAppURL (ADR 0012). Empty means http mode is rejected.
 	GatewayURL string
+	// AppDBHosts maps each registered app to its database hosts ("host:port")
+	// in every environment (apps.Catalog.AppHosts). A plan whose databases
+	// belong to an app must use that app's gateway scope, and an app's scope
+	// only fits a plan whose source and target databases are both the app's.
+	AppDBHosts map[string][]string
 	// DSNHostSuffixes, when set, restricts database hosts (e.g. ".ts.net").
 	DSNHostSuffixes []string
 	// RcloneFlags lists allowed rclone flag names (without values).
@@ -236,7 +242,7 @@ func (p Policy) checkPasswordRef(role, ref string, hosts []string) error {
 }
 
 // checkParsed validates fields that reach the filesystem, processes or network.
-func (p Policy) checkParsed(pl *plan.Plan) error {
+func (p Policy) checkParsed(pl *plan.Plan, hosts dbHosts) error {
 	if !planID.MatchString(pl.ID) {
 		return fmt.Errorf("id %q must be lowercase letters, digits and '-' (at most 63)", pl.ID)
 	}
@@ -280,11 +286,63 @@ func (p Policy) checkParsed(pl *plan.Plan) error {
 		if p.GatewayURL == "" {
 			return fmt.Errorf("gateway.mode http is disabled on this server")
 		}
-		if strings.TrimRight(pl.Gateway.URL, "/") != strings.TrimRight(p.GatewayURL, "/") {
-			return fmt.Errorf("gateway.url must be the platform gateway")
+		if err := p.checkGatewayScope(pl.Gateway.URL, hosts); err != nil {
+			return err
 		}
 	}
+	if pl.Target.App != nil {
+		// Cold mode (ADR 0012 of the engine) scales a workload and sends smoke
+		// requests to a URL from the plan; the policy has no rules for those yet.
+		return fmt.Errorf("target.app is not accepted by this server yet")
+	}
 	return nil
+}
+
+// GatewayAppURL is the admin URL of one app's scope in the gateway at root
+// (ADR 0012): the engine and the runner use it as the gateway's base URL and
+// then act on that app alone.
+func GatewayAppURL(root, app string) string {
+	return strings.TrimRight(root, "/") + "/apps/" + app
+}
+
+// checkGatewayScope allows the gateway admin root (the default app) for a plan
+// whose databases belong to no registered app, and GatewayAppURL of the app
+// that owns both of the plan's databases. Anything else, including another
+// app's scope or the root for an app's plan, would hold or route the wrong
+// app's traffic.
+func (p Policy) checkGatewayScope(raw string, hosts dbHosts) error {
+	u := strings.TrimRight(raw, "/")
+	var owners, partial []string
+	for app, appHosts := range p.AppDBHosts {
+		src, dst := hasHost(appHosts, hosts.source), hasHost(appHosts, hosts.target)
+		switch {
+		case src && dst:
+			owners = append(owners, app)
+		case src || dst:
+			partial = append(partial, app)
+		}
+	}
+	if u == strings.TrimRight(p.GatewayURL, "/") {
+		if len(owners)+len(partial) > 0 {
+			slices.Sort(owners)
+			slices.Sort(partial)
+			return fmt.Errorf("gateway.url must be the scope of the app whose databases the plan moves (%s), not the gateway root", strings.Join(append(owners, partial...), ", "))
+		}
+		return nil
+	}
+	for _, app := range owners {
+		if u == GatewayAppURL(p.GatewayURL, app) {
+			return nil
+		}
+	}
+	if len(owners) == 1 {
+		return fmt.Errorf("gateway.url must be the platform gateway's scope of app %s (%s)", owners[0], GatewayAppURL(p.GatewayURL, owners[0]))
+	}
+	return fmt.Errorf("gateway.url must be the platform gateway, or its scope of the app that owns both of the plan's databases")
+}
+
+func hasHost(hosts []string, h string) bool {
+	return h != "" && slices.ContainsFunc(hosts, func(a string) bool { return strings.EqualFold(a, h) })
 }
 
 func safeRelPath(field, p string) error {
