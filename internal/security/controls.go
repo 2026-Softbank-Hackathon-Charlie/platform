@@ -7,7 +7,7 @@ import (
 )
 
 // PolicyVersion names this version of the control catalog and of the rules
-// that set a finding's severity (ADR 0029). Change it whenever a control, a
+// that set a finding's severity (ADR 0034). Change it whenever a control, a
 // mapping or a severity rule changes.
 const PolicyVersion = "hopcharlie-security-policy/2026-11-06.1"
 

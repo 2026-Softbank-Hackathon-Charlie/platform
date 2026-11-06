@@ -116,6 +116,10 @@ source.Capabilities ∪ request.Mandatory
 
 registry의 Probe는 신뢰된 코드다. 외부 사용자가 작성한 `Result`를 그대로 받는 API가 아니다. 결과의 시각은 수집 시각이며 최종 게이트의 TTL·환경 지문 검증을 대체하지 않는다.
 
+프로브 결과는 이제 5분이 지나거나 5초보다 미래이면 전체 성공으로 사용하지 않는다. 앱의 서버 소유 설정에 `baselines.<source-env>: {revision, reviewedAt, expiresAt}`으로 원본 요구사항 검토를 명시하며 검토 기간은 최대 30일이다. baseline 누락·만료·원본 namespace 불일치는 부분 관측을 유지하되 전체 pass를 금지한다. 기존 audit-only와 복구 면제는 유지한다.
+
+시작 감사 기록에는 Plan ref/revision/reviewedAt, 미확장 Plan 및 첨부 manifest digest, 서버 Policy/parity config digest, 증거 observedAt/expiresAt을 추가한다. 매 새 시작에서 다시 검사하며 이 기록을 다른 계획이나 앱의 실행 허가로 재사용하지 않는다. 실제 환경 전체 fingerprint나 승인 당시 대비 drift 증명은 아니다. 범위와 미지원 항목은 [ADR 0033](../../docs/adr/0033-parity-evidence-and-app-retries.md)에 있다.
+
 ### RBAC
 
 `probes.NewRBAC(target, authorizationClient, serviceAccount, rules)`로 생성한다. caller가 client를 해당 환경의 kubeconfig에 묶어야 한다. probe는 target이 달라지면 거부한다.

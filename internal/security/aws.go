@@ -249,7 +249,7 @@ func (p *partial) add(f apiv1.SecurityFinding) {
 	p.mu.Unlock()
 }
 
-// eval records one control evaluation (ADR 0029).
+// eval records one control evaluation (ADR 0034).
 func (p *partial) eval(check, asset string, result apiv1.SecurityControlResult, reason string) {
 	p.mu.Lock()
 	p.evals = append(p.evals, Evaluation{Check: check, Asset: asset, Result: result, Reason: reason})
@@ -494,7 +494,7 @@ func (c *AWSCollector) checkEC2(ctx context.Context, cl awsClients, _ string) Re
 	return p.report()
 }
 
-// openIngress reports an ingress rule open to 0.0.0.0/0 or ::/0 (ADR 0029):
+// openIngress reports an ingress rule open to 0.0.0.0/0 or ::/0 (ADR 0034):
 // critical for all traffic or a TCP range with a port AWS Security Hub
 // EC2.19 blocks, high for another TCP port (EC2.18), info for TCP 80 or 443
 // alone (EC2.18's authorized ports), medium for UDP and low for ICMP (the

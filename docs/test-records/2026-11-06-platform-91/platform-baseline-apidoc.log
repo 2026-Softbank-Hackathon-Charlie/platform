@@ -1,0 +1,5 @@
+--- FAIL: TestRenderRepoContract (0.08s)
+    main_test.go:53: chunk 1 is 173409 bytes, over 20000
+FAIL
+FAIL	github.com/2026-Softbank-Hackathon-Charlie/platform/tools/apidoc	1.743s
+FAIL

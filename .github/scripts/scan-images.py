@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scans the platform's running image digests with Grype (SEC-04, ADR 0029).
+"""Scans the platform's running image digests with Grype (SEC-04, ADR 0034).
 
 Reads the running images from GET /v1/security/vulnerabilities, scans each
 digest whose stored scan is missing, failed or older than RESCAN_HOURS with
@@ -16,6 +16,7 @@ Environment:
   DOCKER_CONFIG      the directory whose config.json this writes (registry logins)
   ECR_PASSWORD       optional: `aws ecr get-login-password` for ECR_REGION
   ECR_REGION         optional: the region of ECR_PASSWORD
+  GAR_TOKEN          optional: a Google access token that reads Artifact Registry
   MAX_DIGESTS        optional: digests per run, default 40
 """
 
@@ -56,6 +57,10 @@ def ecr_host(host, region):
     return re.fullmatch(r'[0-9]{12}\.dkr\.ecr\.' + re.escape(region) + r'\.amazonaws\.com', host) is not None
 
 
+def gar_host(host):
+    return re.fullmatch(r'[a-z0-9-]+-docker\.pkg\.dev', host) is not None
+
+
 def parse_time(s):
     if not s:
         return None
@@ -91,14 +96,17 @@ def targets(report, now):
     return out
 
 
-def docker_config(hosts, password, region):
-    """config.json for the ECR registries of region among hosts."""
+def docker_config(hosts, password, region, gar_token=''):
+    """config.json for the ECR registries of region and the Artifact Registry
+    hosts among hosts."""
     auths = {}
-    if password and region:
-        token = base64.b64encode(f'AWS:{password}'.encode()).decode()
-        for host in sorted(hosts):
-            if ecr_host(host, region):
-                auths[host] = {'auth': token}
+    ecr = base64.b64encode(f'AWS:{password}'.encode()).decode() if password and region else ''
+    gar = base64.b64encode(f'oauth2accesstoken:{gar_token}'.encode()).decode() if gar_token else ''
+    for host in sorted(hosts):
+        if ecr and ecr_host(host, region):
+            auths[host] = {'auth': ecr}
+        elif gar and gar_host(host):
+            auths[host] = {'auth': gar}
     return {'auths': auths}
 
 
@@ -174,7 +182,7 @@ def main():
     hosts = {registry(repository(r)) for refs in todo.values() for r in refs}
     cfg_dir = os.environ['DOCKER_CONFIG']
     os.makedirs(cfg_dir, exist_ok=True)
-    cfg = docker_config(hosts, os.environ.get('ECR_PASSWORD', ''), os.environ.get('ECR_REGION', ''))
+    cfg = docker_config(hosts, os.environ.get('ECR_PASSWORD', ''), os.environ.get('ECR_REGION', ''), os.environ.get('GAR_TOKEN', ''))
     with open(os.path.join(cfg_dir, 'config.json'), 'w', encoding='utf-8') as f:
         json.dump(cfg, f)
     print(f'registry logins: {", ".join(sorted(cfg["auths"])) or "none"}')
@@ -192,8 +200,9 @@ def main():
             errors.append(f'{ref.split("@")[0]}: {err}')
         else:
             msg = '; '.join(errors)
-            if any(registry(repository(r)) not in cfg['auths'] and registry(repository(r)) != 'docker.io' for r in refs):
-                msg += ' (the scanner has registry credentials only for ECR in its region)'
+            missing = sorted({registry(repository(r)) for r in refs} - set(cfg['auths']) - {'docker.io'})
+            if missing:
+                msg += f' (the scanner has no registry credentials for {", ".join(missing)})'
             code, resp = api.call('POST', '/v1/security/scans', scan_body(refs[0], digest, 'failed', started, now_iso(), version, message=msg[:480]))
             print(f'{digest[:19]} failed: {msg[:200]}, POST {code}')
         if code != 201:

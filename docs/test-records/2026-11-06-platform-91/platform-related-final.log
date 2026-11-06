@@ -1,0 +1,12 @@
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans	(cached)
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api	19.625s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/parity	(cached)
+--- FAIL: TestCheckRecordsRealProbeResults (0.01s)
+    gate_test.go:112: invalid parity configuration: malformed document or unknown fields
+--- FAIL: TestCheckProbeProblemsAreRecordedNotRaised (0.00s)
+    gate_test.go:155: invalid parity configuration: malformed document or unknown fields
+--- FAIL: TestCheckIsBounded (0.00s)
+    gate_test.go:192: invalid parity configuration: malformed document or unknown fields
+FAIL
+FAIL	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate	0.258s
+FAIL

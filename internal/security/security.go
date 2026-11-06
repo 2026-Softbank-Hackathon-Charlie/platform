@@ -53,7 +53,7 @@ type Report struct {
 	Findings  []apiv1.SecurityFinding
 	// StorageKeys are the bucket keys the source lists (StorageKeyCollector).
 	StorageKeys []apiv1.StorageKey
-	// Evaluations are the catalog controls the source evaluated (ADR 0029).
+	// Evaluations are the catalog controls the source evaluated (ADR 0034).
 	// A check whose read failed reports its assets as unknown; a source
 	// that reports none for a control of its own while not ok gets one
 	// unknown evaluation of every asset ("*").
@@ -508,7 +508,8 @@ type Config struct {
 }
 
 // Collectors returns the collectors for cfg: every environment's cluster, the
-// AWS account, GCP and Cloudflare (not connected yet), and the platform.
+// AWS account, GCP Security Command Center, Cloudflare (not connected yet)
+// and the platform.
 func Collectors(cfg Config) []Collector {
 	var out []Collector
 	for _, e := range cfg.Environments {
@@ -516,8 +517,7 @@ func Collectors(cfg Config) []Collector {
 	}
 	out = append(out,
 		NewAWSCollector(cfg.AWSRegion),
-		NotConfigured(Source{Name: "gcp-scc", Provider: apiv1.SecurityProviderGcp, Environment: "gcp-project"},
-			"Security Command Center is not connected: this server has no GCP organization or project id and no credentials with roles/securitycenter.findingsViewer. The GKE cluster itself is checked through Kubernetes."),
+		sccCollector(cfg.Environments),
 		NotConfigured(Source{Name: "cloudflare", Provider: apiv1.SecurityProviderCloudflare, Environment: "cloudflare-account"},
 			"Cloudflare is not connected: this server has no Cloudflare API token with Account Settings:Read and Zone WAF:Read, so the tunnel and zone settings are not checked."),
 		NewPlatformCollector(cfg.Audit, cfg.DSNHostSuffixes, cfg.GatewayConfigured),
@@ -541,6 +541,16 @@ func (n notConfigured) Sources() []Source { return []Source{n.src} }
 
 func (n notConfigured) Collect(context.Context) []Report {
 	return []Report{{Source: n.src, Status: apiv1.SecuritySourceStatusNotConfigured, Message: n.msg}}
+}
+
+// sccCollector reads SCC for the project of the gcp environment's storage
+// (SEC-03), or reports it not configured when there is none.
+func sccCollector(environments []envs.EnvConfig) Collector {
+	if project := SCCProject(environments); project != "" {
+		return NewSCCCollector(project)
+	}
+	return NotConfigured(sccSource,
+		"Security Command Center is not connected: no gcp environment has a gcs storage project, so there is no project to read. The GKE cluster itself is checked through Kubernetes.")
 }
 
 // many renders a count with its noun: "1 trail", "3 trails".

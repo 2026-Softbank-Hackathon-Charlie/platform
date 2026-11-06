@@ -1,8 +1,9 @@
-# 0029. 보안 통제와 심각도 정책: 통제는 판정 기준, 심각도는 출처와 정책 버전을 남긴다
+# 0034. 보안 통제와 심각도 정책: 통제는 판정 기준, 심각도는 출처와 정책 버전을 남긴다
 
-- 상태: 제안
+- 상태: 채택 (2026-11-06 팀 승인)
 - 날짜: 2026-11-06
 - 관련: [0027 스토리지 키를 보안 화면에](0027-app-storage-keys-in-security-view.md), 노션 SEC-01·SEC-02·SEC-04·SEC-05
+- 번호: 처음 0029로 만들었으나 [0029 동등성 리소스 증거](0029-parity-resource-evidence.md)와 겹쳐 0034로 옮겼다(2026-11-06).
 
 ## 상황
 
@@ -60,6 +61,13 @@ Security Hub CSPM 통제 문서(2026-11-06 확인)에 맞췄다.
 - 스캐너는 Grype 하나다. 버전과 체크섬을 workflow(`.github/workflows/scan-images.yml`)에 고정한다. self-hosted runner에서 매시간 돈다. 실행 중 digest를 `GET /v1/security/vulnerabilities`로 읽고, `repository@digest`를 스캔한다. 결과는 `POST /v1/security/scans`(role agent, 전용 토큰)로 보낸다. API는 저장과 조회만 하고 스캔하지 않는다.
 - API가 Grype JSON을 해석한다. 심각도는 advisory 출처(배포판, NVD, GitHub)가 준 값을 vendor 근거로 둔다. 값이 없으면 unknown이다. CVSS는 받은 그대로 나열할 뿐, 심각도로 바꾸지 않는다. 원본 보고서는 gzip으로 보관하고 sha256을 함께 남긴다.
 - 저장은 digest마다 최신 스캔 하나다(`image_scans`). 더 늦게 끝난 스캔이 이미 있으면 받지 않는다(409). 7일보다 오래된 스캔은 세지 않으므로, 그 컨테이너는 미검사로 보인다.
-- 끌어올 수 없는 digest는 failed로 저장한다. 0건으로 저장하지 않는다. 스캐너는 자기 리전의 ECR 자격만 가진다. ECR에도 같은 digest가 있으면 GKE 쪽 사본도 digest가 같아 함께 덮인다. Artifact Registry에만 있는 이미지는 실패로 보인다.
+- 끌어올 수 없는 digest는 failed로 저장한다. 0건으로 저장하지 않는다. 스캐너는 자기 리전의 ECR 자격과, GitHub OIDC로 받은 Artifact Registry 읽기 토큰(`hopcharlie-apps`, `charlie-apps` 저장소 reader, infra ADR 0065)을 가진다. GCP 변수가 없으면 Artifact Registry 이미지는 실패로 보인다.
 - 멀티 아키텍처 index는 runner 플랫폼(linux/amd64)의 manifest를 스캔한다. 스캔의 digest는 실행 중 digest(index)로 두고, `message`에 실제 manifest를 남긴다.
 - SEC-05: 실행 중 digest와 그 환경에 도달한 최신 배포 기록의 digest를 비교한다(`runningImages[].deployed`). 기록을 읽지 못하면 unknown이며, match로 보지 않는다.
+
+## 2026-11-06 GCP Security Command Center 수집(SEC-03)
+
+- `gcp-scc` 출처(환경 `gcp-project`)는 gcp 환경의 gcs 저장소 `project`의 SCC 결과를 v2 `findings.list`로 읽는다. 자격은 서버의 Application Default Credentials이며 권한은 `roles/securitycenter.findingsViewer`뿐이다(infra ADR 0066). 등급은 Standard(무료, 프로젝트 단위 활성화)다.
+- AWS Security Hub와 같은 방식으로 CRITICAL부터 LOW까지 등급별로 읽고, 활성이며 mute되지 않은 결과를 최대 50건 모은다. 심각도는 SCC가 준 값을 vendor 근거로 두고 원래 값(`sourceSeverity`)과 결과 이름(`sourceFindingId`)을 남긴다. 등급이 없으면 info다.
+- API가 꺼져 있거나 SCC가 활성화되지 않았으면 `not_configured`, 권한이 없으면 `error`다. 어느 경우에도 0건으로 세지 않는다. 활성화 전 Google은 "Security Command Center Legacy"를 말하는 400 INVALID_ARGUMENT를 돌려준다(2026-11-06 확인).
+- GKE 클러스터 내부는 계속 Kubernetes 검사(`gke`)가 맡는다. SCC 결과로 그 범위를 채우지 않는다.

@@ -80,8 +80,11 @@ type Prometheus struct {
 
 // App is what parity expects of one app in every environment.
 type App struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
+	// Baselines are explicit operator-reviewed source requirements. Missing or
+	// expired baselines never imply an empty set of source dependencies.
+	Baselines map[string]Baseline `json:"baselines,omitempty"`
+	Name      string              `json:"name"`
+	Namespace string              `json:"namespace"`
 	// ServiceAccount is the account the app's pods run as; the RBAC rules
 	// are evaluated for it with SubjectAccessReview.
 	ServiceAccount string `json:"serviceAccount,omitempty"`
@@ -90,6 +93,12 @@ type App struct {
 	// PrometheusJob is the scrape job of the app's targets.
 	PrometheusJob string                  `json:"prometheusJob,omitempty"`
 	Environments  map[string]AppResources `json:"environments,omitempty"`
+}
+
+type Baseline struct {
+	Revision   string    `json:"revision"`
+	ReviewedAt time.Time `json:"reviewedAt"`
+	ExpiresAt  time.Time `json:"expiresAt"`
 }
 
 // Rule is one Kubernetes operation the app must (allowed) or must not be
@@ -152,6 +161,11 @@ func (c Config) validate(envs []string) error {
 	}
 	names, namespaces := map[string]bool{}, map[string]bool{}
 	for i, a := range c.Apps {
+		for env, baseline := range a.Baselines {
+			if !slices.Contains(envs, env) || !id.MatchString(baseline.Revision) || baseline.ReviewedAt.IsZero() || !baseline.ExpiresAt.After(baseline.ReviewedAt) || baseline.ExpiresAt.Sub(baseline.ReviewedAt) > 30*24*time.Hour {
+				return bad("apps[%d].baselines: registered environment, revision and review interval up to 30 days required", i)
+			}
+		}
 		if !id.MatchString(a.Name) || !id.MatchString(a.Namespace) || names[a.Name] || namespaces[a.Namespace] {
 			return bad("apps[%d]: invalid or duplicate name or namespace", i)
 		}

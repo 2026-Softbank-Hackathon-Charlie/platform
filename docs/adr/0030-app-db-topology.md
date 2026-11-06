@@ -73,7 +73,7 @@ values:
 - `PLATFORM_APP_DB_HOST_TEMPLATES`(예 `eks=db-eks-{instance}.hopcharlie-db-network.svc.cluster.local,gke=db-gke-{instance}.hopcharlie-db-network.svc.cluster.local`)가 있으면, 정적 카탈로그(`PLATFORM_APPS_FILE`)에 없는 이름은 짝 행이 있는 등록 앱으로 초안을 만든다. 이름이 겹치면 정적 카탈로그가 이긴다(운영 moimroom 보호). 파일이 없는 서버도 이 설정만으로 초안을 만든다.
   - namespace는 인스턴스, cluster는 `<app>-<pg>`, database와 user는 `app`, schemas는 비운다(엔진 기본 `public`).
   - DSN은 `postgres://app:${<ENV>_<APP>_PGPASSWORD}@<템플릿 호스트>:5432/app?sslmode=require`다. 관리 경로는 `sslmode=require`를 그대로 쓴다.
-  - 파일 이전은 넣지 않는다. 앱 버킷 키는 평문이 없어서 서버 rclone 원격으로만 옮길 수 있고, 그 자격 증명이 앱 버킷에 닿는지 확인하지 않았다.
+  - 파일 이전은 `PLATFORM_APP_FILES=1`일 때만 넣는다(ADR 0032). 앱 버킷 키는 평문이 없어서 플랫폼 신원으로 만든 환경 이름 원격(`eks:`, `gke:`)으로 옮긴다.
 - 같은 앱은 `GET /v1/apps`, `GET /v1/apps/{name}`에 정적 카탈로그 앱과 같은 모양(namespace, database, 환경별 cluster와 dbHost)으로 보인다. 그래서 콘솔의 이전 화면, `GET /v1/traffic?app=`, `POST /v1/ai-runs`가 그대로 이 앱을 고른다. 비밀번호와 CA는 보이지 않는다.
 - 정책의 비밀번호 변수 허용 호스트와 앱별 게이트웨이 범위(ADR 0012, #79)는 시작할 때 정한 정적 값에 더해, plan을 parse할 때마다 짝 행에서 다시 읽는다. 그래서 재시작 없이 새 앱을 이전할 수 있다. 정적 값과 겹치는 변수나 앱은 정적 값이 이긴다. 등록 앱의 DB 호스트만 쓰는 plan은 그 앱의 범위(`<gateway>/apps/<app>`)만 받는다.
 - 비밀번호는 서버 시작 때 넣지 않는다. 초안을 만들 때와 plan을 parse할 때(제출, 시작, 재개, 되돌리기) 정책이 그 변수를 허용한 뒤에 행을 읽어 복호화하고 `os.Setenv`로 넣는다. plan과 DB에는 `${VAR}`만 남는다(엔진 ADR 0006).
@@ -102,3 +102,18 @@ values:
 - 서버 인증서와 replication 인증서를 플랫폼이 직접 발급한다: 90일 갱신을 플랫폼이 맡아야 한다. CA만 주면 CNPG가 발급과 갱신을 한다.
 - 서버 시작 때 모든 짝의 비밀번호를 환경에 넣는다: 새 앱마다 재시작이 필요하고, 이전하지 않는 앱의 비밀번호까지 환경에 둔다.
 - 엔진에 비밀번호 조회 함수를 넣는다: 엔진 저장소까지 바꿔야 한다. 같은 효과를 parse 직전의 `os.Setenv`로 낸다.
+
+## 추가: 관리 쪽 DB 경로를 플랫폼이 만든다 (2026-11-06)
+
+"결과"에 남긴 일, 앱마다 management 프로필에 `egress.peers`를 더하는 일을 없앤다. 플랫폼 API가 관리 EKS에 직접 egress Service를 만들고 지운다(패키지 `internal/dbroute`).
+
+- 켜는 법: `PLATFORM_APP_DB_ROUTE_TAILNET`(예 `tail567fe8.ts.net`), `PLATFORM_APP_DB_ROUTE_PROXY_CLASS`(`hopcharlie-app-db-egress-management`), `PLATFORM_APP_DB_ROUTE_TAG`(`tag:hop-db-client-management`)를 모두 넣는다. 셋 다 없으면 꺼져 있고 지금과 같다. 일부만 있거나 `PLATFORM_APP_DB_HOST_TEMPLATES`가 없으면 서버가 시작하지 않는다.
+- 이름: 호스트 템플릿 `<service>.<namespace>.svc.cluster.local`에서 읽는다. `db-eks-{instance}.hopcharlie-db-network.svc.cluster.local`이면 namespace `hopcharlie-db-network`의 Service `db-eks-<app>`이다. 이 모양이 아니면 서버가 시작하지 않는다.
+- Service: `type: ExternalName`, `externalName: placeholder`, 포트 `postgres` 5432. 라벨은 `app.kubernetes.io/managed-by: hopcharlie-platform`, `hopcharlie.dev/app: <app>`, `hopcharlie.dev/db-route: <env>`다. annotation은 `tailscale.com/tailnet-fqdn: hop-db-<env>-<app>.<tailnet>`(앱 차트의 ingress 이름), `tailscale.com/hostname: hop-db-management-to-<env>-<app>`, `tailscale.com/tags`, `tailscale.com/proxy-class`다.
+- 만들 때: 짝이 있는 앱을 등록한 직후 백그라운드로 만들고, 실패는 로그만 남긴다. API 시작 때와 2분마다 짝 목록을 읽어 없는 Service를 만든다.
+- 지울 때: 앱 삭제가 성공하면 바로 지운다. 주기 실행은 짝 목록에 없는 앱의 Service를 그 앱의 짝 행을 다시 읽어 없을 때(`ErrNotFound`)만 지운다. 짝 목록을 읽지 못했거나 목록이 비어 있으면 아무것도 지우지 않는다. 지울 때는 읽은 객체의 UID를 전제 조건으로 건다.
+- 고치지 않는다: operator가 `externalName`과 finalizer를 바꾸므로 update와 patch는 하지 않는다. 설정이 바뀌어 annotation이 다르면 경고만 남긴다. 바꾸려면 Service를 지우고 다음 주기에 다시 만들게 한다.
+- 남의 Service: 같은 이름이라도 라벨 셋과 이름이 맞지 않으면 만들지도 지우지도 않고 경고(`conflict`)를 남긴다. infra #99의 정적 `db-eks`, `db-gke`는 이름이 달라 겹치지 않는다.
+- 관리 클러스터 권한(infra가 별도 매니페스트로 적용): `hopcharlie-db-network`의 Role에 `services`의 `get, list, watch, create, delete`, `charlie-platform/hopcharlie-platform`에 RoleBinding. update와 patch는 주지 않는다. VAP로 CREATE는 라벨과 이름, `placeholder`, annotation 값을, DELETE는 `oldObject`의 managed-by 라벨을 검사한다.
+- 초안의 원본 측정이 실패하면(`sourceStatsReason: not_measured`) 서버 로그와 API 설명에 "등록 직후라면 관리 경로를 만드는 중일 수 있으니 잠시 뒤 다시 초안을 만든다"를 남긴다. 경로 준비 상태를 API로 보여 주는 일(`routes[]`, 409 `db_route_pending`)은 하지 않는다. operator의 준비 조건이 실제 연결을 뜻하지 않기 때문이다.
+- 등록 앱마다 관리 EKS에 프록시 Pod가 환경마다 하나씩 생긴다. 앱 수가 늘면 ProxyGroup egress를 다시 검토한다.

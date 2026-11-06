@@ -2700,11 +2700,11 @@ type PlanDraftResult struct {
 	// sessions x 1.2.
 	SourceStats *SourceStats `json:"sourceStats,omitempty"`
 
-	// SourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query.
+	// SourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query. For an app registered with a database pair, an unreachable database usually means the management cluster's route to it is still being made (a few minutes after registration); draft again later.
 	SourceStatsReason *PlanDraftResultSourceStatsReason `json:"sourceStatsReason,omitempty"`
 }
 
-// PlanDraftResultSourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query.
+// PlanDraftResultSourceStatsReason Why sourceStats is absent. not_measured covers an unset password variable, an unreachable database and a failed query. For an app registered with a database pair, an unreachable database usually means the management cluster's route to it is still being made (a few minutes after registration); draft again later.
 type PlanDraftResultSourceStatsReason string
 
 // PlanEndpoint The non-secret view of a plan endpoint.
@@ -3033,7 +3033,7 @@ type SecurityControl struct {
 	Mapping    SecurityControlMapping     `json:"mapping"`
 	References []SecurityControlReference `json:"references"`
 
-	// SeverityBasis Where a severity came from (ADR 0029). The source's own value is kept
+	// SeverityBasis Where a severity came from (ADR 0034). The source's own value is kept
 	// as given and never overwritten; `severity` is the platform's
 	// normalised label for sorting and filtering.
 	SeverityBasis SecuritySeverityBasis `json:"severityBasis"`
@@ -3239,7 +3239,7 @@ type SecurityFinding struct {
 	// Id stable across collections: a hash of environment, source, check, resource and, where it has one, the vendor's own finding id (GuardDuty finding id, Security Hub finding ARN) or the rule's protocol, ports and CIDRs
 	Id string `json:"id"`
 
-	// Kind Set on every finding by servers that implement ADR 0029.
+	// Kind Set on every finding by servers that implement ADR 0034.
 	// - configuration: a setting checked against a control.
 	// - threat: a detection of activity (GuardDuty, Security Hub threat types).
 	// - governance: the platform's own rules about its requests and records (audit denials, unrecorded bucket keys, server settings).
@@ -3255,7 +3255,7 @@ type SecurityFinding struct {
 	Resource string           `json:"resource"`
 	Severity SecuritySeverity `json:"severity"`
 
-	// SeverityBasis Where a severity came from (ADR 0029). The source's own value is kept
+	// SeverityBasis Where a severity came from (ADR 0034). The source's own value is kept
 	// as given and never overwritten; `severity` is the platform's
 	// normalised label for sorting and filtering.
 	SeverityBasis *SecuritySeverityBasis `json:"severityBasis,omitempty"`
@@ -3267,14 +3267,14 @@ type SecurityFinding struct {
 	Title  string `json:"title"`
 }
 
-// SecurityFindingKind Set on every finding by servers that implement ADR 0029.
+// SecurityFindingKind Set on every finding by servers that implement ADR 0034.
 // - configuration: a setting checked against a control.
 // - threat: a detection of activity (GuardDuty, Security Hub threat types).
 // - governance: the platform's own rules about its requests and records (audit denials, unrecorded bucket keys, server settings).
 // - vulnerability: a package vulnerability in an image; these are listed by `GET /v1/security/vulnerabilities`, not in `findings`.
 type SecurityFindingKind string
 
-// SecurityImageScan One scan of one image digest by the platform's scanner (ADR 0029).
+// SecurityImageScan One scan of one image digest by the platform's scanner (ADR 0034).
 type SecurityImageScan struct {
 	Database *struct {
 		// BuiltAt when the vulnerability database was built
@@ -3385,7 +3385,7 @@ type SecurityReport struct {
 }
 
 // SecurityRunningImage One container of a running workload and the image it runs, read from
-// the cluster (ADR 0029). The tag in `image` is for display; the digest
+// the cluster (ADR 0034). The tag in `image` is for display; the digest
 // identifies the image.
 type SecurityRunningImage struct {
 	// App the app, from the label app.kubernetes.io/part-of that the platform's app chart sets; absent when the pod lacks the chart's labels
@@ -3478,7 +3478,7 @@ type SecurityScannerStateStatus string
 // SecuritySeverity defines model for SecuritySeverity.
 type SecuritySeverity string
 
-// SecuritySeverityBasis Where a severity came from (ADR 0029). The source's own value is kept
+// SecuritySeverityBasis Where a severity came from (ADR 0034). The source's own value is kept
 // as given and never overwritten; `severity` is the platform's
 // normalised label for sorting and filtering.
 type SecuritySeverityBasis struct {
@@ -3583,7 +3583,7 @@ type SecurityVulnerability struct {
 	// `negligible` is a distribution's own label below low.
 	Severity SecurityVulnerabilitySeverity `json:"severity"`
 
-	// SeverityBasis Where a severity came from (ADR 0029). The source's own value is kept
+	// SeverityBasis Where a severity came from (ADR 0034). The source's own value is kept
 	// as given and never overwritten; `severity` is the platform's
 	// normalised label for sorting and filtering.
 	SeverityBasis SecuritySeverityBasis `json:"severityBasis"`

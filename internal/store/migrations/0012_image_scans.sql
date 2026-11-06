@@ -1,4 +1,4 @@
--- Image scans the platform's scan workflow posts (SEC-04, ADR 0029).
+-- Image scans the platform's scan workflow posts (SEC-04, ADR 0034).
 --
 -- One row per image digest: its latest scan. doc is the apiv1.SecurityImageScan
 -- JSON and vulnerabilities the apiv1.SecurityVulnerability array the platform

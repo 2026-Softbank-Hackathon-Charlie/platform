@@ -14,7 +14,7 @@ var domains = []apiv1.SecurityControlDomain{
 	apiv1.SecurityControlDomainPolicy, apiv1.SecurityControlDomainVulnerability,
 }
 
-// ScanResults reads stored image scans (ADR 0029). Scans run outside the
+// ScanResults reads stored image scans (ADR 0034). Scans run outside the
 // request; a ScanResults only reads what they stored.
 type ScanResults interface {
 	// Latest returns the latest scan of each digest and the vulnerabilities
@@ -131,7 +131,7 @@ func unsupportedReason(rep apiv1.SecurityReport, env string, d apiv1.SecurityCon
 // runningImages gives each running container the scan state of its digest.
 func runningImages(images []apiv1.SecurityRunningImage, scans ScanResults) ([]apiv1.SecurityRunningImage, apiv1.SecurityScannerState) {
 	scanner := apiv1.SecurityScannerState{Status: apiv1.SecurityScannerStateStatusNotConfigured}
-	msg := "no image scanner results are connected (ADR 0029): running images are not scanned, which is not the same as having no vulnerabilities"
+	msg := "no image scanner results are connected (ADR 0034): running images are not scanned, which is not the same as having no vulnerabilities"
 	scanner.Message = &msg
 	latest := map[string]apiv1.SecurityImageScan{}
 	if scans != nil {

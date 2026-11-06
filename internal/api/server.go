@@ -167,6 +167,18 @@ type Deps struct {
 	// AIRuns starts the AI runner as a Job (airun.Runner); nil answers the
 	// /v1/ai-runs endpoints 503 ai_runner_not_configured.
 	AIRuns AIRunner
+	// DBRoutes makes and removes the management cluster's routes to the
+	// databases of registered apps (dbroute.Manager, ADR 0030); nil when
+	// they are made by hand.
+	DBRoutes AppDBRoutes
+}
+
+// AppDBRoutes starts making the routes of a database pair just registered
+// and removing those of an app just deleted. Both return at once; failures
+// are logged and retried by the manager.
+type AppDBRoutes interface {
+	Added(d store.AppDatabase)
+	Removed(app string)
 }
 
 // AIRunner starts and lists AI runner Jobs (airun.Runner).
@@ -625,9 +637,9 @@ func noteVersion(r *http.Request, c plans.VersionCheck) {
 func noteParity(r *http.Request, c plans.ParityCheck) {
 	switch {
 	case c.Report != nil:
-		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "passed": c.Report.Passed, "results": paritygate.Lines(*c.Report)})
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "passed": c.Report.Passed, "results": paritygate.Lines(*c.Report), "binding": c.Binding, "configDigest": c.Report.ConfigDigest, "baselineStatus": c.Report.BaselineStatus, "observedAt": c.Report.ObservedAt, "expiresAt": c.Report.ExpiresAt})
 	case c.Outcome != "":
-		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit"})
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "binding": c.Binding})
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
@@ -229,6 +230,12 @@ func main() {
 		rcfg.TrafficAt = func(u string) runs.Traffic {
 			return &gateway.Client{BaseURL: u, Token: gw.Token, HTTP: gw.HTTP}
 		}
+		// With the public proxy known, the canary sends synthetic reads through
+		// it, so that an app without users still has its target judged.
+		if proxy := os.Getenv("PLATFORM_GATEWAY_PROXY_URL"); proxy != "" {
+			p := &gateway.Prober{ProxyURL: proxy, AppDomain: os.Getenv("PLATFORM_APP_DOMAIN"), HTTP: gateway.ProbeClient()}
+			rcfg.Probe = p.Probe
+		}
 	}
 	planSvc := plans.New(policy, st)
 	planSvc.SetStateDir(*stateDir)
@@ -247,6 +254,13 @@ func main() {
 	default:
 		fatal("PLATFORM_APP_DB_TOPOLOGY must be 1 or 0", "value", v)
 	}
+	// Optional (ADR 0032): registered apps' files move between their
+	// buckets through rclone remotes named after the environments, which
+	// use the platform's own identities.
+	appFiles, err := apps.EnableFiles(os.Getenv("PLATFORM_APP_FILES"), envCfg.Environments, os.LookupEnv, os.Setenv)
+	if err != nil {
+		fatal("PLATFORM_APP_FILES", "err", err)
+	}
 	// Plans for those apps: drafted from the store, their database hosts and
 	// password variables allowed and their passwords put into the
 	// environment on every parse, so a new app needs no restart.
@@ -262,7 +276,12 @@ func main() {
 		if appCat == nil {
 			appCat = apps.Empty(envCfg.Environments, policy.GatewayURL)
 		}
-		appCat = appCat.WithRegistry(&apps.Registry{Store: st, Secrets: secretsKey, HostTemplates: tmpls})
+		reg := &apps.Registry{Store: st, Secrets: secretsKey, HostTemplates: tmpls}
+		if appFiles != nil {
+			reg.BucketPrefixes = appFiles.BucketPrefixes
+			log.Info("registered apps' files enabled", "remotesSet", appFiles.Set, "remotesKept", appFiles.Kept)
+		}
+		appCat = appCat.WithRegistry(reg)
 		planSvc.SetAppDatabases(appCat)
 		for env := range tmpls {
 			appDBEnvs = append(appDBEnvs, env)
@@ -404,6 +423,13 @@ func main() {
 	deps.Secrets = secretsKey
 	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }
 	go agents.RunSweeper(runCtx, agentIdle, log)
+	// Optional (ADR 0030): the management cluster's routes to registered apps' databases.
+	if dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log); err != nil {
+		fatal("PLATFORM_APP_DB_ROUTE_*", "err", err)
+	} else if dbRoutes != nil {
+		deps.DBRoutes = dbRoutes
+		go dbRoutes.Run(runCtx)
+	}
 	// Optional: the GitHub App that apps are registered and deployed from.
 	gh, err := github.FromEnv(os.Getenv)
 	if err != nil {

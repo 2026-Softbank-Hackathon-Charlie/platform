@@ -1,0 +1,3 @@
+restore-and-app-validation-seconds=3
+fixture-writes-after-backup=0
+residency-scope=same-disposable-local-instance

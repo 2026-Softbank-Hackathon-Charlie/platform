@@ -48,6 +48,16 @@ class ScanImagesTest(unittest.TestCase):
         self.assertEqual(base64.b64decode(cfg["auths"][ECR.split("/")[0]]["auth"]), b"AWS:pw")
         self.assertEqual(MODULE.docker_config(hosts, "", "ap-northeast-2"), {"auths": {}})
 
+    def test_docker_config_artifact_registry(self):
+        gar = "asia-northeast3-docker.pkg.dev"
+        hosts = {ECR.split("/")[0], gar, "asia-northeast3-artifactregistry.gcr.io", "docker.io"}
+        cfg = MODULE.docker_config(hosts, "", "", "tok")
+        self.assertEqual(sorted(cfg["auths"]), [gar])
+        self.assertEqual(base64.b64decode(cfg["auths"][gar]["auth"]), b"oauth2accesstoken:tok")
+        both = MODULE.docker_config(hosts, "pw", "ap-northeast-2", "tok")
+        self.assertEqual(sorted(both["auths"]), [ECR.split("/")[0], gar])
+        self.assertFalse(MODULE.gar_host("evil.example/asia-docker.pkg.dev"))
+
     def test_scan_body_keeps_the_report_bytes(self):
         report = b'{"matches": [],  "descriptor": {"name": "grype", "version": "0.121.0"}}'
         body = MODULE.scan_body(ECR + "@" + D1, D1, "succeeded", "a", "b", "0.121.0", report=report)

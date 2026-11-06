@@ -1,6 +1,6 @@
 name: Scan running images
 
-# SEC-04 (ADR 0029): every hour, scans the image digests the clusters run
+# SEC-04 (ADR 0034): every hour, scans the image digests the clusters run
 # with the pinned Grype and posts each result to POST /v1/security/scans.
 # The API only stores and shows them; it never scans. A digest is rescanned
 # when its scan is a day old, and a failed one after an hour. A digest that
@@ -9,6 +9,9 @@ name: Scan running images
 # Settings > Secrets and variables > Actions:
 #   secret   SCANNER_TOKEN             the image-scanner entry (role agent) of PLATFORM_TOKENS
 #   variable AWS_IMAGE_SCAN_ROLE_ARN   infra output image_scan_role_arn (ECR pull only)
+#   variable GCP_IMAGE_SCAN_PROVIDER   infra app-images output image_scan_workload_identity_provider
+#   variable GCP_IMAGE_SCAN_SERVICE_ACCOUNT  infra app-images output image_scan_service_account
+#                                      (Artifact Registry read only, infra ADR 0065)
 #   variable PLATFORM_API_URL          optional, https://api.hopcharlie.dev
 #   variable AWS_REGION                optional, ap-northeast-2
 
@@ -37,6 +40,8 @@ jobs:
       PLATFORM_API_URL: ${{ vars.PLATFORM_API_URL || 'https://api.hopcharlie.dev' }}
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
       AWS_IMAGE_SCAN_ROLE_ARN: ${{ vars.AWS_IMAGE_SCAN_ROLE_ARN }}
+      GCP_IMAGE_SCAN_PROVIDER: ${{ vars.GCP_IMAGE_SCAN_PROVIDER }}
+      GCP_IMAGE_SCAN_SERVICE_ACCOUNT: ${{ vars.GCP_IMAGE_SCAN_SERVICE_ACCOUNT }}
       AWS_PAGER: ''
     steps:
       # Until the token exists nothing is posted, and the API keeps showing
@@ -54,6 +59,7 @@ jobs:
             exit 0
           fi
           [ -n "$AWS_IMAGE_SCAN_ROLE_ARN" ] || echo "::warning::AWS_IMAGE_SCAN_ROLE_ARN is not set: ECR images will be posted as failed scans"
+          [ -n "$GCP_IMAGE_SCAN_PROVIDER" ] && [ -n "$GCP_IMAGE_SCAN_SERVICE_ACCOUNT" ] || echo "::warning::GCP_IMAGE_SCAN_PROVIDER or GCP_IMAGE_SCAN_SERVICE_ACCOUNT is not set: Artifact Registry images will be posted as failed scans"
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v5
@@ -86,10 +92,22 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: platform-image-scan-${{ github.run_id }}
 
+      - name: GCP credentials (OIDC, Artifact Registry read only)
+        id: gcp
+        if: steps.config.outputs.ready == 'true' && env.GCP_IMAGE_SCAN_PROVIDER != '' && env.GCP_IMAGE_SCAN_SERVICE_ACCOUNT != ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ env.GCP_IMAGE_SCAN_PROVIDER }}
+          service_account: ${{ env.GCP_IMAGE_SCAN_SERVICE_ACCOUNT }}
+          token_format: access_token
+          create_credentials_file: false
+
       - name: Scan and post
         if: steps.config.outputs.ready == 'true'
         env:
           SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
+          # Masked by the auth action; empty when the GCP variables are unset.
+          GAR_TOKEN: ${{ steps.gcp.outputs.access_token }}
           # Logins live in this job's temp dir, not the runner user's ~/.docker.
           DOCKER_CONFIG: ${{ runner.temp }}/docker
           # The vulnerability database is kept between runs on the runner.
