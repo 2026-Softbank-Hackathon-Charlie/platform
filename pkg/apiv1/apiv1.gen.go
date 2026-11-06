@@ -3558,6 +3558,12 @@ type SecurityKEVState string
 
 // SecurityOCSFExport defines model for SecurityOCSFExport.
 type SecurityOCSFExport struct {
+	// Controls OCSF Compliance Finding (2003) events, one per control evaluation
+	// (not_applicable left out), as the OCSF schema defines them
+	// (snake_case keys, `time` in epoch milliseconds). Their shape is
+	// the OCSF standard's, not this API's, so it is not repeated here.
+	Controls []map[string]interface{} `json:"controls"`
+
 	// Findings OCSF Detection Finding (2004) and Compliance Finding (2003) events,
 	// as the OCSF schema defines them (snake_case keys, `time` in epoch
 	// milliseconds). Their shape is the OCSF standard's, not this API's,
@@ -3571,6 +3577,12 @@ type SecurityOCSFExport struct {
 	//
 	// Example: 1.9.0
 	OcsfVersion string `json:"ocsfVersion"`
+
+	// Vulnerabilities OCSF Vulnerability Finding (2002) events, one per vulnerability,
+	// as the OCSF schema defines them (snake_case keys, `time` in epoch
+	// milliseconds). Their shape is the OCSF standard's, not this API's,
+	// so it is not repeated here.
+	Vulnerabilities []map[string]interface{} `json:"vulnerabilities"`
 }
 
 // SecurityPackage defines model for SecurityPackage.
