@@ -29,6 +29,7 @@ func (s *Server) root(w http.ResponseWriter, _ *http.Request) {
 // GET /v1/security?environment=&severity=&refresh=
 func (s *Server) security(w http.ResponseWriter, r *http.Request) {
 	if rep, ok := s.securityReport(w, r); ok {
+		security.AttachFindingExceptions(&rep, s.activeExceptions(r))
 		writeJSON(w, http.StatusOK, rep)
 	}
 }
@@ -37,6 +38,7 @@ func (s *Server) security(w http.ResponseWriter, r *http.Request) {
 // OCSF Detection and Compliance Finding events.
 func (s *Server) securityOCSF(w http.ResponseWriter, r *http.Request) {
 	if rep, ok := s.securityReport(w, r); ok {
+		security.AttachFindingExceptions(&rep, s.activeExceptions(r))
 		writeJSON(w, http.StatusOK, security.ToOCSF(rep))
 	}
 }
@@ -95,6 +97,7 @@ func (s *Server) securityVulnerabilities(w http.ResponseWriter, r *http.Request)
 		}
 		security.CompareDeployed(r.Context(), &rep, recs)
 		security.AttachExploitation(r.Context(), &rep, s.d.Exploits)
+		security.AttachVulnerabilityExceptions(&rep, s.activeExceptions(r))
 		writeJSON(w, http.StatusOK, rep)
 	}
 }

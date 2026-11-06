@@ -3065,7 +3065,7 @@ components:
             Security Hub) and for audit denials, which no catalog control
             evaluates.
         severityBasis: { $ref: "#/components/schemas/SecuritySeverityBasis" }
-        exception: { $ref: "#/components/schemas/SecurityException", description: "the active exception, if any" }
+        exception: { $ref: "#/components/schemas/SecurityException" }
 
     SecurityFindingKind:
       description: |
@@ -3375,7 +3375,7 @@ components:
         cvss: { type: array, items: { $ref: "#/components/schemas/SecurityCVSS" } }
         urls: { type: array, items: { type: string } }
         exploitation: { $ref: "#/components/schemas/SecurityExploitation" }
-        exception: { $ref: "#/components/schemas/SecurityException", description: "the active exception, if any" }
+        exception: { $ref: "#/components/schemas/SecurityException" }
 
     SecurityExploitation:
       description: |
