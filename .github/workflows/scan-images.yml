@@ -39,22 +39,34 @@ jobs:
       AWS_IMAGE_SCAN_ROLE_ARN: ${{ vars.AWS_IMAGE_SCAN_ROLE_ARN }}
       AWS_PAGER: ''
     steps:
+      # Until the token exists nothing is posted, and the API keeps showing
+      # the running images as not scanned (never as zero vulnerabilities).
       - name: Check settings
+        id: config
         env:
           HAS_SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN != '' }}
         run: |
           set -euo pipefail
-          [ "$HAS_SCANNER_TOKEN" = true ] || { echo "::error::Repository secret SCANNER_TOKEN is not set"; exit 1; }
+          if [ "$HAS_SCANNER_TOKEN" != true ]; then
+            echo "::notice::Repository secret SCANNER_TOKEN is not set: nothing scanned"
+            echo "Image scan skipped: SCANNER_TOKEN is not set." >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           [ -n "$AWS_IMAGE_SCAN_ROLE_ARN" ] || echo "::warning::AWS_IMAGE_SCAN_ROLE_ARN is not set: ECR images will be posted as failed scans"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v5
+        if: steps.config.outputs.ready == 'true'
         with:
           persist-credentials: false
 
       - name: Scanner helper tests
+        if: steps.config.outputs.ready == 'true'
         run: python3 -B -m unittest discover -s .github/scripts -p 'test_scan_images.py'
 
       - name: Install Grype ${{ env.GRYPE_VERSION }} (checksum pinned)
+        if: steps.config.outputs.ready == 'true'
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/grype"
@@ -67,7 +79,7 @@ jobs:
           echo "GRYPE=$dir/grype" >> "$GITHUB_ENV"
 
       - name: AWS credentials (OIDC, ECR pull only)
-        if: env.AWS_IMAGE_SCAN_ROLE_ARN != ''
+        if: steps.config.outputs.ready == 'true' && env.AWS_IMAGE_SCAN_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ env.AWS_IMAGE_SCAN_ROLE_ARN }}
@@ -75,6 +87,7 @@ jobs:
           role-session-name: platform-image-scan-${{ github.run_id }}
 
       - name: Scan and post
+        if: steps.config.outputs.ready == 'true'
         env:
           SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
           # Logins live in this job's temp dir, not the runner user's ~/.docker.
