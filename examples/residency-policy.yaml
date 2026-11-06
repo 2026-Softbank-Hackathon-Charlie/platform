@@ -7,6 +7,13 @@
 # so the strictest table decides. The server lists the source's tables itself
 # at start time; a table missing here, or listed here but missing there, denies.
 version: 1
+# REQUIRED for file migrations: explicitly identify the KR environment where
+# the API's PRIVATE temporary staging volume actually resides. Also control its
+# backups/replication/ACLs. This is an operator assertion, not a location probe.
+# Do not uncomment until the actual API placement has been verified:
+# inspectionEnvironment: eks
+# Without it file migrations deny before downloading any object body.
+# See docs/adr/0031-file-content-residency.md for format/size/metadata limitations.
 environments:
   - {id: onprem, country: KR}
   - {id: eks, country: KR}   # ap-northeast-2 (Seoul)
@@ -37,6 +44,14 @@ catalog:
 # The target's enabled replication rules are read too: every bucket it
 # replicates into must be registered here, in a country the data may go to.
 # A MinIO bucket whose lifecycle tiers objects to another store is denied.
+#
+# The content guard also scans the actual bytes on every normal sync. Unsupported
+# binary objects (including normal photos without OCR support) fail closed unless
+# an operator has reviewed their EXACT SHA-256 and classification. A source bucket
+# may have reviewedFiles entries with fields sha256 and label (kr-only/apac/global).
+# Do not add placeholder hashes or label real photos without an actual review.
+# Hash approval never removes declared labels or supported-text PII findings.
+# Guarded plans must omit files.flags; large objects/archives also deny at limits.
 buckets:
   - bucket: "s3:moimroom-photos-eks"
     environment: eks

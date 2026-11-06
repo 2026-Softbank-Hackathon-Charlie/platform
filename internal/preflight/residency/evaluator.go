@@ -131,6 +131,9 @@ func validRequest(r preflight.Request) bool {
 			!validObservation(f.SourceObserved) || !validObservation(f.TargetObserved)) {
 			return false
 		}
+		if m.Files != nil && (len(m.Files.ContentLabels) > 3 || !distinct(m.Files.ContentLabels, validLabel)) {
+			return false
+		}
 		datasets := map[preflight.Dataset]bool{}
 		for _, d := range m.Inventory.Datasets {
 			if !validDataset(d) || datasets[d] {

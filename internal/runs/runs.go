@@ -93,6 +93,9 @@ type Config struct {
 	StateDir string
 	Store    store.Store
 	Factory  Factory
+	// FileSyncer installs the server-owned content guard on every normal launch,
+	// including resumes. Reverse rollback runs preserve their recovery exemption.
+	FileSyncer func(*plan.Plan) engine.FileSyncer
 	// Traffic is the gateway admin client. Nil means no gateway: canary is
 	// refused and request counts are not measured.
 	Traffic Traffic
@@ -250,7 +253,14 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 			return apiv1.Run{}, fmt.Errorf("%w (run %s)", ErrBusy, id)
 		}
 	}
-	eng, err := r.cfg.Factory(p, engine.Options{StateDir: r.cfg.StateDir, RunID: runID, Emit: l.emitEngine})
+	opts := engine.Options{StateDir: r.cfg.StateDir, RunID: runID, Emit: l.emitEngine}
+	if p.Files != nil && r.cfg.FileSyncer != nil && (doc.RollbackOf == nil || *doc.RollbackOf == "") {
+		opts.Files = r.cfg.FileSyncer(p)
+		if opts.Files == nil {
+			return apiv1.Run{}, ErrEngineInit
+		} // never fall back to unguarded rclone
+	}
+	eng, err := r.cfg.Factory(p, opts)
 	if err != nil {
 		return apiv1.Run{}, fmt.Errorf("%w: %w", ErrEngineInit, err)
 	}

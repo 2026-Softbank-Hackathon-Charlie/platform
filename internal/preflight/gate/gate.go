@@ -6,7 +6,11 @@ package gate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 
@@ -43,20 +47,36 @@ type Collector interface {
 	Collect(ctx context.Context, dsn string, scope preflight.ClusterScope) (preflight.Inventory, inventory.Result)
 }
 
+// ContentInspector reads all source bytes into private staging, without an upload.
+type ContentInspector interface {
+	Inspect(context.Context, string, []fileguard.Review) (fileguard.Report, error)
+}
+
 // Gate checks plans against one immutable residency policy.
 type Gate struct {
 	evaluator *residency.Evaluator
 	collector Collector
 	prober    Prober
 	// registered buckets are the only ones the gate connects to.
-	registered map[string]bool
-	buckets    map[string]residency.Bucket
-	digest     string
+	registered            map[string]bool
+	buckets               map[string]residency.Bucket
+	digest                string
+	inspector             ContentInspector
+	inspectionEnvironment string
 }
 
 // New prepares the policy. collector nil uses inventory.Collector{}; the
 // buckets of a files copy are measured with bucketprobe.Prober{}.
 func New(ctx context.Context, cfg residency.Config, collector Collector) (*Gate, error) {
+	// Keep the measured catalog/reviews just as immutable as the OPA data.
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, residency.ErrInvalidConfig
+	}
+	cfg, err = residency.ParseConfig(raw)
+	if err != nil {
+		return nil, err
+	}
 	e, err := residency.New(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -68,7 +88,7 @@ func New(ctx context.Context, cfg residency.Config, collector Collector) (*Gate,
 	for _, b := range cfg.Buckets {
 		registered[b.Bucket], buckets[b.Bucket] = true, b
 	}
-	return &Gate{evaluator: e, collector: collector, prober: bucketprobe.Prober{}, registered: registered, buckets: buckets, digest: e.PolicyDigest()}, nil
+	return &Gate{evaluator: e, collector: collector, prober: bucketprobe.Prober{}, registered: registered, buckets: buckets, digest: e.PolicyDigest(), inspector: fileguard.Inspector{}, inspectionEnvironment: cfg.InspectionEnvironment}, nil
 }
 
 // WithProber replaces the bucket prober (tests). It returns g.
@@ -76,6 +96,9 @@ func (g *Gate) WithProber(p Prober) *Gate {
 	g.prober = p
 	return g
 }
+
+// WithContentInspector replaces content reads in tests, never in production wiring.
+func (g *Gate) WithContentInspector(i ContentInspector) *Gate { g.inspector = i; return g }
 
 // PolicyDigest identifies the embedded policy and its configuration.
 func (g *Gate) PolicyDigest() string { return g.digest }
@@ -85,6 +108,53 @@ func (g *Gate) PolicyDigest() string { return g.digest }
 // the source's relations and never leaves this call. A nil error does not
 // mean allowed: always check Allowed.
 func (g *Gate) Check(ctx context.Context, p *plan.Plan) (preflight.ResidencyVerdict, error) {
+	v, err := g.check(ctx, p, nil)
+	if err != nil || !v.Allowed || p.Files == nil {
+		return v, err
+	}
+	if g.inspector == nil {
+		v.Allowed = false
+		v.Reasons = []preflight.Reason{{Code: "file_inspection_failed"}}
+		return v, nil
+	}
+	r, err := g.inspector.Inspect(ctx, p.Files.Source, g.buckets[p.Files.Source].ReviewedFiles)
+	if err != nil {
+		v.Allowed = false
+		v.Reasons = []preflight.Reason{{Code: "file_inspection_failed", MovementID: movementID(p)}}
+		for _, fixed := range []error{fileguard.ErrUnsupported, fileguard.ErrLimit, fileguard.ErrRead, fileguard.ErrPath, fileguard.ErrChanged, fileguard.ErrCleanup, fileguard.ErrOptions} {
+			if errors.Is(err, fixed) {
+				v.Reasons = append(v.Reasons, preflight.Reason{Code: fixed.Error(), MovementID: movementID(p)})
+				break
+			}
+		}
+		return v, nil // scanner/command errors must not expose object keys or values
+	}
+	v, err = g.check(ctx, p, r.Labels)
+	v.Content = &r
+	return v, err
+}
+
+// FileSyncer is installed for normal starts AND resumes. The runner retains the
+// existing explicit rollback exemption; this is not a global rollback policy.
+func (g *Gate) FileSyncer(p *plan.Plan) engine.FileSyncer {
+	before := func(ctx context.Context) error {
+		v, err := g.check(ctx, p, nil)
+		if err != nil || !v.Allowed {
+			return fileguard.ErrDenied
+		}
+		return nil
+	}
+	authorize := func(ctx context.Context, r fileguard.Report) error {
+		v, err := g.check(ctx, p, r.Labels)
+		if err != nil || !v.Allowed {
+			return fileguard.ErrDenied
+		}
+		return nil
+	}
+	return fileguard.New(p.Files.Source, p.Files.Target, g.buckets[p.Files.Source].ReviewedFiles, before, authorize)
+}
+
+func (g *Gate) check(ctx context.Context, p *plan.Plan, labels []string) (preflight.ResidencyVerdict, error) {
 	deny := func(codes ...string) preflight.ResidencyVerdict {
 		v := preflight.ResidencyVerdict{PolicyDigest: g.digest, Reasons: []preflight.Reason{}}
 		for _, c := range codes {
@@ -112,7 +182,13 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (preflight.ResidencyVerd
 	var files *preflight.BucketCopy
 	var evidence []preflight.ObservedBucket
 	if p.Files != nil {
-		files = &preflight.BucketCopy{Source: p.Files.Source, Target: p.Files.Target}
+		if !residency.ValidBucket(p.Files.Source) || !residency.ValidBucket(p.Files.Target) {
+			return deny(CodeInvalidInput), residency.ErrInvalidInput
+		}
+		if len(p.Files.Flags) != 0 || (p.Files.Rclone != "" && p.Files.Rclone != "rclone") {
+			return deny("file_guard_options_not_supported"), nil
+		}
+		files = &preflight.BucketCopy{Source: p.Files.Source, Target: p.Files.Target, ContentLabels: labels}
 		// A store the policy does not know is never contacted.
 		var unregistered []preflight.Reason
 		for _, name := range []string{p.Files.Source, p.Files.Target} {
@@ -164,6 +240,10 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (preflight.ResidencyVerd
 		return deny(CodeEvaluationFailed), err
 	}
 	v.Buckets = evidence
+	if v.Allowed && p.Files != nil && g.inspectionEnvironment == "" {
+		v.Allowed = false
+		v.Reasons = []preflight.Reason{{Code: "inspection_location_unverified", MovementID: movementID(p)}}
+	}
 	return v, nil
 }
 

@@ -229,7 +229,6 @@ func main() {
 			return &gateway.Client{BaseURL: u, Token: gw.Token, HTTP: gw.HTTP}
 		}
 	}
-	runner := runs.New(runCtx, rcfg)
 	planSvc := plans.New(policy, st)
 	planSvc.SetStateDir(*stateDir)
 
@@ -279,6 +278,7 @@ func main() {
 			fatal("PLATFORM_RESIDENCY_POLICY_FILE", "err", err)
 		}
 		planSvc.SetResidencyGate(g)
+		rcfg.FileSyncer = g.FileSyncer
 		bucketInspector = g
 		log.Info("residency gate enabled", "policyDigest", g.PolicyDigest())
 	} else {
@@ -325,6 +325,7 @@ func main() {
 		fatal("PLATFORM_VERSION_GATE must be on or off", "value", v)
 	}
 
+	runner := runs.New(runCtx, rcfg)
 	if n, err := planSvc.RecoverStarting(ctx); err != nil {
 		fatal("recover plans", "err", err)
 	} else if n > 0 {

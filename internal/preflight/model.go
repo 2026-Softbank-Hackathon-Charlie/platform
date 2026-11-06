@@ -66,6 +66,33 @@ type BucketCopy struct {
 	Target         string             `json:"target"`
 	SourceObserved *BucketObservation `json:"sourceObserved"`
 	TargetObserved *BucketObservation `json:"targetObserved"`
+	// ContentLabels are computed from the staged bytes by trusted server code.
+	// They add restrictions; they never replace the declared bucket/prefix labels.
+	ContentLabels []string `json:"contentLabels,omitempty"`
+}
+
+// ContentReview is an operator-reviewed classification of exact object bytes.
+type ContentReview struct {
+	SHA256 string `json:"sha256"`
+	Label  string `json:"label"`
+}
+
+var contentHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func ValidContentReview(r ContentReview) bool {
+	return contentHash.MatchString(r.SHA256) && (r.Label == "global" || r.Label == "apac" || r.Label == "kr-only")
+}
+
+// FileInspection is safe audit evidence. No object keys or data values belong here.
+type FileInspection struct {
+	Rules          string   `json:"rules"`
+	Objects        int      `json:"objects"`
+	Bytes          int64    `json:"bytes"`
+	ManifestDigest string   `json:"manifestDigest"`
+	Labels         []string `json:"labels"`
+	// Findings counts matched scan segments (body/key/member/comment), not
+	// individual values or necessarily distinct objects.
+	Findings map[string]int `json:"findings"`
 }
 
 // Hosting of an observed bucket.
@@ -132,6 +159,7 @@ type ResidencyVerdict struct {
 	// Buckets is what the gate measured about a files copy's buckets, as
 	// evidence for the audit log. It never holds host names or credentials.
 	Buckets []ObservedBucket `json:"buckets,omitempty"`
+	Content *FileInspection  `json:"content,omitempty"`
 }
 
 // ObservedBucket pairs a registered bucket name with its observation.

@@ -33,6 +33,7 @@ type ResidencyCheck struct {
 	PolicyDigest string
 	// Buckets is what the gate measured about the files copy's buckets.
 	Buckets []preflight.ObservedBucket
+	Content *preflight.FileInspection
 }
 
 // ResidencyDenied is the error Reserve returns when the policy refuses a plan.
@@ -91,9 +92,9 @@ func (s *Service) checkResidency(ctx context.Context, rollbackOf string, p *plan
 		if len(v.Reasons) == 0 {
 			v.Reasons = []preflight.Reason{{Code: "evaluation_failed"}}
 		}
-		return ResidencyCheck{PolicyDigest: v.PolicyDigest, Buckets: v.Buckets}, &ResidencyDenied{Verdict: v}
+		return ResidencyCheck{PolicyDigest: v.PolicyDigest, Buckets: v.Buckets, Content: v.Content}, &ResidencyDenied{Verdict: v}
 	}
-	return ResidencyCheck{Outcome: ResidencyAllowed, PolicyDigest: v.PolicyDigest, Buckets: v.Buckets}, nil
+	return ResidencyCheck{Outcome: ResidencyAllowed, PolicyDigest: v.PolicyDigest, Buckets: v.Buckets, Content: v.Content}, nil
 }
 
 // BucketEvidence renders what the gate measured, one line per bucket, e.g.
