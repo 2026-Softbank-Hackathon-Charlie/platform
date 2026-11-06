@@ -2,7 +2,11 @@ package plans
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
@@ -15,6 +19,30 @@ type fakeParity struct {
 	report parity.Report
 	err    error
 	seen   int
+}
+
+func TestParityBindingUsesUnexpandedApprovedBody(t *testing.T) {
+	t.Setenv("SRC_PGPASSWORD", "parity-secret-source")
+	t.Setenv("DST_PGPASSWORD", "parity-secret-target")
+	s := newService(DefaultPolicy())
+	s.SetParityGate(&fakeParity{report: failedParity()})
+	ref := approved(t, s)
+	row, err := s.store.GetPlan(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Reserve(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(row.Raw)
+	if b := res.Parity.Binding; b.PlanDigest != hex.EncodeToString(sum[:]) || b.Operation != "planned_migration" || len(b.PolicyDigest) != 64 {
+		t.Fatalf("%+v", b)
+	}
+	raw, _ := json.Marshal(res.Parity)
+	if strings.Contains(string(raw), "parity-secret") || strings.Contains(string(raw), "postgres://") {
+		t.Fatal("secret-bearing plan leaked into parity evidence")
+	}
 }
 
 func (f *fakeParity) Check(context.Context, *plan.Plan) (parity.Report, error) {
@@ -45,6 +73,9 @@ func TestReserveRecordsParityWithoutBlocking(t *testing.T) {
 			}
 			if tc.want == ParityRecorded && (res.Parity.Report == nil || res.Parity.Report.Passed) {
 				t.Fatalf("report %+v", res.Parity.Report)
+			}
+			if b := res.Parity.Binding; b == nil || b.PlanRef == "" || b.Revision < 1 || len(b.PlanDigest) != 64 || b.ReviewedAt == nil {
+				t.Fatalf("missing approval binding: %+v", b)
 			}
 		})
 	}

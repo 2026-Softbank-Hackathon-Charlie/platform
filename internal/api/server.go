@@ -630,9 +630,9 @@ func noteVersion(r *http.Request, c plans.VersionCheck) {
 func noteParity(r *http.Request, c plans.ParityCheck) {
 	switch {
 	case c.Report != nil:
-		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "passed": c.Report.Passed, "results": paritygate.Lines(*c.Report)})
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "passed": c.Report.Passed, "results": paritygate.Lines(*c.Report), "binding": c.Binding, "configDigest": c.Report.ConfigDigest, "baselineStatus": c.Report.BaselineStatus, "observedAt": c.Report.ObservedAt, "expiresAt": c.Report.ExpiresAt})
 	case c.Outcome != "":
-		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit"})
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "binding": c.Binding})
 	}
 }
 

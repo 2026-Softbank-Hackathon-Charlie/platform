@@ -71,8 +71,12 @@ type Result struct {
 }
 
 type Report struct {
-	Passed  bool     `json:"passed"`
-	Results []Result `json:"results"`
+	Passed         bool      `json:"passed"`
+	Results        []Result  `json:"results"`
+	ConfigDigest   string    `json:"configDigest,omitempty"`
+	BaselineStatus string    `json:"baselineStatus,omitempty"`
+	ObservedAt     time.Time `json:"observedAt,omitempty"`
+	ExpiresAt      time.Time `json:"expiresAt,omitempty"`
 }
 
 // Probe implementations are trusted code with server-owned clients/config.
@@ -108,7 +112,8 @@ func known(c Capability) bool {
 // The caller must not mutate request, probe configuration or the registry while
 // it is in use. Each probe has a bounded execution context.
 func Evaluate(ctx context.Context, req Request, probes map[Capability]Probe) (Report, error) {
-	report := Report{Results: []Result{}}
+	report := Report{Results: []Result{}, ObservedAt: time.Now().UTC()}
+	report.ExpiresAt = report.ObservedAt.Add(5 * time.Minute)
 	if !ValidTarget(req.Source.Target) || !ValidTarget(req.Target) ||
 		req.Source.Target.Environment == req.Target.Environment || req.Source.Target.Application != req.Target.Application {
 		return report, ErrInvalidRequest
@@ -146,8 +151,13 @@ func Evaluate(ctx context.Context, req Request, probes map[Capability]Probe) (Re
 				r.Code = "probe_failed" // never expose a raw provider error
 			} else if !validResult(got, c, req.Target) {
 				r.Code = "invalid_probe_result"
+			} else if got.ObservedAt.After(time.Now().Add(5*time.Second)) || time.Since(got.ObservedAt) > 5*time.Minute {
+				r.Code = "stale_probe_result"
 			} else {
 				r = got
+				if expiry := got.ObservedAt.Add(5 * time.Minute); expiry.Before(report.ExpiresAt) {
+					report.ExpiresAt = expiry
+				}
 			}
 		}
 		if r.Status != Pass && r.Status != NotApplicable || required[c] && r.Status != Pass {
@@ -158,6 +168,9 @@ func Evaluate(ctx context.Context, req Request, probes map[Capability]Probe) (Re
 	if ctx.Err() != nil {
 		report.Passed = false
 		return report, ctx.Err()
+	}
+	if !time.Now().Before(report.ExpiresAt) {
+		report.Passed = false
 	}
 	return report, nil
 }

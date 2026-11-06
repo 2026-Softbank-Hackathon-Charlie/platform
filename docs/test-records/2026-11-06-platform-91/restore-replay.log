@@ -1,0 +1,5 @@
+=== RUN   TestSandboxBackupRestoreRetry
+    restore_retry_test.go:75: restored acknowledged reservation preserved; same-key retry did not duplicate the booking
+--- PASS: TestSandboxBackupRestoreRetry (0.09s)
+PASS
+ok  	github.com/2026-Softbank-Hackathon-Charlie/moimroom/internal/api	0.104s

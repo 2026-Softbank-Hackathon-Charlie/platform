@@ -2,6 +2,9 @@ package paritygate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,11 +28,10 @@ const Timeout = 30 * time.Second
 // ErrNoApp: the plan's target namespace has no app in the parity file.
 var ErrNoApp = parity.ErrNotConfigured
 
-// Every capability is required. Source discovery does not exist yet; making
-// all five mandatory means a missing discovery cannot drop a requirement, so
-// the baseline may be marked complete. Capabilities without a probe are
-// reported as probe_not_configured, which keeps Passed false: an honest
-// record, and the reason this package never blocks.
+// Every capability is required, so missing discovery cannot drop a requirement.
+// This fixed minimum is evaluated to preserve partial probe observations; the
+// separately checked operator baseline must also be current before Passed can
+// be true. Neither is a claim of automatic source dependency discovery.
 var mandatory = []parity.Capability{parity.Identity, parity.Secret, parity.Audit, parity.Observability, parity.BackupRestore}
 
 // SARFactory returns the SubjectAccessReview client of an environment's
@@ -42,6 +44,7 @@ type ResourceFactory func(env string) (metadata.Interface, dynamic.Interface, er
 
 // Gate builds the probes for a plan's target and evaluates them.
 type Gate struct {
+	digest    string
 	cfg       Config
 	sar       SARFactory
 	http      *http.Client
@@ -51,10 +54,16 @@ type Gate struct {
 // New returns a gate. sar may be nil (no identity probe); httpClient nil
 // uses a client with a 10 second timeout.
 func New(cfg Config, sar SARFactory, httpClient *http.Client) *Gate {
+	// Own a deep snapshot: later caller mutations cannot change the policy
+	// behind an already recorded fingerprint.
+	raw, _ := json.Marshal(cfg)
+	var owned Config
+	_ = json.Unmarshal(raw, &owned)
+	sum := sha256.Sum256(raw)
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &Gate{cfg: cfg, sar: sar, http: httpClient}
+	return &Gate{cfg: owned, sar: sar, http: httpClient, digest: hex.EncodeToString(sum[:])}
 }
 
 // NewWithResources adds metadata-only Secret and dynamic resource readers.
@@ -83,7 +92,26 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (parity.Report, error) {
 		Target:    target,
 		Mandatory: mandatory,
 	}
-	return parity.Evaluate(ctx, req, g.probes(target, app, p.Target.Cluster))
+	report, err := parity.Evaluate(ctx, req, g.probes(target, app, p.Target.Cluster))
+	report.ConfigDigest = g.digest
+	report.BaselineStatus = "not_configured"
+	if b, ok := app.Baselines[p.Source.Env]; ok {
+		report.BaselineStatus = "expired_or_future"
+		now := time.Now().UTC()
+		if !b.ReviewedAt.After(now) && now.Before(b.ExpiresAt) {
+			report.BaselineStatus = "operator_reviewed"
+			if b.ExpiresAt.Before(report.ExpiresAt) {
+				report.ExpiresAt = b.ExpiresAt
+			}
+		}
+	}
+	if p.Source.Namespace != app.Namespace {
+		report.BaselineStatus = "source_scope_mismatch"
+	}
+	if report.BaselineStatus != "operator_reviewed" {
+		report.Passed = false
+	}
+	return report, err
 }
 
 // probes builds the configured probes for target. A probe that cannot be

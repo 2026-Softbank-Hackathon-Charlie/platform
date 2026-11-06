@@ -1,0 +1,4 @@
+=== RUN   TestReservationIdempotencyConcurrentAndResponseLost
+--- PASS: TestReservationIdempotencyConcurrentAndResponseLost (5.61s)
+PASS
+ok  	github.com/2026-Softbank-Hackathon-Charlie/moimroom/internal/api	6.658s

@@ -290,6 +290,9 @@ func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 	// Last, and only for a run that will start: parity is a record, so it
 	// must not be what decides, and a denied run needs none.
 	parCheck := s.checkParity(ctx, row.RollbackOf, p)
+	if parCheck.Outcome != ParityNotConfigured {
+		s.bindParity(ctx, row, &parCheck)
+	}
 	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf, Residency: check, Capacity: capCheck, Version: verCheck, Parity: parCheck}, nil
 }
 
