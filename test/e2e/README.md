@@ -15,21 +15,23 @@ test/e2e/down.sh         # KEEP=1로 남긴 것, 중간에 끊긴 실행이 남�
 1. kind 클러스터 `hop-e2e` 하나에 CNPG 1.25.1 operator를 올리고, 원본 `pg-src`(primary)를 만든다. `items` 테이블에 2만 행을 넣는다. 매니페스트는 엔진의 `test/rehearsal`과 같고, 엔진 PR #4의 수정(`smartShutdownTimeout: 5`, 대상이 원본의 app Secret을 씀)이 들어 있다.
 2. 플랫폼 저장소로 쓸 PostgreSQL 컨테이너 `hop-e2e-store`를 새로 띄운다.
 3. 호스트에서 `go build`한 프로세스를 띄운다. 테스트 앱 두 개(`test/e2e/app`, 원본용과 대상용), 게이트웨이(backend `src`, `dst`, 앱 도메인 `e2e.test`), 플랫폼 API. 토큰과 비밀번호는 실행할 때마다 새로 만들고 파일에 남기지 않는다. 부하는 `127.0.0.1`로 보내므로 앱 도메인 밖이고, 이전은 기본 앱에서 일어난다.
-4. 드라이버(`test/e2e/driver`)가 쓰기 4개, 읽기 4개를 게이트웨이로 계속 보낸다. 쓰기는 고유한 키로 행을 넣고, 성공한 키를 1초마다 `POST /v1/written-records/e2e`로 보낸다. 읽기는 성공한 키를 무작위로 다시 읽는다.
+4. 드라이버(`test/e2e/driver`)가 쓰기 4개, 읽기 4개를 게이트웨이로 계속 보낸다. 쓰기는 고유한 키로 행을 넣고, 성공한 키를 1초마다 `POST /v1/written-records/e2e`로 보낸다. 실패하거나 응답이 끊긴 쓰기는 같은 키로 최대 6번 다시 보낸다(앱은 키로 멱등, [ADR 0028](../../docs/adr/0028-write-retry-contract.md)). 결과에 첫 시도 실패와 재시도로 끝난 쓰기를 따로 찍는다. 읽기는 성공한 키를 무작위로 다시 읽는다.
 5. 드라이버가 플랫폼 API로만 이전을 진행한다.
-   - agent 토큰: `POST /v1/plans`(`plan.json`), `PUT /v1/plans/{ref}/attachments/target.yaml`
+   - operator 토큰: `POST /v1/plans`(`plan.json`), `PUT /v1/plans/{ref}/attachments/target.yaml`. AI(agent)가 낸 Plan은 샌드박스 리허설 보고서가 있어야 승인되므로(platform #24) 이전 자체를 보는 이 테스트는 사람이 쓴 Plan으로 낸다. 리허설 게이트는 API 테스트가 본다
+   - agent 토큰: written-records 기록(`POST /v1/written-records/{stream}`)
    - operator 토큰: `GET /v1/plans/{ref}`에서 본 `revision`으로 승인, `POST /v1/migrations`(카나리 1%→100% 7단계, 단계마다 5초), SSE로 이벤트를 보다가 `awaiting_switch`가 되면 `/switch`
 6. run이 끝나면 5초 더 부하를 보내고 멈춘 뒤, 기록한 키를 새 primary(`pg-dst`)에서 직접 센다. verify 단계 뒤에 들어온 쓰기까지 확인하기 위해서다.
 7. 게이트웨이 관리 API로 두 번째 앱 `second`(환경 `blue`, 원본 테스트 앱)를 등록하고, `Host: second.e2e.test`가 `blue`로, `app.e2e.test`와 `127.0.0.1`이 기본 앱의 `dst`로 가는지, 등록하지 않은 이름이 404인지 본다. 앱을 지운 뒤에는 `second.e2e.test`도 404여야 한다.
 
 ## 실패 시나리오
 
-`run.sh`는 같은 클러스터에서 시나리오 세 개를 차례로 돌린다(`SCENARIOS="canary-fault observe-rollback migrate"`가 기본, 일부만 고를 수 있다). 앞의 두 시나리오는 대상 테스트 앱에 일부러 장애를 넣고(`PUT /_fault`, 앱 자신의 포트로만 부른다), 끝나면 원본이 다시 primary라서 마지막의 정상 이전이 같은 상태에서 시작한다. 시나리오마다 plan id와 written-records 스트림(`e2e-<시나리오>`)이 따로다. 코드와 판정은 `driver/scenarios.go`.
+`run.sh`는 같은 클러스터에서 시나리오 네 개를 차례로 돌린다(`SCENARIOS="lost-response canary-fault observe-rollback migrate"`가 기본, 일부만 고를 수 있다). `lost-response`는 이전 없이 원본 앱에만 장애를 넣는다. 그다음 두 시나리오는 대상 테스트 앱에 일부러 장애를 넣고(`PUT /_fault`, 앱 자신의 포트로만 부른다), 끝나면 원본이 다시 primary라서 마지막의 정상 이전이 같은 상태에서 시작한다. 시나리오마다 plan id와 written-records 스트림(`e2e-<시나리오>`)이 따로다. 코드와 판정은 `driver/scenarios.go`.
 
 | 시나리오 | 장애 | 기대 |
 | --- | --- | --- |
 | `canary-fault` | 카나리 10% 단계가 시작되면 대상의 모든 읽기가 500 | run `rolled_back`(카나리 단계), fence 전이라 쓰기는 옮겨지지 않음, 게이트웨이 쓰기·읽기 모두 `src`, 실패한 쓰기 0, 성공한 쓰기가 전부 원본에 있음 |
 | `observe-rollback` | 전환 후 관찰(observe)이 시작되면 대상의 모든 요청이 1.2초 (p95 기준 800ms 초과), `autoRollback` 켬 | observe 위반, `slo-guard`가 시작한 롤백 run `succeeded`, 게이트웨이 쓰기·읽기 모두 `src`, 실패한 쓰기 0, 성공한 쓰기가 전부 원본(다시 primary)에 있음 |
+| `lost-response` | 이전 없이 20초 동안 원본 앱이 5번째 쓰기마다 커밋한 뒤 응답 없이 연결을 끊음 | 실패한 쓰기 0, 재시도로 끝난 쓰기 1건 이상, 응답한 쓰기마다 DB에 정확히 한 행(중복 0, 모르는 행 0). [ADR 0028](../../docs/adr/0028-write-retry-contract.md) |
 | `migrate` | 없음 | 아래 통과 조건 |
 
 카나리는 기본 1%→10%→25%→50%→75%→90%→100%(단계마다 5초)다. 1% 단계는 요청이 적어 `inconclusive`로 넘어가는 것이 정상이다.

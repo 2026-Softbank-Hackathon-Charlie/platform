@@ -45,8 +45,9 @@ func main() {
 	readers := flag.Int("readers", 4, "concurrent readers")
 	canaryFlag := flag.String("canary", "1,10,25,50,75,90,100", "canary read weights to the target")
 	canaryStep := flag.Duration("canary-step", 5*time.Second, "duration of each canary step")
-	scenarioFlag := flag.String("scenario", scenarioMigrate, "migrate | canary-fault | observe-rollback (see scenarios.go)")
+	scenarioFlag := flag.String("scenario", scenarioMigrate, "migrate | canary-fault | observe-rollback | lost-response (see scenarios.go)")
 	targetApp := flag.String("target-app", "", "the target test app's own URL, for fault injection")
+	sourceApp := flag.String("source-app", "", "the source test app's own URL, for fault injection")
 	gwAdmin := flag.String("gateway-admin", "", "gateway admin URL, to check where traffic ended")
 	timeout := flag.Duration("timeout", 20*time.Minute, "give up after this long")
 	flag.Parse()
@@ -55,7 +56,7 @@ func main() {
 	if *apiURL == "" || *gwURL == "" || agentTok == "" || opTok == "" || targetDSN == "" {
 		log.Fatal("need -api, -gateway, E2E_AGENT_TOKEN, E2E_OPERATOR_TOKEN and E2E_TARGET_DSN")
 	}
-	sc, err := newScenario(*scenarioFlag, *targetApp, *gwAdmin, os.Getenv("E2E_GATEWAY_TOKEN"), os.Getenv("E2E_SOURCE_DSN"))
+	sc, err := newScenario(*scenarioFlag, *sourceApp, *targetApp, *gwAdmin, os.Getenv("E2E_GATEWAY_TOKEN"), os.Getenv("E2E_SOURCE_DSN"))
 	must(err, "scenario")
 	if *scenarioFlag != scenarioMigrate {
 		*stream = "e2e-" + *scenarioFlag
@@ -96,14 +97,28 @@ func main() {
 		time.Sleep(time.Second)
 	}
 	log.Printf("load running through %s: %d writers, %d readers", *gwURL, *writers, *readers)
+	if *scenarioFlag == scenarioLostResponse { // no migration
+		ok := sc.lostResponse(ctx, l, stopLoad)
+		fmt.Printf("driver wall    %s (load start to end)\n", time.Since(began).Round(time.Second))
+		if !ok {
+			fmt.Println("== E2E FAILED")
+			os.Exit(1)
+		}
+		fmt.Println("== E2E passed")
+		return
+	}
 
-	pr, err := agent.SubmitPlan(ctx, raw)
+	// The operator writes the plan: an agent's (AI) plan needs a sandbox
+	// rehearsal report before approval (platform #24, internal/plans/rehearsal.go),
+	// which this test of the migration itself does not produce. The API tests
+	// cover that gate.
+	pr, err := op.SubmitPlan(ctx, raw)
 	must(err, "submit plan")
-	att, err := agent.PutPlanAttachment(ctx, pr.Ref, "target.yaml", manifest)
+	att, err := op.PutPlanAttachment(ctx, pr.Ref, "target.yaml", manifest)
 	must(err, "upload target.yaml")
 	pr, err = op.GetPlan(ctx, pr.Ref)
 	must(err, "get plan")
-	log.Printf("plan %s submitted (agent), target.yaml %d bytes sha256 %.12s, revision %d", pr.Ref, att.Size, att.Sha256, pr.Revision)
+	log.Printf("plan %s submitted (operator), target.yaml %d bytes sha256 %.12s, revision %d", pr.Ref, att.Size, att.Sha256, pr.Revision)
 	_, err = op.ApprovePlan(ctx, pr.Ref, "e2e: reviewed target.yaml", pr.Revision)
 	must(err, "approve plan")
 	step := canaryStep.String()
@@ -207,6 +222,8 @@ func report(ctx context.Context, run *apiv1.Run, l *load, streamCount int64, tar
 		boolStr(res.Verified), num(res.MissingRows), num(res.MissingWrites), checkedWrites(run))
 	fmt.Printf("client writes  ok=%d failed=%d; longest gap without a successful write %s, slowest write %s\n",
 		l.writeOK.Load(), l.writeFail.Load(), l.maxGap.Round(time.Millisecond), l.slowest.Round(time.Millisecond))
+	fmt.Printf("write retries  first attempt failed=%d, completed by a retry=%d, retry attempts=%d\n",
+		l.writeFirstFail.Load(), l.writeRecovered.Load(), l.writeRetried.Load())
 	fmt.Printf("client reads   ok=%d notFound=%d failed=%d; by backend %v\n",
 		l.readOK.Load(), l.readMissing.Load(), l.readFail.Load(), l.byBackend)
 	fmt.Printf("records        sent=%d unsent=%d stream=%d\n", l.sent, len(l.unsent), streamCount)
@@ -244,6 +261,19 @@ func countOnTarget(ctx context.Context, dsn string, keys []string) (int64, error
 	defer conn.Close(ctx)
 	var n int64
 	err = conn.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE id = ANY($1)", keys).Scan(&n)
+	return n, err
+}
+
+// countWithPrefix counts every row whose id starts with prefix: this run's rows,
+// acknowledged or not.
+func countWithPrefix(ctx context.Context, dsn, prefix string) (int64, error) {
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close(ctx)
+	var n int64
+	err = conn.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE starts_with(id, $1)", prefix).Scan(&n)
 	return n, err
 }
 
@@ -285,6 +315,10 @@ type load struct {
 	failLogs  int
 
 	writeOK, writeFail, readOK, readMissing, readFail atomic.Int64
+	// writeFirstFail: writes whose first attempt failed (what a client without
+	// retries would have seen); writeRecovered: of those, the ones a retry
+	// completed; writeRetried: retry attempts sent.
+	writeFirstFail, writeRecovered, writeRetried atomic.Int64
 }
 
 func newLoad(gw string) *load {
@@ -342,15 +376,46 @@ func (l *load) writer(i int, stop <-chan struct{}) {
 		}
 		id := fmt.Sprintf("%s-w%d-%d", l.nonce, i, seq)
 		t0 := time.Now()
-		code, _, err := l.do(http.MethodPost, "/items", `{"id":"`+id+`"}`)
-		if err == nil && code == http.StatusCreated {
-			l.written(id, t0, time.Now())
-		} else {
-			l.writeFail.Add(1)
-			l.logFail("write", code, err)
+		// A well-behaved client: a write that failed or whose answer was lost
+		// is sent again with the same id. The app's insert is idempotent by id,
+		// so a retry never adds a second row (platform ADR 0028).
+		for attempt := 1; ; attempt++ {
+			code, _, err := l.do(http.MethodPost, "/items", `{"id":"`+id+`"}`)
+			if err == nil && code == http.StatusCreated {
+				if attempt > 1 {
+					l.writeRecovered.Add(1)
+				}
+				l.written(id, t0, time.Now())
+				break
+			}
+			if attempt == 1 {
+				l.writeFirstFail.Add(1)
+			}
+			if attempt >= maxWriteAttempts || !retryable(code, err) {
+				l.writeFail.Add(1)
+				l.logFail("write", code, err)
+				break
+			}
+			l.writeRetried.Add(1)
+			wait := 300 * time.Millisecond
+			if code == http.StatusServiceUnavailable {
+				wait = time.Second // the gateway's Retry-After
+			}
+			time.Sleep(wait)
 		}
 		time.Sleep(pace)
 	}
+}
+
+// maxWriteAttempts bounds one write's attempts (about 6s of retries).
+const maxWriteAttempts = 6
+
+// retryable: a lost answer (transport error) or a 5xx. The gateway's 503s for
+// held writes (hold_timeout, too_many_held_writes, shutting_down) were never
+// forwarded; other 5xx and lost answers may have been committed, which the
+// idempotent insert makes harmless. 4xx are the client's own mistakes.
+func retryable(code int, err error) bool {
+	return err != nil || code >= 500
 }
 
 func (l *load) reader(stop <-chan struct{}) {
