@@ -364,8 +364,15 @@ func (s *Server) traffic(w http.ResponseWriter, r *http.Request) {
 	}
 	traffic := s.d.Traffic
 	if app := r.URL.Query().Get("app"); app != "" {
-		// Only an app from the apps file: the same names plans use as gateway scopes.
-		if s.d.Apps == nil || s.d.TrafficApp == nil || !s.d.Apps.Has(app) {
+		// Only an app plans can be drafted for (the apps file, or a
+		// registered app with a database pair): the same names plans use
+		// as gateway scopes.
+		_, known, err := s.catalogApp(r.Context(), app)
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
+		if s.d.TrafficApp == nil || !known {
 			s.fail(w, r, http.StatusBadRequest, "invalid_request", "app must be an app registered on this server (GET /v1/apps)")
 			return
 		}

@@ -219,3 +219,33 @@ func TestRegisteredAppPlanPassesThePolicy(t *testing.T) {
 		t.Fatalf("plan of a deleted app: %v, want ErrInvalid", err)
 	}
 }
+
+func TestLookup(t *testing.T) {
+	f := newRegistryFixture(t)
+	f.register("moimroom-mig", "pw")
+	f.register("moimroom", "pw") // the file's moimroom wins
+	f.register("old", "")        // no pair
+	a, ok, err := f.cat.Lookup(t.Context(), "moimroom-mig")
+	if err != nil || !ok {
+		t.Fatalf("Lookup = %v, %v", ok, err)
+	}
+	var envs []string
+	for _, e := range a.Environments {
+		envs = append(envs, e.Env+"="+e.CnpgCluster+"@"+e.DbHost)
+	}
+	want := []string{ // environments-file order
+		"gke=moimroom-mig-db@db-gke-moimroom-mig.hopcharlie-db-network.svc.cluster.local:5432",
+		"eks=moimroom-mig-db@db-eks-moimroom-mig.hopcharlie-db-network.svc.cluster.local:5432",
+	}
+	if a.Namespace != "moimroom-mig" || a.Database.Name != "app" || a.Database.Schemas == nil || !reflect.DeepEqual(envs, want) {
+		t.Fatalf("Lookup = %+v, environments %v", a, envs)
+	}
+	if a, ok, _ := f.cat.Lookup(t.Context(), "moimroom"); !ok || a.Database.Schemas[0] != "app" || len(a.Environments) != 3 {
+		t.Fatalf("file app = %+v", a)
+	}
+	for _, name := range []string{"old", "nope"} {
+		if _, ok, err := f.cat.Lookup(t.Context(), name); ok || err != nil {
+			t.Errorf("Lookup(%s) = %v, %v", name, ok, err)
+		}
+	}
+}

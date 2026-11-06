@@ -169,7 +169,12 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	noteAudit(r, "deployment", d.ID)
 	s.enqueue(ctx, d.ID)
 	w.Header().Set("Location", "/v1/apps/"+app.Name)
-	writeJSON(w, http.StatusCreated, apiv1.AppCreated{App: s.appView(app, nil, map[string][]store.Deployment{app.Name: {d}}, db), Deployment: deploymentJSON(d)})
+	view, err := s.appView(ctx, app, nil, map[string][]store.Deployment{app.Name: {d}}, db)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, apiv1.AppCreated{App: view, Deployment: deploymentJSON(d)})
 }
 
 // newAppDatabase makes the database pair of an app being registered (ADR
@@ -409,7 +414,9 @@ func (s *Server) targetEnvs(names []string) ([]string, string) {
 }
 
 // GET /v1/apps: the apps file in its order, then the apps only registered
-// from GitHub by name. An app in both is the file's entry with deploy set.
+// from GitHub by name. An app in both is the file's entry with deploy set;
+// a registered app with a database pair has its environments from the
+// pair (ADR 0030).
 func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	list := []apiv1.App{}
 	if s.d.Apps != nil {
@@ -430,12 +437,17 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 			s.internal(w, r, err)
 			return
 		}
-		deploy := s.appDeploy(a, branches, deps, db)
 		if i, ok := inFile[a.Name]; ok {
+			deploy := s.appDeploy(a, branches, deps, db)
 			list[i].Deploy = &deploy
 			continue
 		}
-		list = append(list, registeredOnly(a.Name, &deploy))
+		view, err := s.appView(r.Context(), a, branches, deps, db)
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
+		list = append(list, view)
 	}
 	writeJSON(w, http.StatusOK, apiv1.AppList{Apps: list})
 }
@@ -462,7 +474,12 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.appView(a, branches, deps, db))
+	view, err := s.appView(r.Context(), a, branches, deps, db)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 // appRecords reads what a registered app's deploy section shows besides
@@ -508,16 +525,30 @@ func (s *Server) fileApp(name string) (apiv1.App, bool) {
 	return apiv1.App{}, false
 }
 
-// appView is a registered app as the API shows it: the apps file's entry
-// when the file has the name, otherwise the defaults, with deploy set from
-// branches, deps and db as appDeploy takes them.
-func (s *Server) appView(a store.App, branches []store.AppBranch, deps map[string][]store.Deployment, db *store.AppDatabase) apiv1.App {
+// appView is a registered app as the API shows it: the catalog's entry
+// (the apps file's, or one made from the app's database pair) when there is
+// one, otherwise the defaults, with deploy set from branches, deps and db
+// as appDeploy takes them.
+func (s *Server) appView(ctx context.Context, a store.App, branches []store.AppBranch, deps map[string][]store.Deployment, db *store.AppDatabase) (apiv1.App, error) {
 	deploy := s.appDeploy(a, branches, deps, db)
-	if out, ok := s.fileApp(a.Name); ok {
-		out.Deploy = &deploy
-		return out
+	out, ok, err := s.catalogApp(ctx, a.Name)
+	if err != nil {
+		return apiv1.App{}, err
 	}
-	return registeredOnly(a.Name, &deploy)
+	if ok {
+		out.Deploy = &deploy
+		return out, nil
+	}
+	return registeredOnly(a.Name, &deploy), nil
+}
+
+// catalogApp is the app plans can be drafted for (apps.Catalog.Lookup):
+// the apps file's entry or a registered app with a database pair.
+func (s *Server) catalogApp(ctx context.Context, name string) (apiv1.App, bool, error) {
+	if s.d.Apps == nil {
+		return apiv1.App{}, false, nil
+	}
+	return s.d.Apps.Lookup(ctx, name)
 }
 
 // registeredOnly is a registered app that is not in the apps file: its
