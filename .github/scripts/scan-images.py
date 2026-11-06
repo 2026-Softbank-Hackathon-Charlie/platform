@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scans the platform's running image digests with Grype (SEC-04, ADR 0029).
+"""Scans the platform's running image digests with Grype (SEC-04, ADR 0034).
 
 Reads the running images from GET /v1/security/vulnerabilities, scans each
 digest whose stored scan is missing, failed or older than RESCAN_HOURS with

@@ -53,7 +53,7 @@ type Report struct {
 	Findings  []apiv1.SecurityFinding
 	// StorageKeys are the bucket keys the source lists (StorageKeyCollector).
 	StorageKeys []apiv1.StorageKey
-	// Evaluations are the catalog controls the source evaluated (ADR 0029).
+	// Evaluations are the catalog controls the source evaluated (ADR 0034).
 	// A check whose read failed reports its assets as unknown; a source
 	// that reports none for a control of its own while not ok gets one
 	// unknown evaluation of every asset ("*").

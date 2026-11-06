@@ -1,6 +1,6 @@
 name: Scan running images
 
-# SEC-04 (ADR 0029): every hour, scans the image digests the clusters run
+# SEC-04 (ADR 0034): every hour, scans the image digests the clusters run
 # with the pinned Grype and posts each result to POST /v1/security/scans.
 # The API only stores and shows them; it never scans. A digest is rescanned
 # when its scan is a day old, and a failed one after an hour. A digest that
