@@ -78,8 +78,10 @@ func DefaultPolicy() Policy {
 
 // withRegistered returns p with the registered apps' password variables and
 // database hosts (AppDatabases.RegistryHosts) added to HostPasswordEnvs and
-// AppDBHosts. A variable or app p already has keeps p's entry.
-func (p Policy) withRegistered(passwordHosts, appHosts map[string][]string) Policy {
+// AppDBHosts, and their buckets (AppDatabases.RegistryBuckets) to Buckets.
+// A variable or app p already has keeps p's entry; a bucket that is not a
+// plain remote:bucket is left out.
+func (p Policy) withRegistered(passwordHosts, appHosts map[string][]string, buckets []string) Policy {
 	merge := func(own, more map[string][]string) map[string][]string {
 		out := maps.Clone(own)
 		if out == nil {
@@ -94,6 +96,12 @@ func (p Policy) withRegistered(passwordHosts, appHosts map[string][]string) Poli
 	}
 	p.HostPasswordEnvs = merge(p.HostPasswordEnvs, passwordHosts)
 	p.AppDBHosts = merge(p.AppDBHosts, appHosts)
+	p.Buckets = slices.Clone(p.Buckets)
+	for _, b := range buckets {
+		if CheckBucket(b) == nil && !slices.Contains(p.Buckets, b) {
+			p.Buckets = append(p.Buckets, b)
+		}
+	}
 	return p
 }
 
@@ -310,7 +318,7 @@ func (p Policy) checkParsed(pl *plan.Plan, hosts dbHosts) error {
 			}
 		}
 		if len(p.Buckets) == 0 {
-			return fmt.Errorf("files is disabled on this server: no bucket is registered (PLATFORM_APPS_FILE or PLATFORM_PLAN_BUCKETS)")
+			return fmt.Errorf("files is disabled on this server: no bucket is registered (PLATFORM_APPS_FILE, PLATFORM_PLAN_BUCKETS or PLATFORM_APP_FILES)")
 		}
 		for _, f := range []struct{ field, value string }{{"files.source", pl.Files.Source}, {"files.target", pl.Files.Target}} {
 			if !slices.Contains(p.Buckets, f.value) {

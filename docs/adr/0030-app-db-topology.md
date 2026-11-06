@@ -73,7 +73,7 @@ values:
 - `PLATFORM_APP_DB_HOST_TEMPLATES`(예 `eks=db-eks-{instance}.hopcharlie-db-network.svc.cluster.local,gke=db-gke-{instance}.hopcharlie-db-network.svc.cluster.local`)가 있으면, 정적 카탈로그(`PLATFORM_APPS_FILE`)에 없는 이름은 짝 행이 있는 등록 앱으로 초안을 만든다. 이름이 겹치면 정적 카탈로그가 이긴다(운영 moimroom 보호). 파일이 없는 서버도 이 설정만으로 초안을 만든다.
   - namespace는 인스턴스, cluster는 `<app>-<pg>`, database와 user는 `app`, schemas는 비운다(엔진 기본 `public`).
   - DSN은 `postgres://app:${<ENV>_<APP>_PGPASSWORD}@<템플릿 호스트>:5432/app?sslmode=require`다. 관리 경로는 `sslmode=require`를 그대로 쓴다.
-  - 파일 이전은 넣지 않는다. 앱 버킷 키는 평문이 없어서 서버 rclone 원격으로만 옮길 수 있고, 그 자격 증명이 앱 버킷에 닿는지 확인하지 않았다.
+  - 파일 이전은 `PLATFORM_APP_FILES=1`일 때만 넣는다(ADR 0032). 앱 버킷 키는 평문이 없어서 플랫폼 신원으로 만든 환경 이름 원격(`eks:`, `gke:`)으로 옮긴다.
 - 같은 앱은 `GET /v1/apps`, `GET /v1/apps/{name}`에 정적 카탈로그 앱과 같은 모양(namespace, database, 환경별 cluster와 dbHost)으로 보인다. 그래서 콘솔의 이전 화면, `GET /v1/traffic?app=`, `POST /v1/ai-runs`가 그대로 이 앱을 고른다. 비밀번호와 CA는 보이지 않는다.
 - 정책의 비밀번호 변수 허용 호스트와 앱별 게이트웨이 범위(ADR 0012, #79)는 시작할 때 정한 정적 값에 더해, plan을 parse할 때마다 짝 행에서 다시 읽는다. 그래서 재시작 없이 새 앱을 이전할 수 있다. 정적 값과 겹치는 변수나 앱은 정적 값이 이긴다. 등록 앱의 DB 호스트만 쓰는 plan은 그 앱의 범위(`<gateway>/apps/<app>`)만 받는다.
 - 비밀번호는 서버 시작 때 넣지 않는다. 초안을 만들 때와 plan을 parse할 때(제출, 시작, 재개, 되돌리기) 정책이 그 변수를 허용한 뒤에 행을 읽어 복호화하고 `os.Setenv`로 넣는다. plan과 DB에는 `${VAR}`만 남는다(엔진 ADR 0006).

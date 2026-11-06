@@ -29,6 +29,10 @@ type Registry struct {
 	// database there as the API reaches it, with {instance} for the
 	// instance (PLATFORM_APP_DB_HOST_TEMPLATES, ParseHostTemplates).
 	HostTemplates map[string]string
+	// BucketPrefixes maps an environment to its storage driver's bucket
+	// prefix when the registered apps' files are moved there (Files,
+	// PLATFORM_APP_FILES, ADR 0032). nil: their files are not moved.
+	BucketPrefixes map[string]string
 }
 
 // RegistryStore is the part of the store a Registry reads.
@@ -124,9 +128,16 @@ func (r *Registry) app(ctx context.Context, name string) (App, store.AppDatabase
 	}
 	// The chart's names (ADR 0030): namespace the instance, Cluster
 	// <app>-<resource>, database app owned by app.
+	// An s3 resource is the instance's bucket, <bucketPrefix><instance>
+	// (ADR 0016), named through the environment's remote (ADR 0032).
+	hasBucket := slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypeS3 })
 	out := App{Name: name, Namespace: name, Database: Database{Name: "app", User: "app"}, Environments: map[string]Environment{}}
 	for _, e := range r.endpoints(d) {
-		out.Environments[e.env] = Environment{CnpgCluster: name + "-" + spec.Resources[i].Name, DBHost: e.host, DBPort: 5432, PasswordEnv: e.passwordEnv}
+		env := Environment{CnpgCluster: name + "-" + spec.Resources[i].Name, DBHost: e.host, DBPort: 5432, PasswordEnv: e.passwordEnv}
+		if hasBucket {
+			env.Bucket = r.fileBucket(e.env, name)
+		}
+		out.Environments[e.env] = env
 	}
 	return out, d, true, nil
 }
@@ -170,6 +181,31 @@ func (c *Catalog) RegistryHosts(ctx context.Context) (passwordHosts, appHosts ma
 		}
 	}
 	return passwordHosts, appHosts, nil
+}
+
+// RegistryBuckets returns, read now, the buckets files of the registered
+// apps' plans may move between (ADR 0032): <env>:<bucketPrefix><app> in
+// each environment of every pair that the registry moves files in, for
+// the plan policy (plans.AppDatabases). The bucket of an app without an s3
+// resource does not exist, so it is not told apart: rclone fails on it.
+// Empty without a registry or with PLATFORM_APP_FILES off.
+func (c *Catalog) RegistryBuckets(ctx context.Context) ([]string, error) {
+	out := []string{}
+	if c.registry == nil || len(c.registry.BucketPrefixes) == 0 {
+		return out, nil
+	}
+	pairs, err := c.pairs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read the database pairs: %w", err)
+	}
+	for _, d := range pairs {
+		for _, e := range c.registry.endpoints(d) {
+			if b := c.registry.fileBucket(e.env, d.App); b != "" {
+				out = append(out, b)
+			}
+		}
+	}
+	return out, nil
 }
 
 // SetRegistryPasswords puts the password of every registered app's

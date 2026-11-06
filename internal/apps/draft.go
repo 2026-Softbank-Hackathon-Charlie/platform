@@ -28,8 +28,10 @@ var ErrInvalid = errors.New("invalid draft request")
 //
 // An app that is not in the apps file may be a registered app with a
 // database pair (WithRegistry, ADR 0030): its DSNs go to the hosts of the
-// host templates, its files are not moved, and its password is put into the
-// server's environment now, for the draft's source measurement.
+// host templates, its files move like an apps file app's when the server
+// moves registered apps' files (Registry.BucketPrefixes, ADR 0032), and its
+// password is put into the server's environment now, for the draft's
+// source measurement.
 func (c *Catalog) Draft(ctx context.Context, req apiv1.PlanDraftRequest) (apiv1.EnginePlan, error) {
 	a, ok := c.app(req.App)
 	var pair *store.AppDatabase
