@@ -30,4 +30,9 @@ func TestStartRecordsParityWithoutBlocking(t *testing.T) {
 		!strings.Contains(d[0], "identity fail rbac_mismatch: no-secrets=fail(authorization_mismatch)") || !strings.Contains(d[0], "secret unknown probe_not_configured") {
 		t.Fatalf("audit: %v", d)
 	}
+	for _, field := range []string{`"binding"`, `"planDigest"`, `"revision"`, `"reviewedAt"`} {
+		if !strings.Contains(d[0], field) {
+			t.Fatalf("missing %s: %v", field, d)
+		}
+	}
 }

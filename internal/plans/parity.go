@@ -2,11 +2,16 @@ package plans
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/parity"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 )
 
 // ParityGate checks the target's identity and monitoring against what the
@@ -35,6 +40,47 @@ const (
 type ParityCheck struct {
 	Outcome string
 	Report  *parity.Report
+	Binding *ParityBinding
+}
+
+// ParityBinding binds start-time evidence to the approved, unexpanded content.
+// It is an audit record, not authorization to reuse evidence for another run.
+type ParityBinding struct {
+	PlanRef        string     `json:"planRef"`
+	Revision       int64      `json:"revision"`
+	PlanDigest     string     `json:"planDigest"`
+	ManifestDigest string     `json:"manifestDigest,omitempty"`
+	ReviewedAt     *time.Time `json:"reviewedAt,omitempty"`
+	Operation      string     `json:"operation"`
+	DurabilityMode string     `json:"durabilityMode"`
+	PolicyDigest   string     `json:"policyDigest"`
+}
+
+func (s *Service) bindParity(ctx context.Context, row store.Plan, check *ParityCheck) {
+	sum := sha256.Sum256(row.Raw)
+	binding := &ParityBinding{PlanRef: row.Ref, Revision: row.Revision, PlanDigest: hex.EncodeToString(sum[:]), ReviewedAt: row.ReviewedAt}
+	binding.Operation = "planned_migration"
+	if row.RollbackOf != "" {
+		binding.Operation = "planned_reverse"
+	}
+	binding.DurabilityMode = "asynchronous_environment_rpo_unverified"
+	policy, err := json.Marshal(s.policy)
+	if err != nil {
+		check.Outcome, check.Report = ParityError, nil
+	} else {
+		digest := sha256.Sum256(policy)
+		binding.PolicyDigest = hex.EncodeToString(digest[:])
+	}
+	name, usesManifest := manifestName(row)
+	if usesManifest {
+		attachment, err := s.store.GetPlanAttachment(ctx, row.Ref, name)
+		if err != nil {
+			check.Outcome, check.Report = ParityError, nil
+		} else {
+			binding.ManifestDigest = attachment.SHA256
+		}
+	}
+	check.Binding = binding
 }
 
 // checkParity records parity for a reservation. It never returns an error:

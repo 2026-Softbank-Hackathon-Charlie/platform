@@ -1,0 +1,73 @@
+go : go: downloading github.com/minio/minio-go/v7 v7.0.90
+위치 줄:2 문자:1
++ go test ./... 2>&1 | Tee-Object ../migration-engine/docs/test-records ...
++ ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (go: downloading...o-go/v7 v7.0.90:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+go: downloading github.com/Masterminds/sprig/v3 v3.3.0
+go: downloading github.com/mkmik/multierror v0.4.0
+go: downloading github.com/Masterminds/semver/v3 v3.4.0
+go: downloading dario.cat/mergo v1.0.1
+go: downloading github.com/Masterminds/goutils v1.1.1
+go: downloading github.com/huandu/xstrings v1.5.0
+go: downloading github.com/mitchellh/copystructure v1.2.0
+go: downloading github.com/shopspring/decimal v1.4.0
+go: downloading github.com/spf13/cast v1.7.0
+go: downloading github.com/mitchellh/reflectwalk v1.0.2
+go: downloading github.com/goccy/go-json v0.10.6
+go: downloading github.com/minio/crc64nvme v1.0.1
+go: downloading github.com/go-ini/ini v1.67.0
+go: downloading github.com/klauspost/cpuid/v2 v2.2.10
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/api	[no test files]
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/api	5.207s
+--- FAIL: TestShutdown (0.02s)
+    main_test.go:58: listen tcp 127.0.0.1:0: listen: The system detected an invalid pointer address in attempting to use a pointer argument in a call.
+FAIL
+FAIL	github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/gateway	2.473s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog	1.427s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun	1.343s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api	(cached)
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps	1.146s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth	4.270s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute	1.382s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy	65.810s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs	3.462s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard	2.692s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway	18.567s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github	2.653s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans	(cached)
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight	[no test files]
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/bucketprobe	2.779s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity	0.336s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate	1.233s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/inventory	1.625s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/parity	(cached)
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate	(cached)
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion	0.574s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes	2.647s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency	3.468s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs	0.610s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing	1.086s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets	0.698s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security	4.290s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage	2.651s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store	0.352s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest	1.243s
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1	[no test files]
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec	1.894s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/client	4.389s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/test/charts	3.547s
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/test/e2e/app	[no test files]
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/test/e2e/deploy/driver	[no test files]
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/test/e2e/deploy/fakegithub	[no test files]
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/test/e2e/deploy/gitserver	[no test files]
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/test/e2e/deploy/probe	[no test files]
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/test/e2e/deploy/proxy	[no test files]
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/test/e2e/driver	[no test files]
+?   	github.com/2026-Softbank-Hackathon-Charlie/platform/test/e2e/moimroom/driver	[no test files]
+--- FAIL: TestRenderRepoContract (0.48s)
+    main_test.go:53: chunk 1 is 173409 bytes, over 20000
+FAIL
+FAIL	github.com/2026-Softbank-Hackathon-Charlie/platform/tools/apidoc	1.014s
+FAIL

@@ -1,0 +1,55 @@
+go: downloading github.com/jackc/pgx/v5 v5.12.0
+go: downloading github.com/google/uuid v1.6.0
+go: downloading github.com/minio/minio-go/v7 v7.4.1
+go: downloading github.com/jackc/pgpassfile v1.0.0
+go: downloading github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761
+go: downloading golang.org/x/text v0.42.0
+go: downloading github.com/jackc/puddle/v2 v2.2.3
+go: downloading golang.org/x/sync v0.23.0
+go: downloading github.com/dustin/go-humanize v1.0.1
+go: downloading github.com/cespare/xxhash/v2 v2.3.0
+go: downloading github.com/klauspost/compress v1.19.2
+go: downloading github.com/klauspost/crc32 v1.3.0
+go: downloading github.com/minio/crc64nvme v1.1.1
+go: downloading github.com/minio/md5-simd v1.1.2
+go: downloading github.com/zeebo/xxh3 v1.1.0
+go: downloading go.yaml.in/yaml/v3 v3.0.5
+go: downloading golang.org/x/net v0.60.0
+go: downloading gopkg.in/ini.v1 v1.67.3
+go: downloading golang.org/x/crypto v0.57.0
+go: downloading github.com/rs/xid v1.6.0
+go: downloading github.com/tinylib/msgp v1.6.4
+go: downloading github.com/klauspost/cpuid/v2 v2.4.0
+go: downloading golang.org/x/sys v0.48.0
+go: downloading github.com/philhofer/fwd v1.2.0
+=== RUN   TestListAndDetail
+--- PASS: TestListAndDetail (0.09s)
+=== RUN   TestBookingLifecycle
+--- PASS: TestBookingLifecycle (1.20s)
+=== RUN   TestBookingValidation
+--- PASS: TestBookingValidation (0.38s)
+=== RUN   TestConcurrentBookingConflict
+--- PASS: TestConcurrentBookingConflict (1.01s)
+=== RUN   TestReviewRules
+--- PASS: TestReviewRules (0.64s)
+=== RUN   TestHostArea
+--- PASS: TestHostArea (0.66s)
+=== RUN   TestHostDisabledWithoutCode
+--- PASS: TestHostDisabledWithoutCode (0.11s)
+=== RUN   TestNormalizePhone
+--- PASS: TestNormalizePhone (0.00s)
+=== RUN   TestHashPhone
+--- PASS: TestHashPhone (0.50s)
+=== RUN   TestMaskName
+--- PASS: TestMaskName (0.00s)
+=== RUN   TestNormalizeCode
+--- PASS: TestNormalizeCode (0.00s)
+=== RUN   TestReservationCommitThenNetworkResponseLoss
+--- PASS: TestReservationCommitThenNetworkResponseLoss (1.13s)
+=== RUN   TestReservationIdempotencyConcurrentAndResponseLost
+--- PASS: TestReservationIdempotencyConcurrentAndResponseLost (3.70s)
+=== RUN   TestReservationFailedAttemptDoesNotReserveRetryKey
+--- PASS: TestReservationFailedAttemptDoesNotReserveRetryKey (1.18s)
+PASS
+ok  	github.com/2026-Softbank-Hackathon-Charlie/moimroom/internal/api	11.639s
+?   	github.com/2026-Softbank-Hackathon-Charlie/moimroom/internal/store	[no test files]

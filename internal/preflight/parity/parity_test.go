@@ -72,6 +72,8 @@ func TestRequiredResultsFailClosed(t *testing.T) {
 		"not applicable":       func(r *Result) { r.Status = NotApplicable },
 		"empty checks":         func(r *Result) { r.Checks = nil },
 		"missing observation":  func(r *Result) { r.ObservedAt = time.Time{} },
+		"expired observation":  func(r *Result) { r.ObservedAt = time.Now().Add(-6 * time.Minute) },
+		"future observation":   func(r *Result) { r.ObservedAt = time.Now().Add(time.Minute) },
 		"wrong capability":     func(r *Result) { r.Capability = Secret },
 		"wrong target":         func(r *Result) { r.Target.Environment = "tokyo" },
 		"inconsistent success": func(r *Result) { r.Checks[0].Status = Unknown },

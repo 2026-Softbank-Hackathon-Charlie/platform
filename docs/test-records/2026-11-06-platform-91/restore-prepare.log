@@ -1,0 +1,4 @@
+=== RUN   TestSandboxBackupRestoreRetry
+--- PASS: TestSandboxBackupRestoreRetry (0.49s)
+PASS
+ok  	github.com/2026-Softbank-Hackathon-Charlie/moimroom/internal/api	0.504s
