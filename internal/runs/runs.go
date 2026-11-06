@@ -643,10 +643,8 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 		// Let the reads in flight finish, so a slow target counts with its real
 		// latency instead of as a cut request, then judge everything the step sent.
 		probe.wait()
-		window := time.Since(stepStart).Round(time.Second)
-		if window < stepDur {
-			window = stepDur
-		}
+		// whole seconds rounded up, so the step's first reads stay in; the gateway keeps 300s
+		window := min(max(time.Since(stepStart).Truncate(time.Second)+time.Second, stepDur), 300*time.Second)
 
 		var ts apiv1.TrafficState
 		err := r.withTimeout(func(c context.Context) error {
@@ -725,7 +723,8 @@ func (p probing) wait() {
 	p.wg.Wait()
 }
 
-// stop is wait for an aborted step: the reads are cut by the run's context.
+// stop is wait for a step that ends early. An abort cancels the run's context
+// and so cuts the reads; on a shutdown they finish within their timeout.
 func (p probing) stop() { p.wait() }
 
 // probe starts n synthetic reads spread over d through Config.Probe, for a run

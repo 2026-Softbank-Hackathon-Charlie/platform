@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -34,9 +35,9 @@ func TestProbeAddressesTheAppScope(t *testing.T) {
 }
 
 func TestProbeDoesNotFollowRedirects(t *testing.T) {
-	var hits int
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		hits.Add(1)
 		http.Redirect(w, r, "/login", http.StatusFound)
 	}))
 	defer srv.Close()
@@ -44,7 +45,7 @@ func TestProbeDoesNotFollowRedirects(t *testing.T) {
 	if err := p.Probe(context.Background(), "http://gw:9901/apps/a"); err != nil {
 		t.Fatal(err)
 	}
-	if hits != 1 {
-		t.Fatalf("requests = %d, want 1 (no redirect followed)", hits)
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("requests = %d, want 1 (no redirect followed)", n)
 	}
 }
