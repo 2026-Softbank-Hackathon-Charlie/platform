@@ -85,7 +85,7 @@ func (s *Server) securityControls(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/security/vulnerabilities?environment=&refresh=: running images,
 // their scan state and the vulnerabilities of stored scans (ADR 0034). It only
-// reads stored scans; it never scans.
+// reads stored scans; it never scans. KEV and EPSS are looked up for its CVEs (SEC-07).
 func (s *Server) securityVulnerabilities(w http.ResponseWriter, r *http.Request) {
 	if col, env, ok := s.securityCollection(w, r); ok {
 		rep := security.VulnerabilityReport(col, env, s.d.ImageScans)
@@ -94,6 +94,7 @@ func (s *Server) securityVulnerabilities(w http.ResponseWriter, r *http.Request)
 			recs = s.d.Store
 		}
 		security.CompareDeployed(r.Context(), &rep, recs)
+		security.AttachExploitation(r.Context(), &rep, s.d.Exploits)
 		writeJSON(w, http.StatusOK, rep)
 	}
 }

@@ -144,6 +144,9 @@ type Deps struct {
 	// ImageScans reads stored image scans for /v1/security/controls and
 	// /v1/security/vulnerabilities; nil reports the scanner as not configured.
 	ImageScans security.ScanResults
+	// Exploits adds KEV and EPSS evidence to /v1/security/vulnerabilities
+	// (SEC-07); nil leaves it out.
+	Exploits *security.ExploitIntel
 	// Agents is the AI agent's activity log; nil turns /v1/agent off.
 	Agents AgentLog
 	// Deployer runs deployments; nil leaves them queued.
