@@ -142,7 +142,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		Name: spec.Name, Repo: req.Repo, Branch: branch, Environments: targets, AutoDeploy: autoDeploy,
 		Spec: specJSON, SpecCommit: commit, CreatedBy: actor(r), CreatedAt: now,
 	}
-	db, err := s.newAppDatabase(app)
+	db, err := s.newAppDatabase(app, *spec)
 	if err != nil {
 		s.internal(w, r, err)
 		return
@@ -179,10 +179,13 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 
 // newAppDatabase makes the database pair of an app being registered (ADR
 // 0030), or returns nil when it gets none: the setting is off, the app is
-// not in exactly two environments, or there is no secrets key to store the
-// pair with.
-func (s *Server) newAppDatabase(app store.App) (*store.AppDatabase, error) {
-	if !s.cfg.AppDBTopology || len(app.Environments) != 2 {
+// not in exactly two environments, one of them has no database host
+// template (Config.AppDBEnvs), its platform.yaml has no postgres resource,
+// or there is no secrets key to store the pair with.
+func (s *Server) newAppDatabase(app store.App, spec appspec.Spec) (*store.AppDatabase, error) {
+	if !s.cfg.AppDBTopology || len(app.Environments) != 2 ||
+		!slices.Contains(s.cfg.AppDBEnvs, app.Environments[0]) || !slices.Contains(s.cfg.AppDBEnvs, app.Environments[1]) ||
+		!slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres }) {
 		return nil, nil
 	}
 	if s.d.Secrets == nil {

@@ -57,6 +57,8 @@ func TestCreateAppWithoutDatabasePair(t *testing.T) {
 		"one environment":    {[]string{"gke"}, []option{withSecrets(testCipher(t)), withAppDBTopology()}},
 		"three environments": {[]string{"gke", "eks", "onprem"}, []option{withSecrets(testCipher(t)), withAppDBTopology()}},
 		"setting off":        {[]string{"gke", "eks"}, []option{withSecrets(testCipher(t))}},
+		"no host template":   {[]string{"gke", "onprem"}, []option{withSecrets(testCipher(t)), withAppDBTopology()}},
+		"no postgres":        {[]string{"gke", "eks"}, []option{withSecrets(testCipher(t)), withAppDBTopology(), withoutPostgres()}},
 		"no secrets key":     {[]string{"gke", "eks"}, []option{withAppDBTopology()}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -72,6 +74,15 @@ func TestCreateAppWithoutDatabasePair(t *testing.T) {
 				t.Fatalf("stored pair: %v, want ErrNotFound", err)
 			}
 		})
+	}
+}
+
+// withoutPostgres serves shop's platform.yaml without its postgres resource.
+func withoutPostgres() option {
+	return func(_ *harness, _ *runs.Config, d *Deps) {
+		gh := newFakeGitHub()
+		gh.repo(shopRepo, "main", headSHA, strings.Replace(shopSpec, "resources:\n  - {name: db, type: postgres}\n", "", 1), "Dockerfile", "worker/Dockerfile")
+		d.GitHub = gh
 	}
 }
 

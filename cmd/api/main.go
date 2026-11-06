@@ -250,6 +250,7 @@ func main() {
 	// Plans for those apps: drafted from the store, their database hosts and
 	// password variables allowed and their passwords put into the
 	// environment on every parse, so a new app needs no restart.
+	var appDBEnvs []string
 	if v := os.Getenv("PLATFORM_APP_DB_HOST_TEMPLATES"); v != "" {
 		if secretsKey == nil {
 			fatal("PLATFORM_APP_DB_HOST_TEMPLATES needs PLATFORM_SECRETS_KEY to read the database passwords")
@@ -263,6 +264,9 @@ func main() {
 		}
 		appCat = appCat.WithRegistry(&apps.Registry{Store: st, Secrets: secretsKey, HostTemplates: tmpls})
 		planSvc.SetAppDatabases(appCat)
+		for env := range tmpls {
+			appDBEnvs = append(appDBEnvs, env)
+		}
 		log.Info("plans for registered apps with a database pair enabled", "hostTemplates", tmpls)
 	}
 
@@ -455,6 +459,7 @@ func main() {
 			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
 			GitOpsRepo:          os.Getenv("PLATFORM_GITOPS_REPO"),
 			AppDBTopology:       appDBTopology,
+			AppDBEnvs:           appDBEnvs,
 		}, deps),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

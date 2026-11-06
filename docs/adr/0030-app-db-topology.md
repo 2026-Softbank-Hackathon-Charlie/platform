@@ -24,7 +24,7 @@
 
 ### 대상
 
-- `PLATFORM_APP_DB_TOPOLOGY=1`이고 `PLATFORM_SECRETS_KEY`가 있는 서버에서, 환경이 정확히 두 개인 앱을 등록하면 DB 짝을 만든다. 끄면 새 앱도 예전과 같다.
+- `PLATFORM_APP_DB_TOPOLOGY=1`이고 `PLATFORM_SECRETS_KEY`가 있는 서버에서, 환경이 정확히 두 개이고 두 환경 모두 `PLATFORM_APP_DB_HOST_TEMPLATES`에 있으며 platform.yaml에 `postgres` 리소스가 있는 앱을 등록하면 DB 짝을 만든다. 하나라도 아니면 짝 없이 예전처럼 등록한다. 끄면 새 앱도 예전과 같다.
 - 기본 인스턴스(앱 이름과 같은 인스턴스)의 `postgres` 리소스만 대상이다. 브랜치 인스턴스는 지금처럼 환경마다 독립 DB다.
 - 세 환경 이상은 대상이 아니다. 원본의 `replica.source`는 상대 하나만 가리킨다.
 - 이미 등록된 앱은 행이 없어서 gitops 파일이 바이트 단위로 그대로다. 짝이 필요하면 삭제하고 다시 등록한다.
