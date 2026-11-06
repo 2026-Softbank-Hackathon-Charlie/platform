@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -75,6 +76,27 @@ func DefaultPolicy() Policy {
 	}
 }
 
+// withRegistered returns p with the registered apps' password variables and
+// database hosts (AppDatabases.RegistryHosts) added to HostPasswordEnvs and
+// AppDBHosts. A variable or app p already has keeps p's entry.
+func (p Policy) withRegistered(passwordHosts, appHosts map[string][]string) Policy {
+	merge := func(own, more map[string][]string) map[string][]string {
+		out := maps.Clone(own)
+		if out == nil {
+			out = map[string][]string{}
+		}
+		for k, v := range more {
+			if _, ok := out[k]; !ok {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	p.HostPasswordEnvs = merge(p.HostPasswordEnvs, passwordHosts)
+	p.AppDBHosts = merge(p.AppDBHosts, appHosts)
+	return p
+}
+
 // passwordEnvName is the form every password variable must have.
 var passwordEnvName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_PGPASSWORD$`)
 
@@ -144,9 +166,11 @@ type expandedFields struct {
 // dbHosts are the "host:port" the DSNs connect to, read from the plan as
 // submitted. Empty when a DSN is missing.
 // all holds every host of both DSNs, fallback hosts included.
+// refs are the password variables the DSNs reference.
 type dbHosts struct {
 	source, target string
 	all            []string
+	refs           []string
 }
 
 // checkRefs runs before plan.Parse, which expands the environment.
@@ -160,7 +184,7 @@ func (p Policy) checkRefs(raw []byte) (dbHosts, error) {
 		role, dsn string
 		first     *string
 	}{{"source", f.Source.DSN, &h.source}, {"target", f.Target.DSN, &h.target}} {
-		hosts, err := p.checkDSN(d.role, d.dsn)
+		hosts, ref, err := p.checkDSN(d.role, d.dsn)
 		if err != nil {
 			return dbHosts{}, err
 		}
@@ -168,6 +192,9 @@ func (p Policy) checkRefs(raw []byte) (dbHosts, error) {
 			*d.first = hosts[0]
 		}
 		h.all = append(h.all, hosts...)
+		if ref != "" && !slices.Contains(h.refs, ref) {
+			h.refs = append(h.refs, ref)
+		}
 	}
 	if strings.Contains(f.Gateway.URL, "$") {
 		return dbHosts{}, fmt.Errorf("gateway.url must not reference environment variables")
@@ -186,34 +213,35 @@ var dsnRef = regexp.MustCompile(`^(postgres(?:ql)?://[^:@/?#$]*):\$\{([^}]*)\}(@
 const dsnPlaceholder = "password"
 
 // checkDSN checks the DSN as submitted and returns its hosts ("host:port"),
-// the first one and then the fallbacks.
-func (p Policy) checkDSN(role, dsn string) ([]string, error) {
+// the first one and then the fallbacks, and the variable it references, if
+// any.
+func (p Policy) checkDSN(role, dsn string) ([]string, string, error) {
 	if dsn == "" {
-		return nil, nil // plan.Parse reports the missing DSN
+		return nil, "", nil // plan.Parse reports the missing DSN
 	}
 	if !strings.HasPrefix(dsn, "postgres://") && !strings.HasPrefix(dsn, "postgresql://") {
-		return nil, fmt.Errorf("%s.dsn must be a postgres:// URL", role)
+		return nil, "", fmt.Errorf("%s.dsn must be a postgres:// URL", role)
 	}
 	onlyPassword := fmt.Errorf("%s.dsn may reference an environment variable only as its whole password, as in postgres://user:${VAR}@host:5432/db", role)
 	tmpl, ref := dsn, ""
 	if strings.Contains(dsn, "$") {
 		m := dsnRef.FindStringSubmatch(dsn)
 		if m == nil {
-			return nil, onlyPassword
+			return nil, "", onlyPassword
 		}
 		tmpl, ref = m[1]+":"+dsnPlaceholder+m[3], m[2]
 	}
 	// Errors never echo the DSN: it may hold a literal password.
 	u, err := url.Parse(tmpl)
 	if err != nil || u.Host == "" {
-		return nil, fmt.Errorf("%s.dsn is not a postgres:// URL with a host", role)
+		return nil, "", fmt.Errorf("%s.dsn is not a postgres:// URL with a host", role)
 	}
 	if pw, _ := u.User.Password(); ref != "" && pw != dsnPlaceholder {
-		return nil, onlyPassword
+		return nil, "", onlyPassword
 	}
 	cfg, err := pgconn.ParseConfig(tmpl)
 	if err != nil {
-		return nil, fmt.Errorf("%s.dsn is not a valid PostgreSQL connection string", role)
+		return nil, "", fmt.Errorf("%s.dsn is not a valid PostgreSQL connection string", role)
 	}
 	hosts := []string{net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port)))}
 	for _, fb := range cfg.Fallbacks {
@@ -223,16 +251,16 @@ func (p Policy) checkDSN(role, dsn string) ([]string, error) {
 		for _, hp := range hosts {
 			h, _, _ := net.SplitHostPort(hp)
 			if !slices.ContainsFunc(p.DSNHostSuffixes, func(s string) bool { return strings.HasSuffix(h, s) }) {
-				return nil, fmt.Errorf("%s.dsn host %q is not an allowed database host", role, h)
+				return nil, "", fmt.Errorf("%s.dsn host %q is not an allowed database host", role, h)
 			}
 		}
 	}
 	if ref != "" {
 		if err := p.checkPasswordRef(role, ref, hosts); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
-	return hosts, nil
+	return hosts, ref, nil
 }
 
 // checkPasswordRef allows ref as the password of a DSN connecting to hosts.

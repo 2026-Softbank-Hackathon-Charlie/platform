@@ -2,12 +2,14 @@ package apps
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"strconv"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
@@ -23,8 +25,21 @@ var ErrInvalid = errors.New("invalid draft request")
 //   - files are moved when both environments have a bucket, unless req.Files is false
 //   - the gateway is the app's scope in the platform gateway, <gateway>/apps/<app>
 //     (mode http), when the server has one, otherwise none
-func (c *Catalog) Draft(req apiv1.PlanDraftRequest) (apiv1.EnginePlan, error) {
+//
+// An app that is not in the apps file may be a registered app with a
+// database pair (WithRegistry, ADR 0030): its DSNs go to the hosts of the
+// host templates, its files are not moved, and its password is put into the
+// server's environment now, for the draft's source measurement.
+func (c *Catalog) Draft(ctx context.Context, req apiv1.PlanDraftRequest) (apiv1.EnginePlan, error) {
 	a, ok := c.app(req.App)
+	var pair *store.AppDatabase
+	if !ok && c.registry != nil {
+		ra, d, found, err := c.registry.app(ctx, req.App)
+		if err != nil {
+			return apiv1.EnginePlan{}, err
+		}
+		a, ok, pair = ra, found, &d
+	}
 	if !ok {
 		return apiv1.EnginePlan{}, fmt.Errorf("%w: unknown app %q", ErrInvalid, req.App)
 	}
@@ -80,6 +95,13 @@ func (c *Catalog) Draft(req apiv1.PlanDraftRequest) (apiv1.EnginePlan, error) {
 				return apiv1.EnginePlan{}, fmt.Errorf("%w: writtenRecordsStream %q must match %s", ErrInvalid, name, plans.StreamName)
 			}
 			v.WrittenRecords = ptr("stream:" + name)
+		}
+	}
+	if pair != nil {
+		for _, e := range []Environment{srcApp, dstApp} {
+			if err := c.setPassword(*pair, e.PasswordEnv); err != nil {
+				return apiv1.EnginePlan{}, err
+			}
 		}
 	}
 	return p, nil

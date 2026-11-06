@@ -104,6 +104,14 @@ type Config struct {
 	// GitOpsRepo is the gitops repository (owner/name, PLATFORM_GITOPS_REPO),
 	// which never gets a push token. Default deploy.DefaultGitOpsRepo.
 	GitOpsRepo string
+	// AppDBTopology makes a database pair (ADR 0030) for every app with a
+	// postgres resource registered in exactly two environments of
+	// AppDBEnvs while Deps.Secrets is set (PLATFORM_APP_DB_TOPOLOGY=1).
+	AppDBTopology bool
+	// AppDBEnvs are the environments with a database host template
+	// (PLATFORM_APP_DB_HOST_TEMPLATES), the only ones a pair can be
+	// migrated between.
+	AppDBEnvs []string
 }
 
 // DefaultAppDomain is Config.AppDomain's default.

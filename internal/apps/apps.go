@@ -6,6 +6,7 @@
 package apps
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -90,6 +91,23 @@ type Catalog struct {
 	apps       []App
 	envs       []envs.EnvConfig // PLATFORM_ENVS_FILE order
 	gatewayURL string
+	registry   *Registry // nil: only the apps file
+}
+
+// Empty is a catalog without an apps file, for a server that drafts plans
+// only for registered apps (WithRegistry).
+func Empty(environments []envs.EnvConfig, gatewayURL string) *Catalog {
+	return &Catalog{envs: slices.Clone(environments), gatewayURL: gatewayURL}
+}
+
+// WithRegistry returns a copy of c that also drafts plans for the apps
+// registered from GitHub with a database pair (ADR 0030). The apps file's
+// entries win; List, Has, PasswordHosts, AppHosts and Buckets stay the
+// file's.
+func (c *Catalog) WithRegistry(r *Registry) *Catalog {
+	out := *c
+	out.registry = r
+	return &out
 }
 
 // New validates cfg against the registered environments (normalized, as
@@ -214,30 +232,52 @@ func (c *Catalog) Buckets() []string {
 func (c *Catalog) List() []apiv1.App {
 	out := make([]apiv1.App, 0, len(c.apps))
 	for _, a := range c.apps {
-		item := apiv1.App{
-			Name:         a.Name,
-			Namespace:    a.Namespace,
-			Database:     apiv1.AppDatabase{Name: a.Database.Name, User: a.Database.User, Schemas: slices.Clone(a.Database.Schemas)},
-			Environments: []apiv1.AppEnvironment{},
-		}
-		if item.Database.Schemas == nil {
-			item.Database.Schemas = []string{}
-		}
-		for _, env := range c.envs {
-			e, ok := a.Environments[env.Name]
-			if !ok {
-				continue
-			}
-			ae := apiv1.AppEnvironment{Env: env.Name, CnpgCluster: e.CnpgCluster, DbHost: hostPort(e)}
-			if e.Bucket != "" {
-				b := e.Bucket
-				ae.Bucket = &b
-			}
-			item.Environments = append(item.Environments, ae)
-		}
-		out = append(out, item)
+		out = append(out, c.view(a))
 	}
 	return out
+}
+
+// Lookup returns the app as List shows it: the apps file's entry, or else
+// a registered app with a database pair (WithRegistry, ADR 0030). false
+// when it is neither.
+func (c *Catalog) Lookup(ctx context.Context, name string) (apiv1.App, bool, error) {
+	if a, ok := c.app(name); ok {
+		return c.view(a), true, nil
+	}
+	if c.registry == nil {
+		return apiv1.App{}, false, nil
+	}
+	a, _, ok, err := c.registry.app(ctx, name)
+	if err != nil || !ok {
+		return apiv1.App{}, false, err
+	}
+	return c.view(a), true, nil
+}
+
+// view is an app as the API shows it, without passwords or their variables.
+func (c *Catalog) view(a App) apiv1.App {
+	item := apiv1.App{
+		Name:         a.Name,
+		Namespace:    a.Namespace,
+		Database:     apiv1.AppDatabase{Name: a.Database.Name, User: a.Database.User, Schemas: slices.Clone(a.Database.Schemas)},
+		Environments: []apiv1.AppEnvironment{},
+	}
+	if item.Database.Schemas == nil {
+		item.Database.Schemas = []string{}
+	}
+	for _, env := range c.envs {
+		e, ok := a.Environments[env.Name]
+		if !ok {
+			continue
+		}
+		ae := apiv1.AppEnvironment{Env: env.Name, CnpgCluster: e.CnpgCluster, DbHost: hostPort(e)}
+		if e.Bucket != "" {
+			b := e.Bucket
+			ae.Bucket = &b
+		}
+		item.Environments = append(item.Environments, ae)
+	}
+	return item
 }
 
 // Has reports whether name is a registered app.

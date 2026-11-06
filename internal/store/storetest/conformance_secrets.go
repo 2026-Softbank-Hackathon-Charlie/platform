@@ -25,6 +25,7 @@ func ConformanceSecrets(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"SecretsCopiesAndText", testSecretsCopiesAndText},
 		{"InstanceStorage", testInstanceStorage},
 		{"BackupStorage", testBackupStorage},
+		{"AppDatabase", testAppDatabase},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -497,4 +498,84 @@ func testBackupStorage(t *testing.T, s store.Store) {
 	// Unclean keys find nothing.
 	_, err = s.GetBackupStorage(ctx, "moim\x00room", "eks")
 	wantErr(t, err, store.ErrNotFound)
+}
+
+func newAppDatabase(primary, peer string, createdAt int) store.AppDatabase {
+	return store.AppDatabase{
+		PrimaryEnv: primary, PeerEnv: peer, KeyVersion: 1, KeyCheck: "0a1b2c3d4e5f",
+		PasswordNonce: []byte("nonce-pw"), PasswordCiphertext: []byte("sealed:pw"),
+		CACert:     "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+		CAKeyNonce: []byte("nonce-key"), CAKeyCiphertext: []byte("sealed:key"),
+		CreatedAt: at(createdAt),
+	}
+}
+
+func testAppDatabase(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	if _, err := s.GetAppDatabase(ctx, "moimroom-mig"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetAppDatabase of nothing = %v, want ErrNotFound", err)
+	}
+	list, err := s.ListAppDatabases(ctx)
+	must(t, err)
+	if list == nil || len(list) != 0 {
+		t.Fatalf("ListAppDatabases of nothing = %#v, want empty and not nil", list)
+	}
+
+	want := newAppDatabase("gke", "eks", 1)
+	want.App = "ignored: the app's name wins"
+	must(t, s.CreateAppWithDatabase(ctx, newApp("moimroom-mig", 0), want))
+	if _, err := s.GetApp(ctx, "moimroom-mig"); err != nil {
+		t.Fatalf("the app of CreateAppWithDatabase: %v", err)
+	}
+	got, err := s.GetAppDatabase(ctx, "moimroom-mig")
+	must(t, err)
+	want.App, want.CreatedAt = "moimroom-mig", pg(want.CreatedAt)
+	eqFields(t, "app database", got, want)
+	got.PasswordCiphertext[0] = 'X'
+	again, err := s.GetAppDatabase(ctx, "moimroom-mig")
+	must(t, err)
+	eqFields(t, "app database after changing a read copy", again, want)
+
+	// A refused pair stores neither the app nor the pair.
+	for _, envs := range [][2]string{{"eks", "eks"}, {"", "eks"}, {"gke", ""}} {
+		err := s.CreateAppWithDatabase(ctx, newApp("shop", 0), newAppDatabase(envs[0], envs[1], 1))
+		if err == nil {
+			t.Fatalf("CreateAppWithDatabase with environments %q succeeded", envs)
+		}
+		if _, err := s.GetApp(ctx, "shop"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("app shop after a refused database pair %q: %v, want ErrNotFound", envs, err)
+		}
+		if _, err := s.GetAppDatabase(ctx, "shop"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("database pair of shop after a refused one %q: %v, want ErrNotFound", envs, err)
+		}
+	}
+
+	// A taken name stores no pair.
+	must(t, s.CreateApp(ctx, newApp("shop", 0)))
+	wantErr(t, s.CreateAppWithDatabase(ctx, newApp("shop", 0), newAppDatabase("gke", "eks", 1)), store.ErrConflict)
+	if _, err := s.GetAppDatabase(ctx, "shop"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("database pair of an app registered before: %v, want ErrNotFound", err)
+	}
+
+	must(t, s.CreateAppWithDatabase(ctx, newApp("blog", 0), newAppDatabase("eks", "gke", 2)))
+	list, err = s.ListAppDatabases(ctx)
+	must(t, err)
+	var apps []string
+	for _, d := range list {
+		apps = append(apps, d.App)
+	}
+	eqList(t, "app databases", apps, []string{"blog", "moimroom-mig"})
+
+	// DeleteApp removes the pair; registering the name again has none.
+	must(t, s.DeleteApp(ctx, "moimroom-mig"))
+	if _, err := s.GetAppDatabase(ctx, "moimroom-mig"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("database pair after DeleteApp: %v, want ErrNotFound", err)
+	}
+	must(t, s.CreateApp(ctx, newApp("moimroom-mig", 3)))
+	if _, err := s.GetAppDatabase(ctx, "moimroom-mig"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("database pair of a re-registered app: %v, want ErrNotFound", err)
+	}
+	if _, err := s.GetAppDatabase(ctx, "blog"); err != nil {
+		t.Fatalf("the other app's pair after DeleteApp: %v", err)
+	}
 }

@@ -78,7 +78,7 @@ func TestExampleFileLoads(t *testing.T) {
 
 func TestDraftFromExample(t *testing.T) {
 	c := exampleCatalog(t, "http://gateway.ts.net:9901")
-	p, err := c.Draft(apiv1.PlanDraftRequest{App: "moimroom", Source: "gke", Target: "eks", WrittenRecordsStream: ptr("moimroom-demo")})
+	p, err := c.Draft(t.Context(), apiv1.PlanDraftRequest{App: "moimroom", Source: "gke", Target: "eks", WrittenRecordsStream: ptr("moimroom-demo")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestDraftFromExample(t *testing.T) {
 
 	// files: false, and no gateway on the server.
 	c = exampleCatalog(t, "")
-	p, err = c.Draft(apiv1.PlanDraftRequest{App: "moimroom", Source: "onprem", Target: "gke", Files: ptr(false)})
+	p, err = c.Draft(t.Context(), apiv1.PlanDraftRequest{App: "moimroom", Source: "onprem", Target: "gke", Files: ptr(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,19 +122,19 @@ func TestDraftRejects(t *testing.T) {
 		"eks": {CnpgCluster: "solo-eks", DBHost: "solo-eks", DBPort: 5432, PasswordEnv: "SOLO_EKS"},
 	}})
 	for name, tc := range cases {
-		_, err := c.Draft(tc.req)
+		_, err := c.Draft(t.Context(), tc.req)
 		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
 		}
 	}
 	// Each app's draft uses its own gateway scope.
 	c.gatewayURL = "http://gw:9901/"
-	if p, err := c.Draft(apiv1.PlanDraftRequest{App: "solo", Source: "gke", Target: "eks"}); err != nil || *p.Gateway.Url != "http://gw:9901/apps/solo" {
+	if p, err := c.Draft(t.Context(), apiv1.PlanDraftRequest{App: "solo", Source: "gke", Target: "eks"}); err != nil || *p.Gateway.Url != "http://gw:9901/apps/solo" {
 		t.Fatalf("solo's gateway url = %v, %v", p.Gateway.Url, err)
 	}
 	c.gatewayURL = ""
 	// Without an explicit files: true, a missing bucket just leaves files out.
-	p, err := c.Draft(apiv1.PlanDraftRequest{App: "solo", Source: "gke", Target: "eks"})
+	p, err := c.Draft(t.Context(), apiv1.PlanDraftRequest{App: "solo", Source: "gke", Target: "eks"})
 	if err != nil || p.Files != nil {
 		t.Fatalf("draft = %+v, %v", p.Files, err)
 	}
@@ -222,7 +222,7 @@ func TestDraftEnvironmentNamespace(t *testing.T) {
 			c.apps[i].Environments["gke"] = e
 		}
 	}
-	p, err := c.Draft(apiv1.PlanDraftRequest{App: "moimroom", Source: "gke", Target: "eks"})
+	p, err := c.Draft(t.Context(), apiv1.PlanDraftRequest{App: "moimroom", Source: "gke", Target: "eks"})
 	if err != nil {
 		t.Fatal(err)
 	}

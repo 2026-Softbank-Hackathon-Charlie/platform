@@ -33,17 +33,17 @@ func (s *Server) startAIRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusServiceUnavailable, "apps_not_configured", "the server has no apps file (PLATFORM_APPS_FILE)")
 		return
 	}
-	known := false
-	for _, a := range s.d.Apps.List() {
-		if a.Name != req.App {
-			continue
-		}
+	a, known, err := s.d.Apps.Lookup(r.Context(), req.App)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	if known {
 		envs := make([]string, 0, len(a.Environments))
 		for _, e := range a.Environments {
 			envs = append(envs, e.Env)
 		}
 		known = slices.Contains(envs, req.Source) && slices.Contains(envs, req.Target)
-		break
 	}
 	if !known || req.Source == req.Target {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", "app "+req.App+" is not configured for "+req.Source+" -> "+req.Target+" (GET /v1/apps)")

@@ -233,6 +233,43 @@ func main() {
 	planSvc := plans.New(policy, st)
 	planSvc.SetStateDir(*stateDir)
 
+	// Optional (ADR 0030): an app registered in exactly two environments gets
+	// a database pair, born primary in its first environment and a replica in
+	// the other, so that it can be migrated between them.
+	appDBTopology := false
+	switch v := os.Getenv("PLATFORM_APP_DB_TOPOLOGY"); v {
+	case "", "0":
+	case "1":
+		appDBTopology = true
+		if secretsKey == nil {
+			log.Warn("PLATFORM_APP_DB_TOPOLOGY is on, but PLATFORM_SECRETS_KEY is not set: apps are registered without a database pair")
+		}
+	default:
+		fatal("PLATFORM_APP_DB_TOPOLOGY must be 1 or 0", "value", v)
+	}
+	// Plans for those apps: drafted from the store, their database hosts and
+	// password variables allowed and their passwords put into the
+	// environment on every parse, so a new app needs no restart.
+	var appDBEnvs []string
+	if v := os.Getenv("PLATFORM_APP_DB_HOST_TEMPLATES"); v != "" {
+		if secretsKey == nil {
+			fatal("PLATFORM_APP_DB_HOST_TEMPLATES needs PLATFORM_SECRETS_KEY to read the database passwords")
+		}
+		tmpls, err := apps.ParseHostTemplates(v, envSvc.Names())
+		if err != nil {
+			fatal("PLATFORM_APP_DB_HOST_TEMPLATES", "err", err)
+		}
+		if appCat == nil {
+			appCat = apps.Empty(envCfg.Environments, policy.GatewayURL)
+		}
+		appCat = appCat.WithRegistry(&apps.Registry{Store: st, Secrets: secretsKey, HostTemplates: tmpls})
+		planSvc.SetAppDatabases(appCat)
+		for env := range tmpls {
+			appDBEnvs = append(appDBEnvs, env)
+		}
+		log.Info("plans for registered apps with a database pair enabled", "hostTemplates", tmpls)
+	}
+
 	// Optional: the residency policy. With it every new run (not a rollback)
 	// starts only if the source's live inventory may be copied to the target.
 	var bucketInspector api.BucketInspector
@@ -421,6 +458,8 @@ func main() {
 			GitHubWebhookSecret: webhookSecret,
 			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
 			GitOpsRepo:          os.Getenv("PLATFORM_GITOPS_REPO"),
+			AppDBTopology:       appDBTopology,
+			AppDBEnvs:           appDBEnvs,
 		}, deps),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

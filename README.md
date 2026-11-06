@@ -149,6 +149,8 @@ go run ./cmd/gateway
 | `PLATFORM_ADDR`, `PLATFORM_STATE_DIR` | 주소(기본 `:8080`), 엔진 상태 디렉터리 |
 | `PLATFORM_PLAN_ENV_ALLOW` | 어느 Plan이든 두 DSN의 비밀번호 자리에 `${VAR}`로 쓸 수 있는 변수 (기본 `SRC_PGPASSWORD`, `DST_PGPASSWORD`). 이름은 `_PGPASSWORD`로 끝나야 하고 `PLATFORM_`, `AWS_`로 시작하면 안 되며, 어기면 서버가 시작하지 않음 |
 | `PLATFORM_DSN_HOST_SUFFIXES` | 허용할 DB 호스트 접미사 (예: `.ts.net`) |
+| `PLATFORM_APP_DB_TOPOLOGY` | `1`이면 환경이 정확히 두 개이고 둘 다 `PLATFORM_APP_DB_HOST_TEMPLATES`에 있으며 `postgres` 리소스가 있는 앱을 등록할 때 DB 짝(첫 환경에서 primary, 다른 환경에서 replica로 태어나는 CNPG Cluster 둘)을 만듦 ([ADR 0030](docs/adr/0030-app-db-topology.md)). `PLATFORM_SECRETS_KEY`가 필요하고, 앱 차트가 `values.dbTopology`를 받기 전에는 켜지 말 것. 기본 꺼짐 |
+| `PLATFORM_APP_DB_HOST_TEMPLATES` | DB 짝이 있는 등록 앱의 이전 초안과 정책에 쓰는 환경별 DB 호스트 틀. `<env>=<호스트>`를 쉼표로 잇고 `{instance}`만 바꿈 (예: `eks=db-eks-{instance}.hopcharlie-db-network.svc.cluster.local`). 포트는 5432. `PLATFORM_SECRETS_KEY`가 필요하고, 호스트 접미사를 `PLATFORM_DSN_HOST_SUFFIXES`에 더해야 함 |
 | `PLATFORM_PLAN_BUCKETS` | 앱 설정 말고도 Plan의 `files`에 쓸 수 있는 버킷 (`원격:버킷`, 쉼표 구분). 앱 설정의 `bucket`은 자동으로 들어감 |
 | `RCLONE_CONFIG_<원격>_*` | rclone 원격의 종류와 자격 증명 (예: `RCLONE_CONFIG_GCS_TYPE=google cloud storage`). 등록된 버킷의 원격에 `_TYPE`이 없으면 시작할 때 경고 |
 | `PLATFORM_AWS_REGION` | 보안 뷰가 읽는 AWS 리전 (기본 `ap-northeast-2`) |

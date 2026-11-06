@@ -29,7 +29,7 @@ func (s *Service) Rollback(ctx context.Context, runID, ref, actor, comment strin
 	if err != nil {
 		return apiv1.PlanRecord{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	p, summary, err := s.parse(raw)
+	p, summary, err := s.parse(ctx, raw)
 	if err != nil {
 		return apiv1.PlanRecord{}, err
 	}

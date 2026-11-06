@@ -195,3 +195,34 @@ func (s *Postgres) DeleteInstanceStorage(ctx context.Context, instance, env stri
 	}
 	return nil
 }
+
+const appDatabaseColumns = `app, primary_env, peer_env, key_version, key_check, password_nonce, password_ciphertext, ca_cert, ca_key_nonce, ca_key_ciphertext, created_at`
+
+func scanAppDatabase(row pgx.Row) (AppDatabase, error) {
+	var d AppDatabase
+	if err := row.Scan(&d.App, &d.PrimaryEnv, &d.PeerEnv, &d.KeyVersion, &d.KeyCheck, &d.PasswordNonce, &d.PasswordCiphertext,
+		&d.CACert, &d.CAKeyNonce, &d.CAKeyCiphertext, &d.CreatedAt); err != nil {
+		return AppDatabase{}, err
+	}
+	d.CreatedAt = d.CreatedAt.UTC()
+	return d, nil
+}
+
+func (s *Postgres) GetAppDatabase(ctx context.Context, app string) (AppDatabase, error) {
+	if !Clean(app) {
+		return AppDatabase{}, fmt.Errorf("%w: database pair of app %q", ErrNotFound, app)
+	}
+	d, err := scanAppDatabase(s.pool.QueryRow(ctx, `SELECT `+appDatabaseColumns+` FROM app_databases WHERE app = $1`, app))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AppDatabase{}, fmt.Errorf("%w: database pair of app %s", ErrNotFound, app)
+	}
+	return d, err
+}
+
+func (s *Postgres) ListAppDatabases(ctx context.Context) ([]AppDatabase, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+appDatabaseColumns+` FROM app_databases ORDER BY app COLLATE "C"`)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, scanAppDatabase)
+}

@@ -215,6 +215,11 @@ func (e DeploymentEvent) Clean() DeploymentEvent {
 type DeployStore interface {
 	// CreateApp inserts an app. ErrConflict if the name exists.
 	CreateApp(ctx context.Context, a App) error
+	// CreateAppWithDatabase inserts an app and its database pair (ADR 0030)
+	// in one transaction: both are stored or, on any error, neither. d.App
+	// is taken from a.Name. ErrConflict if the name exists. An error, and
+	// nothing stored, when d's environments are empty or the same.
+	CreateAppWithDatabase(ctx context.Context, a App, d AppDatabase) error
 	// GetApp returns ErrNotFound when no app has the name.
 	GetApp(ctx context.Context, name string) (App, error)
 	// ListApps returns every app, by name.
@@ -224,8 +229,8 @@ type DeployStore interface {
 	// ErrBranchExists when a.Branch is one of the app's added branches.
 	UpdateApp(ctx context.Context, a App) error
 	// DeleteApp removes an app together with its added branches, its
-	// secrets, its deployments and their events. ErrNotFound if it does not
-	// exist.
+	// secrets, its database pair, its deployments and their events.
+	// ErrNotFound if it does not exist.
 	DeleteApp(ctx context.Context, name string) error
 
 	// CreateAppBranch adds a branch to an existing app that has fewer than
