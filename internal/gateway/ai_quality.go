@@ -160,6 +160,7 @@ func (rt *router) handleAdvanceAI(w http.ResponseWriter, r *http.Request) {
 	}
 	rt.mu.Lock()
 	prev := *rt.canary
+	observedQualityGeneration := rt.qualityGeneration
 	rt.mu.Unlock()
 	if prev.LastCommand == id {
 		if prev.LastExpectedVersion != *req.ExpectedVersion || prev.LastTargetPercent != req.TargetPercent {
@@ -206,7 +207,7 @@ func (rt *router) handleAdvanceAI(w http.ResponseWriter, r *http.Request) {
 	}
 	// A watcher may revoke evidence without changing a 0% stage/version. An
 	// earlier, slower passing fetch must not overwrite that newer revocation.
-	if req.TargetPercent > 0 && rt.canary.Verdict.Status != "pass" && rt.canary.Verdict.CheckedAt.After(verdict.CheckedAt) {
+	if req.TargetPercent > 0 && rt.canary.Verdict.Status != "pass" && rt.qualityGeneration != observedQualityGeneration {
 		latest := rt.canary.Verdict
 		rt.mu.Unlock()
 		writeJSON(w, http.StatusPreconditionFailed, latest)
@@ -283,6 +284,7 @@ func (g *Gateway) refreshAIQuality(ctx context.Context) {
 		return
 	}
 	next := *g.canary
+	g.qualityGeneration++
 	next.Verdict = v
 	if next.Verdict.Status != g.canary.Verdict.Status || next.Verdict.Reason != g.canary.Verdict.Reason {
 		g.log.Info("AI quality verdict", "status", v.Status, "reason", v.Reason, "version", version, "batchDigest", v.Batch)

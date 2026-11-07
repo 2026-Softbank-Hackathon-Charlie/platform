@@ -96,12 +96,13 @@ type holdGen struct {
 // router is one app: its backends, routing, hold and stats. Apps share
 // nothing else, so holding one app's writes never delays another's.
 type router struct {
-	ai      *aiState       // guarded by mu
-	canary  *AICanaryState // guarded by mu; dedicated AI route only
-	g       *Gateway
-	name    string
-	log     *slog.Logger
-	metrics *routerMetrics
+	ai                *aiState       // guarded by mu
+	canary            *AICanaryState // guarded by mu; dedicated AI route only
+	qualityGeneration uint64         // newer evidence revocations, even when stage is 0%
+	g                 *Gateway
+	name              string
+	log               *slog.Logger
+	metrics           *routerMetrics
 
 	inflightReads atomic.Int64
 
