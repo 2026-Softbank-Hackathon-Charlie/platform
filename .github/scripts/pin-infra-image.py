@@ -20,12 +20,16 @@ LOCK_PATH = "helm/images.lock.json"
 ATTEMPTS = 5
 IMAGE_PATTERN = re.compile(
     r"(?P<repository>[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/"
-    r"[a-z0-9]+(?:[._/-][a-z0-9]+)*):(?P<tag>[0-9a-f]{7})@(?P<digest>sha256:[0-9a-f]{64})"
+    r"[a-z0-9]+(?:[._/-][a-z0-9]+)*):(?P<tag>[0-9a-f]{7}(?P<flavor>-minio)?)@(?P<digest>sha256:[0-9a-f]{64})"
 )
 
 
 class NotFastForward(Exception):
     """infra main moved between reading it and updating it."""
+
+
+class FlavorPreserved(Exception):
+    """Publishing must not select or remove the optional MinIO driver."""
 
 
 def api(method, endpoint, payload=None):
@@ -55,8 +59,8 @@ def check_env(env):
         if not re.fullmatch(r"[1-9][0-9]*", env[key]):
             raise ValueError(f"Invalid workflow identifier: {key}")
     image = IMAGE_PATTERN.fullmatch(env["IMAGE"])
-    if not re.fullmatch(r"[0-9a-f]{40}", env["SOURCE_SHA"]) or not image or image["tag"] != env["SOURCE_SHA"][:7]:
-        raise ValueError("IMAGE must pin the source commit's 7-character tag and a sha256 digest")
+    if not re.fullmatch(r"[0-9a-f]{40}", env["SOURCE_SHA"]) or not image or image["tag"].removesuffix("-minio") != env["SOURCE_SHA"][:7]:
+        raise ValueError("IMAGE must pin the source commit's 7-character tag (optionally -minio) and a sha256 digest")
     return image
 
 
@@ -84,6 +88,8 @@ def pin(env, request=api):
         old_name = f"{old['repository']}:{old['tag']}"
         if lock["images"].get(old_name) != old["digest"]:
             raise ValueError("The existing platform image and images.lock.json disagree")
+        if old["flavor"] != image["flavor"]:
+            raise FlavorPreserved("Infra's selected image flavor is preserved; change flavor through a reviewed infra change")
         if values["images"]["platform"] == env["IMAGE"]:
             return None
 
@@ -108,13 +114,23 @@ def pin(env, request=api):
 
 
 def main():
-    sha = pin(os.environ)
+    try:
+        sha = pin(os.environ)
+    except FlavorPreserved as error:
+        summary = f"## Platform image published; infra pin skipped\n\nImage: `{os.environ['IMAGE']}`\n\n{error}. No infra pin was applied.\n"
+        summary += "\nThe running release was not checked. Publish and review a matching flavor to update it.\n"
+        write_summary(summary)
+        return
     summary = f"## Platform image published\n\nImage: `{os.environ['IMAGE']}`\n\n"
     if sha:
         summary += f"Pinned in infra main: https://github.com/{os.environ['INFRA_REPOSITORY']}/commit/{sha}\n"
     else:
         summary += "Infra main already pins this image; nothing was committed.\n"
     summary += "\nArgo CD deploys infra main; this workflow does not check the running release.\n"
+    write_summary(summary)
+
+
+def write_summary(summary):
     print(summary)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as output:
