@@ -67,8 +67,8 @@ type Runner struct {
 	mu       sync.Mutex
 	busy     map[string]bool
 	starting map[string]bool // Cutover between reserving and storing the run
-	wg   sync.WaitGroup
-	ctx  context.Context // set by Run; steps outlive requests
+	wg       sync.WaitGroup
+	ctx      context.Context // set by Run; steps outlive requests
 
 }
 
