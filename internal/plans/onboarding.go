@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
-	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/enginecompat"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 )
 
@@ -76,7 +75,7 @@ func cloneHosts(m map[string][]string) map[string][]string {
 // external source reached at the scope's host, and a cold target app of
 // the onboarded app's namespace.
 func (o *OnboardingScope) check(pl *plan.Plan, hosts dbHosts) error {
-	if !enginecompat.SourceExternal(pl) || enginecompat.SourceName(pl) != "legacy" {
+	if !pl.Source.External() || pl.Source.Name != "legacy" {
 		return fmt.Errorf("an onboarding's plan has the external source legacy")
 	}
 	if !strings.EqualFold(hosts.source, o.SourceHost) {

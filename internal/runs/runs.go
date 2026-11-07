@@ -27,7 +27,6 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
-	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/enginecompat"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
@@ -108,7 +107,7 @@ type Config struct {
 	// External gives the engine the adapter of a plan's external source
 	// (ADR 0042; engine ADR 0017). Nil, or nil for a plan, lets the engine
 	// connect with the plan's expanded source DSN.
-	External func(*plan.Plan) enginecompat.ExternalSource
+	External func(*plan.Plan) engine.ExternalSource
 	// Traffic is the gateway admin client. Nil means no gateway: canary is
 	// refused and request counts are not measured.
 	Traffic Traffic
@@ -322,7 +321,7 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		}
 	}
 	var retirement *retention.Job
-	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil && !enginecompat.SourceExternal(p) {
+	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil && !p.Source.External() {
 		// An external source is no CNPG Cluster to retain; the onboarding
 		// decommissions it (ADR 0042).
 		if r.cfg.RetentionPeriod < time.Minute || r.cfg.RetentionPeriod > 30*24*time.Hour || r.cfg.RetentionPlan == nil {
@@ -338,8 +337,8 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		retirement = &j
 	}
 	opts := engine.Options{StateDir: r.cfg.StateDir, RunID: runID, Emit: l.emitEngine}
-	if enginecompat.SourceExternal(p) && r.cfg.External != nil {
-		enginecompat.SetExternal(&opts, r.cfg.External(p))
+	if p.Source.External() && r.cfg.External != nil {
+		opts.External = r.cfg.External(p)
 	}
 	if p.Files != nil && r.cfg.FileSyncer != nil && (doc.RollbackOf == nil || *doc.RollbackOf == "") {
 		opts.Files = r.cfg.FileSyncer(p)
@@ -1681,10 +1680,10 @@ func stepSucceeded(e Engine, step string) bool {
 
 func clusterKeys(p *plan.Plan) []string {
 	k := func(e plan.Endpoint) string { return e.Context + "/" + e.Namespace + "/" + e.Cluster }
-	if enginecompat.SourceExternal(p) {
+	if p.Source.External() {
 		// An external source (ADR 0042) has no Cluster: it is the target
 		// app's own source, so the key is that app's.
-		return []string{"external/" + enginecompat.SourceName(p) + "/" + p.Target.Namespace, k(p.Target)}
+		return []string{"external/" + p.Source.Name + "/" + p.Target.Namespace, k(p.Target)}
 	}
 	return []string{k(p.Source), k(p.Target)}
 }
