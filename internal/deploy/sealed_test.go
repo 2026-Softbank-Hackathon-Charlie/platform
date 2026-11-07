@@ -878,6 +878,31 @@ func TestDeployBackupBucketKey(t *testing.T) {
 	}
 }
 
+// TestDeleteBackupStorageRechecksTheApp keeps the backup bucket of an app
+// registered again under the same name after CleanupStorage found it gone:
+// deleteStorage checks again under the app's lock.
+func TestDeleteBackupStorageRechecksTheApp(t *testing.T) {
+	se := newStorageEnv(t)
+	ctx := context.Background()
+	row := store.InstanceStorage{Instance: BackupInstance("shop"), Env: "eks", App: "shop", Driver: "aws", Bucket: "hc-shop---pg", KeyID: "AKIA1", CreatedAt: time.Now().UTC()}
+	if err := se.store.PutBackupStorage(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	// Registered again between CleanupStorage's check and the lock: the row
+	// reaches deleteStorage although the app exists.
+	se.register("shop", "eks")
+	ex := se.start()
+	if err := ex.deleteStorage(ctx, row, true); !errors.Is(err, errAppLive) {
+		t.Fatalf("deleteStorage = %v, want errAppLive", err)
+	}
+	if d := se.drvs["eks"]; slices.Contains(d.deleted, "shop---pg") {
+		t.Fatalf("deleted %v", d.deleted)
+	}
+	if _, err := se.store.GetBackupStorage(ctx, "shop", "eks"); err != nil {
+		t.Fatalf("backup row of the registered app: %v", err)
+	}
+}
+
 // TestDeployFailsWithoutItsBackupDriver fails the deployment of a postgres
 // app where the configuration names the aws driver but it could not be
 // built: deploying without the backup values would take the backups off the

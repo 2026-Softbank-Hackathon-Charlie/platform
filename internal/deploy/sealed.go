@@ -518,7 +518,9 @@ func (e *Executor) CleanupStorage(ctx context.Context) (int, error) {
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return done, err
 		}
-		if err := e.deleteStorage(ctx, row, true); errors.Is(err, errStuck) {
+		if err := e.deleteStorage(ctx, row, true); errors.Is(err, errAppLive) {
+			continue
+		} else if errors.Is(err, errStuck) {
 			e.cfg.Log.Error("cannot delete the backup bucket and key of a deleted app; an operator deletes them and the backup_storage row (ADR 0025, 0037)",
 				"app", row.App, "env", row.Env, "driver", row.Driver, "bucket", row.Bucket, "err", err)
 			continue
@@ -533,9 +535,16 @@ func (e *Executor) CleanupStorage(ctx context.Context) (int, error) {
 	return done, nil
 }
 
+// errAppLive means the app of a backup row was registered again before
+// deleteStorage took its lock; the row is the new app's now.
+var errAppLive = errors.New("the app is registered again")
+
 // deleteStorage deletes one row's bucket and key under the instance's
 // lock, then the row. With backup the row is an app's backup bucket (ADR
-// 0025), made under the lock of the app's default instance.
+// 0025), made under the lock of the app's default instance. Under that lock
+// it checks again that the app is gone: an app registered again under the
+// same name and deployed since the caller's check made its backup key in
+// this bucket, so the row is kept (errAppLive).
 func (e *Executor) deleteStorage(ctx context.Context, row store.InstanceStorage, backup bool) error {
 	lock := row.Instance
 	if backup {
@@ -544,6 +553,13 @@ func (e *Executor) deleteStorage(ctx context.Context, row store.InstanceStorage,
 	l := e.lock(lock)
 	l.Lock()
 	defer l.Unlock()
+	if backup {
+		if _, err := e.cfg.Store.GetApp(ctx, row.App); err == nil {
+			return errAppLive
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	}
 	drv, err := e.cfg.Storage(row.Env)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errStuck, err)
