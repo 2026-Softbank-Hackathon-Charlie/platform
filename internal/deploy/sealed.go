@@ -258,8 +258,8 @@ type sealedDatabase struct {
 // the onboarding is syncing still renders cold (the row's source_kind is
 // external until the cutover succeeded).
 func (d *sealedDatabase) postgres() *PostgresValues {
-	v := PostgresValues{Image: d.row.Image, Database: d.row.Database, Owner: d.row.Owner, StorageSize: d.row.StorageSize}
-	if v == (PostgresValues{}) {
+	v := PostgresValues{Image: d.row.Image, Database: d.row.Database, Owner: d.row.Owner, StorageSize: d.row.StorageSize, Parameters: d.row.Parameters}
+	if v.Image == "" && v.Database == "" && v.Owner == "" && v.StorageSize == "" && len(v.Parameters) == 0 {
 		return nil
 	}
 	return &v

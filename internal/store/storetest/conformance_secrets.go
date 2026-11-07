@@ -584,6 +584,7 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	ext.StorageSize = "2Gi"
 	ext.ExternalHost, ext.Reindex = "hop-db-legacy-legacy-app", []string{"public.users_email_idx", "public.posts_title_idx"}
 	ext.ReplicationPasswordNonce, ext.ReplicationPasswordCiphertext = []byte("nonce-repl"), []byte("sealed:repl")
+	ext.Parameters = map[string]string{"max_connections": "200", "max_wal_senders": "10"}
 	must(t, s.CreateAppWithDatabase(ctx, newApp("legacy-app", 0), ext))
 	got, err = s.GetAppDatabase(ctx, "legacy-app")
 	must(t, err)
@@ -594,6 +595,11 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	if err := s.CreateAppWithDatabase(ctx, newApp("bad-kind", 0), bad); err == nil {
 		t.Fatal("CreateAppWithDatabase with source kind vm succeeded")
 	}
+	must(t, s.SetAppDatabaseReplicationPassword(ctx, "legacy-app", []byte("nonce-2"), []byte("sealed:2")))
+	if got, _ := s.GetAppDatabase(ctx, "legacy-app"); string(got.ReplicationPasswordCiphertext) != "sealed:2" || string(got.ReplicationPasswordNonce) != "nonce-2" {
+		t.Fatalf("rotated replication password %q", got.ReplicationPasswordCiphertext)
+	}
+	wantErr(t, s.SetAppDatabaseReplicationPassword(ctx, "nothing", nil, nil), store.ErrNotFound)
 	must(t, s.DeleteApp(ctx, "legacy-app"))
 
 	must(t, s.CreateAppWithDatabase(ctx, newApp("blog", 0), newAppDatabase("eks", "gke", 2)))

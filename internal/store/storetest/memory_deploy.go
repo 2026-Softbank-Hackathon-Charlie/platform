@@ -139,6 +139,18 @@ func (m *memory) SetAppDatabaseSourceKind(_ context.Context, app, from, to strin
 	return nil
 }
 
+func (m *memory) SetAppDatabaseReplicationPassword(_ context.Context, app string, nonce, ciphertext []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.deploy.databases[app]
+	if !ok {
+		return fmt.Errorf("%w: database pair of app %s", store.ErrNotFound, app)
+	}
+	d.ReplicationPasswordNonce, d.ReplicationPasswordCiphertext = bytes.Clone(nonce), bytes.Clone(ciphertext)
+	m.deploy.databases[app] = d
+	return nil
+}
+
 func (m *memory) ListAppDatabases(_ context.Context) ([]store.AppDatabase, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -27,7 +27,7 @@ func onboardingFile(t *testing.T) File {
 		Sealed: &Sealed{PGApp: map[string]string{"password": "Ag1"}, PGCA: map[string]string{"ca.crt": "Ag2", "ca.key": "Ag3"},
 			PGLegacy: map[string]string{"password": "Ag4", "username": "Ag5"}},
 		Postgres: &PostgresValues{Image: "ghcr.io/cloudnative-pg/postgresql:17.11-standard-bookworm@sha256:bb",
-			Database: "moim", Owner: "moim", StorageSize: "2Gi"},
+			Database: "moim", Owner: "moim", StorageSize: "2Gi", Parameters: map[string]string{"max_wal_senders": "10", "max_connections": "200"}},
 		DBTopology: &DBTopology{Primary: "eks", Peer: "gke", PeerAbsent: true,
 			External: &ExternalSource{Name: "legacy", Host: "hop-db-legacy-shop", User: "hopcharlie_replicator",
 				PasswordSecret: "shop-db-legacy", SSLMode: "prefer"}},
@@ -63,6 +63,9 @@ values:
     database: "moim"
     owner: "moim"
     storageSize: "2Gi"
+    parameters:
+      "max_connections": "200"
+      "max_wal_senders": "10"
   dbTopology:
     primary: "eks"
     peer: "gke"

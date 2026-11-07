@@ -158,4 +158,8 @@ type SecretStore interface {
 	// succeeded). ErrNotFound without a pair, ErrConflict when its kind is
 	// not from.
 	SetAppDatabaseSourceKind(ctx context.Context, app, from, to string) error
+	// SetAppDatabaseReplicationPassword replaces the sealed
+	// hopcharlie_replicator password of app's database (ADR 0042: connect
+	// rotated it). ErrNotFound without a pair.
+	SetAppDatabaseReplicationPassword(ctx context.Context, app string, nonce, ciphertext []byte) error
 }

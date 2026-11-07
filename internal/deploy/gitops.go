@@ -108,6 +108,8 @@ type File struct {
 //	    database: "moimroom"     # bootstrap database; the chart's default stays app
 //	    owner: "moimroom"        # its owner and the app account; default app
 //	    storageSize: "2Gi"       # the PVC; before topologyStorageSize and storageSize
+//	    parameters:              # spec.postgresql.parameters, keys sorted
+//	      "max_connections": "200"   # at least the source's (standby floor)
 //	  dbTopology:
 //	    primary: "eks"           # the onboarding's target environment
 //	    peer: "gke"
@@ -156,6 +158,10 @@ type File struct {
 //     ignores, and replicas 0 is drawn as 0 (not default 1).
 type PostgresValues struct {
 	Image, Database, Owner, StorageSize string
+	// Parameters is values.postgres.parameters, the chart's
+	// spec.postgresql.parameters: an onboarded app's standby-relevant
+	// settings at least the source's (ADR 0042), in every file of the app.
+	Parameters map[string]string
 }
 
 // ExternalSource is values.dbTopology.external (ADR 0042): the database
@@ -270,11 +276,17 @@ func Render(f File) ([]byte, error) {
 			fmt.Fprintf(&b, "      type: %s\n", q(r.Type))
 		}
 	}
-	if pg := f.Postgres; pg != nil && *pg != (PostgresValues{}) {
+	if pg := f.Postgres; pg != nil && (pg.Image != "" || pg.Database != "" || pg.Owner != "" || pg.StorageSize != "" || len(pg.Parameters) > 0) {
 		b.WriteString("  postgres:\n")
 		for _, kv := range [][2]string{{"image", pg.Image}, {"database", pg.Database}, {"owner", pg.Owner}, {"storageSize", pg.StorageSize}} {
 			if kv[1] != "" {
 				fmt.Fprintf(&b, "    %s: %s\n", kv[0], q(kv[1]))
+			}
+		}
+		if len(pg.Parameters) > 0 {
+			b.WriteString("    parameters:\n")
+			for _, k := range sortedKeys(pg.Parameters) {
+				fmt.Fprintf(&b, "      %s: %s\n", q(k), q(pg.Parameters[k]))
 			}
 		}
 	}
