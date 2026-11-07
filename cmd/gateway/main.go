@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs"
 )
 
 func main() {
@@ -54,6 +55,8 @@ func main() {
 	aiFollowURL := flag.String("ai-follow-url", os.Getenv("AI_FOLLOW_URL"), "traffic gateway admin base URL for -ai-follow-app, e.g. http://hopcharlie-gateway.charlie-platform.svc.cluster.local:9901")
 	aiFollowMap := flag.String("ai-follow-map", os.Getenv("AI_FOLLOW_MAP"), "followed app backend to AI backend, e.g. onprem=laptop,gke=gcp,eks=gcp")
 	aiFollowInterval := flag.Duration("ai-follow-interval", gateway.DefaultAIFollowInterval, "how often -ai-follow-app's state is read (AI_FOLLOW_INTERVAL; at least 500ms)")
+	aiQualityPolicy := flag.String("ai-quality-policy", os.Getenv("AI_QUALITY_POLICY_FILE"), "operator-owned paired quality policy file; enables guarded native AI canary")
+	aiQualityLangfuse := flag.String("ai-quality-langfuse-config", os.Getenv("AI_QUALITY_LANGFUSE_CONFIG_FILE"), "operator-owned Langfuse evaluation-project binding with mounted key file references")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -81,9 +84,24 @@ func main() {
 		log.Error("invalid AI follow configuration", "err", err)
 		os.Exit(2)
 	}
+	var qualityCfg *gateway.AIQualityConfig
+	if *aiQualityPolicy != "" || *aiQualityLangfuse != "" {
+		policy, err := gateway.LoadAIQualityPolicy(*aiQualityPolicy)
+		if err != nil {
+			log.Error("invalid AI quality policy", "reason", err.Error())
+			os.Exit(2)
+		}
+		provider, err := llmobs.Load(*aiQualityLangfuse)
+		if err != nil {
+			log.Error("invalid AI quality Langfuse binding", "reason", err.Error())
+			os.Exit(2)
+		}
+		qualityCfg = &gateway.AIQualityConfig{Policy: policy, Provider: provider}
+	}
 	gw, err := gateway.New(gateway.Config{
 		AIDemo:               aiCfg,
 		AIFollow:             followCfg,
+		AIQuality:            qualityCfg,
 		Backends:             bs,
 		InitialBackend:       *initial,
 		StateFile:            *stateFile,

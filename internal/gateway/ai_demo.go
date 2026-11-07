@@ -192,7 +192,7 @@ func (rt *router) serveAI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "AI routing unavailable")
 		return
 	}
-	b := rt.byName[rt.writeBackend]
+	b := rt.aiBackendLocked(id, time.Now())
 	if b == nil || (b.name != "gcp" && b.name != "laptop") {
 		rt.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, "bad_configuration", "AI backend unavailable")

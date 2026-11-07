@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"sync"
 	"time"
 )
 
@@ -110,7 +111,10 @@ func known(c Capability) bool {
 // Required missing/error/unknown/not-applicable probes deny. Results include all
 // five categories, but non-required categories are explicitly not_applicable.
 // The caller must not mutate request, probe configuration or the registry while
-// it is in use. Each probe has a bounded execution context.
+// it is in use. The five independent capabilities run concurrently; this is a
+// fixed bound, never a goroutine per caller-supplied requirement. Probe clients
+// must honor cancellation. We join all probes before returning and retain the
+// stable capability order in the report.
 func Evaluate(ctx context.Context, req Request, probes map[Capability]Probe) (Report, error) {
 	report := Report{Results: []Result{}, ObservedAt: time.Now().UTC()}
 	report.ExpiresAt = report.ObservedAt.Add(5 * time.Minute)
@@ -131,39 +135,49 @@ func Evaluate(ctx context.Context, req Request, probes map[Capability]Probe) (Re
 		return report, ErrInvalidRequest
 	}
 	report.Passed = req.Source.Complete
-	for _, c := range capabilities {
-		r := Result{Capability: c, Target: req.Target, Status: Unknown, Checks: []Check{}}
-		switch {
-		case !req.Source.Complete:
-			r.Code = "source_discovery_incomplete"
-		case !required[c]:
-			r.Status, r.Code = NotApplicable, "not_required"
-		case ctx.Err() != nil:
-			r.Code = "evaluation_cancelled"
-		case probes[c] == nil:
-			r.Code = "probe_not_configured"
-		default:
-			pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			got, err := probes[c].Check(pctx, req.Target)
-			expired := pctx.Err() != nil
-			cancel()
-			if err != nil || expired {
-				r.Code = "probe_failed" // never expose a raw provider error
-			} else if !validResult(got, c, req.Target) {
-				r.Code = "invalid_probe_result"
-			} else if got.ObservedAt.After(time.Now().Add(5*time.Second)) || time.Since(got.ObservedAt) > 5*time.Minute {
-				r.Code = "stale_probe_result"
-			} else {
-				r = got
-				if expiry := got.ObservedAt.Add(5 * time.Minute); expiry.Before(report.ExpiresAt) {
-					report.ExpiresAt = expiry
+	report.Results = make([]Result, len(capabilities))
+	var pending sync.WaitGroup
+	for i, c := range capabilities {
+		pending.Go(func() {
+			r := Result{Capability: c, Target: req.Target, Status: Unknown, Checks: []Check{}}
+			switch {
+			case !req.Source.Complete:
+				r.Code = "source_discovery_incomplete"
+			case !required[c]:
+				r.Status, r.Code = NotApplicable, "not_required"
+			case ctx.Err() != nil:
+				r.Code = "evaluation_cancelled"
+			case probes[c] == nil:
+				r.Code = "probe_not_configured"
+			default:
+				pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				got, err := probes[c].Check(pctx, req.Target)
+				expired := pctx.Err() != nil
+				cancel()
+				if err != nil || expired {
+					r.Code = "probe_failed" // never expose a raw provider error
+				} else if !validResult(got, c, req.Target) {
+					r.Code = "invalid_probe_result"
+				} else if got.ObservedAt.After(time.Now().Add(5*time.Second)) || time.Since(got.ObservedAt) > 5*time.Minute {
+					r.Code = "stale_probe_result"
+				} else {
+					r = got
 				}
 			}
-		}
+			report.Results[i] = r
+		})
+	}
+	pending.Wait()
+	for _, r := range report.Results {
+		c := r.Capability
 		if r.Status != Pass && r.Status != NotApplicable || required[c] && r.Status != Pass {
 			report.Passed = false
 		}
-		report.Results = append(report.Results, r)
+		if !r.ObservedAt.IsZero() {
+			if expiry := r.ObservedAt.Add(5 * time.Minute); expiry.Before(report.ExpiresAt) {
+				report.ExpiresAt = expiry
+			}
+		}
 	}
 	if ctx.Err() != nil {
 		report.Passed = false
