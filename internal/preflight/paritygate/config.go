@@ -53,6 +53,7 @@ type AuditCollector struct {
 // AppResources must be reviewed separately per environment. Names are not
 // inferred from a Plan, copied from another environment, or submitted by AI.
 type AppResources struct {
+	CloudIAM    *probes.CloudIAM           `json:"cloudIAM,omitempty"`
 	Secrets     []probes.SecretRequirement `json:"secrets,omitempty"`
 	SecretUsage *probes.SecretUsage        `json:"secretUsage,omitempty"`
 	Backup      *Backup                    `json:"backup,omitempty"`
@@ -194,6 +195,12 @@ func (c Config) validate(envs []string) error {
 				if err := u.Validate(resources.Secrets); err != nil {
 					return bad("apps[%d].environments: invalid secretUsage binding", i)
 				}
+			}
+			if cloud := resources.CloudIAM; cloud != nil {
+				if err := cloud.Validate(); err != nil {
+					return bad("apps[%d].environments: invalid cloudIAM policy", i)
+				}
+				configured = true
 			}
 			if e := c.Environments[env]; e.AuditCollector != nil {
 				configured = true

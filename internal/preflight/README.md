@@ -43,6 +43,15 @@ Secret 실제 사용은 환경별 `secretUsage`를 명시하고 지원하는 앱
 모든 Secret 키, 객체 쓰기 권한, cloud IAM 최소 권한을 증명하지 않는다.
 설정과 rollout 순서는 [ADR 0038](../../docs/adr/0038-verify-application-secret-use.md)을 따른다.
 
+환경별 `cloudIAM` 설정은 AWS identity 정책 시뮬레이션과 GCP Policy Troubleshooter의
+실제 정책 조회를 RBAC 결과에 결합한다. 허용·금지 permission/resource를 모두 지정하고,
+검사 불가·조건 미평가·일부 정책만 검사한 경우는 unknown이다. AWS 시뮬레이션만으로 전체
+유효 권한을 통과시키지 않는다. 검사 대상 principal의 workload 연결과 검사자 권한은 운영
+준비가 필요하며 코드가 권한을 부여하지 않는다. 등록된 AWS/GCP 환경에 설정이 없으면
+`cloud_policy_not_configured`로 unknown을 남겨 RBAC만으로 통과시키지 않는다.
+[ADR 0039](../../docs/adr/0039-cloud-policy-parity.md)와
+[설정 예시](../../examples/parity-cloud-iam.yaml)를 참고한다.
+
 ## 레지던시: 신뢰 경계
 
 `Config`는 운영자가 리뷰한 서버 정책이다. 환경 ID와 국가, 정확한 클러스터 scope의 dataset 분류, APAC 국가 집합을 가진다. 환경/namespace/CNPG cluster와 database/schema/table을 각각 구분한다. 단순 문자열 `schema.table`을 연결해 식별하지 않는다.
