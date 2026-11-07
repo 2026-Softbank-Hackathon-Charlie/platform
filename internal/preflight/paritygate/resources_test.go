@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,9 +89,9 @@ func TestResourceGatePreservesPartialEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	calls := 0
+	var calls atomic.Int64
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		if r.Method != "GET" {
 			t.Errorf("write request: %s", r.Method)
 		}
@@ -131,8 +132,8 @@ func TestResourceGatePreservesPartialEvidence(t *testing.T) {
 	p := shopPlan()
 	p.Target.Env, p.Target.Cluster = "onprem", "onprem-db"
 	r, err := g.Check(context.Background(), p)
-	if err != nil || r.Passed || calls != 4 {
-		t.Fatalf("%+v %v calls=%d", r, err, calls)
+	if err != nil || r.Passed || calls.Load() != 4 {
+		t.Fatalf("%+v %v calls=%d", r, err, calls.Load())
 	}
 	for _, cap := range []parity.Capability{parity.Secret, parity.Audit, parity.BackupRestore} {
 		x := result(r, cap)
