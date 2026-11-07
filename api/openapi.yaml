@@ -1751,7 +1751,9 @@ paths:
         instance's namespace in the environment, 409
         environment_cleanup_pending. The Tailscale operator's Services keep
         their finalizer until it deleted their tailnet devices, so the new
-        database gets the same tailnet hostname again. A peer added back
+        database gets the same tailnet hostname again. This is read whenever
+        the server can read the clusters, also for an app deleted and
+        registered again under the same name. A peer added back
         archives its database's WAL under a new path of the backup bucket.
 
         Checked in this order. Error codes: invalid_request (400: no
@@ -1760,8 +1762,10 @@ paths:
         environment of this server), environment_exists (409), deployment_in_progress
         (409: a deployment of the default instance is not finished, an earlier
         add included), migration_in_progress (409: a migration run of the app
-        is running, awaiting its switch, halted or interrupted, or the traffic
-        gateway holds the app's writes), nothing_to_redeploy (409: the default
+        is active, by the rule `POST /v1/migrations` uses to refuse another
+        run: it has not ended and is running or awaiting its switch, so a run
+        that ended halted or was interrupted is not; or the traffic gateway
+        holds the app's writes), nothing_to_redeploy (409: the default
         instance has no healthy deployment; deploy the branch first),
         db_pair_unavailable (409: platform.yaml has a postgres resource and the
         app has no database pair whose peer is the environment, or the app is
@@ -1774,7 +1778,9 @@ paths:
         environment_cleanup_unknown (502: the management or workload cluster
         could not be read for that; 503: this server cannot read them),
         app_changed (409: the app's environments changed meanwhile; read the
-        app and try again). Role operator.
+        app and try again), deployment_not_queued (500: the environment was
+        added to the app but its deployment could not be stored; send the
+        same request again to queue it). Role operator.
       requestBody:
         required: true
         content:
@@ -1846,11 +1852,13 @@ paths:
         instance of the app is not finished), environment_has_files (409: an
         instance with an s3 resource and no public service went healthy
         there; delete the app instead), migration_in_progress (409: a
-        migration run of the app is running, awaiting its switch, halted or
-        interrupted, or the gateway holds an instance's writes),
+        migration run of the app is active, as for the POST; a run that ended
+        halted or was interrupted is not; or the gateway holds an instance's
+        writes),
         github_not_configured (503: no deployer), app_changed (409: the app's
-        branches or environments changed while the removal waited; nothing
-        changed, read the app and try again), gateway_unreachable (502:
+        branches changed while the removal waited; nothing changed, read the
+        app and try again. An environment added meanwhile does not stop the
+        removal, which keeps it), gateway_unreachable (502:
         nothing changed), github_unreachable (502: the gitops repository; the
         gateway backend is already out, so send the request again). Role
         operator.
@@ -4471,7 +4479,8 @@ components:
         has it; it reads the traffic gateway and both environments' CNPG
         Clusters in parallel, each within 3 seconds, and reuses what it read
         for the app for 10 seconds (the deployments and migration runs are
-        read every time). `ready` is true only when both environments are the
+        read every time, and a run that ended since is a reason to read
+        again). `ready` is true only when both environments are the
         app's, no migration of the app is in progress, the default instance's
         newest deployment that got to each of them is healthy there, the
         traffic gateway has a backend for both (when the app has a public
@@ -4483,9 +4492,9 @@ components:
 
         `reason` is the first check that failed, or `ready`:
         replica_missing (an environment of the pair is not the app's),
-        migration_in_progress (a migration run of the app is running,
-        awaiting its switch, halted or interrupted, or the gateway holds its
-        writes), deploy_pending (a deployment to an environment is not
+        migration_in_progress (a migration run of the app is active, by the
+        rule `POST /v1/migrations` uses: not ended and running or awaiting its
+        switch; or the gateway holds its writes), deploy_pending (a deployment to an environment is not
         finished, or none got there healthy and none is going: the message
         says to send `POST /v1/apps/{name}/environments` again),
         app_degraded (that deployment left the environment Degraded: the app

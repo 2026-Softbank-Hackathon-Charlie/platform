@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
@@ -18,10 +19,16 @@ import (
 
 // Adding and removing an environment of a registered app (ADR 0037).
 
-// activeRunStatuses are the statuses of a migration run that may still move
-// the app's traffic or database: running, waiting for its switch, halted
-// after the target was asked to promote, or interrupted by a restart.
-var activeRunStatuses = []apiv1.RunStatus{apiv1.RunStatusRunning, apiv1.RunStatusAwaitingSwitch, apiv1.RunStatusHalted, apiv1.RunStatusInterrupted}
+// runActive reports whether a migration run is in progress, with the rule
+// POST /v1/migrations uses to refuse another run on its clusters
+// (runs.Runner.IsActive): a run that ended, halted or interrupted included,
+// is not.
+func (s *Server) runActive(run apiv1.Run) bool {
+	if s.d.Runs != nil {
+		return s.d.Runs.IsActive(run)
+	}
+	return runs.StoredActive(run)
+}
 
 // CleanupCheckTimeout bounds the reads that tell whether what an earlier
 // removal of an environment deletes is gone (ADR 0037).
@@ -154,7 +161,10 @@ func (s *Server) addAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
 		return
 	case err != nil:
-		s.internal(w, r, err)
+		// The environment is in the app now; sending the request again
+		// queues the deployment that did not get queued.
+		s.cfg.Log.Error("queue the deployment of an added environment", "app", app.Name, "env", env, "err", err)
+		s.fail(w, r, http.StatusInternalServerError, "deployment_not_queued", fmt.Sprintf("%s is one of the environments of %s now, but its deployment could not be queued; send the same request again to queue it", env, app.Name))
 		return
 	}
 	if hasPG && s.d.DBRoutes != nil {
@@ -172,19 +182,25 @@ func (s *Server) addAppEnvironment(w http.ResponseWriter, r *http.Request) {
 // Argo CD deleted the namespace, and a Service of the Tailscale operator
 // keeps its own until the operator deleted the proxy and its tailnet device,
 // so with neither left the new database gets the old hostname on the
-// tailnet again (ADR 0037). An app never deployed to env has nothing to
-// wait for. When it cannot tell, it answers 503 or 502
-// environment_cleanup_unknown.
+// tailnet again (ADR 0037). They are read whenever this server can read
+// them, so an app deleted and registered again under the same name, whose
+// deployments are gone with the old registration, still waits. A server
+// that cannot read them lets an app never deployed to env through (by its
+// deployments), and answers 503 environment_cleanup_unknown otherwise; a
+// read that fails answers 502 environment_cleanup_unknown. The namespace
+// itself is not read: the platform's role in the workload clusters may
+// list Services and Pods but not get Namespaces (infra
+// hopcharlie-platform-observer).
 func (s *Server) environmentCleanedUp(ctx context.Context, w http.ResponseWriter, r *http.Request, app store.App, env string) bool {
-	all, err := s.d.Store.ListDeployments(ctx, app.Name, 0)
-	if err != nil {
-		s.internal(w, r, err)
-		return false
-	}
-	if !slices.ContainsFunc(all, func(d store.Deployment) bool { return envStatus(d, env) != "" }) {
-		return true // never deployed there
-	}
 	if s.d.Remover == nil || s.d.WorkloadResidue == nil {
+		all, err := s.d.Store.ListDeployments(ctx, app.Name, 0)
+		if err != nil {
+			s.internal(w, r, err)
+			return false
+		}
+		if !slices.ContainsFunc(all, func(d store.Deployment) bool { return envStatus(d, env) != "" }) {
+			return true // never deployed there
+		}
 		s.fail(w, r, http.StatusServiceUnavailable, "environment_cleanup_unknown", fmt.Sprintf("app %s was in %s before, and this server cannot read whether Argo CD finished deleting it there (no deployer or no workload cluster reads)", app.Name, env))
 		return false
 	}
@@ -494,7 +510,10 @@ func (s *Server) appRuns(ctx context.Context, instances []string) ([]apiv1.Run, 
 	for _, row := range rows {
 		var run apiv1.Run
 		if err := json.Unmarshal(row.Doc, &run); err != nil {
-			return nil, fmt.Errorf("run %s: %w", row.RunID, err)
+			// One bad document must not hold every app's readiness or
+			// environments; the runs it could be of are passed over.
+			s.cfg.Log.Warn("skip a migration run whose document cannot be read", "run", row.RunID, "err", err)
+			continue
 		}
 		if slices.Contains(instances, run.Source.Namespace) || slices.Contains(instances, run.Target.Namespace) {
 			out = append(out, run)
@@ -503,18 +522,17 @@ func (s *Server) appRuns(ctx context.Context, instances []string) ([]apiv1.Run, 
 	return out, nil
 }
 
-// migrationBusy says why a migration of app is in progress, or "": a run of
-// one of instances that is running, awaiting its switch, halted or
-// interrupted, or the traffic gateway holding an instance's writes. A
-// gateway that cannot be read is only logged: a deployment that reaches it
-// refuses held writes again.
+// migrationBusy says why a migration of app is in progress, or "": an
+// active run (runActive) of one of instances, or the traffic gateway
+// holding an instance's writes. A gateway that cannot be read is only
+// logged: a deployment that reaches it refuses held writes again.
 func (s *Server) migrationBusy(ctx context.Context, app string, instances []string) (string, error) {
 	runs, err := s.appRuns(ctx, instances)
 	if err != nil {
 		return "", err
 	}
 	for _, run := range runs {
-		if slices.Contains(activeRunStatuses, run.Status) {
+		if s.runActive(run) {
 			return fmt.Sprintf("migration run %s of %s is %s", run.RunId, app, run.Status), nil
 		}
 	}

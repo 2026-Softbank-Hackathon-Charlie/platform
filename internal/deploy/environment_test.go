@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -540,5 +541,54 @@ func TestRemoveEnvironmentErrors(t *testing.T) {
 	}
 	if err := ex.RemoveEnvironment(ctx, "nope", "eks"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown app: %v", err)
+	}
+}
+
+// addMeanwhileStore adds an environment to the app, the way POST
+// environments does without the instance locks, right before the first
+// SetAppEnvironments of RemoveEnvironment.
+type addMeanwhileStore struct {
+	store.Store
+	once sync.Once
+	add  string
+}
+
+func (s *addMeanwhileStore) SetAppEnvironments(ctx context.Context, name string, from, to []string) error {
+	s.once.Do(func() {
+		a, err := s.Store.GetApp(ctx, name)
+		if err == nil {
+			err = s.Store.SetAppEnvironments(ctx, name, a.Environments, append(slices.Clone(a.Environments), s.add))
+		}
+		if err != nil {
+			panic(err)
+		}
+	})
+	return s.Store.SetAppEnvironments(ctx, name, from, to)
+}
+
+// TestRemoveEnvironmentFinishesWhenAnotherIsAddedMeanwhile: an environment
+// added while the removal holds its locks makes the store's compare and set
+// miss after the gateway and the files are gone already; the removal is
+// finished on the list read again, which keeps the added environment.
+func TestRemoveEnvironmentFinishesWhenAnotherIsAddedMeanwhile(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke", "eks")
+	race := &addMeanwhileStore{Store: te.store, add: "onprem"}
+	te.cfg.Store = race
+	ex := te.start()
+	ctx := context.Background()
+	d := te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(d.ID)
+	if got := te.wait(d.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("%s %q", got.Status, got.Error)
+	}
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+		t.Fatalf("remove with an environment added meanwhile: %v", err)
+	}
+	if a, _ := te.store.GetApp(ctx, "shop"); !slices.Equal(a.Environments, []string{"gke", "onprem"}) {
+		t.Fatalf("environments %v, want gke and the added onprem", a.Environments)
+	}
+	if a, _ := te.gw.app("shop"); a.Backends["eks"] != "" {
+		t.Fatalf("gateway still has eks: %+v", a)
 	}
 }

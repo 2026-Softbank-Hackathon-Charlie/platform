@@ -1333,6 +1333,31 @@ func (r *Runner) Active() int {
 	return len(r.live)
 }
 
+// IsActive reports whether run is active, the rule POST /v1/migrations
+// applies before it starts another run on the same clusters: this runner
+// drives it now, or (StoredActive) its stored document says another server
+// does. A run that ended (phase done, endedAt set) is not active, whatever
+// its status: a halted or interrupted one holds no cluster until it is
+// resumed.
+func (r *Runner) IsActive(run apiv1.Run) bool {
+	r.mu.Lock()
+	_, ok := r.live[run.RunId]
+	r.mu.Unlock()
+	return ok || StoredActive(run)
+}
+
+// StoredActive reports whether a stored run document is of a run that has
+// not ended: running or awaiting its switch, with no endedAt and not in
+// phase done. Such a run holds its clusters' lease, so POST /v1/migrations
+// refuses another run there (ErrBusy). Recover marks the ones a restart cut
+// short interrupted, which are not active.
+func StoredActive(run apiv1.Run) bool {
+	if run.EndedAt != nil || run.Phase == apiv1.RunPhaseDone {
+		return false
+	}
+	return run.Status == apiv1.RunStatusRunning || run.Status == apiv1.RunStatusAwaitingSwitch
+}
+
 // snapshot returns a deep copy: the document holds slices and pointers that
 // the run goroutines keep changing while callers encode the copy.
 func (l *live) snapshot() apiv1.Run {

@@ -719,10 +719,10 @@ var (
 // (ErrEnvironmentInUse) when the gateway sends an instance's writes or
 // reads to env, and ErrWritesHeld when it holds an instance's writes. A
 // missing app is store.ErrNotFound, an app without env ErrNotInEnvironment,
-// env as the app's first environment ErrPrimaryEnvironment, and branches or
-// environments that changed meanwhile ErrAppChanged; nothing is changed
-// then. The caller checks the rest (migrations, which environment was ever
-// written).
+// env as the app's first environment ErrPrimaryEnvironment, and branches that
+// changed meanwhile ErrAppChanged; nothing is changed then. An environment
+// added meanwhile does not stop it: it keeps the added one. The caller
+// checks the rest (migrations, which environment was ever written).
 func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) error {
 	app, err := e.cfg.Store.GetApp(ctx, name)
 	if err != nil {
@@ -837,11 +837,28 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 		}
 		e.cfg.Log.Info("database pair peer removed; a peer added back gets a new backup path", "app", name, "env", env, "peerGeneration", gen)
 	}
-	rest := slices.DeleteFunc(slices.Clone(app.Environments), func(e string) bool { return e == env })
-	if err := e.cfg.Store.SetAppEnvironments(ctx, name, app.Environments, rest); errors.Is(err, store.ErrConflict) {
-		return fmt.Errorf("%w: %w", ErrAppChanged, err)
-	} else if err != nil {
-		return fmt.Errorf("store the environments of %s: %w", name, err)
+	// The gateway and the files are changed already, so the store must
+	// follow. An environment added meanwhile (POST environments does not
+	// take the instance locks) makes the compare-and-set miss: the removal
+	// is finished on the list read again, which keeps the added one.
+	from := app.Environments
+	for attempt := 0; ; attempt++ {
+		rest := slices.DeleteFunc(slices.Clone(from), func(e string) bool { return e == env })
+		err := e.cfg.Store.SetAppEnvironments(ctx, name, from, rest)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, store.ErrConflict) || attempt == 2 {
+			return fmt.Errorf("store the environments of %s without %s (its gateway backend and gitops files are removed already; remove it again to finish): %v", name, env, err)
+		}
+		fresh, err := e.cfg.Store.GetApp(ctx, name)
+		if err != nil {
+			return fmt.Errorf("read %s again to finish removing %s: %w", name, env, err)
+		}
+		if !slices.Contains(fresh.Environments, env) {
+			break // removed meanwhile
+		}
+		from = fresh.Environments
 	}
 	e.cfg.Log.Info("environment removed from app", "app", name, "env", env, "instances", instances)
 	e.wakeCleanup() // the instances' buckets and keys there

@@ -1640,7 +1640,8 @@ type AppCreated struct {
 // has it; it reads the traffic gateway and both environments' CNPG
 // Clusters in parallel, each within 3 seconds, and reuses what it read
 // for the app for 10 seconds (the deployments and migration runs are
-// read every time). `ready` is true only when both environments are the
+// read every time, and a run that ended since is a reason to read
+// again). `ready` is true only when both environments are the
 // app's, no migration of the app is in progress, the default instance's
 // newest deployment that got to each of them is healthy there, the
 // traffic gateway has a backend for both (when the app has a public
@@ -1652,9 +1653,9 @@ type AppCreated struct {
 //
 // `reason` is the first check that failed, or `ready`:
 // replica_missing (an environment of the pair is not the app's),
-// migration_in_progress (a migration run of the app is running,
-// awaiting its switch, halted or interrupted, or the gateway holds its
-// writes), deploy_pending (a deployment to an environment is not
+// migration_in_progress (a migration run of the app is active, by the
+// rule `POST /v1/migrations` uses: not ended and running or awaiting its
+// switch; or the gateway holds its writes), deploy_pending (a deployment to an environment is not
 // finished, or none got there healthy and none is going: the message
 // says to send `POST /v1/apps/{name}/environments` again),
 // app_degraded (that deployment left the environment Degraded: the app
@@ -1729,7 +1730,8 @@ type AppDBTopology struct {
 	// has it; it reads the traffic gateway and both environments' CNPG
 	// Clusters in parallel, each within 3 seconds, and reuses what it read
 	// for the app for 10 seconds (the deployments and migration runs are
-	// read every time). `ready` is true only when both environments are the
+	// read every time, and a run that ended since is a reason to read
+	// again). `ready` is true only when both environments are the
 	// app's, no migration of the app is in progress, the default instance's
 	// newest deployment that got to each of them is healthy there, the
 	// traffic gateway has a backend for both (when the app has a public
@@ -1741,9 +1743,9 @@ type AppDBTopology struct {
 	//
 	// `reason` is the first check that failed, or `ready`:
 	// replica_missing (an environment of the pair is not the app's),
-	// migration_in_progress (a migration run of the app is running,
-	// awaiting its switch, halted or interrupted, or the gateway holds its
-	// writes), deploy_pending (a deployment to an environment is not
+	// migration_in_progress (a migration run of the app is active, by the
+	// rule `POST /v1/migrations` uses: not ended and running or awaiting its
+	// switch; or the gateway holds its writes), deploy_pending (a deployment to an environment is not
 	// finished, or none got there healthy and none is going: the message
 	// says to send `POST /v1/apps/{name}/environments` again),
 	// app_degraded (that deployment left the environment Degraded: the app

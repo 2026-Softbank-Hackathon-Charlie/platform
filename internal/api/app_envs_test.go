@@ -175,6 +175,56 @@ func (f *envFixture) run(id string, status apiv1.RunStatus, source, target strin
 	}
 }
 
+// endedRun stores a run that ended with status, shaped like the halted run
+// of moimroom-mig on the live server: phase done and endedAt set.
+func (f *envFixture) endedRun(id string, status apiv1.RunStatus, source, target string) {
+	f.t.Helper()
+	started := time.Now().UTC().Add(-time.Hour)
+	ended := started.Add(2 * time.Minute)
+	reason := "the target was asked to promote, but the source is still primary"
+	doc, _ := json.Marshal(apiv1.Run{RunId: id, PlanRef: "pln_" + id, Status: status, Phase: apiv1.RunPhaseDone, StatusReason: &reason,
+		StartedAt: started, UpdatedAt: ended, EndedAt: &ended,
+		Source: apiv1.PlanEndpoint{Env: source, Namespace: "shop", Cluster: "shop-db"}, Target: apiv1.PlanEndpoint{Env: target, Namespace: "shop", Cluster: "shop-db"}})
+	if err := f.store.CreateRun(context.Background(), store.Run{RunID: id, PlanRef: "pln_" + id, SourceEnv: source, TargetEnv: target, Status: string(status), Doc: doc, CreatedAt: started, UpdatedAt: ended}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// TestEndedRunsAreNotInProgress: a run that ended halted (phase done,
+// endedAt set, like moimroom-mig's old incident run on the live server),
+// or was interrupted by a restart, holds no cluster, so POST
+// /v1/migrations would start another run; adding and removing an
+// environment are not refused for it either. A run document that cannot
+// be read is passed over.
+func TestEndedRunsAreNotInProgress(t *testing.T) {
+	for name, prep := range map[string]func(f *envFixture){
+		"halted and ended": func(f *envFixture) {
+			f.endedRun("moimroom-mig-eks-to-gke-20261107-021354", apiv1.RunStatusHalted, "gke", "onprem")
+		},
+		"interrupted": func(f *envFixture) { f.run("run_1", apiv1.RunStatusInterrupted, "gke", "onprem") },
+		"unreadable": func(f *envFixture) {
+			now := time.Now().UTC()
+			if err := f.store.CreateRun(context.Background(), store.Run{RunID: "run_bad", PlanRef: "pln_bad", SourceEnv: "gke", TargetEnv: "onprem", Status: "running", Doc: []byte(`{"runId":"run_bad","source":"gke"}`), CreatedAt: now, UpdatedAt: now}); err != nil {
+				f.t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newEnvFixture(t)
+			f.register("gke")
+			prep(f)
+			code, b := f.add("eks")
+			if code != 202 {
+				t.Fatalf("add: %d %s", code, b)
+			}
+			f.finish(decode[apiv1.AppEnvironmentAdded](t, b).Deployment.Id, store.DeployHealthy, nil)
+			if code, b := f.do("DELETE", "/v1/apps/shop/environments/eks", opToken, nil); code != 202 {
+				t.Fatalf("remove: %d %s", code, b)
+			}
+		})
+	}
+}
+
 func TestAddAppEnvironment(t *testing.T) {
 	f := newEnvFixture(t)
 	f.register("gke")
@@ -259,7 +309,6 @@ func TestAddAppEnvironmentErrors(t *testing.T) {
 		"already there":   {body: map[string]any{"environment": "gke"}, status: 409, code: "environment_exists"},
 		"deploying":       {prep: func(f *envFixture) { f.redeployQueued() }, status: 409, code: "deployment_in_progress"},
 		"run in progress": {prep: func(f *envFixture) { f.run("run_1", apiv1.RunStatusAwaitingSwitch, "gke", "onprem") }, status: 409, code: "migration_in_progress"},
-		"halted run":      {prep: func(f *envFixture) { f.run("run_1", apiv1.RunStatusHalted, "gke", "onprem") }, status: 409, code: "migration_in_progress"},
 		"writes held": {prep: func(f *envFixture) {
 			f.gw.set(gateway.AppInfo{Name: "shop", Backends: map[string]string{"gke": "http://g"}, WriteBackend: "gke", WritesHeld: true})
 		}, status: 409, code: "migration_in_progress"},

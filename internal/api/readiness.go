@@ -94,15 +94,23 @@ func (s *Server) dbReadiness(ctx context.Context, a store.App, db store.AppDatab
 		cluster = deploy.ClusterName(a.Name, spec.Resources[i].Name)
 	}
 	_, public := publicSpecService(spec)
-	reads := s.readinessReads(ctx, a.Name, pair, inApp, cluster, public && s.d.Gateway != nil)
 
 	// A migration of the app moves its database and traffic; the pair is
-	// not ready for another until it is done.
-	if runs, err := s.appRuns(ctx, []string{a.Name}); err != nil {
+	// not ready for another until it is done. What was read before a run
+	// ended is not reused: the run may have moved the primary.
+	var ended time.Time
+	runs, err := s.appRuns(ctx, []string{a.Name})
+	if err != nil {
 		fail(reasonMigration, "could not read the app's migration runs: "+err.Error())
-	} else if i := slices.IndexFunc(runs, func(r apiv1.Run) bool { return slices.Contains(activeRunStatuses, r.Status) }); i >= 0 {
+	} else if i := slices.IndexFunc(runs, s.runActive); i >= 0 {
 		fail(reasonMigration, fmt.Sprintf("migration run %s of %s is %s", runs[i].RunId, a.Name, runs[i].Status))
 	}
+	for _, r := range runs {
+		if r.EndedAt != nil && r.EndedAt.After(ended) {
+			ended = *r.EndedAt
+		}
+	}
+	reads := s.readinessReads(ctx, a.Name, pair, inApp, cluster, public && s.d.Gateway != nil, ended)
 	if reads.gwApp != nil && reads.gwApp.WritesHeld {
 		fail(reasonMigration, fmt.Sprintf("the traffic gateway holds the writes of %s", a.Name))
 	}
@@ -202,12 +210,14 @@ func (s *Server) dbReadiness(ctx context.Context, a store.App, db store.AppDatab
 // readinessReads reads the gateway (with readGateway) and the Cluster of
 // each environment of pair that is inApp, all in parallel and each within
 // DBClusterTimeout, or returns what it read for the same question less than
-// ReadinessCacheTTL ago.
-func (s *Server) readinessReads(ctx context.Context, app string, pair []string, inApp []bool, cluster string, readGateway bool) readinessReads {
+// ReadinessCacheTTL ago and after notBefore (when a migration run of the
+// app last ended). What it read while ctx ended (the client went away) is
+// not kept, since its errors say nothing about the clusters.
+func (s *Server) readinessReads(ctx context.Context, app string, pair []string, inApp []bool, cluster string, readGateway bool, notBefore time.Time) readinessReads {
 	key := fmt.Sprintf("%s|%s|%v|%s|%t", app, strings.Join(pair, ","), inApp, cluster, readGateway)
 	now := time.Now()
 	s.ready.mu.Lock()
-	if r, ok := s.ready.reads[key]; ok && now.Sub(r.at) < ReadinessCacheTTL {
+	if r, ok := s.ready.reads[key]; ok && now.Sub(r.at) < ReadinessCacheTTL && r.at.After(notBefore) {
 		s.ready.mu.Unlock()
 		return r
 	}
@@ -247,6 +257,9 @@ func (s *Server) readinessReads(ctx context.Context, app string, pair []string, 
 		})
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		return out
+	}
 
 	s.ready.mu.Lock()
 	defer s.ready.mu.Unlock()
