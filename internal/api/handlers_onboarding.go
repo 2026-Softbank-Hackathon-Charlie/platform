@@ -294,9 +294,9 @@ func (s *Server) guardPlan(h http.HandlerFunc) http.HandlerFunc {
 			h(w, r)
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 		if err != nil {
-			s.fail(w, r, http.StatusBadRequest, "invalid_request", "read the body")
+			s.fail(w, r, http.StatusRequestEntityTooLarge, "invalid_request", "the body is over "+fmt.Sprint(MaxBodyBytes)+" bytes or unreadable")
 			return
 		}
 		r.Body = io.NopCloser(strings.NewReader(string(body)))

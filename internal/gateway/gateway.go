@@ -215,6 +215,13 @@ func (rt *router) newBackends(bcs []BackendConfig, old map[string]*backend) ([]*
 		list = append(list, b)
 		byName[b.name] = b
 	}
+	// A dialled backend that was replaced or dropped closes its own idle
+	// connections; requests in flight on it finish.
+	for name, b := range old {
+		if b.transport != nil && byName[name] != b {
+			b.transport.CloseIdleConnections()
+		}
+	}
 	return list, byName, nil
 }
 

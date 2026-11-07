@@ -810,8 +810,9 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 			if hidden := hiddenPasswords(&cur, map[string]string{env: ""}); len(hidden) > 0 {
 				return fmt.Errorf("%w: the gateway hides the password in the URL of the %s backend of %s, and sending that URL back would replace the password; set it again without a password in its URL, then remove the environment again", ErrGateway, strings.Join(hidden, ", "), in)
 			}
-			next := gateway.AppSpec{Backends: maps.Clone(cur.Backends), WriteBackend: cur.WriteBackend}
+			next := gateway.AppSpec{Backends: maps.Clone(cur.Backends), WriteBackend: cur.WriteBackend, Dial: maps.Clone(cur.Dial)}
 			delete(next.Backends, env)
+			delete(next.Dial, env)
 			if weights := positive(cur.ReadWeights); len(weights) > 0 {
 				delete(weights, env)
 				next.ReadWeights = weights

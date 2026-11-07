@@ -786,8 +786,8 @@ func (r *Runner) sourceValues(x *rec) (map[string]map[string]string, error) {
 	return v, nil
 }
 
-// platformNames are the variables the platform sets itself (ADR 0024 and
-// the resources), never carried over.
+// platformPrefixes start the variables the platform sets itself (ADR 0024
+// and the resources), which are never carried over.
 var platformPrefixes = []string{"PG", "S3_", "DATABASE_URL", "HOPCHARLIE_", "PLATFORM_", "PORT"}
 
 // AppSecrets are the source's values the app gets as secrets (ADR 0042

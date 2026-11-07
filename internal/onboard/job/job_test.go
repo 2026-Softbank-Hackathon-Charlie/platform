@@ -523,3 +523,141 @@ func TestRemoteOfThePlan(t *testing.T) {
 		t.Fatalf("another plan got %+v", other)
 	}
 }
+
+// TestCutoverRunLostAtRestart: a cutting_over row without a run (the server
+// stopped between the reservation and storing the run) finds the run by
+// its plan id, or fails so resume goes back to ready.
+func TestCutoverRunLostAtRestart(t *testing.T) {
+	for _, lost := range []bool{false, true} {
+		w := newWorld(t)
+		w.lostRun = lost
+		r := w.runner()
+		id := toReady(t, w, r)
+		if _, err := r.update(ctx, id, nil, func(x *rec) (string, error) {
+			x.doc.Internal.Attempt = 1
+			return store.OnboardingCuttingOver, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		r.Advance(ctx, id)
+		if !lost {
+			if o := want(t, r, id, apiv1.OnboardingStateCuttingOver); o.RunId == nil || *o.RunId != "run1" {
+				t.Fatalf("run not found: %+v", o.RunId)
+			}
+			continue
+		}
+		want(t, r, id, apiv1.OnboardingStateFailed)
+		if _, err := r.Resume(ctx, id, "op"); err != nil {
+			t.Fatal(err)
+		}
+		r.Wait()
+		want(t, r, id, apiv1.OnboardingStateReady)
+	}
+}
+
+// TestRegistrationRetriesTheFirstDeployment: a first deployment that failed
+// fails the onboarding; resume queues another instead of failing again.
+func TestRegistrationRetriesTheFirstDeployment(t *testing.T) {
+	w := newWorld(t)
+	w.firstDeployFails = 1
+	r := w.runner()
+	id := toApproval(t, w, r)
+	if _, err := r.Approve(ctx, id, headSHA, "op"); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	o := want(t, r, id, apiv1.OnboardingStateFailed)
+	if *o.FailedState != apiv1.OnboardingStateRegistering {
+		t.Fatalf("failed in %s", *o.FailedState)
+	}
+	if _, err := r.Resume(ctx, id, "op"); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	want(t, r, id, apiv1.OnboardingStateSyncing)
+	got := strings.Join(w.done(), ",") + ","
+	deploys := 0
+	for _, d := range w.done() {
+		if d == "deploy" {
+			deploys++
+		}
+	}
+	if deploys != 2 || strings.Index(got, "gateway put legacy") > strings.Index(got, ",deploy,") {
+		t.Fatalf("the gateway before the first deployment, and a second one after resume: %s", got)
+	}
+}
+
+// TestDeleteAfterDNSMovedKeepsLegacy: once the name points at the gateway,
+// DELETE keeps the gateway app on legacy instead of deleting it.
+func TestDeleteAfterDNSMovedKeepsLegacy(t *testing.T) {
+	w := newWorld(t)
+	r := w.runner()
+	id := toReady(t, w, r)
+	before := len(w.done())
+	if _, err := r.Delete(ctx, id, "op"); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	got := strings.Join(w.done()[before:], ",")
+	if strings.Contains(got, "gateway delete") || !strings.Contains(got, "gateway put legacy dial=203.0.113.10:443") {
+		t.Fatalf("undo %s", got)
+	}
+}
+
+// TestDeleteForeignAppLeavesIt: an app of the name that is not the
+// onboarding's is never deleted.
+func TestDeleteForeignAppLeavesIt(t *testing.T) {
+	w := newWorld(t)
+	r := w.runner()
+	id := toReady(t, w, r)
+	w.foreignApp = true
+	before := len(w.done())
+	if _, err := r.Delete(ctx, id, "op"); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	got := strings.Join(w.done()[before:], ",")
+	if strings.Contains(got, "remove app moim") || strings.Contains(got, "gateway") {
+		t.Fatalf("touched another app: %s", got)
+	}
+}
+
+// TestRolledBackRunNeedsWritableSource: a run that ended before the
+// promotion goes back to ready only once the source takes writes.
+func TestRolledBackRunNeedsWritableSource(t *testing.T) {
+	w := newWorld(t)
+	r := w.runner()
+	id := toReady(t, w, r)
+	if _, err := r.Cutover(ctx, id, "op"); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	w.runStatus, w.sourceFenced = apiv1.RunStatusRolledBack, true
+	r.Advance(ctx, id)
+	o := want(t, r, id, apiv1.OnboardingStateFailed)
+	if !strings.Contains(deref(o.Failure), "refuses writes") {
+		t.Fatalf("failure %q", deref(o.Failure))
+	}
+}
+
+// TestDeleteDoesNotUndoAStartedCutover: DELETE that lost the race to a
+// cutover leaves it alone.
+func TestDeleteDoesNotUndoAStartedCutover(t *testing.T) {
+	w := newWorld(t)
+	r := w.runner()
+	id := toReady(t, w, r)
+	if _, err := r.update(ctx, id, nil, func(x *rec) (string, error) {
+		x.doc.Deleting, x.doc.Internal.DeleteRequested = true, true
+		return store.OnboardingCuttingOver, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(w.done())
+	r.Advance(ctx, id)
+	if got := w.done()[before:]; len(got) != 0 {
+		t.Fatalf("undid a cutover: %v", got)
+	}
+	if _, err := r.Cutover(ctx, id, "op"); !errors.Is(err, ErrDeleting) && !errors.Is(err, ErrState) {
+		t.Fatalf("cutover: %v", err)
+	}
+}
