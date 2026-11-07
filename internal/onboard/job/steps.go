@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -412,7 +413,8 @@ func plannedChanges(x *rec) []apiv1.OnboardingPlannedChange {
 	}
 	add(apiv1.OnboardingLegacyChangeKindReplicationRoleCreated, onboard.ReplicationUser, "LOGIN REPLICATION")
 	add(apiv1.OnboardingLegacyChangeKindTailscaleVolumeCreated, onboard.TailscaleVolume(app), "")
-	add(apiv1.OnboardingLegacyChangeKindTailscaleContainerStarted, onboard.TailscaleContainer(app), "")
+	add(apiv1.OnboardingLegacyChangeKindTailscaleContainerStarted, onboard.TailscaleContainer(app),
+		"while this container is attached to the compose network, a manual docker compose down cannot remove the network")
 	add(apiv1.OnboardingLegacyChangeKindTailscaleDeviceJoined, onboard.TailnetHost(app), onboard.TailscaleTag)
 	subnet := ""
 	if f != nil && f.VM != nil && f.DB != nil {
@@ -481,13 +483,17 @@ func (r *Runner) connecting(ctx context.Context, x *rec) (bool, error) {
 	}
 	// 2-4. The VM and its database.
 	if !x.doc.Internal.Connected {
-		changes, pw, err := r.cfg.Connect.Connect(ctx, r.connectReq(x))
+		res, err := r.cfg.Connect.Connect(ctx, r.connectReq(x))
+		var blk *Blocker
 		_, uerr := r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
-			for _, c := range changes {
+			for _, c := range res.Changes {
 				x.addChange(c)
 			}
+			if errors.As(err, &blk) {
+				x.doc.Report.Blockers = append(x.doc.Report.Blockers, apiv1.OnboardingFinding{Code: apiv1.OnboardingFindingCode(blk.Code), Message: blk.Message})
+			}
 			if err == nil {
-				x.row.ReplicationPasswordNonce, x.row.ReplicationPasswordCiphertext = pw.Nonce, pw.Ciphertext
+				x.row.ReplicationPasswordNonce, x.row.ReplicationPasswordCiphertext = res.ReplicationPassword.Nonce, res.ReplicationPassword.Ciphertext
 				x.doc.Internal.Connected = true
 			}
 			return "", nil
@@ -499,6 +505,11 @@ func (r *Runner) connecting(ctx context.Context, x *rec) (bool, error) {
 			return false, uerr
 		}
 		x, _ = r.load(ctx, x.row.ID)
+		if res.Rotated && x.doc.Internal.Registered {
+			if err := r.rotated(ctx, x); err != nil {
+				return false, err
+			}
+		}
 	}
 	// 5. The management cluster's route.
 	if x.doc.Internal.SourceHost == "" {
@@ -546,6 +557,49 @@ func (r *Runner) open(x *rec, field string, nonce, ct []byte) (string, error) {
 		return "", fmt.Errorf("%w: secrets key", ErrNotConfigured)
 	}
 	return r.cfg.Secrets.OpenOnboarding(x.row, field, nonce, ct)
+}
+
+// rotated seals the replication password connect changed into the
+// registered app's row and redeploys it, so Secret <cluster>-legacy has it.
+func (r *Runner) rotated(ctx context.Context, x *rec) error {
+	pw, err := r.open(x, secrets.OnboardingReplicationPassword, x.row.ReplicationPasswordNonce, x.row.ReplicationPasswordCiphertext)
+	if err != nil {
+		return err
+	}
+	if err := r.cfg.Apps.SetReplicationPassword(ctx, x.row.App, pw); err != nil {
+		return fmt.Errorf("seal the new replication password: %w", err)
+	}
+	dep, err := r.cfg.Apps.Redeploy(ctx, x.row.App, onboardActor)
+	if err != nil {
+		return err
+	}
+	r.event(ctx, x, apiv1.OnboardingEventKindStep, "the replication password changed; redeploying "+x.row.App+" with it ("+dep+")", nil)
+	return nil
+}
+
+const onboardActor = "onboarding"
+
+// standbyFloors are CNPG's defaults, under which a replica must not start
+// (a hot standby needs these at least the primary's).
+var standbyFloors = map[string]int{
+	"max_connections": 100, "max_wal_senders": 10, "max_worker_processes": 32,
+	"max_prepared_transactions": 0, "max_locks_per_transaction": 64,
+}
+
+// StandbyParameters are values.postgres.parameters of an onboarded app:
+// each standby-relevant setting the larger of the source's and the floor.
+func StandbyParameters(db *facts.DB) map[string]string {
+	if db == nil {
+		return nil
+	}
+	src := map[string]int{"max_connections": db.MaxConnections, "max_wal_senders": db.MaxWALSenders,
+		"max_worker_processes": db.MaxWorkerProcesses, "max_prepared_transactions": db.MaxPreparedTransactions,
+		"max_locks_per_transaction": db.MaxLocksPerTransaction}
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = strconv.Itoa(max(v, standbyFloors[k]))
+	}
+	return out
 }
 
 // --- registering ---
@@ -670,7 +724,7 @@ func (r *Runner) registration(x *rec) (Registration, error) {
 	host := onboard.TailnetHost(x.row.App)
 	return Registration{App: x.row.App, Repo: x.row.Repo, Branch: f.GitHub.DefaultBranch, Env: x.doc.TargetEnv, Peer: x.doc.Internal.TargetPeer,
 		Actor: deref(x.doc.ApprovedBy), Image: f.Target.Image, Database: f.DB.Database, Owner: f.DB.Owner, StorageSize: f.Target.StorageSize,
-		ExternalHost: host, Reindex: f.Target.Reindex, AppPassword: appPW, ReplicationPassword: repl,
+		ExternalHost: host, Reindex: f.Target.Reindex, Parameters: StandbyParameters(f.DB), AppPassword: appPW, ReplicationPassword: repl,
 		Secrets: AppSecrets(f, values)}, nil
 }
 

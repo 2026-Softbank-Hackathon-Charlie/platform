@@ -2,9 +2,13 @@ package job
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/connect"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/discover"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/vm"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/onboard/facts"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
@@ -39,20 +43,38 @@ type connector struct {
 	stop func(ctx context.Context, req ConnectRequest) error
 }
 
-func (a connector) Connect(ctx context.Context, req ConnectRequest) ([]apiv1.OnboardingLegacyChange, Sealed, error) {
+func (a connector) Connect(ctx context.Context, req ConnectRequest) (Connected, error) {
 	res, err := a.c.Connect(ctx, connect.Input{ID: req.ID, Facts: req.Facts})
-	var pw Sealed
-	if s := res.ReplicationPassword; s != nil {
-		pw = Sealed{s.Nonce, s.Ciphertext}
+	out := Connected{Rotated: res.PasswordRotated}
+	for _, c := range res.Changes {
+		out.Changes = append(out.Changes, c.OnboardingLegacyChange)
 	}
-	return res.Changes, pw, err
+	if s := res.ReplicationPassword; s != nil {
+		out.ReplicationPassword = Sealed{s.Nonce, s.Ciphertext}
+	}
+	var se *vm.StepError
+	if errors.As(err, &se) && se.ExitCode == ConnectExitPendingConfig {
+		err = &Blocker{Code: facts.BlockPendingConfig, Message: "the source database has settings that wait for a restart or a configuration file with errors, so connect cannot reload it safely; restart or fix the database container, then resume: " + se.Message}
+	}
+	return out, err
 }
+
+// The exit codes of the VM scripts the job reads (infra HopCharlie-Connect).
+const (
+	ConnectExitPendingConfig = 8 // connect.sh: settings wait for a restart
+	DisconnectExitDBStopped  = 4 // disconnect.sh: the database container is stopped
+)
 
 // Disconnect undoes everything connect did on the VM; connect does not
 // undo a part, so decommissioning's removal of the device takes the rest
 // with it, which is harmless on an instance about to stop.
 func (a connector) Disconnect(ctx context.Context, req ConnectRequest, _ []apiv1.OnboardingLegacyChange) ([]apiv1.OnboardingLegacyChange, error) {
-	return a.c.Disconnect(ctx, connect.Input{ID: req.ID, Facts: req.Facts})
+	out, err := a.c.Disconnect(ctx, connect.Input{ID: req.ID, Facts: req.Facts})
+	var se *vm.StepError
+	if errors.As(err, &se) && se.ExitCode == DisconnectExitDBStopped {
+		err = fmt.Errorf("incomplete: the source database container is stopped, so its replication account, hba and wal_keep_size lines were not removed; start it and delete again: %w", err)
+	}
+	return out, err
 }
 
 func (a connector) StopInstance(ctx context.Context, req ConnectRequest) error {

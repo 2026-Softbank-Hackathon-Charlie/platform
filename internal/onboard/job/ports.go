@@ -67,14 +67,29 @@ type ConnectRequest struct {
 	Facts   facts.Facts
 }
 
+// Connected is what Connect did.
+type Connected struct {
+	Changes []apiv1.OnboardingLegacyChange
+	// ReplicationPassword is sealed as secrets.OnboardingReplicationPassword.
+	ReplicationPassword Sealed
+	// Rotated says the role's password changed: an app registered with the
+	// old one needs it sealed again.
+	Rotated bool
+}
+
+// Blocker is an error that is also a report blocker (facts Block* code).
+type Blocker struct{ Code, Message string }
+
+func (b *Blocker) Error() string { return b.Code + ": " + b.Message }
+
 // Connector changes the source VM and its database (ADR 0042 "3." steps 2
 // to 4: instance tag, Tailscale key, HopCharlie-Connect) and undoes it.
 type Connector interface {
 	// Connect returns what it did, in order, also with an error (what was
-	// done before it failed), and hopcharlie_replicator's password sealed
-	// as secrets.OnboardingReplicationPassword. Run again it does only what
-	// is missing.
-	Connect(ctx context.Context, req ConnectRequest) ([]apiv1.OnboardingLegacyChange, Sealed, error)
+	// done before it failed), and hopcharlie_replicator's password. Run
+	// again it does only what is missing. A *Blocker error is a finding the
+	// operator must fix on the source before resume.
+	Connect(ctx context.Context, req ConnectRequest) (Connected, error)
 	// Disconnect undoes changes (its own kinds; others are left as they
 	// are) in reverse order and returns them with UndoneAt set on those it
 	// undid, also with an error.
@@ -123,6 +138,8 @@ type Registration struct {
 	// app_databases.
 	Image, Database, Owner, StorageSize, ExternalHost string
 	Reindex                                           []string
+	// Parameters are the standby-relevant settings (StandbyParameters).
+	Parameters map[string]string
 	// AppPassword is the app account's password (the source's own);
 	// ReplicationPassword hopcharlie_replicator's.
 	AppPassword, ReplicationPassword string
@@ -149,6 +166,9 @@ type Apps interface {
 	// Remove deletes an app with everything it has; one that is not there
 	// is no error.
 	Remove(ctx context.Context, app string) error
+	// SetReplicationPassword seals hopcharlie_replicator's new password into
+	// the app's database row.
+	SetReplicationPassword(ctx context.Context, app, password string) error
 	// FinishSource sets the app's database source_kind to peer.
 	FinishSource(ctx context.Context, app string) error
 	// BackendURL is the gateway backend URL of the app in env.

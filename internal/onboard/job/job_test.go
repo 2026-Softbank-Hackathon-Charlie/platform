@@ -460,3 +460,49 @@ func TestCuttingOverAndPush(t *testing.T) {
 	}
 	_ = store.OnboardingDone
 }
+
+func TestStandbyParameters(t *testing.T) {
+	got := StandbyParameters(&facts.DB{MaxConnections: 300, MaxWALSenders: 4, MaxWorkerProcesses: 8, MaxPreparedTransactions: 10, MaxLocksPerTransaction: 128})
+	want := map[string]string{"max_connections": "300", "max_wal_senders": "10", "max_worker_processes": "32",
+		"max_prepared_transactions": "10", "max_locks_per_transaction": "128"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+func TestConnectBlocker(t *testing.T) {
+	w := newWorld(t)
+	w.connectErr = &Blocker{Code: facts.BlockPendingConfig, Message: "restart it"}
+	r := w.runner()
+	id := toApproval(t, w, r)
+	if _, err := r.Approve(ctx, id, headSHA, "op"); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	o := want(t, r, id, apiv1.OnboardingStateFailed)
+	if !slices.ContainsFunc(o.Report.Blockers, func(f apiv1.OnboardingFinding) bool { return f.Code == facts.BlockPendingConfig }) {
+		t.Fatalf("blockers %+v", o.Report.Blockers)
+	}
+}
+
+// TestRotatedPasswordRedeploys: a connect run that changed the replication
+// password of an app registered already seals it again and redeploys.
+func TestRotatedPasswordRedeploys(t *testing.T) {
+	w := newWorld(t)
+	r := w.runner()
+	id := toReady(t, w, r)
+	if _, err := r.update(ctx, id, nil, func(x *rec) (string, error) {
+		x.doc.Internal.Connected = false
+		return store.OnboardingConnecting, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.rotated = true
+	r.Advance(ctx, id)
+	got := strings.Join(w.done(), ",")
+	if !strings.Contains(got, "seal replication password repl,redeploy") {
+		t.Fatalf("no reseal and redeploy in %s", got)
+	}
+}

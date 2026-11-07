@@ -55,6 +55,7 @@ type world struct {
 	dns       bool
 
 	noPostgres bool // the registered platform.yaml has no postgres resource
+	rotated    bool // connect says the replication password changed
 
 	runStatus apiv1.RunStatus
 	reserveErr error
@@ -126,18 +127,18 @@ func (w *world) Discover(_ context.Context, req DiscoverRequest) (Discovered, er
 }
 
 // Connector
-func (w *world) Connect(_ context.Context, req ConnectRequest) ([]apiv1.OnboardingLegacyChange, Sealed, error) {
+func (w *world) Connect(_ context.Context, req ConnectRequest) (Connected, error) {
 	w.did("connect")
 	ch := []apiv1.OnboardingLegacyChange{
 		{At: w.now, Kind: apiv1.OnboardingLegacyChangeKindInstanceTagged, Target: "i-1"},
 		{At: w.now, Kind: apiv1.OnboardingLegacyChangeKindReplicationRoleCreated, Target: "hopcharlie_replicator"},
 	}
 	if w.connectErr != nil {
-		return ch[:1], Sealed{}, w.connectErr
+		return Connected{Changes: ch[:1]}, w.connectErr
 	}
 	ch = append(ch, apiv1.OnboardingLegacyChange{At: w.now, Kind: apiv1.OnboardingLegacyChangeKindTailscaleDeviceJoined, Target: "hop-db-legacy-moim"})
 	n, c, _ := w.cipher.SealOnboarding(req.ID, secrets.OnboardingReplicationPassword, "repl")
-	return ch, Sealed{n, c}, nil
+	return Connected{Changes: ch, ReplicationPassword: Sealed{n, c}, Rotated: w.rotated}, nil
 }
 
 func (w *world) Disconnect(_ context.Context, _ ConnectRequest, ch []apiv1.OnboardingLegacyChange) ([]apiv1.OnboardingLegacyChange, error) {
@@ -217,7 +218,8 @@ func (w *world) DeployTest(_ context.Context, t TestApp) (string, error) {
 }
 func (w *world) Register(ctx context.Context, r Registration) (string, error) {
 	w.did("register " + r.App)
-	if r.AppPassword != "pw" || r.ReplicationPassword != "repl" || r.Secrets["JWT_SECRET"] != "jwt" || len(r.Secrets) != 1 {
+	if r.AppPassword != "pw" || r.ReplicationPassword != "repl" || r.Secrets["JWT_SECRET"] != "jwt" || len(r.Secrets) != 1 ||
+		r.Parameters["max_connections"] != "100" || r.Parameters["max_worker_processes"] != "32" {
 		w.t.Errorf("registration %+v", r)
 	}
 	spec := `{"name":"moim","services":[{"name":"web","port":8080,"public":true,"healthCheck":"/healthz","replicas":2}],"resources":[{"name":"db","type":"postgres"}]}`
@@ -242,6 +244,10 @@ func (w *world) Remove(_ context.Context, app string) error {
 	return nil
 }
 func (w *world) FinishSource(context.Context, string) error { w.did("source peer"); return nil }
+func (w *world) SetReplicationPassword(_ context.Context, _, pw string) error {
+	w.did("seal replication password " + pw)
+	return nil
+}
 func (w *world) BackendURL(_ context.Context, app, env string) (string, error) {
 	return "https://" + app + "." + env + ".internal", nil
 }

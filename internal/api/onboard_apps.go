@@ -136,7 +136,7 @@ func (a onboardApps) Register(ctx context.Context, r job.Registration) (string, 
 	}
 	db.CreatedAt = now
 	db.SourceKind, db.Image, db.Database, db.Owner, db.StorageSize = store.DBSourceExternal, r.Image, r.Database, r.Owner, r.StorageSize
-	db.ExternalHost, db.Reindex = r.ExternalHost, r.Reindex
+	db.ExternalHost, db.Reindex, db.Parameters = r.ExternalHost, r.Reindex, r.Parameters
 	if db.ReplicationPasswordNonce, db.ReplicationPasswordCiphertext, err = a.s.d.Secrets.SealDatabaseField(r.App, secrets.DatabaseReplicationPassword, r.ReplicationPassword); err != nil {
 		return "", err
 	}
@@ -219,6 +219,17 @@ func (a onboardApps) Remove(ctx context.Context, name string) error {
 		return nil
 	}
 	return err
+}
+
+func (a onboardApps) SetReplicationPassword(ctx context.Context, name, password string) error {
+	if a.s.d.Secrets == nil {
+		return errors.New("no PLATFORM_SECRETS_KEY")
+	}
+	nonce, ct, err := a.s.d.Secrets.SealDatabaseField(name, secrets.DatabaseReplicationPassword, password)
+	if err != nil {
+		return err
+	}
+	return a.s.d.Store.SetAppDatabaseReplicationPassword(ctx, name, nonce, ct)
 }
 
 func (a onboardApps) FinishSource(ctx context.Context, name string) error {
