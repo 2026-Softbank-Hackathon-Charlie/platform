@@ -23,6 +23,9 @@ metadata:
   labels:
     hopcharlie.dev/app: {{ $.Values.values.app }}
     hopcharlie.dev/resource: {{ . }}
+    {{- if $topo.explicitMembers }}
+    hopcharlie.dev/db-topology-members: {{ len $topo.members | quote }}
+    {{- end }}
     app.kubernetes.io/part-of: {{ $.Values.values.app }}
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 spec:
@@ -84,9 +87,9 @@ spec:
   # issues and renews this server's and streaming_replica's certificates, so
   # each side's certificates pass on the other and no Secret is copied
   # between clusters. The database born primary runs initdb; the other is
-  # born a replica of it. Argo CD ignores replica, externalClusters and
-  # certificates after creation: the migration engine moves the primary
-  # through replica.primary.
+  # born a replica of it. Argo CD ignores replica and certificates after
+  # creation: the migration engine moves the primary through replica.primary.
+  # Three-member externalClusters stay GitOps-owned so a new member is added.
   bootstrap:
     {{- if $topo.isPrimary }}
     initdb:
@@ -123,15 +126,17 @@ spec:
       sslCert: {name: {{ . }}-replication, key: tls.crt}
       sslKey: {name: {{ . }}-replication, key: tls.key}
       sslRootCert: {name: app-pg-ca, key: ca.crt}
-    - name: {{ $topo.source }}
+    {{- range $topo.peers }}
+    - name: {{ .name }}
       connectionParameters:
-        host: {{ $topo.egressService }}.{{ $ns }}.svc.cluster.local
+        host: {{ .egressService }}.{{ $ns }}.svc.cluster.local
         user: streaming_replica
         dbname: postgres
         sslmode: verify-full
-      sslCert: {name: {{ . }}-replication, key: tls.crt}
-      sslKey: {name: {{ . }}-replication, key: tls.key}
+      sslCert: {name: {{ $topo.cluster }}-replication, key: tls.crt}
+      sslKey: {name: {{ $topo.cluster }}-replication, key: tls.key}
       sslRootCert: {name: app-pg-ca, key: ca.crt}
+    {{- end }}
   {{- end }}
 {{- if $backupOn }}
 ---

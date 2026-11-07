@@ -70,16 +70,18 @@ values:
   # sealedSecrets.pgBackup; profile.postgres.backup.enabled turns backups on.
   #   backup: {bucket: hopcharlie-eks-moimroom---pg, path: 20261104T082201Z}
   backup: {}
-  # The postgres resource as one half of a CNPG distributed topology across
-  # the app's two environments (infra ADR 0063), so the migration engine can
+  # The postgres resource as one member of a CNPG distributed topology across
+  # two or three environments (platform ADR 0044), so the migration engine can
   # move the primary between them. Set by the platform, with
-  # sealedSecrets.pgApp and pgCA, only for an app registered in exactly two
-  # environments; without it the Cluster is an independent primary.
+  # sealedSecrets.pgApp and pgCA; without it the Cluster is an independent primary.
   #   dbTopology:
   #     primary: gke   # the env whose database is born primary
   #     peer: eks      # the env that is born a replica (same value in both files)
   #     peerPresent: false  # only in the primary's file of an app with one env so far
   #                         # (infra ADR 0074): no tailnet objects until the peer is added
+  #     members: [gke, eks, onprem] # optional 2..3 unique members, all present;
+  #                                # includes primary, peer and this file's env;
+  #                                # cannot accompany peerPresent: false
 
 profile:
   # The Service of the public service, which the traffic gateway reaches.
@@ -184,7 +186,7 @@ profile:
     extraEgress: []
 
   # With values.dbTopology (infra ADR 0063): the Tailscale Services that carry
-  # replication between the two environments' databases. The operator in
+  # replication between the members' databases. The operator in
   # proxyNamespace runs their proxies with the ProxyClasses the
   # hopcharlie-db-network release makes (platformApps.enabled); its shared
   # NetworkPolicies there admit them. Off: the Cluster is drawn but has no

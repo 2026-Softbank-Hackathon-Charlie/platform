@@ -167,7 +167,13 @@ public service, and no env name that is also a sealed app secret.
 {{- end -}}
 {{- $topo := include "hopcharlie-app.dbTopology" . | fromJson -}}
 {{- with $topo.cluster -}}
-{{- range list $topo.ingressService $topo.egressService -}}
+{{- $services := list $topo.ingressService -}}
+{{- $hosts := list $topo.ingressHost -}}
+{{- range $topo.peers -}}
+{{- $services = append $services .egressService -}}
+{{- $hosts = concat $hosts (list .egressHost .peerHost) -}}
+{{- end -}}
+{{- range $services -}}
 {{- if gt (len .) 63 -}}
 {{- fail (printf "values.dbTopology: Service name %s is longer than 63 characters" .) -}}
 {{- end -}}
@@ -175,7 +181,7 @@ public service, and no env name that is also a sealed app secret.
 {{- fail (printf "values.dbTopology: Service %s is also an app service's Service" .) -}}
 {{- end -}}
 {{- end -}}
-{{- range list $topo.ingressHost $topo.egressHost $topo.peerHost -}}
+{{- range $hosts -}}
 {{- if gt (len .) 63 -}}
 {{- fail (printf "values.dbTopology: Tailscale hostname %s is longer than 63 characters" .) -}}
 {{- end -}}
@@ -197,12 +203,15 @@ platform, which builds the same names for the migration engine:
   egressService    <cluster>-to-<other env>, the peer's database through the
                    tailnet host hop-db-<env>-<instance>-to-<other env>
 
-other is the environment of the file that is not env. The platform writes peer
+Without members, other is the environment of the file that is not env. The platform writes peer
 as the environment born a replica, the same value in both files; a peer that
 is the other environment seen from this file is accepted too. peerPresent
 false (infra ADR 0074) means the peer environment does not exist yet: only
 the primary's file may say so, and dbnetwork.yaml then draws no tailnet
-objects. Fails on values the platform must not write.
+objects. With members, primary and peer are still the legacy pair and all
+members get externalClusters and egress paths. Every nonprimary follows
+primary; primary keeps peer as its default demotion source. Fails on values
+the platform must not write.
 */}}
 {{- define "hopcharlie-app.dbTopology" -}}
 {{- $t := .Values.values.dbTopology -}}
@@ -214,17 +223,36 @@ objects. Fails on values the platform must not write.
 {{- fail "values.dbTopology needs a postgres resource, values.sealedSecrets.pgApp and values.sealedSecrets.pgCA (infra ADR 0063)" -}}
 {{- end -}}
 {{- $env := .Values.env -}}
+{{- $members := list $t.primary $t.peer -}}
+{{- $explicitMembers := hasKey $t "members" -}}
 {{- $other := ternary $t.peer $t.primary (eq $env $t.primary) -}}
-{{- if or (not $env) (eq $other $env) (not (has $t.peer (list $env $other))) -}}
+{{- if $explicitMembers -}}
+{{- $members = $t.members -}}
+{{- if or (lt (len $members) 2) (gt (len $members) 3) (ne (len $members) (len (uniq $members))) (eq $t.primary $t.peer) (not (has $t.primary $members)) (not (has $t.peer $members)) (not (has $env $members)) -}}
+{{- fail "values.dbTopology.members must contain 2..3 unique environments including primary, distinct peer and env" -}}
+{{- end -}}
+{{- else if or (not $env) (eq $other $env) (not (has $t.peer (list $env $other))) -}}
 {{- fail (printf "values.dbTopology: env %q must be one of primary %q and peer %q, and the other must differ (infra ADR 0063)" $env $t.primary $t.peer) -}}
 {{- end -}}
 {{- $peerPresent := not (and (hasKey $t "peerPresent") (not $t.peerPresent)) -}}
+{{- if and $explicitMembers (not $peerPresent) -}}
+{{- fail "values.dbTopology.members cannot be combined with peerPresent false" -}}
+{{- end -}}
 {{- if and (not $peerPresent) (ne $env $t.primary) -}}
 {{- fail (printf "values.dbTopology.peerPresent false is only for the primary's file (env %q, primary %q; infra ADR 0074)" $env $t.primary) -}}
 {{- end -}}
 {{- $cluster := printf "%s-%s" .Values.values.app $pg.name -}}
 {{- $instance := .Release.Namespace -}}
+{{- $peers := list -}}
+{{- range $members -}}
+{{- if ne . $env -}}
+{{- $peers = append $peers (dict "env" . "name" (printf "%s-%s" $cluster .) "egressService" (printf "%s-to-%s" $cluster .) "egressHost" (printf "hop-db-%s-%s-to-%s" $env $instance .) "peerHost" (printf "hop-db-%s-%s" . $instance)) -}}
+{{- end -}}
+{{- end -}}
 {{- $_ := set $out "cluster" $cluster -}}
+{{- $_ := set $out "members" $members -}}
+{{- $_ := set $out "explicitMembers" $explicitMembers -}}
+{{- $_ := set $out "peers" $peers -}}
 {{- $_ := set $out "peerPresent" $peerPresent -}}
 {{- $_ := set $out "env" $env -}}
 {{- $_ := set $out "other" $other -}}

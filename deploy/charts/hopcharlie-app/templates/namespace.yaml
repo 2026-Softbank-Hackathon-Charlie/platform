@@ -16,6 +16,9 @@ metadata:
     # Where the platform may patch the CNPG Cluster's replica (infra ADR 0063)
     # and the shared database proxies accept replication.
     hopcharlie.dev/db-topology: "true"
+    {{- with .Values.values.dbTopology.members }}
+    hopcharlie.dev/db-topology-members: {{ len . | quote }}
+    {{- end }}
     {{- end }}
     app.kubernetes.io/part-of: {{ .Values.values.app }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}

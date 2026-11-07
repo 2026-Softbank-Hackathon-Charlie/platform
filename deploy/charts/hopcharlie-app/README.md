@@ -65,7 +65,7 @@ SealedSecret은 대상 클러스터의 Sealed Secrets 공개 인증서로 strict
 
 `path`는 앱을 등록할 때마다 새로 정해진다. 같은 이름으로 다시 등록한 앱의 새 DB가 예전 DB의 WAL이 있는 곳에 쓰지 않으므로 Barman의 빈 보관소 검사를 통과한다. 백업을 켜거나 끄면 CNPG가 plugin 컨테이너를 넣거나 빼려고 Postgres 파드를 한 번 다시 만든다. 백업 버킷은 앱을 지워도 남는다.
 
-## 두 환경 DB
+## 두 환경·세 환경 DB
 
 두 환경에 등록한 앱의 기본 인스턴스는 플랫폼이 `values.dbTopology`(`primary`, `peer`)와 `values.sealedSecrets.pgApp`, `pgCA`를 함께 쓴다(infra ADR 0063). 이때 차트는 CNPG Cluster를 분산 토폴로지의 반쪽으로 그린다.
 
@@ -78,6 +78,13 @@ SealedSecret은 대상 클러스터의 Sealed Secrets 공개 인증서로 strict
 한 환경에만 등록한 postgres 앱도 처음부터 같은 토폴로지로 태어날 수 있다(infra ADR 0074). 이때 플랫폼은 primary 파일에 `dbTopology.peerPresent: false`를 쓴다. Cluster, 봉인 Secret, 네임스페이스 레이블은 위와 같고, Tailscale Service 둘과 복제 NetworkPolicy만 그리지 않는다. 상대 환경을 더하면 플랫폼이 `peerPresent`를 빼거나 `true`로 다시 쓰고, 그때 이 세 객체가 생긴다. `peerPresent: false`는 `env`가 `primary`인 파일에만 쓸 수 있고 다른 파일에서는 렌더링이 실패한다. 값이 없으면 `true`다.
 
 `dbTopology`가 없으면 출력은 이 기능 이전과 같다.
+
+`dbTopology.members: [gke, eks, onprem]`을 더하면 최대 세 환경을 명시할 수 있다(platform ADR 0044). 목록은 2~3개의 고유한 환경이며 `primary`, `peer`, 현재 파일의 `env`를 포함해야 한다. `primary`와 `peer`는 달라야 하고 `peerPresent: false`와 함께 쓸 수 없다. `members`가 없는 기존 두 환경 파일의 출력 의미는 유지한다.
+
+- 각 Cluster는 자기 자신과 다른 모든 멤버의 `externalClusters`를 갖는다. 다른 멤버마다 egress Service와 복제 NetworkPolicy egress 규칙을 만든다.
+- 태어날 때 모든 nonprimary의 bootstrap과 `replica.source`는 `primary`다. primary의 기본 `replica.source`는 기존 `peer`다. 실제 primary 변경은 계속 이전 엔진이 소유하며 Git의 bootstrap primary와 다를 수 있다.
+- 명시한 멤버 수를 Cluster와 Namespace의 `hopcharlie.dev/db-topology-members` 레이블에 쓴다. infra의 ApplicationSet은 값이 `"3"`인 Cluster의 `externalClusters`를 Git으로 관리해 세 번째 경로를 추가한다. `replica`와 인증서 무시는 유지해 승격·강등을 되돌리지 않는다. 차트와 infra ApplicationSet 변경을 함께 준비해야 한다.
+- 세 멤버는 임의의 spoke 간 이전을 보장하지 않는다. EKS→GKE 전환을 검증한 다음 GKE를 따라오는 onprem을 더하는 경로가 현재 범위다. 실제 복제·Tailscale ACL·인증서·승격·롤백은 운영 리허설에서 별도로 검증해야 한다.
 
 ## 앱을 지우면 네임스페이스째 지워진다
 
