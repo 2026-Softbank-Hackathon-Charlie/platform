@@ -54,6 +54,8 @@ type world struct {
 	lag       time.Duration
 	dns       bool
 
+	noPostgres bool // the registered platform.yaml has no postgres resource
+
 	runStatus apiv1.RunStatus
 	reserveErr error
 }
@@ -219,6 +221,9 @@ func (w *world) Register(ctx context.Context, r Registration) (string, error) {
 		w.t.Errorf("registration %+v", r)
 	}
 	spec := `{"name":"moim","services":[{"name":"web","port":8080,"public":true,"healthCheck":"/healthz","replicas":2}],"resources":[{"name":"db","type":"postgres"}]}`
+	if w.noPostgres {
+		spec = `{"name":"moim","services":[{"name":"web","port":8080,"public":true,"healthCheck":"/healthz","replicas":2}],"resources":[]}`
+	}
 	if err := w.st.CreateApp(ctx, store.App{Name: r.App, Repo: r.Repo, Branch: "main", Environments: []string{r.Env}, Spec: []byte(spec), CreatedAt: w.now}); err != nil && !errors.Is(err, store.ErrConflict) {
 		return "", err
 	}

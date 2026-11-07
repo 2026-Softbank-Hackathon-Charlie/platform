@@ -298,7 +298,11 @@ func (r *Runner) postRun(ctx context.Context, x *rec) (bool, error) {
 		})
 		return err
 	}
-	cluster := x.row.App + "-" + r.pgResource(x)
+	res, err := r.pgResource(ctx, x)
+	if err != nil {
+		return false, err
+	}
+	cluster := x.row.App + "-" + res
 	if !x.postRunDone("replica_source") {
 		if peer := x.doc.Internal.TargetPeer; peer != "" {
 			if r.cfg.Kube == nil {
@@ -356,7 +360,7 @@ func (r *Runner) postRun(ctx context.Context, x *rec) (bool, error) {
 			return false, err
 		}
 	}
-	_, err := r.update(ctx, x.row.ID, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
+	_, err = r.update(ctx, x.row.ID, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
 		return store.OnboardingDecommissioning, nil
 	})
 	return err == nil, err

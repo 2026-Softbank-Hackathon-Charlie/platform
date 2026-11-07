@@ -15,6 +15,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/onboard/facts"
 )
 
@@ -814,22 +815,24 @@ func (r *Runner) syncing(ctx context.Context, x *rec) (bool, error) {
 	return ready && err == nil, err
 }
 
-// pgResource is the postgres resource's name in platform.yaml: hopai's
-// mapping of the database's compose service, "db" when it does not say.
-func (r *Runner) pgResource(x *rec) string {
-	var res struct {
-		Mapping []struct {
-			ComposeService string `json:"composeService"`
-			Resource       string `json:"resource"`
-		} `json:"mapping"`
+// pgResource is the name of the postgres resource of the app's
+// platform.yaml as registered, from the default branch after the PR was
+// merged (the Cluster is <app>-<name>).
+func (r *Runner) pgResource(ctx context.Context, x *rec) (string, error) {
+	a, err := r.cfg.Store.GetApp(ctx, x.row.App)
+	if err != nil {
+		return "", err
 	}
-	_ = json.Unmarshal([]byte(x.doc.Internal.HopaiResult), &res)
-	for _, m := range res.Mapping {
-		if x.facts != nil && x.facts.DB != nil && m.ComposeService == x.facts.DB.Service && m.Resource != "" {
-			return m.Resource
+	var spec appspec.Spec
+	if err := json.Unmarshal(a.Spec, &spec); err != nil {
+		return "", fmt.Errorf("the spec of %s: %w", x.row.App, err)
+	}
+	for _, res := range spec.Resources {
+		if res.Type == appspec.TypePostgres {
+			return res.Name, nil
 		}
 	}
-	return "db"
+	return "", fmt.Errorf("the platform.yaml of %s at %s has no postgres resource", x.row.App, a.SpecCommit)
 }
 
 // legacyRemote is the rclone remote legacy of the source bucket, only for

@@ -120,6 +120,26 @@ func TestHappyPath(t *testing.T) {
 	}
 }
 
+// TestPostRunNeedsPostgresResource: the Cluster's name comes from the
+// registered platform.yaml; without a postgres resource the onboarding
+// fails and says so.
+func TestPostRunNeedsPostgresResource(t *testing.T) {
+	w := newWorld(t)
+	w.noPostgres = true
+	r := w.runner()
+	id := toReady(t, w, r)
+	if _, err := r.Cutover(ctx, id, "op"); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	w.runStatus = apiv1.RunStatusSucceeded
+	r.Advance(ctx, id)
+	o := want(t, r, id, apiv1.OnboardingStateFailed)
+	if !strings.Contains(deref(o.Failure), "no postgres resource") {
+		t.Fatalf("failure %q", deref(o.Failure))
+	}
+}
+
 func TestStartRefuses(t *testing.T) {
 	w := newWorld(t)
 	r := w.runner()
