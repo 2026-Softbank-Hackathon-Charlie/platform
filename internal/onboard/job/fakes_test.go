@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -264,8 +265,11 @@ func (w *world) Deployment(_ context.Context, id string) (string, string, error)
 	return w.deployStatus[id], "msg", nil
 }
 func (w *world) DeploymentLog(context.Context, string) ([]byte, error) { return []byte("boom"), nil }
-func (w *world) Remove(_ context.Context, app string) error {
+func (w *world) Remove(_ context.Context, app string, keepGateway bool) error {
 	w.did("remove app " + app)
+	if !keepGateway && !strings.HasPrefix(app, "onb-") {
+		w.did("gateway delete") // deploy.RemoveApp deletes the instance's gateway app
+	}
 	return nil
 }
 func (w *world) FinishSource(context.Context, string) error { w.did("source peer"); return nil }

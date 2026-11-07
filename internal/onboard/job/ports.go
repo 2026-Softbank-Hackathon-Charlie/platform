@@ -177,8 +177,8 @@ type Apps interface {
 	// DeploymentLog is the end of a deployment's log.
 	DeploymentLog(ctx context.Context, id string) ([]byte, error)
 	// Remove deletes an app with everything it has; one that is not there
-	// is no error.
-	Remove(ctx context.Context, app string) error
+	// is no error. keepGateway leaves its gateway app as it is.
+	Remove(ctx context.Context, app string, keepGateway bool) error
 	// SetReplicationPassword seals hopcharlie_replicator's new password into
 	// the app's database row.
 	SetReplicationPassword(ctx context.Context, app, password string) error

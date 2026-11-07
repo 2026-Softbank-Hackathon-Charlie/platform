@@ -46,3 +46,28 @@ func TestCuttingOverGuard(t *testing.T) {
 		t.Fatalf("deployment after the run succeeded: %s %q", d.Status, d.Error)
 	}
 }
+
+// TestRemoveAppKeepingGateway: an onboarding deleted after its name moved
+// to the gateway removes the app and keeps its gateway app (ADR 0042).
+func TestRemoveAppKeepingGateway(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke")
+	te.start()
+	d := te.deployment("shop", sha("c1"), "gke")
+	te.enqueue(d.ID)
+	if got := te.wait(d.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("deployment %s %q", got.Status, got.Error)
+	}
+	if _, ok := te.gw.app("shop"); !ok {
+		t.Fatal("no gateway app to keep")
+	}
+	if err := te.ex.RemoveAppKeepingGateway(context.Background(), "shop"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := te.store.GetApp(context.Background(), "shop"); err == nil {
+		t.Fatal("the app is still there")
+	}
+	if _, ok := te.gw.app("shop"); !ok {
+		t.Fatal("the gateway app was deleted")
+	}
+}

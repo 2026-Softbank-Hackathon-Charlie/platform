@@ -262,11 +262,20 @@ func (a onboardApps) DeploymentLog(ctx context.Context, id string) ([]byte, erro
 	return []byte(b.String()), nil
 }
 
-func (a onboardApps) Remove(ctx context.Context, name string) error {
+func (a onboardApps) Remove(ctx context.Context, name string, keepGateway bool) error {
 	if a.s.d.Remover == nil {
 		return errors.New("this server cannot remove apps")
 	}
-	err := a.s.d.Remover.RemoveApp(ctx, name)
+	var err error
+	if keepGateway {
+		k, ok := a.s.d.Remover.(GatewayKeepingRemover)
+		if !ok {
+			return errors.New("this server cannot remove an app and keep its gateway app")
+		}
+		err = k.RemoveAppKeepingGateway(ctx, name)
+	} else {
+		err = a.s.d.Remover.RemoveApp(ctx, name)
+	}
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}

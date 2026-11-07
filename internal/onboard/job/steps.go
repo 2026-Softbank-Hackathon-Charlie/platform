@@ -298,7 +298,7 @@ func (r *Runner) checking(ctx context.Context, x *rec) (bool, error) {
 	}
 	if status != store.DeployHealthy {
 		log, _ := r.cfg.Apps.DeploymentLog(ctx, *c.DeploymentId)
-		if err := r.cfg.Apps.Remove(ctx, app); err != nil {
+		if err := r.cfg.Apps.Remove(ctx, app, false); err != nil {
 			return false, err
 		}
 		if c.Attempts >= onboard.CheckAttempts || x.doc.Internal.SkipPatch {
@@ -328,7 +328,7 @@ func (r *Runner) checking(ctx context.Context, x *rec) (bool, error) {
 			start = s
 		}
 	}
-	if err := r.cfg.Apps.Remove(ctx, app); err != nil {
+	if err := r.cfg.Apps.Remove(ctx, app, false); err != nil {
 		return false, err
 	}
 	hold := holdEstimate(x.facts, start)
@@ -888,9 +888,9 @@ func (r *Runner) syncing(ctx context.Context, x *rec) (bool, error) {
 	if f != nil && f.Instance != nil {
 		vmIP = f.Instance.PublicIP
 	}
-	dns, err := r.cfg.DNS.PointsAtGateway(ctx, host, vmIP)
-	if err != nil {
-		dns = false
+	dns, dnsErr := r.cfg.DNS.PointsAtGateway(ctx, host, vmIP)
+	if dnsErr != nil {
+		r.event(ctx, x, apiv1.OnboardingEventKindLog, "look up "+host+": "+dnsErr.Error(), nil)
 	}
 	r.event(ctx, x, apiv1.OnboardingEventKindStep, "syncing", map[string]any{
 		"lagSeconds": lag.Seconds(), "filesCopied": copied, "filesPending": pending, "dnsToGateway": dns, "streaming": streaming})
@@ -910,10 +910,10 @@ func (r *Runner) syncing(ctx context.Context, x *rec) (bool, error) {
 					x.doc.HumanActions[i].Done = true
 				}
 			}
-		} else {
-			x.doc.Internal.DNSAt = nil
+		} else if dnsErr == nil {
+			x.doc.Internal.DNSAt = nil // an error says nothing about the record
 		}
-		ready = streaming && lag <= onboard.MaxReplicationLag && pending <= onboard.MaxFileDiff &&
+		ready = dnsErr == nil && streaming && lag <= onboard.MaxReplicationLag && pending <= onboard.MaxFileDiff &&
 			x.doc.Internal.DNSAt != nil && now.Sub(*x.doc.Internal.DNSAt) >= time.Duration(ttl)*time.Second
 		if ready {
 			return store.OnboardingReady, nil

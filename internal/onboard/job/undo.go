@@ -41,7 +41,7 @@ func (r *Runner) undoSteps(ctx context.Context, x *rec) error {
 		if r.cfg.Apps == nil {
 			return ErrNotConfigured
 		}
-		if err := r.cfg.Apps.Remove(ctx, onboard.TestApp(x.row.ID)); err != nil {
+		if err := r.cfg.Apps.Remove(ctx, onboard.TestApp(x.row.ID), false); err != nil {
 			return fmt.Errorf("remove the test app: %w", err)
 		}
 	}
@@ -67,13 +67,14 @@ func (r *Runner) undoSteps(ctx context.Context, x *rec) error {
 		if err != nil {
 			return err
 		}
-		if owned && r.cfg.Gateway != nil {
-			if err := r.undoGateway(ctx, x); err != nil {
-				return err
-			}
-		}
 		if owned {
-			if err := r.cfg.Apps.Remove(ctx, x.row.App); err != nil {
+			keep := false
+			if r.cfg.Gateway != nil {
+				if keep, err = r.undoGateway(ctx, x); err != nil {
+					return err
+				}
+			}
+			if err := r.cfg.Apps.Remove(ctx, x.row.App, keep); err != nil {
 				return fmt.Errorf("delete the app: %w", err)
 			}
 		}
@@ -127,27 +128,42 @@ func (r *Runner) undoSteps(ctx context.Context, x *rec) error {
 	return nil
 }
 
-// undoGateway deletes the gateway app, or, once the name points at the
-// gateway (the individual record was deleted), keeps it with legacy alone:
-// deleting it would leave the name answering 404 until the record is back
-// (ADR 0042 DELETE). The owner restores the record and deletes the app.
-func (r *Runner) undoGateway(ctx context.Context, x *rec) error {
-	if x.doc.Internal.DNSAt != nil {
+// undoGateway deletes the gateway app, or, while the name points at the
+// gateway now (the individual record was deleted), keeps it with legacy
+// alone and reports keep: deleting it would leave the name answering 404
+// until the record is back (ADR 0042 DELETE). The owner restores the record
+// and deletes the gateway app. A name that cannot be looked up fails the
+// undo rather than guess.
+func (r *Runner) undoGateway(ctx context.Context, x *rec) (keep bool, err error) {
+	moved := false
+	if x.doc.Internal.DNSAt != nil || x.row.State == store.OnboardingSyncing || x.row.State == store.OnboardingReady || x.effectiveState() == store.OnboardingSyncing || x.effectiveState() == store.OnboardingReady {
+		if r.cfg.DNS == nil {
+			return false, fmt.Errorf("%w: DNS, to see whether %s points at the gateway", ErrNotConfigured, x.row.App)
+		}
+		vmIP := ""
+		if x.facts != nil && x.facts.Instance != nil {
+			vmIP = x.facts.Instance.PublicIP
+		}
+		if moved, err = r.cfg.DNS.PointsAtGateway(ctx, strings.TrimPrefix(x.doc.ServiceUrl, "https://"), vmIP); err != nil {
+			return false, fmt.Errorf("look up %s before deleting its gateway app: %w", x.row.App, err)
+		}
+	}
+	if moved {
 		spec, err := legacySpec(x, "")
 		if err != nil {
-			return err
+			return false, err
 		}
 		if err := r.cfg.Gateway.PutApp(ctx, x.row.App, spec); err != nil {
-			return fmt.Errorf("keep the gateway app on legacy: %w", err)
+			return false, fmt.Errorf("keep the gateway app on legacy: %w", err)
 		}
 		r.event(ctx, x, apiv1.OnboardingEventKindHuman, x.row.App+" points at the gateway, which keeps sending it to the VM; restore its A record, then delete the gateway app "+x.row.App, nil)
-		return nil
+		return true, nil
 	}
 	var ae *gateway.APIError
 	if err := r.cfg.Gateway.DeleteApp(ctx, x.row.App); err != nil && !(errors.As(err, &ae) && ae.Status == 404) {
-		return fmt.Errorf("delete the gateway app: %w", err)
+		return false, fmt.Errorf("delete the gateway app: %w", err)
 	}
-	return nil
+	return false, nil
 }
 
 func (r *Runner) workflowID(x *rec, path string) int64 {

@@ -577,6 +577,21 @@ const removeAppAttempts = 3
 // store.ErrNotFound; a gateway that holds the writes of one of the instances
 // is ErrWritesHeld, and the app is then kept.
 func (e *Executor) RemoveApp(ctx context.Context, name string) error {
+	return e.removeApp(ctx, name, false)
+}
+
+// RemoveAppKeepingGateway is RemoveApp that leaves the gateway app of the
+// default instance as it is: an onboarding deleted after its name moved to
+// the gateway keeps it routed to the source (ADR 0042, DELETE).
+func (e *Executor) RemoveAppKeepingGateway(ctx context.Context, name string) error {
+	return e.removeApp(ctx, name, true)
+}
+
+func (e *Executor) removeApp(ctx context.Context, name string, keepGateway bool) error {
+	keep := ""
+	if keepGateway {
+		keep = name // the default instance
+	}
 	if _, err := e.cfg.Store.GetApp(ctx, name); err != nil {
 		return err
 	}
@@ -593,7 +608,7 @@ func (e *Executor) RemoveApp(ctx context.Context, name string) error {
 			return err
 		}
 		changed := false
-		err = e.removeInstances(ctx, instances, "delete app "+name, func() error {
+		err = e.removeInstancesKeeping(ctx, instances, "delete app "+name, keep, func() error {
 			// An instance added meanwhile is not locked or removed yet.
 			now, err := e.instances(ctx, name)
 			if err != nil {
@@ -655,6 +670,12 @@ func (e *Executor) supersedeAll(ctx context.Context, list []store.Deployment, ms
 // then finds itself deleted. A gateway that holds an instance's writes is
 // ErrWritesHeld, and forget is not called.
 func (e *Executor) removeInstances(ctx context.Context, instances []string, message string, forget func() error) error {
+	return e.removeInstancesKeeping(ctx, instances, message, "", forget)
+}
+
+// removeInstancesKeeping is removeInstances that leaves the gateway app of
+// the instance keep ("" for none).
+func (e *Executor) removeInstancesKeeping(ctx context.Context, instances []string, message, keep string, forget func() error) error {
 	// One lock order for every caller, and each lock once.
 	instances = slices.Compact(slices.Sorted(slices.Values(instances)))
 	dirs := make([]string, len(instances))
@@ -676,6 +697,9 @@ func (e *Executor) removeInstances(ctx context.Context, instances []string, mess
 	}
 	if e.cfg.Gateway != nil {
 		for _, in := range instances {
+			if in == keep {
+				continue
+			}
 			err := e.cfg.Gateway.DeleteApp(ctx, in)
 			var ae *gateway.APIError
 			switch {
