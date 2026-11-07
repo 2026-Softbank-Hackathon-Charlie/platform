@@ -1,10 +1,13 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"slices"
@@ -189,7 +192,7 @@ func (rt *router) handleRelease(w http.ResponseWriter, r *http.Request) {
 
 func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
 	var req apiv1.RouteRequest
-	if !decodeJSON(w, r, &req) {
+	if !rt.g.decodeJSON(w, r, &req) {
 		return
 	}
 	rt.g.controlMu.Lock()
@@ -218,7 +221,7 @@ func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
 
 func (rt *router) handleWeights(w http.ResponseWriter, r *http.Request) {
 	var req apiv1.WeightsRequest
-	if !decodeJSON(w, r, &req) {
+	if !rt.g.decodeJSON(w, r, &req) {
 		return
 	}
 	rt.g.controlMu.Lock()
@@ -348,11 +351,45 @@ func (rt *router) namesLocked() []string {
 	return out
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAdminBody))
+func (g *Gateway) decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	// Bound the entire body, not only the prefix the first Decode consumes.
+	// Only receive time is bounded: Hold's drain and Release's dispatch waits
+	// are independent and may legitimately exceed this duration.
+	deadline := time.Now().Add(g.cfg.AdminBodyReadTimeout)
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(deadline)
+	body := http.MaxBytesReader(w, r.Body, maxAdminBody)
+	done := make(chan struct{})
+	timer := time.AfterFunc(time.Until(deadline), func() { _ = body.Close(); close(done) })
+	raw, err := io.ReadAll(body)
+	if !timer.Stop() {
+		<-done
+	}
+	if !time.Now().Before(deadline) {
+		// Keep the expired network read deadline until this connection closes:
+		// net/http must not wait for the rest of a stalled body after the 408.
+		w.Header().Set("Connection", "close")
+		writeError(w, http.StatusRequestTimeout, "body_timeout", "admin request body did not arrive in time; no control change was applied")
+		return false
+	}
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "admin request body exceeds 64 KiB")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body: "+err.Error())
+		}
+		return false
+	}
+	_ = controller.SetReadDeadline(time.Time{})
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body: "+err.Error())
+		return false
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_request", "JSON body must contain exactly one value")
 		return false
 	}
 	return true

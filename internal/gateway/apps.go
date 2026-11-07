@@ -127,8 +127,6 @@ func (g *Gateway) handleListApps(w http.ResponseWriter, _ *http.Request) {
 // routing. A replace keeps the app's in-flight writes counted, so a hold
 // right after it still waits for writes sent before it.
 func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
-	g.controlMu.Lock()
-	defer g.controlMu.Unlock()
 	name := r.PathValue("app")
 	if !appName.MatchString(name) {
 		writeError(w, http.StatusBadRequest, "invalid_app_name", fmt.Sprintf("app name %q must match %s", name, appName))
@@ -139,7 +137,7 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var spec AppSpec
-	if !decodeJSON(w, r, &spec) {
+	if !g.decodeJSON(w, r, &spec) {
 		return
 	}
 	if len(spec.Dial) > 0 {
@@ -177,6 +175,11 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reading and validating an administrator's body must not hold up another
+	// app's Hold/Route/Release. Mutable state is still checked and changed in
+	// the same control transaction, including an app held while decoding.
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
 	g.appsMu.Lock()
 	rt, exists := g.apps[name]
 	if !exists {

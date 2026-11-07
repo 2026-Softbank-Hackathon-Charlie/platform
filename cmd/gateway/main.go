@@ -41,6 +41,7 @@ func main() {
 	maxHeld := flag.Int("max-held", gateway.DefaultMaxHeld, "waiting writes beyond this get 503")
 	writeTimeout := flag.Duration("write-timeout", gateway.DefaultWriteTimeout, "how long a forwarded write may take; writes are not cancelled when their client leaves")
 	bodyReadTimeout := flag.Duration("held-body-timeout", gateway.DefaultBodyReadTimeout, "maximum initial body read while a write is held")
+	adminBodyReadTimeout := flag.Duration("admin-body-timeout", gateway.DefaultAdminBodyReadTimeout, "maximum admin JSON body receive time; excludes drain and dispatch waits")
 	maxConcurrentWrites := flag.Int("max-concurrent-writes", gateway.DefaultMaxConcurrentWrites, "maximum writes dispatched per app at once")
 	maxBufferedBytes := flag.Int64("max-buffered-bytes", gateway.DefaultMaxBufferedBytes, "global held-body memory reservation limit")
 	healthInterval := flag.Duration("health-interval", gateway.DefaultHealthInterval, "backend health check interval")
@@ -66,24 +67,25 @@ func main() {
 		aiCfg = &gateway.AIDemoConfig{App: *aiApp, Token: os.Getenv("AI_GATEWAY_TOKEN")}
 	}
 	gw, err := gateway.New(gateway.Config{
-		AIDemo:              aiCfg,
-		Backends:            bs,
-		InitialBackend:      *initial,
-		StateFile:           *stateFile,
-		AdminToken:          token,
-		AppDomain:           *appDomain,
-		DefaultApp:          *defaultApp,
-		DrainTimeout:        *drain,
-		MaxHold:             *maxHold,
-		MaxHeld:             *maxHeld,
-		WriteTimeout:        *writeTimeout,
-		BodyReadTimeout:     *bodyReadTimeout,
-		MaxConcurrentWrites: *maxConcurrentWrites,
-		MaxBufferedBytes:    *maxBufferedBytes,
-		HealthInterval:      *healthInterval,
-		HealthPath:          *healthPath,
-		ConnRecycle:         *connRecycle,
-		Log:                 log,
+		AIDemo:               aiCfg,
+		Backends:             bs,
+		InitialBackend:       *initial,
+		StateFile:            *stateFile,
+		AdminToken:           token,
+		AdminBodyReadTimeout: *adminBodyReadTimeout,
+		AppDomain:            *appDomain,
+		DefaultApp:           *defaultApp,
+		DrainTimeout:         *drain,
+		MaxHold:              *maxHold,
+		MaxHeld:              *maxHeld,
+		WriteTimeout:         *writeTimeout,
+		BodyReadTimeout:      *bodyReadTimeout,
+		MaxConcurrentWrites:  *maxConcurrentWrites,
+		MaxBufferedBytes:     *maxBufferedBytes,
+		HealthInterval:       *healthInterval,
+		HealthPath:           *healthPath,
+		ConnRecycle:          *connRecycle,
+		Log:                  log,
 	})
 	if err != nil {
 		log.Error("start gateway", "err", err)
