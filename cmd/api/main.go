@@ -33,6 +33,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion"
@@ -663,6 +664,20 @@ func parityGate(path string, envSvc *envs.Service) (*paritygate.Gate, error) {
 		return envs.NewReadClients(c, 10*time.Second)
 	}
 	g := paritygate.NewWithResources(cfg, sar, nil, resources)
+	var cloudEnvironments []string
+	for _, name := range envSvc.Names() {
+		c, _ := envSvc.Config(name)
+		if c.Provider == "aws" || c.Provider == "gcp" {
+			cloudEnvironments = append(cloudEnvironments, name)
+		}
+	}
+	g.SetCloudPolicyFetcher(cloudpolicy.New(func(environment string) (cloudpolicy.Environment, error) {
+		c, ok := envSvc.Config(environment)
+		if !ok {
+			return cloudpolicy.Environment{}, errors.New("unknown environment")
+		}
+		return cloudpolicy.Environment{Provider: c.Provider, Region: c.Region}, nil
+	}, nil, nil).Check, cloudEnvironments...)
 	g.SetUsageFetcher(probes.ServiceUsageFetcher(func(environment string) (rest.Interface, error) {
 		c, ok := envSvc.Config(environment)
 		if !ok {
