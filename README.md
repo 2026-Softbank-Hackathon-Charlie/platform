@@ -108,6 +108,22 @@ npx openapi-typescript ../platform/api/openapi.yaml -o src/api/types.ts
 
 브라우저의 `EventSource`는 Authorization 헤더를 붙일 수 없으므로, SSE는 fetch 기반 클라이언트(예: `@microsoft/fetch-event-source`)로 받습니다. 콘솔 주소는 `PLATFORM_CORS_ORIGINS`에 넣어야 합니다.
 
+## 온프렘 연결 코드
+
+콘솔의 온프렘 연결 화면은 `POST /v1/onprem/enrollments`로 실제 15분짜리 등록 코드를
+발급합니다. operator와 `Idempotency-Key`가 필요합니다. GET `/{id}`와 POST `/{id}/revoke`
+역시 operator 전용입니다. 코드는 최초 한 번만 반환하고 DB에는 해시만 남깁니다.
+재요청은 같은 등록 상태만 돌려주므로, 다시 필요하면 폐기 후 재발급하세요.
+
+실제 제공되는 `/v1/onprem/installer.sh`는 Linux/WSL2에서 기존 k3s를 확인하고, 명시적으로
+선택했을 때만 설치를 시도합니다. 자동 sudo나 기존 k3s 설정 덮어쓰기는 하지 않습니다.
+설치 명령의 서버 주소는 `PLATFORM_ONPREM_PUBLIC_URL`(기본 `https://api.hopcharlie.dev`)입니다.
+공개 claim은 한 번만 코드를 소비하며 장비의 인증 요청을 기록합니다.
+
+현재 등록 worker는 없으므로 인증 후에는 claimed/검증 미관측으로 남습니다. 자동 Argo·SSM
+등록이나 신규 환경의 배포 가능 상태를 뜻하지 않습니다. 설계·권한·검증 경계는
+[ADR 0048](docs/adr/0048-one-use-onprem-bootstrap-enrollments.md)을 확인하세요.
+
 ## 실행
 
 엔진 레포가 private이라 Go 모듈을 받으려면 한 번 설정이 필요합니다.

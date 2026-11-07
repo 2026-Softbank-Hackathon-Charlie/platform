@@ -163,4 +163,5 @@ type Store interface {
 	ScanStore       // the latest image scan of each digest (scans.go)
 	ExceptionStore  // security exceptions (exceptions.go)
 	OnboardingStore // onboardings of apps from outside the platform and their events (onboarding.go)
+	EnrollmentStore // one-use on-prem bootstrap grants (enrollment.go)
 }

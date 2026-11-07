@@ -24,6 +24,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
@@ -83,7 +84,10 @@ type GitHub interface {
 
 // Config configures the API.
 type Config struct {
-	WrittenTokens *auth.WrittenTokens
+	// OnpremPublicURL is a trusted HTTPS origin used in bootstrap commands.
+	// It never comes from Host or X-Forwarded-* request headers.
+	OnpremPublicURL string
+	WrittenTokens   *auth.WrittenTokens
 	// Tokens authenticates programs with static tokens. When Insecure is set
 	// and Tokens and Admins are both empty, every request acts as the
 	// operator "dev" (local development only).
@@ -259,9 +263,12 @@ type SourceMeasurer interface {
 
 // Server is the HTTP handler.
 type Server struct {
-	cfg Config
-	d   Deps
-	mux *http.ServeMux
+	enrollments                    *onprem.Service
+	enrollmentIP, enrollmentGlobal *auth.LoginLimiter
+	enrollmentSlots                chan struct{}
+	cfg                            Config
+	d                              Deps
+	mux                            *http.ServeMux
 
 	startMu sync.Mutex // one start at a time keeps idempotency and plan reservation consistent
 
@@ -296,11 +303,28 @@ func New(cfg Config, d Deps) *Server {
 	s := &Server{cfg: cfg, d: d, mux: http.NewServeMux(), now: storeTime,
 		logins:     auth.NewLoginLimiter(loginMaxFailures, loginWindow, loginMaxUsernames),
 		loginSlots: make(chan struct{}, loginConcurrency)}
+	if s.cfg.OnpremPublicURL == "" {
+		s.cfg.OnpremPublicURL = "https://api.hopcharlie.dev"
+	}
+	s.enrollments = &onprem.Service{Store: d.Store, Origin: s.cfg.OnpremPublicURL, Now: func() time.Time { return s.now() }}
+	s.enrollmentIP = auth.NewLoginLimiter(20, time.Minute, 1024)
+	s.enrollmentGlobal = auth.NewLoginLimiter(120, time.Minute, 1)
+	s.enrollmentSlots = make(chan struct{}, 16)
 	if d.Runs != nil {
 		// The observe phase rolls back through the same path as the endpoint.
 		d.Runs.SetAutoRollback(s.autoRollback)
 	}
 	viewer, agent, operator := apiv1.RoleViewer, apiv1.RoleAgent, apiv1.RoleOperator
+	s.route("POST /v1/onprem/enrollments", operator, s.createOnpremEnrollment)
+	s.route("GET /v1/onprem/enrollments/{id}", operator, s.getOnpremEnrollment)
+	s.route("POST /v1/onprem/enrollments/{id}/revoke", operator, s.revokeOnpremEnrollment)
+	s.route("POST /v1/onprem/enrollments/{id}/claim", "", s.claimOnpremEnrollment)
+	s.route("GET /v1/onprem/installer.sh", "", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write([]byte(onprem.Installer))
+	})
 
 	s.route("GET /healthz", "", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, apiv1.Health{Status: "ok"})

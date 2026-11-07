@@ -22,14 +22,15 @@ import (
 type idemEntry struct{ planRef, runID string }
 
 type memory struct {
-	mu      sync.Mutex
-	plans   map[string]store.Plan
-	runs    map[string]store.Run
-	events  []store.Event // in Seq order
-	audit   []store.Audit // in ID order
-	idem    map[string]idemEntry
-	seq     int64
-	auditID int64
+	enrollments map[string]store.OnpremEnrollment
+	mu          sync.Mutex
+	plans       map[string]store.Plan
+	runs        map[string]store.Run
+	events      []store.Event // in Seq order
+	audit       []store.Audit // in ID order
+	idem        map[string]idemEntry
+	seq         int64
+	auditID     int64
 
 	tools      memoryPlanTools  // written records and plan attachments (memory_written.go)
 	agent      agentMemory      // agent sessions and events (memory_agent.go)
