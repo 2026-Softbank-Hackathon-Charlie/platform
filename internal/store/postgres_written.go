@@ -71,6 +71,17 @@ func (s *Postgres) AppendWrittenRecords(ctx context.Context, stream string, recs
 			return err
 		}
 	}
+	if received := CollectorReceivedAt(recs); !received.IsZero() {
+		tag, err := tx.Exec(ctx, `INSERT INTO written_record_collectors(stream,generation,scope,coverage,last_received_at) VALUES($1,$2,$3,$4,$5)
+		ON CONFLICT(stream) DO UPDATE SET last_received_at=GREATEST(written_record_collectors.last_received_at,EXCLUDED.last_received_at)
+		WHERE written_record_collectors.generation=EXCLUDED.generation AND written_record_collectors.scope=EXCLUDED.scope AND written_record_collectors.coverage=EXCLUDED.coverage`, stream, recs[0].Generation, recs[0].Scope, recs[0].Coverage, received)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("%w: collector identity changed", ErrConflict)
+		}
+	}
 	return tx.Commit(ctx)
 }
 
@@ -89,7 +100,7 @@ func (s *Postgres) ListWrittenRecords(ctx context.Context, stream string, afterS
 
 func (s *Postgres) WrittenRecordStats(ctx context.Context, stream string) (WrittenStats, error) {
 	var st WrittenStats
-	err := s.pool.QueryRow(ctx, `SELECT count(*), max(at),coalesce(max(seq),0),CASE WHEN count(DISTINCT scope)=1 THEN min(scope) ELSE 'unspecified' END,CASE WHEN count(DISTINCT coverage)=1 THEN min(coverage) ELSE 'reported_records' END,coalesce(min(generation),'') FROM written_records WHERE stream = $1`, stream).Scan(&st.Count, &st.LatestAt, &st.LastSeq, &st.Scope, &st.Coverage, &st.Generation)
+	err := s.pool.QueryRow(ctx, `SELECT count(*), max(at),coalesce(max(seq),0),CASE WHEN count(DISTINCT scope)=1 THEN min(scope) ELSE 'unspecified' END,CASE WHEN count(DISTINCT coverage)=1 THEN min(coverage) ELSE 'reported_records' END,coalesce(min(generation),''),(SELECT last_received_at FROM written_record_collectors WHERE stream=$1) FROM written_records WHERE stream = $1`, stream).Scan(&st.Count, &st.LatestAt, &st.LastSeq, &st.Scope, &st.Coverage, &st.Generation, &st.LastReceivedAt)
 	if st.LatestAt != nil {
 		t := st.LatestAt.UTC()
 		st.LatestAt = &t

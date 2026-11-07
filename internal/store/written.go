@@ -9,10 +9,13 @@ import (
 // verify.writtenRecords to "stream:<name>", verification checks that every
 // record of the stream exists on the target database.
 type WrittenRecord struct {
-	EventID    string
-	Generation string
-	Scope      string
-	Coverage   string
+	// AuthenticatedCollector is transient server authorization evidence, never
+	// accepted from JSON or persisted as a property of an individual receipt.
+	AuthenticatedCollector bool
+	EventID                string
+	Generation             string
+	Scope                  string
+	Coverage               string
 	// Seq is assigned by AppendWrittenRecords and increases within a stream.
 	Seq    int64
 	Stream string
@@ -25,12 +28,30 @@ type WrittenRecord struct {
 
 // WrittenStats summarizes one stream.
 type WrittenStats struct {
-	LastSeq    int64
-	Generation string
-	Scope      string
-	Coverage   string
-	Count      int64
-	LatestAt   *time.Time // the largest At; nil when the stream is empty
+	// LastReceivedAt is server receipt time of a valid authenticated collector
+	// batch, including an identical retry. LatestAt remains the committed-write time.
+	LastReceivedAt *time.Time
+	LastSeq        int64
+	Generation     string
+	Scope          string
+	Coverage       string
+	Count          int64
+	LatestAt       *time.Time // the largest At; nil when the stream is empty
+}
+
+// CollectorReceivedAt accepts only nonempty, authenticated reservation-commit
+// batches. A no-op, rejected batch or general agent cannot forge collector liveness.
+func CollectorReceivedAt(recs []WrittenRecord) time.Time {
+	var latest time.Time
+	for _, r := range recs {
+		if !r.AuthenticatedCollector || r.Scope != "application_commits" || r.Coverage != "reservation_inserts" || r.Generation == "" || r.Table != "app.reservations" || r.PK == "" || r.EventID != "reservation-"+r.PK || r.At.IsZero() || r.ReceivedAt.IsZero() {
+			return time.Time{}
+		}
+		if r.ReceivedAt.After(latest) {
+			latest = r.ReceivedAt
+		}
+	}
+	return latest
 }
 
 // PlanAttachment is a file a plan refers to as "attachment:<name>", such as
