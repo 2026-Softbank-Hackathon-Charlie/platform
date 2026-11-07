@@ -99,7 +99,7 @@ func TestConnectionCannotPublishFromPartialOrDuplicatedChecks(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := c.Connect(t.Context(), e, requestFixture())
-		if err != nil || result.Status == "ready" || r.published != 0 {
+		if (err != nil && !errors.Is(err, store.ErrConflict)) || result.Status == "ready" || r.published != 0 {
 			t.Fatalf("unverified registration published: status=%s error=%v", result.Status, err)
 		}
 	}
@@ -157,5 +157,42 @@ func TestBootstrapIsOneUseAndDoesNotMintBeforeSessionReservation(t *testing.T) {
 	}
 	if network.keys != 1 {
 		t.Fatalf("minted %d keys", network.keys)
+	}
+}
+
+type revokeAfterRegistrationSnapshot struct {
+	store.EnrollmentStore
+	after func()
+}
+
+func (s revokeAfterRegistrationSnapshot) ListRegisteredOnpremEnvironments(ctx context.Context, now time.Time) ([]store.OnpremEnrollment, error) {
+	rows, err := s.EnrollmentStore.ListRegisteredOnpremEnvironments(ctx, now)
+	if err == nil {
+		s.after()
+	}
+	return rows, err
+}
+
+func TestRestoreCannotResurrectAConcurrentRevocation(t *testing.T) {
+	c, s, claimed, r, _ := registrationFixture(t)
+	r.checks = successfulChecks()
+	e, err := s.AuthenticateConnection(t.Context(), claimed.ID, claimed.ConnectionToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Connect(t.Context(), e, requestFixture()); err != nil {
+		t.Fatal(err)
+	}
+	c.Store = revokeAfterRegistrationSnapshot{EnrollmentStore: c.Store, after: func() {
+		if _, err := s.Revoke(t.Context(), claimed.ID); err != nil {
+			t.Fatal(err)
+		}
+		_ = r.Remove(t.Context(), claimed.ID, e.Environment)
+	}}
+	if err := c.Restore(t.Context()); err == nil {
+		t.Fatal("stale restore did not observe revocation")
+	}
+	if r.published != 1 {
+		t.Fatalf("revoked registration was republished %d times", r.published)
 	}
 }

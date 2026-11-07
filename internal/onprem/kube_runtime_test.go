@@ -8,12 +8,15 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	authv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -22,6 +25,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
+	ktesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 const runtimeTestID = "enr_0123456789abcdef01234567"
@@ -32,7 +37,112 @@ func testKubeRuntime(t *testing.T) *KubeRuntime {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewKubeRuntime(KubeRuntimeConfig{Kube: kubefake.NewSimpleClientset(), Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), Envs: registry, TailnetDomain: "tailtest.ts.net", RouteNamespace: "hopcharlie-db-network", ArgoNamespace: "argocd", ProxyClass: "hopcharlie-onprem-api-egress-management", HelloImage: "docker.io/library/python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca", Profile: map[string]any{"podSecurity": "restricted"}})
+	kube := kubefake.NewSimpleClientset()
+	kube.PrependReactor("create", "selfsubjectaccessreviews", func(a ktesting.Action) (bool, runtime.Object, error) {
+		review := a.(ktesting.CreateAction).GetObject().(*authv1.SelfSubjectAccessReview).DeepCopy()
+		r := review.Spec.ResourceAttributes
+		review.Status.Allowed = !(r.Resource == "secrets" && (r.Verb == "get" || r.Verb == "list" || r.Verb == "watch"))
+		return true, review, nil
+	})
+	// Fake the admission ownership boundary, not GET access to Argo credentials.
+	kube.PrependReactor("update", "secrets", func(a ktesting.Action) (bool, runtime.Object, error) {
+		desired := a.(ktesting.UpdateAction).GetObject().(*corev1.Secret)
+		object, err := kube.Tracker().Get(corev1.SchemeGroupVersion.WithResource("secrets"), a.GetNamespace(), desired.Name)
+		if err != nil {
+			return false, nil, nil
+		}
+		old := object.(*corev1.Secret)
+		if old.Labels[registrationOwnerLabel] != desired.Labels[registrationOwnerLabel] || old.Labels[registrationUIDLabel] != desired.Labels[registrationUIDLabel] || string(old.Data["server"]) != string(desired.Data["server"]) {
+			return true, nil, apierrors.NewForbidden(corev1.Resource("secrets"), desired.Name, errors.New("ownership admission denied"))
+		}
+		return false, nil, nil
+	})
+	kube.PrependReactor("delete", "secrets", func(a ktesting.Action) (bool, runtime.Object, error) {
+		name := a.(ktesting.DeleteAction).GetName()
+		object, err := kube.Tracker().Get(corev1.SchemeGroupVersion.WithResource("secrets"), a.GetNamespace(), name)
+		if err != nil {
+			return false, nil, nil
+		}
+		old := object.(*corev1.Secret)
+		if old.Labels[registrationOwnerLabel] != "enr_"+strings.TrimPrefix(name, "hop-onprem-") {
+			return true, nil, apierrors.NewForbidden(corev1.Resource("secrets"), name, errors.New("ownership admission denied"))
+		}
+		return false, nil, nil
+	})
+	return NewKubeRuntime(KubeRuntimeConfig{Kube: kube, Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), Envs: registry, TailnetDomain: "tailtest.ts.net", RouteNamespace: "hopcharlie-db-network", ArgoNamespace: "argocd", ProxyClass: "hopcharlie-onprem-api-egress-management", HelloImage: "docker.io/library/python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca", Profile: map[string]any{"podSecurity": "restricted"}})
+}
+
+func TestKubeRuntimeNeverReadsArgoCredentials(t *testing.T) {
+	k := testKubeRuntime(t)
+	s := runtimeState(t, k)
+	kube := k.cfg.Kube.(*kubefake.Clientset)
+	for range 2 {
+		if err := k.Publish(t.Context(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := k.Remove(t.Context(), s.EnrollmentID, s.Environment); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range kube.Actions() {
+		if a.GetResource().Resource == "secrets" && (a.GetVerb() == "get" || a.GetVerb() == "list" || a.GetVerb() == "watch") {
+			t.Fatalf("registrar reads existing Argo credentials: %s", a.GetVerb())
+		}
+	}
+}
+
+func TestKubeRuntimeRejectsCredentialReadPermissions(t *testing.T) {
+	k := testKubeRuntime(t)
+	k.cfg.Kube.(*kubefake.Clientset).PrependReactor("create", "selfsubjectaccessreviews", func(a ktesting.Action) (bool, runtime.Object, error) {
+		review := a.(ktesting.CreateAction).GetObject().(*authv1.SelfSubjectAccessReview).DeepCopy()
+		review.Status.Allowed = true
+		return true, review, nil
+	})
+	if err := k.Configured(t.Context()); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("registrar can read every cloud credential", err)
+	}
+}
+
+// Opt-in only: this must point at the disposable kind cluster provisioned by CI,
+// never at the developer's current/default kubeconfig or a production context.
+func TestUnconditionalSecretUpdateOnDisposableKind(t *testing.T) {
+	path := os.Getenv("HOPCHARLIE_ONPREM_TEST_KUBECONFIG")
+	if path == "" {
+		t.Skip("requires explicit disposable kind kubeconfig")
+	}
+	raw, err := clientcmd.LoadFromFile(path)
+	if err != nil {
+		t.Fatal("test kubeconfig could not be loaded")
+	}
+	if !strings.HasPrefix(raw.CurrentContext, "kind-") || !strings.Contains(raw.CurrentContext, "onprem") {
+		t.Fatal("unconditional update test requires an onprem-named disposable kind context")
+	}
+	rc, err := clientcmd.NewNonInteractiveClientConfig(*raw, raw.CurrentContext, &clientcmd.ConfigOverrides{}, nil).ClientConfig()
+	if err != nil {
+		t.Fatal("test client config could not be built")
+	}
+	client, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := client.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "hop-onprem-secret-update-test-", Labels: map[string]string{"hopcharlie.dev/disposable-test": "true"}}}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		uid := ns.UID
+		_ = client.CoreV1().Namespaces().Delete(context.Background(), ns.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
+	})
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "no-get-refresh", Namespace: ns.Name}, Data: map[string][]byte{"credential": []byte("test-only-first")}}
+	if _, err = client.CoreV1().Secrets(ns.Name).Create(t.Context(), secret, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately do not GET and do not populate ResourceVersion.
+	secret.Data["credential"] = []byte("test-only-refreshed")
+	updated, err := client.CoreV1().Secrets(ns.Name).Update(t.Context(), secret, metav1.UpdateOptions{})
+	if err != nil || string(updated.Data["credential"]) != "test-only-refreshed" {
+		t.Fatal("Kubernetes rejected unconditional Secret credential renewal", err)
+	}
 }
 
 func TestKubeRuntimeObservesAdmissionAndHTTPProof(t *testing.T) {
@@ -121,6 +231,8 @@ func TestKubeRuntimeObservesAdmissionAndHTTPProof(t *testing.T) {
 			ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 			k.cfg.NewRemoteClient = func(rc *rest.Config) (kubernetes.Interface, error) {
 				copy := rest.CopyConfig(rc)
+				copy.ContentType = "application/json"
+				copy.AcceptContentTypes = "application/json"
 				copy.Host = server.URL
 				copy.CAData = ca
 				copy.ServerName = ""
@@ -214,7 +326,7 @@ func TestKubeRuntimePublishRestoresAndRefreshesCredentials(t *testing.T) {
 		t.Fatal("runtime credentials not refreshed")
 	}
 	secret.Labels[registrationOwnerLabel] = "foreign"
-	if _, err = k.cfg.Kube.CoreV1().Secrets("argocd").Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
+	if err = k.cfg.Kube.(*kubefake.Clientset).Tracker().Update(corev1.SchemeGroupVersion.WithResource("secrets"), secret, "argocd"); err != nil {
 		t.Fatal(err)
 	}
 	if err = k.Publish(ctx, s); !errors.Is(err, store.ErrConflict) {

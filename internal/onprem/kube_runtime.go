@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,10 +44,44 @@ func NewKubeRuntime(cfg KubeRuntimeConfig) *KubeRuntime { return &KubeRuntime{cf
 var tailnetDomainPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*\.ts\.net$`)
 var pinnedImagePattern = regexp.MustCompile(`^[A-Za-z0-9./:_-]+@sha256:[a-f0-9]{64}$`)
 
-func (k *KubeRuntime) Configured(context.Context) error {
+func (k *KubeRuntime) Configured(ctx context.Context) error {
 	c := k.cfg
 	if c.Kube == nil || c.Dynamic == nil || c.Envs == nil || !tailnetDomainPattern.MatchString(c.TailnetDomain) || c.RouteNamespace != "hopcharlie-db-network" || c.ArgoNamespace != "argocd" || c.ProxyClass != "hopcharlie-onprem-api-egress-management" || !pinnedImagePattern.MatchString(c.HelloImage) || len(c.Profile) == 0 {
 		return ErrUnavailable
+	}
+	// Reading Argo cluster Secrets would expose credentials of existing cloud
+	// clusters. The registrar may mutate only VAP-guarded names, never read them.
+	for _, r := range []struct {
+		a    authv1.ResourceAttributes
+		want bool
+	}{
+		{authv1.ResourceAttributes{Namespace: c.ArgoNamespace, Verb: "create", Resource: "secrets"}, true},
+		{authv1.ResourceAttributes{Namespace: c.ArgoNamespace, Verb: "update", Resource: "secrets", Name: "hop-onprem-000000000000000000000000"}, true},
+		{authv1.ResourceAttributes{Namespace: c.ArgoNamespace, Verb: "delete", Resource: "secrets", Name: "hop-onprem-000000000000000000000000"}, true},
+		{authv1.ResourceAttributes{Namespace: c.ArgoNamespace, Verb: "get", Resource: "secrets"}, false},
+		{authv1.ResourceAttributes{Namespace: c.ArgoNamespace, Verb: "list", Resource: "secrets"}, false},
+		{authv1.ResourceAttributes{Namespace: c.ArgoNamespace, Verb: "watch", Resource: "secrets"}, false},
+	} {
+		review, err := c.Kube.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authv1.SelfSubjectAccessReview{Spec: authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &r.a}}, metav1.CreateOptions{})
+		if err != nil || review.Status.Allowed != r.want || review.Status.EvaluationError != "" {
+			return ErrUnavailable
+		}
+	}
+	for _, r := range []struct {
+		namespace, group, resource string
+		verbs                      []string
+	}{
+		{c.RouteNamespace, "", "services", []string{"get", "create", "update", "delete"}},
+		{c.ArgoNamespace, "argoproj.io", "appprojects", []string{"get", "create", "update"}},
+		{c.ArgoNamespace, "argoproj.io", "applicationsets", []string{"get", "create", "update"}},
+	} {
+		for _, verb := range r.verbs {
+			a := &authv1.ResourceAttributes{Namespace: r.namespace, Group: r.group, Resource: r.resource, Verb: verb}
+			review, err := c.Kube.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authv1.SelfSubjectAccessReview{Spec: authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: a}}, metav1.CreateOptions{})
+			if err != nil || !review.Status.Allowed || review.Status.EvaluationError != "" {
+				return ErrUnavailable
+			}
+		}
 	}
 	return nil
 }
@@ -266,7 +301,7 @@ func (k *KubeRuntime) ensureProbe(ctx context.Context, client kubernetes.Interfa
 	}
 	no, yes, uid := false, true, int64(10001)
 	// This fixed program binds the HTTP proof to one server-generated enrollment.
-	program := fmt.Sprintf("import os\nfrom http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def do_GET(self):\n  b=(%q+os.environ['POD_UID']+'\\n').encode();self.send_response(200);self.end_headers();self.wfile.write(b)\n def log_message(self,*a): pass\nHTTPServer(('0.0.0.0',8080),H).serve_forever()", "Hello World! "+s.EnrollmentID+" ")
+	program := fmt.Sprintf("import os\nfrom http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def do_GET(self):\n  b=(%q+os.environ['POD_UID']+chr(10)).encode();self.send_response(200);self.end_headers();self.wfile.write(b)\n def log_message(self,*a): pass\nHTTPServer(('0.0.0.0',8080),H).serve_forever()", "Hello World! "+s.EnrollmentID+" ")
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hello", Namespace: namespace, Labels: labels}, Spec: corev1.PodSpec{AutomountServiceAccountToken: &no, EnableServiceLinks: &no, RestartPolicy: corev1.RestartPolicyAlways, SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: &yes, RunAsUser: &uid, SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}}, Containers: []corev1.Container{{Name: "hello", Env: []corev1.EnvVar{{Name: "POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}}}, Image: k.cfg.HelloImage, ImagePullPolicy: corev1.PullAlways, Command: []string{"python", "-I", "-u", "-c", program}, Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}}, SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &no, ReadOnlyRootFilesystem: &yes, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}}, Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("16Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m"), corev1.ResourceMemory: resource.MustParse("64Mi")}}}}}}
 	_, err = client.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
@@ -295,20 +330,19 @@ func (k *KubeRuntime) Publish(ctx context.Context, s RegistrationState) error {
 		return ErrInvalid
 	}
 	name := registrationResourceName(s.EnrollmentID)
-	desired := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: k.cfg.ArgoNamespace, Labels: map[string]string{"argocd.argoproj.io/secret-type": "cluster", registrationOwnerLabel: s.EnrollmentID, registrationUIDLabel: s.Connection.ClusterUID}}, Data: map[string][]byte{"name": []byte(name), "server": []byte(s.Endpoint), "config": secretConfig, "clusterResources": []byte("true")}}
+	desired := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: k.cfg.ArgoNamespace, Labels: map[string]string{"argocd.argoproj.io/secret-type": "cluster", registrationOwnerLabel: s.EnrollmentID, registrationUIDLabel: s.Connection.ClusterUID}, Annotations: map[string]string{"hopcharlie.dev/registration-version": strconv.FormatInt(s.RegistrationVersion, 10), "hopcharlie.dev/token-expires-at": s.Connection.TokenExpiresAt.UTC().Format(time.RFC3339)}}, Data: map[string][]byte{"name": []byte(name), "server": []byte(s.Endpoint), "config": secretConfig, "clusterResources": []byte("true")}}
 	secrets := k.cfg.Kube.CoreV1().Secrets(k.cfg.ArgoNamespace)
-	old, err := secrets.Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = secrets.Create(ctx, desired, metav1.CreateOptions{})
-	} else if err == nil {
-		if old.Labels[registrationOwnerLabel] != s.EnrollmentID || old.Labels[registrationUIDLabel] != s.Connection.ClusterUID || string(old.Data["server"]) != s.Endpoint {
-			return store.ErrConflict
-		}
-		desired.ResourceVersion = old.ResourceVersion
-		desired.UID = old.UID
+	_, err = secrets.Create(ctx, desired, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		// Secret strategy supports unconditional updates. The dedicated SA has
+		// no GET/LIST/WATCH; admission compares immutable owner/UID/CA/server
+		// against oldObject. Never replace this with a privileged read.
 		_, err = secrets.Update(ctx, desired, metav1.UpdateOptions{})
 	}
 	if err != nil {
+		if apierrors.IsForbidden(err) || apierrors.IsConflict(err) {
+			return store.ErrConflict
+		}
 		return errors.New("Argo cluster credential registration failed")
 	}
 	if err = EnsureEnvironmentApplications(ctx, k.cfg.Dynamic, k.cfg.ArgoNamespace, s, k.cfg.Profile); err != nil {
@@ -327,15 +361,12 @@ func (k *KubeRuntime) Remove(ctx context.Context, id, environment string) error 
 		return err
 	}
 	secretName := "hop-onprem-" + strings.TrimPrefix(id, "enr_")
-	secret, err := k.cfg.Kube.CoreV1().Secrets(k.cfg.ArgoNamespace).Get(ctx, secretName, metav1.GetOptions{})
-	if err == nil {
-		if secret.Labels[registrationOwnerLabel] != id {
+	// Admission checks the old Secret's ownership on this exact derived name.
+	err := k.cfg.Kube.CoreV1().Secrets(k.cfg.ArgoNamespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		if apierrors.IsForbidden(err) || apierrors.IsConflict(err) {
 			return store.ErrConflict
 		}
-		uid, rv := secret.UID, secret.ResourceVersion
-		err = k.cfg.Kube.CoreV1().Secrets(k.cfg.ArgoNamespace).Delete(ctx, secretName, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}})
-	}
-	if err != nil && !apierrors.IsNotFound(err) {
 		return errors.New("Argo credential revocation failed")
 	}
 	routeName := RegistrationHostname(id)

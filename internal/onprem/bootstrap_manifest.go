@@ -73,6 +73,7 @@ func BootstrapManifest(c BootstrapConfig) ([]byte, error) {
 	items = append(items, role(argo, argoRules), binding(argo, argo))
 	protected := `['kube-system','kube-public','kube-node-lease','default','charlie-system','argocd','hopcharlie-db-network','observability','minio']`
 	user := "system:serviceaccount:" + ns + ":" + argo
+	ownerLabel := "hopcharlie.dev/onprem-enrollment"
 	// Admission is scoped to the delegated Argo identity. It cannot edit this
 	// policy or RBAC, and cannot access the connector's credential namespace.
 	policy := obj("admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicy", argo, map[string]any{"spec": map[string]any{
@@ -81,11 +82,26 @@ func BootstrapManifest(c BootstrapConfig) ([]byte, error) {
 		"matchConditions":  []any{map[string]any{"name": "delegated-identity", "expression": "request.userInfo.username == '" + user + "'"}},
 		"validations": []any{
 			map[string]any{"expression": "!(request.namespace in " + protected + ") && !request.namespace.startsWith('kube-') && (request.resource.resource != 'namespaces' || (object != null && !(object.metadata.name in " + protected + ") && !object.metadata.name.startsWith('kube-')))", "message": "the delegated installer identity cannot change protected namespaces"},
-			map[string]any{"expression": "request.namespace == '' || (namespaceObject != null && has(namespaceObject.metadata.labels) && 'pod-security.kubernetes.io/enforce' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted')", "message": "delegated changes require a restricted Pod Security namespace"},
-			map[string]any{"expression": "request.resource.resource != 'namespaces' || (object != null && has(object.metadata.labels) && 'pod-security.kubernetes.io/enforce' in object.metadata.labels && object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted')", "message": "new application namespaces must enforce restricted Pod Security"},
+			map[string]any{"expression": "request.namespace == '' || (namespaceObject != null && has(namespaceObject.metadata.labels) && 'pod-security.kubernetes.io/enforce' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted' && '" + ownerLabel + "' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['" + ownerLabel + "'] == '" + c.EnrollmentID + "')", "message": "delegated changes require this enrollment's restricted namespace"},
+			map[string]any{"expression": "request.resource.resource != 'namespaces' || (object != null && has(object.metadata.labels) && 'pod-security.kubernetes.io/enforce' in object.metadata.labels && object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted' && '" + ownerLabel + "' in object.metadata.labels && object.metadata.labels['" + ownerLabel + "'] == '" + c.EnrollmentID + "')", "message": "new application namespaces must belong to this enrollment and enforce restricted Pod Security"},
 		},
 	}})
 	items = append(items, policy, obj("admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicyBinding", argo, map[string]any{"spec": map[string]any{"policyName": argo, "validationActions": []string{"Deny"}}}))
+	// Owning a namespace does not delegate its other ServiceAccounts. In
+	// particular, a Pod must not mint or mount a stronger account's credentials.
+	workloadPolicyName := argo + "-workloads"
+	workloadPolicy := obj("admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicy", workloadPolicyName, map[string]any{"spec": map[string]any{
+		"failurePolicy":    "Fail",
+		"matchConstraints": map[string]any{"resourceRules": []any{map[string]any{"apiGroups": []string{"", "apps", "batch"}, "apiVersions": []string{"*"}, "operations": []string{"CREATE", "UPDATE"}, "resources": []string{"pods", "deployments", "replicasets", "statefulsets", "jobs", "cronjobs"}}}},
+		"matchConditions":  []any{map[string]any{"name": "delegated-identity", "expression": "request.userInfo.username == '" + user + "'"}},
+		"variables":        []any{map[string]any{"name": "pod", "expression": "request.resource.resource == 'pods' ? object.spec : (request.resource.resource == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec)"}},
+		"validations": []any{
+			map[string]any{"expression": "!has(variables.pod.serviceAccountName) || variables.pod.serviceAccountName == '' || variables.pod.serviceAccountName == 'default'", "message": "delegated workloads cannot select another ServiceAccount"},
+			map[string]any{"expression": "has(variables.pod.automountServiceAccountToken) && variables.pod.automountServiceAccountToken == false", "message": "delegated workloads must disable automatic ServiceAccount token mounts"},
+			map[string]any{"expression": "!has(variables.pod.volumes) || variables.pod.volumes.all(v, !has(v.projected) || !has(v.projected.sources) || v.projected.sources.all(s, !has(s.serviceAccountToken)))", "message": "delegated workloads cannot project ServiceAccount tokens"},
+		},
+	}})
+	items = append(items, workloadPolicy, obj("admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicyBinding", workloadPolicyName, map[string]any{"spec": map[string]any{"policyName": workloadPolicyName, "validationActions": []string{"Deny"}}}))
 	serve, _ := json.Marshal(map[string]any{"TCP": map[string]any{"6443": map[string]any{"TCPForward": "kubernetes.default.svc:443"}}})
 	items = append(items, namespaced("v1", "ConfigMap", name+"-serve", map[string]any{"data": map[string]string{"serve.json": string(serve)}}))
 	env := func(n, v string) map[string]any { return map[string]any{"name": n, "value": v} }

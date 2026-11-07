@@ -72,6 +72,7 @@ func environmentApplications(namespace string, state RegistrationState, profile 
 		return nil, nil, ErrInvalid
 	}
 	p["podSecurity"] = "restricted"
+	p["onpremRegistration"] = map[string]any{"enrollmentID": state.EnrollmentID, "clusterUID": state.Connection.ClusterUID}
 	name := registrationResourceName(state.EnrollmentID)
 	meta := func() map[string]any {
 		return map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{enrollmentOwnerLabel: state.EnrollmentID, "hopcharlie.dev/env": state.Environment, "hopcharlie.dev/onprem-cluster-uid": state.Connection.ClusterUID}}

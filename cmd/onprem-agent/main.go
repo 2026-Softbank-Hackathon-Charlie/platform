@@ -137,7 +137,7 @@ func (a *agent) run(ctx context.Context) error {
 			return ctx.Err()
 		case <-timer.C:
 		}
-		attempt, cancel := context.WithTimeout(ctx, 45*time.Second)
+		attempt, cancel := context.WithTimeout(ctx, 2*time.Minute+15*time.Second)
 		err := a.heartbeat(attempt)
 		cancel()
 		if err == nil {
@@ -208,7 +208,7 @@ func start() error {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	httpClient := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("registration redirects are disabled") }}
+	httpClient := &http.Client{Transport: transport, Timeout: 2*time.Minute + 15*time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("registration redirects are disabled") }}
 	a := agent{origin: origin, id: id, client: httpClient, issuer: &kubeIssuer{client: client, namespace: "charlie-system", platform: name + "-platform", argo: name + "-argo", caData: base64.StdEncoding.EncodeToString(ca)}, token: func() (string, error) {
 		b, e := os.ReadFile(tokenFile)
 		v := strings.TrimSpace(string(b))

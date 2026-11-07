@@ -31,10 +31,11 @@ type ConnectionRequest struct {
 
 // RegistrationState is encrypted before persistence. It is never a browser response.
 type RegistrationState struct {
-	EnrollmentID string            `json:"enrollmentID"`
-	Environment  string            `json:"environment"`
-	Endpoint     string            `json:"endpoint"`
-	Connection   ConnectionRequest `json:"connection"`
+	EnrollmentID        string            `json:"enrollmentID"`
+	Environment         string            `json:"environment"`
+	Endpoint            string            `json:"endpoint"`
+	Connection          ConnectionRequest `json:"connection"`
+	RegistrationVersion int64             `json:"registrationVersion"`
 }
 
 type RegistrationTailnet interface {
@@ -151,7 +152,7 @@ func (c *Connector) Connect(ctx context.Context, e store.OnpremEnrollment, req C
 		return e, err
 	}
 	checks := []store.OnpremEnrollmentCheck{}
-	state := RegistrationState{EnrollmentID: e.ID, Environment: e.Environment, Connection: req}
+	state := RegistrationState{EnrollmentID: e.ID, Environment: e.Environment, Connection: req, RegistrationVersion: row.Version}
 	save := func(status, stage string, encrypted []byte) (store.OnpremEnrollment, error) {
 		expires := c.now().Add(30 * 24 * time.Hour)
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -254,7 +255,9 @@ func (c *Connector) Restore(ctx context.Context) error {
 		if state.Connection.TokenExpiresAt.Before(c.now()) {
 			continue
 		}
-		if err := c.Runtime.Publish(ctx, state); err != nil {
+		// Reconcile through the same durable lease, live checks and final CAS
+		// as a heartbeat. Another API replica may revoke while this one starts.
+		if _, err := c.Connect(ctx, e, state.Connection); err != nil {
 			return fmt.Errorf("restore onprem environment %s failed", e.Environment)
 		}
 	}
