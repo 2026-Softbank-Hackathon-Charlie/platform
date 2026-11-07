@@ -36,6 +36,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
@@ -48,6 +49,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/metadata"
+	"k8s.io/client-go/rest"
 )
 
 func main() {
@@ -660,5 +662,17 @@ func parityGate(path string, envSvc *envs.Service) (*paritygate.Gate, error) {
 		}
 		return envs.NewReadClients(c, 10*time.Second)
 	}
-	return paritygate.NewWithResources(cfg, sar, nil, resources), nil
+	g := paritygate.NewWithResources(cfg, sar, nil, resources)
+	g.SetUsageFetcher(probes.ServiceUsageFetcher(func(environment string) (rest.Interface, error) {
+		c, ok := envSvc.Config(environment)
+		if !ok {
+			return nil, errors.New("unknown environment")
+		}
+		k, err := envs.NewKubeClient(c, 5*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return k.CoreV1().RESTClient(), nil
+	}))
+	return g, nil
 }
