@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/yaml"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 
@@ -91,7 +92,8 @@ func newGate(t *testing.T, promURL string, sar SARFactory) *Gate {
 	t.Helper()
 	cfg, err := ParseConfig([]byte(strings.Replace(config, "PROM", promURL, 1)), []string{"gke", "eks"})
 	if err != nil {
-		t.Fatal(err)
+		var diagnostic Config
+		t.Fatalf("%v: fixture decoding: %v URL %q", err, yaml.UnmarshalStrict([]byte(strings.Replace(config, "PROM", promURL, 1)), &diagnostic), promURL)
 	}
 	return New(cfg, sar, nil)
 }

@@ -47,7 +47,7 @@ func TestAIServicesScopesBoundsAndProjectsMetadataOnly(t *testing.T) {
 		if r.URL.Query().Get("param_app") != "moimroom" || r.URL.Query().Get("param_x0") != "moimroom-mig" || r.URL.Query().Get("param_recent") == "" {
 			t.Error("missing bound app/window/exclusion")
 		}
-		for _, part := range []string{"default.otel_traces", "uniqExactIf", "LIMIT 128", "dependency.name", "SpanKind"} {
+		for _, part := range []string{"default.otel_traces", "uniqExactIf", "LIMIT 128", "dependency.name", "SpanKind", "coalesce(nullIf(ResourceAttributes['hopcharlie.environment.name'],'')"} {
 			if !strings.Contains(string(q), part) {
 				t.Errorf("missing query guard %s", part)
 			}

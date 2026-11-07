@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/parity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -321,6 +322,19 @@ func (s *Service) Reserve(ctx context.Context, ref string) (Reserved, error) {
 	parCheck := s.checkParity(ctx, row.RollbackOf, p)
 	if parCheck.Outcome != ParityNotConfigured {
 		s.bindParity(ctx, row, &parCheck)
+	}
+	if row.RollbackOf == "" {
+		if gate, ok := s.parity.(interface {
+			ObservabilityDecision(*plan.Plan, *parity.Report) (bool, bool)
+		}); ok {
+			enforced, allowed := gate.ObservabilityDecision(p, parCheck.Report)
+			parCheck.ObservabilityEnforced = enforced
+			if enforced && !allowed {
+				parCheck.Outcome = "observability_blocked"
+				s.Release(ctx, ref)
+				return Reserved{}, &ObservabilityDenied{Check: parCheck}
+			}
+		}
 	}
 	return Reserved{Plan: p, Summary: sum, RollbackOf: row.RollbackOf, Residency: check, Capacity: capCheck, Version: verCheck, Parity: parCheck}, nil
 }

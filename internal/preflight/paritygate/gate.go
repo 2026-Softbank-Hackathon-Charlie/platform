@@ -52,6 +52,7 @@ type Gate struct {
 	usageFetch        probes.UsageFetch
 	cloudFetch        probes.CloudFetch
 	cloudEnvironments map[string]bool
+	signalReader      parity.SignalReader
 }
 
 func (g *Gate) SetCloudPolicyFetcher(fetch probes.CloudFetch, environments ...string) {
@@ -93,6 +94,7 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (parity.Report, error) {
 	if g == nil || p == nil {
 		return parity.Report{Results: []parity.Result{}}, parity.ErrInvalidRequest
 	}
+	p = g.scopedPlan(p)
 	app, ok := g.cfg.appFor(p.Target.Namespace)
 	if !ok {
 		return parity.Report{Results: []parity.Result{}}, ErrNoApp
@@ -105,7 +107,11 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (parity.Report, error) {
 		Target:    target,
 		Mandatory: mandatory,
 	}
-	report, err := parity.Evaluate(ctx, req, g.probes(target, app, p.Target.Cluster))
+	configured := g.probes(target, app, p.Target.Cluster)
+	if app.Observability != nil {
+		configured[parity.Observability] = observationProbe{gate: g, app: app, source: req.Source.Target, target: target}
+	}
+	report, err := parity.Evaluate(ctx, req, configured)
 	report.ConfigDigest = g.digest
 	report.BaselineStatus = "not_configured"
 	if b, ok := app.Baselines[p.Source.Env]; ok {
@@ -137,7 +143,7 @@ func (g *Gate) probes(target parity.Target, app App, targetCluster string) map[p
 	}
 	if e, ok := g.cfg.Environments[target.Environment]; ok && e.Prometheus != nil && app.PrometheusJob != "" {
 		maxAge, _ := e.Prometheus.maxAge() // validated
-		if p, err := probes.NewPrometheus(target, e.Prometheus.URL, app.PrometheusJob, g.http, maxAge); err == nil {
+		if p, err := probes.NewPrometheusWithLabels(target, e.Prometheus.URL, app.PrometheusJob, g.http, maxAge, e.Prometheus.Labels); err == nil {
 			out[parity.Observability] = p
 		} else {
 			out[parity.Observability] = failing{}

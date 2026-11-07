@@ -113,7 +113,7 @@ func (c *Client) AIServices(ctx context.Context, app string, since, until time.T
 	// deployment.environment describes the caller and is never reused as host.
 	fields := []string{
 		"substring(SpanAttributes['hopcharlie.ai.service_id'],1,120) AS identity",
-		"substring(coalesce(nullIf(ResourceAttributes['deployment.environment.name'],''),ResourceAttributes['deployment.environment']),1,120) AS caller",
+		"substring(coalesce(nullIf(ResourceAttributes['hopcharlie.environment.name'],''),nullIf(ResourceAttributes['deployment.environment.name'],''),ResourceAttributes['deployment.environment']),1,120) AS caller",
 		"substring(SpanAttributes['hopcharlie.ai.environment'],1,120) AS host",
 		"substring(coalesce(nullIf(SpanAttributes['gen_ai.provider.name'],''),SpanAttributes['gen_ai.system']),1,120) AS provider",
 		"substring(SpanAttributes['hopcharlie.ai.kind'],1,120) AS kind",

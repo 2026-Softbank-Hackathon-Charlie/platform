@@ -364,13 +364,15 @@ func main() {
 	// Optional: record a parity report (target RBAC for the app's service
 	// account, Prometheus scrape health) on every new run's start. Audit mode
 	// only: the report goes to the audit log and never stops a run.
+	var configuredParity *paritygate.Gate
 	if path := os.Getenv("PLATFORM_PARITY_FILE"); path != "" {
 		g, err := parityGate(path, envSvc)
 		if err != nil {
 			fatal("PLATFORM_PARITY_FILE", "err", err)
 		}
 		planSvc.SetParityGate(g)
-		log.Info("parity recording enabled (audit only, never blocks)")
+		configuredParity = g
+		log.Info("parity recording enabled; required observability signals enforce only when explicitly configured per app")
 	} else {
 		log.Info("PLATFORM_PARITY_FILE is not set: no parity report is recorded")
 	}
@@ -527,6 +529,9 @@ func main() {
 				deps.AIActivity = c
 				deps.AppObs = c
 				deps.AIServices = c
+				if configuredParity != nil {
+					configuredParity.SetSignalReader(c)
+				}
 				log.Info("AI activity enabled", "table", c.Table)
 			}
 		}
