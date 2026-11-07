@@ -133,7 +133,8 @@ func (rt *router) canaryView(state AICanaryState) any {
 	defer rt.mu.Unlock()
 	effective := 0
 	p := rt.g.cfg.AIQuality.Policy
-	if state.Verdict.Status == "pass" && state.Verdict.ValidUntil.After(time.Now()) && !rt.g.persistenceFailed.Load() && !rt.held && rt.byName[p.TargetBackend].healthy.Load() && rt.readExclusions[p.TargetBackend] == "" {
+	target := rt.byName[p.TargetBackend]
+	if target != nil && state.Verdict.Status == "pass" && state.Verdict.ValidUntil.After(time.Now()) && !rt.g.persistenceFailed.Load() && !rt.held && target.healthy.Load() && rt.readExclusions[p.TargetBackend] == "" {
 		effective = state.TargetPercent
 	}
 	return struct {

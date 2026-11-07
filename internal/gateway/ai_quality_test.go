@@ -284,3 +284,47 @@ func TestAIQualityLatePassingAdvanceCannotOverwriteNewerRevocationAtZero(t *test
 		t.Fatalf("older pass overwrote newer revocation: %+v", g.canary)
 	}
 }
+
+func TestAIQualityIneligibleTargetUsesSourceOnceBeforeAdmission(t *testing.T) {
+	for _, mode := range []string{"unhealthy", "excluded", "missing"} {
+		t.Run(mode, func(t *testing.T) {
+			g := qualityGW(t, "", qualityProviderFunc(passQuality))
+			g.mu.Lock()
+			g.canary.TargetPercent = 100
+			g.canary.Verdict = passQuality(nil, llmquality.Policy{}, time.Now(), time.Time{})
+			switch mode {
+			case "unhealthy":
+				g.byName["laptop"].healthy.Store(false)
+			case "excluded":
+				g.readExclusions["laptop"] = "migration-lease"
+			case "missing":
+				delete(g.byName, "laptop")
+			}
+			g.mu.Unlock()
+			public, admin := httptest.NewServer(g.Proxy()), httptest.NewServer(g.Admin())
+			defer public.Close()
+			defer admin.Close()
+			reply := aiCall(public.Client(), "POST", public.URL+"/api/chat", "ai-secret", "pre-admission", aiTestBody)
+			requireAIStatus(t, reply, 200)
+			if reply.backend != "gcp" {
+				t.Fatalf("unavailable target did not use source: %s", reply.backend)
+			}
+			stateReply := aiCall(admin.Client(), "GET", admin.URL+"/v1/ai/canary", "admin-secret", "", "")
+			requireAIStatus(t, stateReply, 200)
+			var state struct {
+				EffectiveTargetPercent int `json:"effectiveTargetPercent"`
+			}
+			if json.Unmarshal(stateReply.body, &state) != nil || state.EffectiveTargetPercent != 0 {
+				t.Fatalf("target reported effective while unavailable: %s", stateReply.body)
+			}
+			observed := aiObserve(t, admin.URL)
+			if len(observed.Requests) != 1 || observed.Requests[0].Backend != "gcp" {
+				t.Fatalf("request was replayed: %+v", observed.Requests)
+			}
+			g.mu.Lock()
+			g.byName["gcp"].healthy.Store(false)
+			g.mu.Unlock()
+			requireAIStatus(t, aiCall(public.Client(), "POST", public.URL+"/api/chat", "ai-secret", "no-eligible-backend", aiTestBody), 503)
+		})
+	}
+}
