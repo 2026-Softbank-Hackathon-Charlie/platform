@@ -506,7 +506,9 @@ func (h *harness) waitRun(id string, ok func(apiv1.Run) bool) apiv1.Run {
 			h.t.Fatalf("get run: %d %s", code, b)
 		}
 		run := decode[apiv1.Run](h.t, b)
-		if ok(run) {
+		// A terminal document is persisted before the worker releases its
+		// live slot. A follow-up resume must wait for both, like the runner.
+		if ok(run) && (run.EndedAt == nil || !h.runner.IsActive(run)) {
 			return run
 		}
 		if time.Now().After(deadline) {
