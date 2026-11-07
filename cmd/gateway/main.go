@@ -36,6 +36,7 @@ func main() {
 	backends := flag.String("backends", os.Getenv("GATEWAY_BACKENDS"), "backends as name=url,... e.g. gke=http://shop.gke.ts.net,eks=http://shop.eks.ts.net")
 	initial := flag.String("initial-backend", os.Getenv("GATEWAY_INITIAL_BACKEND"), "write backend when there is no state file (default: first backend)")
 	stateFile := flag.String("state-file", envOr("GATEWAY_STATE_FILE", filepath.Join(".hopcharlie", "gateway-state.json")), "routing and hold state, kept across restarts")
+	exclusiveState := flag.Bool("exclusive-state", false, "Linux same-node pod failover: all replicas share one local state PVC; one file-lock owner serves through Unix-socket relays")
 	appDomain := flag.String("app-domain", os.Getenv("GATEWAY_APP_DOMAIN"), "route Host <app>.<domain> to the app registered as <app> (PUT /apps/<app>), 404 for an unknown <app>; other hosts go to the default app. Empty sends every request to the default app")
 	defaultApp := flag.String("default-app", envOr("GATEWAY_DEFAULT_APP", gateway.DefaultAppName), "name of the app that -backends serve: <name>.<app-domain> and /apps/<name> reach it")
 	drain := flag.Duration("drain-timeout", gateway.DefaultDrainTimeout, "how long a hold waits for in-flight writes")
@@ -98,7 +99,7 @@ func main() {
 		}
 		qualityCfg = &gateway.AIQualityConfig{Policy: policy, Provider: provider}
 	}
-	gw, err := gateway.New(gateway.Config{
+	cfg := gateway.Config{
 		AIDemo:               aiCfg,
 		AIFollow:             followCfg,
 		AIQuality:            qualityCfg,
@@ -120,7 +121,17 @@ func main() {
 		HealthPath:           *healthPath,
 		ConnRecycle:          *connRecycle,
 		Log:                  log,
-	})
+	}
+	if *exclusiveState {
+		sig, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := runExclusive(sig, cfg, *listen, *adminAddr, log); err != nil {
+			log.Error("exclusive gateway stopped", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+	gw, err := gateway.New(cfg)
 	if err != nil {
 		log.Error("start gateway", "err", err)
 		os.Exit(1)
