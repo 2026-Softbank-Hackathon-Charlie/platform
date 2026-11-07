@@ -3,7 +3,7 @@ module github.com/2026-Softbank-Hackathon-Charlie/platform
 go 1.26.0
 
 require (
-	github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107095807-f520e9f754c7
+	github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107120622-59a8daf3d68b
 	github.com/aws/aws-sdk-go-v2 v1.47.5
 	github.com/aws/aws-sdk-go-v2/config v1.33.13
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.13

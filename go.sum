@@ -2,8 +2,8 @@ cloud.google.com/go/compute/metadata v0.6.0 h1:A6hENjEsCDtC1k8byVsgwvVcioamEHvZ4
 cloud.google.com/go/compute/metadata v0.6.0/go.mod h1:FjyFAW1MW0C203CEOMDTu3Dk1FlqW3Rga40jzHL4hfg=
 dario.cat/mergo v1.0.1 h1:Ra4+bf83h2ztPIQYNP99R6m+Y7KfnARDfID+a+vLl4s=
 dario.cat/mergo v1.0.1/go.mod h1:uNxQE+84aUszobStD9th8a29P2fMDhsBdgRYvZOxGmk=
-github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107095807-f520e9f754c7 h1:JN2DW/T/q6a0K+JhcEGggFXxBZ33FYFHn31VE5HHk1g=
-github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107095807-f520e9f754c7/go.mod h1:6T6kxe10SsazZmS5ex/qZ74TWcy7XIVo0d2IGtMrvx8=
+github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107120622-59a8daf3d68b h1:QID9/jdcaOvLvS7HjrHFXwOISD8gau2vWsHyx7OWyJQ=
+github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107120622-59a8daf3d68b/go.mod h1:6T6kxe10SsazZmS5ex/qZ74TWcy7XIVo0d2IGtMrvx8=
 github.com/Masterminds/goutils v1.1.1 h1:5nUrii3FMTL5diU80unEVvNevw1nH4+ZV4DSLVJLSYI=
 github.com/Masterminds/goutils v1.1.1/go.mod h1:8cTjp+g8YejhMuvIA5y2vz3BpJxksy863GQaJW2MFNU=
 github.com/Masterminds/semver/v3 v3.4.0 h1:Zog+i5UMtVoCU8oKka5P7i9q9HgrJeGzI9SA1Xbatp0=
