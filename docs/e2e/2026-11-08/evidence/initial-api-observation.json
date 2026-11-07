@@ -1,0 +1,24 @@
+[
+  {
+    "path": "/v1/apps/moimroom-mig/ai-services",
+    "http": 200,
+    "serviceCount": 0,
+    "sourceStatuses": [
+      {
+        "name": "hyperdx",
+        "status": "unobserved"
+      }
+    ]
+  },
+  {
+    "path": "/v1/apps/moimroom-mig/llm-observability",
+    "http": 200,
+    "sourceStatus": "not_configured",
+    "sourceReason": "langfuse_not_configured"
+  },
+  {
+    "path": "/v1/migration-recommendations/status",
+    "http": 200,
+    "status": "not_configured"
+  }
+]

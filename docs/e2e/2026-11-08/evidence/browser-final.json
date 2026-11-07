@@ -1,0 +1,780 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-11-07T19:37:59.941Z",
+  "evidenceKind": "production-readonly-real-browser",
+  "expectedImages": {
+    "api": "a89634a-minio@sha256:480198186c6061d261a2e99acd8f0f19f711ecaa5d66568cf8921e90b2859b2b",
+    "console": "eb9cc64@sha256:c91920ebe96ce7e8b4ac39fb03a8eb78731c10d3f8d76f9e38639bd5eb31d70c",
+    "hopai": "aa8d4f4@sha256:db870c26b9564a231634bdea5f6b7ced7f860900f85b6b947239be0a9b19b87b"
+  },
+  "scenarios": [
+    {
+      "id": "B01-public-login",
+      "startedAt": "2026-11-07T19:38:00.576Z",
+      "operationalCoverage": "authentication-screen-only; no login attempt",
+      "pass": true,
+      "authInputCount": 2,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:02.565Z"
+    },
+    {
+      "id": "B02-apps",
+      "startedAt": "2026-11-07T19:38:02.717Z",
+      "operationalCoverage": "actual registered-app GET; no mutations",
+      "pass": true,
+      "appRowCount": 4,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:05.602Z"
+    },
+    {
+      "id": "B05-observation-state",
+      "startedAt": "2026-11-07T19:38:05.602Z",
+      "operationalCoverage": "configuration/unknown presentation only; actual AI receiving may remain unobserved",
+      "pass": true,
+      "langfuseControlVisible": true,
+      "operationalState": "not_configured",
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:08.281Z"
+    },
+    {
+      "id": "B02-environments",
+      "startedAt": "2026-11-07T19:38:08.281Z",
+      "operationalCoverage": "actual cluster-status metadata only; collector receiving not attested",
+      "pass": true,
+      "onpremVisible": false,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:10.368Z"
+    },
+    {
+      "id": "B02-target-selector",
+      "startedAt": "2026-11-07T19:38:10.368Z",
+      "operationalCoverage": "selection only; no plan generation or migration",
+      "pass": true,
+      "options": [
+        {
+          "value": "eks",
+          "disabled": false
+        },
+        {
+          "value": "onprem",
+          "disabled": false
+        },
+        {
+          "value": "onprem-gce",
+          "disabled": false
+        }
+      ],
+      "onpremSelectable": true,
+      "mapShown": false,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:12.054Z"
+    },
+    {
+      "id": "B01-mobile-layout",
+      "startedAt": "2026-11-07T19:38:12.054Z",
+      "operationalCoverage": "same actual app list; 390px viewport",
+      "pass": true,
+      "viewport": 390,
+      "clientWidth": 375,
+      "bodyWidth": 375,
+      "bodyClientWidth": 375,
+      "documentWidth": 375,
+      "activeTag": "A",
+      "fonts": [
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "loaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "SUIT Variable",
+          "status": "loaded"
+        },
+        {
+          "family": "SUIT Variable",
+          "status": "loaded"
+        }
+      ],
+      "rootScrollLeft": 0,
+      "skipFocused": false,
+      "activeClass": "btn ghost",
+      "activeCellIndex": null,
+      "scrollers": [
+        {
+          "clientWidth": 341,
+          "scrollWidth": 939,
+          "scrollLeft": 0,
+          "left": 17,
+          "right": 358,
+          "overflowX": "auto"
+        }
+      ],
+      "outsideElements": [],
+      "freshInitial": {
+        "viewport": 390,
+        "clientWidth": 375,
+        "bodyWidth": 375,
+        "documentWidth": 375
+      },
+      "freshFocused": {
+        "viewport": 390,
+        "clientWidth": 375,
+        "bodyWidth": 375,
+        "documentWidth": 375,
+        "skipFocused": true
+      },
+      "tableKeyboard": {
+        "before": 0,
+        "after": 40,
+        "position": "relative",
+        "clientWidth": 341,
+        "scrollWidth": 939,
+        "hiddenLabelCount": 12,
+        "hiddenLabelsContained": true,
+        "documentWidth": 375
+      },
+      "japaneseLayout": {
+        "lang": "ja",
+        "clientWidth": 375,
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "languageControlPosition": "static",
+        "actionOverlapCount": 0
+      },
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:16.822Z"
+    },
+    {
+      "id": "B06-result-disclosure",
+      "startedAt": "2026-11-07T19:38:16.847Z",
+      "operationalCoverage": "existing results only; detail toggle is local UI state",
+      "pass": true,
+      "labels": [
+        "전체 소요",
+        "쓰기 보류",
+        "실패 요청",
+        "행 누락",
+        "쓰기 누락",
+        "파일 누락"
+      ],
+      "unknownMetricCount": 1,
+      "expandedBefore": "false",
+      "expandedAfter": "true",
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:18.863Z"
+    },
+    {
+      "id": "B07-agent-context-columns",
+      "startedAt": "2026-11-07T19:38:18.863Z",
+      "operationalCoverage": "metadata columns only; raw event/log requests remain blocked",
+      "pass": true,
+      "headers": [
+        "종류",
+        "앱",
+        "From",
+        "To",
+        "제목",
+        "상태",
+        "도구 호출",
+        "토큰 (입력 / 출력)",
+        ""
+      ],
+      "rows": 50,
+      "unknownContextCells": 83,
+      "rawEventsRead": false,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:21.176Z"
+    },
+    {
+      "id": "B08-environment-database-status",
+      "startedAt": "2026-11-07T19:38:21.176Z",
+      "operationalCoverage": "actual environment metadata; missing data never coerced to zero",
+      "pass": true,
+      "dbLists": 4,
+      "backupLists": 4,
+      "unknownCells": 0,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:23.013Z"
+    },
+    {
+      "id": "B09-migration-phase-map",
+      "startedAt": "2026-11-07T19:38:23.013Z",
+      "operationalCoverage": "existing active/pending work only; no Plan or migration start",
+      "pass": true,
+      "groups": [
+        {
+          "title": "검증",
+          "innerStep": "샌드박스 리허설",
+          "state": "완료 2/2 · 완료"
+        },
+        {
+          "title": "게이트",
+          "innerStep": "최종 승인",
+          "state": "완료 0/2 · 대기"
+        },
+        {
+          "title": "데이터",
+          "innerStep": "사전 확인",
+          "state": "완료 0/4 · 시작 전"
+        },
+        {
+          "title": "트래픽",
+          "innerStep": "카나리 10%",
+          "state": "완료 0/4 · 시작 전"
+        },
+        {
+          "title": "전환",
+          "innerStep": "쓰기 보류",
+          "state": "완료 0/4 · 시작 전"
+        },
+        {
+          "title": "정리",
+          "innerStep": "검증",
+          "state": "완료 0/2 · 시작 전"
+        }
+      ],
+      "dbNodeCount": 3,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:38:26.667Z"
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:38:03.087Z",
+      "durationMillis": 78.267
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig/llm-observability",
+      "status": 200,
+      "at": "2026-11-07T19:38:05.676Z",
+      "durationMillis": 22.453
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig/deployments",
+      "status": 200,
+      "at": "2026-11-07T19:38:05.680Z",
+      "durationMillis": 25.552
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig/observability",
+      "status": 200,
+      "at": "2026-11-07T19:38:05.698Z",
+      "durationMillis": 45.755
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig/ai-services",
+      "status": 200,
+      "at": "2026-11-07T19:38:05.713Z",
+      "durationMillis": 59.261
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:38:08.137Z",
+      "durationMillis": 39.715
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:38:08.301Z",
+      "durationMillis": 13.72
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:38:08.331Z",
+      "durationMillis": 42.581
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:38:08.348Z",
+      "durationMillis": 12.054
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:38:10.407Z",
+      "durationMillis": 30.511
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:38:10.411Z",
+      "durationMillis": 33.676
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:38:10.411Z",
+      "durationMillis": 34.114
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:38:10.419Z",
+      "durationMillis": 54.283
+    },
+    {
+      "method": "GET",
+      "path": "/v1/plans",
+      "status": 200,
+      "at": "2026-11-07T19:38:10.432Z",
+      "durationMillis": 55.424
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:38:10.440Z",
+      "durationMillis": 63.612
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:38:10.465Z",
+      "durationMillis": 15.014
+    },
+    {
+      "method": "GET",
+      "path": "/v1/ai-runs",
+      "status": 200,
+      "at": "2026-11-07T19:38:10.469Z",
+      "durationMillis": 17.665
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:38:12.118Z",
+      "durationMillis": 47.237
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:38:14.137Z",
+      "durationMillis": 57.749
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:38:16.879Z",
+      "durationMillis": 28.737
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:38:18.886Z",
+      "durationMillis": 15.267
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:38:18.943Z",
+      "durationMillis": 32.526
+    },
+    {
+      "method": "GET",
+      "path": "/v1/plans",
+      "status": 200,
+      "at": "2026-11-07T19:38:18.949Z",
+      "durationMillis": 37.072
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:38:18.965Z",
+      "durationMillis": 53.301
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:38:21.196Z",
+      "durationMillis": 13.468
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:38:21.224Z",
+      "durationMillis": 41.5
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:38:21.240Z",
+      "durationMillis": 11.722
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.043Z",
+      "durationMillis": 23.922
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.046Z",
+      "durationMillis": 26.436
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.055Z",
+      "durationMillis": 39.377
+    },
+    {
+      "method": "GET",
+      "path": "/v1/plans",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.063Z",
+      "durationMillis": 44.288
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.074Z",
+      "durationMillis": 56.366
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.119Z",
+      "durationMillis": null
+    },
+    {
+      "method": "GET",
+      "path": "/v1/ai-runs",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.124Z",
+      "durationMillis": 27.456
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.135Z",
+      "durationMillis": 21.019
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.206Z",
+      "durationMillis": 24.925
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig/ai-services",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.206Z",
+      "durationMillis": 49.873
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.336Z",
+      "durationMillis": 203.618
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.414Z",
+      "durationMillis": 221.061
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:38:23.414Z",
+      "durationMillis": 317.582
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:38:25.151Z",
+      "durationMillis": 14.067
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:38:26.065Z",
+      "durationMillis": 16.82
+    },
+    {
+      "method": "GET",
+      "path": "/v1/plans",
+      "status": 200,
+      "at": "2026-11-07T19:38:26.094Z",
+      "durationMillis": 27.732
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:38:26.230Z",
+      "durationMillis": 11.168
+    }
+  ],
+  "blockedRequests": [
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    }
+  ],
+  "pageErrors": [],
+  "consoleErrorCount": 14,
+  "observationMetadata": [
+    {
+      "path": "/v1/apps/moimroom-mig/llm-observability",
+      "sourceStatus": "not_configured",
+      "sourceReason": "langfuse_not_configured"
+    },
+    {
+      "path": "/v1/apps/moimroom-mig/ai-services",
+      "serviceCount": 0
+    },
+    {
+      "path": "/v1/apps/moimroom-mig/ai-services",
+      "serviceCount": 0
+    }
+  ],
+  "screenshots": [
+    "public-login-desktop.png",
+    "apps-desktop.png",
+    "observation-source-state.png",
+    "environments-desktop.png",
+    "migration-selector-desktop.png",
+    "apps-mobile.png",
+    "apps-mobile-fresh.png",
+    "mobile-app-table-keyboard.png",
+    "mobile-app-table-japanese.png",
+    "result-six-metrics.png",
+    "agent-context-headers.png",
+    "migration-phase-circles.png"
+  ],
+  "cleanup": {
+    "browserClosed": true,
+    "persistentProfileUsed": false,
+    "storageStateExported": false,
+    "temporaryProfileDeletion": "not_independently_verified",
+    "credentialPersistedToNativeStorage": false
+  },
+  "security": {
+    "har": false,
+    "trace": false,
+    "rawConsole": false,
+    "rawResponseBody": false,
+    "credentialTransport": "RAM stdin and isolated-context memory only",
+    "credentialHeaderToFontHost": false,
+    "blockedMutationAttempts": 0
+  },
+  "paidEntryRequestsAttempted": 0,
+  "preRecommendationStatus": {
+    "http": 200,
+    "status": "ready",
+    "generatedAt": "2026-11-07T19:29:14.844042Z",
+    "nextRefreshAt": "2026-11-07T19:44:14.844042Z",
+    "readOnlyCacheLookup": true,
+    "model": "claude-sonnet-5-5",
+    "sessionId": "ags_f0a4b24ca2c9",
+    "recommendationFacts": [
+      {
+        "app": "docker-doom",
+        "source": "gke",
+        "target": "eks",
+        "action": "insufficient",
+        "estimatedSavingsPresent": false,
+        "missing": [
+          "comparable_total_cost_estimates",
+          "capacity_preflight_required",
+          "data_policy_preflight_required"
+        ]
+      },
+      {
+        "app": "moimroom-mig",
+        "source": "onprem",
+        "target": "eks",
+        "action": "insufficient",
+        "estimatedSavingsPresent": false,
+        "missing": [
+          "comparable_total_cost_estimates",
+          "capacity_preflight_required",
+          "data_policy_preflight_required"
+        ]
+      },
+      {
+        "app": "moimroom-mig",
+        "source": "onprem",
+        "target": "gke",
+        "action": "insufficient",
+        "estimatedSavingsPresent": false,
+        "missing": [
+          "comparable_total_cost_estimates",
+          "capacity_preflight_required",
+          "data_policy_preflight_required"
+        ]
+      },
+      {
+        "app": "hello-onprem",
+        "source": null,
+        "target": null,
+        "action": "insufficient",
+        "estimatedSavingsPresent": false,
+        "missing": [
+          "current_environment_unobserved"
+        ]
+      }
+    ]
+  },
+  "coordinatorStatusChecks": [],
+  "browserOptions": {
+    "headless": true,
+    "nativeScrollbarsHidden": false,
+    "chromiumSandbox": true
+  },
+  "browserVersion": "157.0.8103.38",
+  "recommendationSessionMetadata": {
+    "http": 200,
+    "id": "ags_f0a4b24ca2c9",
+    "model": "claude-sonnet-5-5",
+    "toolCalls": 1,
+    "createdAt": "2026-11-07T19:29:23.930255Z"
+  },
+  "endedAt": "2026-11-07T19:38:26.926Z",
+  "paidEntryRequestsAllowed": 0,
+  "paidEntryRequestsObserved": 0
+}

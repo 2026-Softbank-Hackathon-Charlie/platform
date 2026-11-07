@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "pipeline_passed": true,
+  "exit_code": 0,
+  "last_stage": "second app by host name",
+  "scenarios": [
+    {
+      "name": "lost-response",
+      "passed": true,
+      "fault_injected": true,
+      "writes_ok": 931,
+      "writes_failed": 0,
+      "first_attempt_failed": 149,
+      "recovered_writes": 149,
+      "retry_attempts": 155
+    },
+    {
+      "name": "canary-fault",
+      "passed": true,
+      "fault_injected": true,
+      "run_status": "rolled_back",
+      "writes_ok": 5560,
+      "writes_failed": 0,
+      "first_attempt_failed": 0,
+      "recovered_writes": 0,
+      "retry_attempts": 0,
+      "rechecked_writes": 5560,
+      "acknowledged_writes": 5560
+    },
+    {
+      "name": "observe-rollback",
+      "passed": true,
+      "fault_injected": true,
+      "run_status": "succeeded",
+      "writes_ok": 1417,
+      "writes_failed": 0,
+      "first_attempt_failed": 0,
+      "recovered_writes": 0,
+      "retry_attempts": 0,
+      "rechecked_writes": 1417,
+      "acknowledged_writes": 1417
+    },
+    {
+      "name": "migrate",
+      "passed": true,
+      "fault_injected": false,
+      "run_status": "succeeded",
+      "verified": true,
+      "missing_rows": 0,
+      "missing_writes": 0,
+      "checked_writes": 2794,
+      "writes_ok": 3217,
+      "writes_failed": 0,
+      "first_attempt_failed": 0,
+      "recovered_writes": 0,
+      "retry_attempts": 0,
+      "rechecked_writes": 3217,
+      "acknowledged_writes": 3217
+    }
+  ],
+  "failure_assertions": 0,
+  "private_output_sha256": "ef9e165d8c898d3520b65a91b29a9608f887691a13cef5f5f644018acb62a7e2",
+  "unverified": [
+    "cross-cluster or public-cloud networking",
+    "rclone and MinIO file migration",
+    "moimroom application migration",
+    "production rollout",
+    "opt-in gateway HA"
+  ],
+  "output_truncated": false,
+  "private_output_hash_scope": "complete",
+  "started_at": "2026-11-07T19:03:50.368489+00:00",
+  "completed_at": "2026-11-07T19:11:13.369321+00:00",
+  "tested_sha": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+  "github_run_id": "42404334635",
+  "github_run_attempt": "1"
+}

@@ -1,0 +1,212 @@
+{
+  "source": "894af3b9c24d2b6c94167ed6f967a3a4c19326cd",
+  "url": "http://127.0.0.1:4186/#onboard",
+  "cases": [
+    {
+      "mode": "demo",
+      "label": "desktop",
+      "initial": {
+        "viewport": 1440,
+        "documentWidth": 1425,
+        "bodyWidth": 1425,
+        "pageLeft": 252,
+        "pageRight": 1393,
+        "languageOverlap": [],
+        "stepColumns": 4,
+        "formColumns": 2,
+        "logoHeight": 36,
+        "clippedInputs": []
+      },
+      "keyboardReachedRepo": true,
+      "progress": {
+        "viewport": 1440,
+        "documentWidth": 1425,
+        "bodyWidth": 1425,
+        "pageLeft": 252,
+        "pageRight": 1393,
+        "languageOverlap": [],
+        "stepColumns": 4,
+        "formColumns": null,
+        "logoHeight": 36,
+        "clippedInputs": []
+      },
+      "diff": {
+        "scrollWidth": 650,
+        "width": 464,
+        "overflowX": "auto",
+        "focused": true
+      },
+      "rehearsal": {
+        "viewport": 1440,
+        "documentWidth": 1425,
+        "bodyWidth": 1425,
+        "pageLeft": 252,
+        "pageRight": 1393,
+        "languageOverlap": [],
+        "stepColumns": 4,
+        "formColumns": null,
+        "logoHeight": 36,
+        "clippedInputs": []
+      },
+      "approval": {
+        "viewport": 1440,
+        "documentWidth": 1425,
+        "bodyWidth": 1425,
+        "pageLeft": 252,
+        "pageRight": 1393,
+        "languageOverlap": [],
+        "stepColumns": 4,
+        "formColumns": null,
+        "logoHeight": 36,
+        "clippedInputs": []
+      }
+    },
+    {
+      "mode": "demo",
+      "label": "mobile",
+      "initial": {
+        "viewport": 390,
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "pageLeft": 16,
+        "pageRight": 359,
+        "languageOverlap": [],
+        "stepColumns": 2,
+        "formColumns": 1,
+        "logoHeight": 27,
+        "clippedInputs": []
+      },
+      "keyboardReachedRepo": true,
+      "progress": {
+        "viewport": 390,
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "pageLeft": 16,
+        "pageRight": 359,
+        "languageOverlap": [],
+        "stepColumns": 2,
+        "formColumns": null,
+        "logoHeight": 27,
+        "clippedInputs": []
+      },
+      "diff": {
+        "scrollWidth": 650,
+        "width": 307,
+        "overflowX": "auto",
+        "focused": true
+      },
+      "rehearsal": {
+        "viewport": 390,
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "pageLeft": 16,
+        "pageRight": 359,
+        "languageOverlap": [],
+        "stepColumns": 2,
+        "formColumns": null,
+        "logoHeight": 27,
+        "clippedInputs": []
+      },
+      "approval": {
+        "viewport": 390,
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "pageLeft": 16,
+        "pageRight": 359,
+        "languageOverlap": [],
+        "stepColumns": 2,
+        "formColumns": null,
+        "logoHeight": 27,
+        "clippedInputs": []
+      }
+    },
+    {
+      "mode": "live",
+      "label": "desktop",
+      "initial": {
+        "viewport": 1440,
+        "documentWidth": 1425,
+        "bodyWidth": 1425,
+        "pageLeft": 252,
+        "pageRight": 1393,
+        "languageOverlap": [],
+        "stepColumns": 4,
+        "formColumns": null,
+        "logoHeight": 36,
+        "clippedInputs": []
+      },
+      "modeControl": {
+        "tag": "BUTTON",
+        "height": 32,
+        "background": "rgba(0, 0, 0, 0)",
+        "outline": "solid",
+        "color": "rgb(100, 100, 104)"
+      }
+    },
+    {
+      "mode": "live",
+      "label": "mobile",
+      "initial": {
+        "viewport": 390,
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "pageLeft": 16,
+        "pageRight": 359,
+        "languageOverlap": [],
+        "stepColumns": 2,
+        "formColumns": null,
+        "logoHeight": 27,
+        "clippedInputs": []
+      },
+      "modeControl": {
+        "tag": "BUTTON",
+        "height": 32,
+        "background": "rgba(0, 0, 0, 0)",
+        "outline": "solid",
+        "color": "rgb(100, 100, 104)"
+      },
+      "bottom": {
+        "viewport": 390,
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "pageLeft": 16,
+        "pageRight": 359,
+        "languageOverlap": [],
+        "stepColumns": 2,
+        "formColumns": null,
+        "logoHeight": 27,
+        "clippedInputs": []
+      },
+      "japanese": {
+        "viewport": 390,
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "pageLeft": 16,
+        "pageRight": 359,
+        "languageOverlap": [],
+        "stepColumns": 2,
+        "formColumns": null,
+        "logoHeight": 27,
+        "clippedInputs": []
+      }
+    }
+  ],
+  "blocked": [],
+  "pageErrors": [],
+  "screenshots": [
+    "demo-desktop.png",
+    "demo-desktop-progress.png",
+    "demo-desktop-rehearsal.png",
+    "demo-desktop-approval.png",
+    "demo-mobile.png",
+    "demo-mobile-progress.png",
+    "demo-mobile-rehearsal.png",
+    "demo-mobile-approval.png",
+    "live-desktop.png",
+    "live-desktop-keyboard.png",
+    "live-mobile.png",
+    "live-mobile-keyboard.png",
+    "live-mobile-japanese.png"
+  ],
+  "evidenceKind": "local-real-browser-controlled-UI-data; not production onboarding execution"
+}

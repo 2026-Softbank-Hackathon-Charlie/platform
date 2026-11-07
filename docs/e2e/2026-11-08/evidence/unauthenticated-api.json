@@ -1,0 +1,20 @@
+{
+  "observedAt": "2026-11-07T19:29:44.846129+00:00",
+  "method": "GET",
+  "bearerSent": false,
+  "recommendationEntryRequested": false,
+  "checks": [
+    {
+      "path": "/v1/apps",
+      "http": 401,
+      "expected": 401,
+      "result": "PASS"
+    },
+    {
+      "path": "/v1/migration-recommendations/status",
+      "http": 401,
+      "expected": 401,
+      "result": "PASS"
+    }
+  ]
+}

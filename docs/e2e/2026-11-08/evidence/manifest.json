@@ -1,0 +1,107 @@
+[
+  {
+    "file": "component-ci.json",
+    "sourceSHA256": "630c6323f68ff6bf54a895f08a4bd891adf122c99e5424ba46c5ae1fcf34b3a7",
+    "sourceHashScope": "original file bytes",
+    "sha256": "23604d6f9df67cc4daf90754dca94dda15ef12ce948a9ef6aed0cdb444a9de6f",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "pipeline-metadata.json",
+    "sourceSHA256": "c1c01eb7616ee689c77ce29189c206e6dd001347fc4bb806e7f792a5f9aa2740",
+    "sourceHashScope": "original file bytes",
+    "sha256": "c54150f42f601605ce4eb41bfb2dd58dd01fb83a915ea5996075b4a0c503d642",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "db-pipeline.json",
+    "sourceSHA256": "3965e3139e95a4c8d691217e215b3460cbbfb3f8787d424d2803d5bbe2e597d8",
+    "sourceHashScope": "original file bytes",
+    "sha256": "3965e3139e95a4c8d691217e215b3460cbbfb3f8787d424d2803d5bbe2e597d8",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "db-cleanup.json",
+    "sourceSHA256": "24ddb2fc8ee59f24050cb94228344547c9ff8f95dbb13966787c2b30a176d064",
+    "sourceHashScope": "original file bytes",
+    "sha256": "7793c27a0751b9f52912a089dbb37cdb8556ff452c556dee78b9f701852dc37a",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "file-pipeline.json",
+    "sourceSHA256": "46699ad01e798c5dc6ea1cd93664c8102464cc7b983aa8949d93d7de5af3b862",
+    "sourceHashScope": "original file bytes",
+    "sha256": "46699ad01e798c5dc6ea1cd93664c8102464cc7b983aa8949d93d7de5af3b862",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "file-cleanup.json",
+    "sourceSHA256": "4a9bcfb35b5374ad437831701e3ebcdfad223d38883e6eb822ab3d7c294913e0",
+    "sourceHashScope": "original file bytes",
+    "sha256": "117db38f78fdb788239478b903a4eb74360a7128eaf7a5040703f060c2f2851f",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "public-probes.json",
+    "sourceSHA256": "2855791d206d25f10ebf50e5e727df118a5f263b2b22447f937394965f0beaee",
+    "sourceHashScope": "original file bytes",
+    "sha256": "55286db70226cac0ad9766604ac638a6ac66b1f26658a032d2eb84299ed59784",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "runtime-rollout.json",
+    "sourceSHA256": "54c7ba3a2eab86d2c015f74a2c9257d069efe7e547214cfe7dfa9dad4b51037f",
+    "sourceHashScope": "original file bytes",
+    "sha256": "517a15bc37016c4962a5e86cf229d672cf5a1e0ce0013ac38418be31c9a57159",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "initial-api-observation.json",
+    "sourceSHA256": "96121262ab2832157a53f5632c677a6b5f9be96565906ec6db41ddef57402b3a",
+    "sourceHashScope": "original file bytes",
+    "sha256": "428843e0a18c961167c622c8b03396976ffc3925714692f00cce30c32dad37e0",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "browser-initial.json",
+    "sourceSHA256": "81beb3bb1b165cb420ed27ed3b7d8d845443eae8e5ab00ff0c43bfa156c9f944",
+    "sourceHashScope": "original file bytes",
+    "sha256": "0211b231f972d8770f1ed6752bbb8be5ef90fa1e7147fb60bda6c92dce34b766",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "browser-focused.json",
+    "sourceSHA256": "8f36273ea9bb4a0a040d15fb4c3bcf4ba18ba05f822d60ac23acc95716f1f1bb",
+    "sourceHashScope": "original file bytes",
+    "sha256": "3080fa354157504691b7f469f610437abe8441aa0f21d82c6773545104fc2654",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "browser-all-fonts.json",
+    "sourceSHA256": "44dfd3ca64cf11ec53c7da642db9389a3c552dcd07a643563d2e3a0ac09dbd6e",
+    "sourceHashScope": "original file bytes",
+    "sha256": "11f1511bb3ec01bb5768f38b1c9eb19e151270f83802568ecc70b52317956598",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "browser-scroll-diagnostic.json",
+    "sourceSHA256": "43faeee6c5b0a92710ddfee9a778661d76eb2fed14e80b68142ca5cd1d05c846",
+    "sourceHashScope": "original file bytes",
+    "sha256": "dadcec130ad0982e6988b43c58be138227a37b1d2aad72e3233269812032832c",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "browser-final.json",
+    "sourceSHA256": "53cae0c2b3117a6379d3c066c4c2b93375634fe789167e58c516b3e3ba4276fe",
+    "sourceHashScope": "original file bytes",
+    "sha256": "dde366c074716c8236235d2f4630d69f7fbafc42add7ad7803aaf1109ae89db2",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  },
+  {
+    "file": "console-final-rollout.json",
+    "sourceSHA256": "6162d6fd8edfc5c4499d3a01aa4a957ea856c2576751c09c997c317234a0808d",
+    "sourceHashScope": "original file bytes",
+    "sha256": "82b7f2da106361ac842a3fa2e48f607479e0fe7e5ff61e905e6d9f190629ec60",
+    "sha256Scope": "UTF-8 text normalized to LF"
+  }
+]

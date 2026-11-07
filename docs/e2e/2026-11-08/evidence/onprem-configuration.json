@@ -1,0 +1,19 @@
+{
+  "observedAt": "2026-11-07T19:09:00.403227+00:00",
+  "evidenceKind": "production-readonly-metadata",
+  "sourceSHA256": "bbf16d7770b70967bb091329931bfc747b47fd59d80a3512b598da192d15bcd2",
+  "standardObservabilityNamespacePresent": false,
+  "namespaceMetadataReadable": true,
+  "appDeployments": [
+    {
+      "name": "hello-onprem-web",
+      "otelVariableCount": 0
+    },
+    {
+      "name": "moimroom-mig-web",
+      "otelVariableCount": 0
+    }
+  ],
+  "centralSignalReceiving": "not_measured",
+  "coverage": "standard collector configuration absent; SDK-independent or nonstandard telemetry not excluded"
+}

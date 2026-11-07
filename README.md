@@ -2,6 +2,8 @@
 
 HopCharlie 플랫폼 서버입니다. 바이너리 두 개로 이루어져 있습니다.
 
+[2026-11-08 종합 E2E 기록](docs/e2e/2026-11-08/README.md)은 운영 읽기 전용 확인·실제 임시 컴포넌트·fixture 결과와 미검증 범위를 구분합니다.
+
 ```
 platform/
 ├── api/openapi.yaml   API 계약 (서버, CLI, 콘솔이 모두 이 파일을 따른다)
