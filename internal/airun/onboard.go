@@ -3,6 +3,7 @@ package airun
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -18,8 +19,6 @@ const (
 	LabelOnboarding = "hopcharlie.dev/onboarding"
 	// KindOnboard is the KIND the onboarding Job's hopai gets.
 	KindOnboard = "onboard"
-	// inputVolume is the Job's volume of its input ConfigMap.
-	inputVolume = "onboarding-input"
 )
 
 // OnboardRequest is one hopai run of an onboarding's patching or checking:
@@ -35,10 +34,19 @@ type OnboardRequest struct {
 	CheckLog []byte
 }
 
-// StartOnboard creates the onboarding's input ConfigMap (facts.json and,
-// on a retry, check.log), then the Job that mounts it at onboard.InputDir,
-// and makes the Job the ConfigMap's owner so it goes with the Job. One run
-// of an onboarding at a time.
+// InputConfigMap is the name of an onboarding's input ConfigMap,
+// hopai-<onboarding id>: the only names the platform's RBAC lets it create
+// and delete (infra #149).
+func InputConfigMap(id string) string { return "hopai-" + id }
+
+// inputVolume is the template's volume of the input, mounted at
+// onboard.InputDir; StartOnboard adds both when the template has none.
+const inputVolume = "onboarding"
+
+// StartOnboard creates the Job, whose volume onboarding is the ConfigMap
+// InputConfigMap(id) (not optional: the pod waits for it), then that
+// ConfigMap with facts.json and, on a retry, check.log, owned by the Job so
+// it goes with it. One run of an onboarding at a time.
 func (r *Runner) StartOnboard(ctx context.Context, req OnboardRequest, actor string) (Run, error) {
 	if !onboard.ID.MatchString(req.ID) || !name.MatchString(req.App) || strings.Count(req.Repo, "/") != 1 {
 		return Run{}, fmt.Errorf("%w: onboarding %q of %q", ErrInvalid, req.ID, req.Repo)
@@ -66,13 +74,7 @@ func (r *Runner) StartOnboard(ctx context.Context, req OnboardRequest, actor str
 		data["check.log"] = string(log)
 		env["CHECK_LOG_FILE"] = onboard.CheckLogFile
 	}
-	cm, err := r.cs.CoreV1().ConfigMaps(r.namespace).Create(ctx, &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{GenerateName: req.ID + "-input-", Namespace: r.namespace, Labels: labels},
-		Data:       data,
-	}, metav1.CreateOptions{})
-	if err != nil {
-		return Run{}, fmt.Errorf("airun: create the onboarding input ConfigMap: %w", err)
-	}
+	cmName := InputConfigMap(req.ID)
 	job := r.template.DeepCopy()
 	job.ObjectMeta = metav1.ObjectMeta{
 		GenerateName: "hopai-" + req.ID + "-",
@@ -82,25 +84,47 @@ func (r *Runner) StartOnboard(ctx context.Context, req OnboardRequest, actor str
 	}
 	ps := &job.Spec.Template.Spec
 	job.Spec.Template.Labels = merge(job.Spec.Template.Labels, labels)
-	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: inputVolume,
-		VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: cm.Name}}}})
+	no := false
+	source := corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: cmName}, Optional: &no}}
+	found := false
+	for i := range ps.Volumes {
+		if ps.Volumes[i].Name == inputVolume {
+			ps.Volumes[i].VolumeSource, found = source, true
+		}
+	}
+	if !found {
+		ps.Volumes = append(ps.Volumes, corev1.Volume{Name: inputVolume, VolumeSource: source})
+	}
 	for i := range ps.Containers {
 		c := &ps.Containers[i]
-		if c.Name == Container {
-			c.Env = setEnv(c.Env, env)
+		if c.Name != Container {
+			continue
+		}
+		c.Env = setEnv(c.Env, env)
+		if !slices.ContainsFunc(c.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == inputVolume }) {
 			c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: inputVolume, MountPath: onboard.InputDir, ReadOnly: true})
 		}
 	}
 	created, err := r.cs.BatchV1().Jobs(r.namespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
-		_ = r.cs.CoreV1().ConfigMaps(r.namespace).Delete(ctx, cm.Name, metav1.DeleteOptions{})
 		return Run{}, fmt.Errorf("airun: create Job: %w", err)
 	}
-	// Owned by the Job, the ConfigMap goes when the cluster cleans the Job
-	// up. Best effort: without it StopOnboard still deletes it.
 	yes := true
-	cm.OwnerReferences = []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: created.Name, UID: created.UID, BlockOwnerDeletion: &yes}}
-	_, _ = r.cs.CoreV1().ConfigMaps(r.namespace).Update(ctx, cm, metav1.UpdateOptions{})
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: r.namespace, Labels: labels,
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: created.Name, UID: created.UID, BlockOwnerDeletion: &yes}}},
+		Data: data,
+	}
+	cms := r.cs.CoreV1().ConfigMaps(r.namespace)
+	// The ConfigMap of an earlier run whose Job is not cleaned up yet.
+	if err := cms.Delete(ctx, cmName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return runOf(created), fmt.Errorf("airun: replace the onboarding input: %w", err)
+	}
+	if _, err := cms.Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+		bg := metav1.DeletePropagationBackground
+		_ = r.cs.BatchV1().Jobs(r.namespace).Delete(ctx, created.Name, metav1.DeleteOptions{PropagationPolicy: &bg})
+		return Run{}, fmt.Errorf("airun: create the onboarding input ConfigMap: %w", err)
+	}
 	return runOf(created), nil
 }
 
@@ -140,14 +164,8 @@ func (r *Runner) StopOnboard(ctx context.Context, id string) error {
 			return fmt.Errorf("airun: delete Job %s: %w", j.Name, err)
 		}
 	}
-	cms, err := r.cs.CoreV1().ConfigMaps(r.namespace).List(ctx, sel)
-	if err != nil {
-		return fmt.Errorf("airun: list the onboarding's input: %w", err)
-	}
-	for _, cm := range cms.Items {
-		if err := r.cs.CoreV1().ConfigMaps(r.namespace).Delete(ctx, cm.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("airun: delete ConfigMap %s: %w", cm.Name, err)
-		}
+	if err := r.cs.CoreV1().ConfigMaps(r.namespace).Delete(ctx, InputConfigMap(id), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("airun: delete the onboarding input: %w", err)
 	}
 	return nil
 }

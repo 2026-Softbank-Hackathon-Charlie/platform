@@ -53,6 +53,9 @@ func TestStartOnboard(t *testing.T) {
 		t.Fatalf("mounts %+v", c.VolumeMounts)
 	}
 	cmName := job.Spec.Template.Spec.Volumes[0].ConfigMap.Name
+	if cmName != "hopai-onb-3f9a1c2b7d4e" || *job.Spec.Template.Spec.Volumes[0].ConfigMap.Optional {
+		t.Fatalf("volume %+v", job.Spec.Template.Spec.Volumes[0])
+	}
 	cm, err := cs.CoreV1().ConfigMaps("charlie-platform").Get(ctx, cmName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)

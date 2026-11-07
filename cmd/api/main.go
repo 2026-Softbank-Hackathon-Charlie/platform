@@ -35,6 +35,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/job"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy"
@@ -498,7 +499,8 @@ func main() {
 	}
 	go agents.RunSweeper(runCtx, agentIdle, log)
 	// Optional (ADR 0030): the management cluster's routes to registered apps' databases.
-	if dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log); err != nil {
+	dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log)
+	if err != nil {
 		fatal("PLATFORM_APP_DB_ROUTE_*", "err", err)
 	} else if dbRoutes != nil {
 		deps.DBRoutes = dbRoutes
@@ -538,8 +540,10 @@ func main() {
 		},
 		Secrets: secretsKey,
 		Sealer:  envSvc.Sealer,
-		Storage: envSvc.Storage,
-		Envs:    envSvc.Names(),
+		// A deployment waits while its app's onboarding cuts over (ADR 0042).
+		CuttingOver: job.CuttingOver(st),
+		Storage:     envSvc.Storage,
+		Envs:        envSvc.Names(),
 		StorageDriver: func(env string) string {
 			if c, ok := envSvc.Config(env); ok && c.Storage != nil {
 				return c.Storage.Driver
@@ -562,26 +566,35 @@ func main() {
 			fatal("start deployments", "err", err)
 		}
 		deps.Deployer, deps.Remover = deployer, deployer
+		deps.Backends = deployer.BackendURLs()
+	}
+	if onboarding {
+		deps.Onboarding = onboardingConfig(ctx, log, envSvc.Names(), secretsKey, gh, aiRuns, gw, dbRoutes, planSvc, runner, workloads)
+	}
+	apiServer := api.New(api.Config{
+		WrittenTokens:   writtenTokens,
+		Tokens:          tokens,
+		Insecure:        *insecure,
+		Admins:          admins,
+		ConsoleURL:      os.Getenv("PLATFORM_CONSOLE_URL"),
+		OnpremPublicURL: os.Getenv("PLATFORM_ONPREM_PUBLIC_URL"),
+		CORSOrigins:     splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
+		Log:             log,
+
+		GitHubWebhookSecret: webhookSecret,
+		AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
+		GitOpsRepo:          os.Getenv("PLATFORM_GITOPS_REPO"),
+		AppDBTopology:       appDBTopology,
+		AppDBEnvs:           appDBEnvs,
+		Onboarding:          onboarding,
+	}, deps)
+	if r := apiServer.Onboardings(); r != nil {
+		// From the rows, also after a restart; steps outlive requests.
+		go r.Run(runCtx)
 	}
 	srv := &http.Server{
-		Addr: *addr,
-		Handler: api.New(api.Config{
-			WrittenTokens:   writtenTokens,
-			Tokens:          tokens,
-			Insecure:        *insecure,
-			Admins:          admins,
-			ConsoleURL:      os.Getenv("PLATFORM_CONSOLE_URL"),
-			OnpremPublicURL: os.Getenv("PLATFORM_ONPREM_PUBLIC_URL"),
-			CORSOrigins:     splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
-			Log:             log,
-
-			GitHubWebhookSecret: webhookSecret,
-			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
-			GitOpsRepo:          os.Getenv("PLATFORM_GITOPS_REPO"),
-			AppDBTopology:       appDBTopology,
-			AppDBEnvs:           appDBEnvs,
-			Onboarding:          onboarding,
-		}, deps),
+		Addr:              *addr,
+		Handler:           apiServer,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
