@@ -44,6 +44,8 @@ func (g *Gateway) adminMux() http.Handler {
 		{"POST /v1/writes/release", (*router).handleRelease},
 		{"POST /v1/route", (*router).handleRoute},
 		{"POST /v1/weights", (*router).handleWeights},
+		{"POST /v1/reads/exclude", (*router).handleExcludeReads},
+		{"POST /v1/reads/include", (*router).handleIncludeReads},
 	}
 	for _, e := range perApp {
 		method, path, _ := strings.Cut(e.pattern, " ")
@@ -156,6 +158,14 @@ func (rt *router) handleHold(w http.ResponseWriter, r *http.Request) {
 func (rt *router) handleRelease(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rt.g.controlMu.Lock()
+	rt.mu.Lock()
+	excludedWriter := rt.readExclusions[rt.writeBackend] != ""
+	rt.mu.Unlock()
+	if excludedWriter {
+		rt.g.controlMu.Unlock()
+		readsExcluded(w)
+		return
+	}
 	// Save the current route while the hold is still on. If release's later
 	// save fails, restart conservatively restores this route with writes held.
 	if err := rt.g.trySave(); err != nil {
@@ -205,6 +215,11 @@ func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("unknown backend %q (configured: %s)", req.Backend, strings.Join(names, ", ")))
 		return
 	}
+	if rt.readExclusions[req.Backend] != "" {
+		rt.mu.Unlock()
+		readsExcluded(w)
+		return
+	}
 	prev, held := rt.writeBackend, rt.held
 	if held && rt.inflightWrites > 0 && prev != req.Backend {
 		rt.mu.Unlock()
@@ -231,6 +246,13 @@ func (rt *router) handleWeights(w http.ResponseWriter, r *http.Request) {
 		rt.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "invalid_weights", err.Error())
 		return
+	}
+	for backend, weight := range req.ReadWeights {
+		if weight > 0 && rt.readExclusions[backend] != "" {
+			rt.mu.Unlock()
+			readsExcluded(w)
+			return
+		}
 	}
 	prev := rt.readWeights
 	rt.readWeights = rt.fullWeightsLocked(req.ReadWeights)
@@ -285,6 +307,18 @@ func (rt *router) state(window time.Duration) apiv1.TrafficState {
 		Totals:       make(map[string]apiv1.BackendTotals, len(backends)),
 		UpdatedAt:    now.UTC(),
 	}
+	supported := rt.g.cfg.StateFile != ""
+	exclusions := maps.Clone(rt.readExclusions)
+	inFlight := make(map[string]int, len(backends))
+	for _, b := range backends {
+		inFlight[b.name] = 0
+		if activity := rt.readActivity[b.name]; activity != nil {
+			inFlight[b.name] = activity.count
+		}
+	}
+	st.SourceReadExclusionSupported = &supported
+	st.ReadExclusions = &exclusions
+	st.ReadInFlight = &inFlight
 	if rt.held {
 		hs := rt.heldSince.UTC()
 		st.HeldSince = &hs

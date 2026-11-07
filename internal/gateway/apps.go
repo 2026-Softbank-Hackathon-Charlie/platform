@@ -187,6 +187,12 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 		rt, _ = g.newRouter(name, bcs, g.log.With("app", name), g.prom.apps.view(prometheus.Labels{"app": name}))
 	}
 	rt.mu.Lock()
+	if len(rt.readExclusions) != 0 {
+		rt.mu.Unlock()
+		g.appsMu.Unlock()
+		readsExcluded(w)
+		return
+	}
 	if rt.held {
 		rt.mu.Unlock()
 		g.appsMu.Unlock()
@@ -238,7 +244,13 @@ func (g *Gateway) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	}
 	rt.mu.Lock()
 	held := rt.held
+	excluded := len(rt.readExclusions) != 0
 	rt.mu.Unlock()
+	if excluded {
+		g.appsMu.Unlock()
+		readsExcluded(w)
+		return
+	}
 	if held {
 		g.appsMu.Unlock()
 		writesHeld(w, name)

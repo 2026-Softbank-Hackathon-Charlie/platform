@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -153,6 +156,302 @@ func TestReadExclusionRejectsInvalidInput(t *testing.T) {
 		status, _ := tg.adminDo(t, http.MethodPost, "/v1/reads/exclude", "Bearer "+testToken, body)
 		if status != http.StatusBadRequest {
 			t.Fatalf("invalid request %q: %d", body, status)
+		}
+	}
+}
+
+func TestReadExclusionIsAppScopedAndRestored(t *testing.T) {
+	tg := newReadFenceGW(t)
+	spec, _ := appBackends(t, "shop", "src", "dst")
+	ctx := context.Background()
+	if err := tg.client.PutApp(ctx, "shop", spec); err != nil {
+		t.Fatal(err)
+	}
+	shop := tg.client.App("shop")
+	if err := shop.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	excludeReads(t, tg, "/apps/shop", "src", "run-a")
+	if len(readFenceState(t, tg.client).Exclusions) != 0 || readFenceState(t, shop).Exclusions["src"] != "run-a" {
+		t.Fatal("app exclusion leaked into another router")
+	}
+	if err := tg.client.PutApp(ctx, "shop", spec); err == nil {
+		t.Fatal("a PUT replaced the excluded router")
+	}
+	if err := tg.client.DeleteApp(ctx, "shop"); err == nil {
+		t.Fatal("a DELETE removed the excluded router")
+	}
+	restored, err := New(tg.g.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(restored.Admin())
+	t.Cleanup(func() { server.Close(); restored.Close() })
+	c := (&Client{BaseURL: server.URL, Token: testToken}).App("shop")
+	state := readFenceState(t, c)
+	if state.Exclusions["src"] != "run-a" || state.InFlight["src"] != 0 || state.Supported == nil || !*state.Supported {
+		t.Fatalf("restart lost the read exclusion: %+v", state)
+	}
+	if err := c.IncludeReads(ctx, "src", "run-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.IncludeReads(ctx, "src", "already-cleared"); err != nil {
+		t.Fatalf("empty exclusion is not idempotent: %v", err)
+	}
+	st, err := loadState(tg.g.cfg.StateFile)
+	if err != nil || len(st.Apps["shop"].ReadExclusions) != 0 {
+		t.Fatalf("include was not durable before acknowledging: %+v %v", st, err)
+	}
+}
+
+func asyncReadExclude(ctx context.Context, c *Client) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- c.ExcludeReads(ctx, "src", "run-a") }()
+	return done
+}
+
+func TestReadExclusionDrainsSourceWhileTargetIsBusy(t *testing.T) {
+	tg := newReadFenceGW(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tg.backends["src"].delay.Store(int64(250 * time.Millisecond))
+	old := tg.asyncHostDo(ctx, http.MethodGet, "unscoped", "/orders", "")
+	waitFor(t, "source read started", func() bool { return tg.backends["src"].reads.Load() == 1 })
+	if err := tg.client.SetReadWeights(ctx, map[string]int{"dst": 100}); err != nil {
+		t.Fatal(err)
+	}
+	done := asyncReadExclude(ctx, tg.client)
+	waitFor(t, "source excluded", func() bool { return readFenceState(t, tg.client).Exclusions["src"] == "run-a" })
+	tg.backends["dst"].delay.Store(int64(time.Second))
+	current := tg.asyncHostDo(ctx, http.MethodGet, "unscoped", "/orders", "")
+	waitFor(t, "target read started", func() bool { return tg.backends["dst"].reads.Load() == 1 })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(700 * time.Millisecond):
+		t.Fatal("source drain waited for the busy target")
+	}
+	if state := readFenceState(t, tg.client); state.InFlight["src"] != 0 || state.InFlight["dst"] == 0 {
+		t.Fatalf("drain did not isolate source activity: %+v", state)
+	}
+	if r := <-old; r.err != nil || r.status != http.StatusOK {
+		t.Fatalf("preexisting source read did not finish: %+v", r)
+	}
+	if r := <-current; r.err != nil || r.status != http.StatusOK {
+		t.Fatalf("target read failed: %+v", r)
+	}
+}
+
+func TestReadExclusionCountsReservedRetryAndSkipsIt(t *testing.T) {
+	tg := newReadFenceGW(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.client.SetReadWeights(ctx, map[string]int{"dst": 100}); err != nil {
+		t.Fatal(err)
+	}
+	tg.backends["dst"].delay.Store(int64(250 * time.Millisecond))
+	tg.backends["dst"].readStatus.Store(http.StatusServiceUnavailable)
+	read := tg.asyncHostDo(ctx, http.MethodGet, "unscoped", "/orders", "")
+	waitFor(t, "primary target read", func() bool { return tg.backends["dst"].reads.Load() == 1 })
+	if readFenceState(t, tg.client).InFlight["src"] != 1 {
+		t.Fatal("already selected source retry was not reserved")
+	}
+	done := asyncReadExclude(ctx, tg.client)
+	waitFor(t, "source retry excluded", func() bool { return readFenceState(t, tg.client).Exclusions["src"] == "run-a" })
+	if r := <-read; r.err != nil || r.status != http.StatusServiceUnavailable {
+		t.Fatalf("failed primary did not fail closed: %+v", r)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if tg.backends["src"].reads.Load() != 0 || readFenceState(t, tg.client).InFlight["src"] != 0 {
+		t.Fatal("excluded retry reached source or leaked its reservation")
+	}
+}
+
+type readFenceTransport func(*http.Request) (*http.Response, error)
+
+func (f readFenceTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestReadSelectionIsReservedBeforeExclusionCanAcknowledge(t *testing.T) {
+	selected, choose, beforeDial, dial := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var onceSelect, onceDial sync.Once
+	tg := newTestGW(t, Config{
+		StateFile: filepath.Join(t.TempDir(), "state.json"),
+		Rand:      func(n int) int { onceSelect.Do(func() { close(selected); <-choose }); return 0 },
+		Transport: readFenceTransport(func(r *http.Request) (*http.Response, error) {
+			onceDial.Do(func() { close(beforeDial); <-dial })
+			return http.DefaultTransport.RoundTrip(r)
+		}),
+	}, "src", "dst")
+	var chooseOnce, dialOnce sync.Once
+	defer chooseOnce.Do(func() { close(choose) })
+	defer dialOnce.Do(func() { close(dial) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	read := tg.asyncHostDo(ctx, http.MethodGet, "unscoped", "/orders", "")
+	<-selected // Rand executes under the selection mutex.
+	done := asyncReadExclude(ctx, tg.client)
+	chooseOnce.Do(func() { close(choose) })
+	<-beforeDial // Selection ended, but no upstream request was sent yet.
+	waitFor(t, "exclusion after selection", func() bool { return readFenceState(t, tg.client).Exclusions["src"] == "run-a" })
+	if readFenceState(t, tg.client).InFlight["src"] != 1 {
+		t.Fatal("selected-but-not-dialed read was invisible to exclusion")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("source excluded before its reserved read finished: %v", err)
+	default:
+	}
+	dialOnce.Do(func() { close(dial) })
+	if r := <-read; r.err != nil || r.status != http.StatusOK {
+		t.Fatalf("reserved read failed: %+v", r)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadExclusionAlsoDrainsAndSkipsHealthProbes(t *testing.T) {
+	entered, unblock := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int64
+	tg := newTestGW(t, Config{
+		StateFile: filepath.Join(t.TempDir(), "state.json"),
+		HealthTransport: readFenceTransport(func(r *http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				close(entered)
+			}
+			<-unblock
+			return http.DefaultTransport.RoundTrip(r)
+		}),
+	}, "src", "dst")
+	var unblockOnce sync.Once
+	defer unblockOnce.Do(func() { close(unblock) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: tg.g.cfg.HealthTransport, Timeout: time.Second}
+	health := make(chan struct{})
+	go func() { tg.g.checkBackend(ctx, client, tg.g.byName["src"]); close(health) }()
+	<-entered
+	done := asyncReadExclude(ctx, tg.client)
+	waitFor(t, "source excluded during health probe", func() bool { return readFenceState(t, tg.client).Exclusions["src"] == "run-a" })
+	if readFenceState(t, tg.client).InFlight["src"] != 1 {
+		t.Fatal("source health probe was not included in drain")
+	}
+	tg.g.checkBackend(ctx, client, tg.g.byName["src"])
+	if calls.Load() != 1 {
+		t.Fatal("another health probe was sent to the excluded source")
+	}
+	unblockOnce.Do(func() { close(unblock) })
+	<-health
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadExclusionDrainTimeoutRetainsOwner(t *testing.T) {
+	tg := newReadFenceGW(t)
+	tg.g.cfg.DrainTimeout = 30 * time.Millisecond
+	if err := tg.client.HoldWrites(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tg.backends["src"].delay.Store(int64(150 * time.Millisecond))
+	read := tg.asyncHostDo(context.Background(), http.MethodGet, "unscoped", "/orders", "")
+	waitFor(t, "source pending", func() bool { return tg.backends["src"].reads.Load() == 1 })
+	status, code := tg.adminDo(t, http.MethodPost, "/v1/reads/exclude", "Bearer "+testToken, fenceBody("src", "run-a"))
+	if status != http.StatusServiceUnavailable || code != "read_drain_timeout" || readFenceState(t, tg.client).Exclusions["src"] != "run-a" {
+		t.Fatalf("drain timeout did not preserve its owner: %d %s", status, code)
+	}
+	<-read
+	excludeReads(t, tg, "", "src", "run-a")
+}
+
+func TestReadExclusionIncludeCancelsTheOldDrainAcknowledgment(t *testing.T) {
+	tg := newReadFenceGW(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tg.backends["src"].delay.Store(int64(200 * time.Millisecond))
+	read := tg.asyncHostDo(ctx, http.MethodGet, "unscoped", "/orders", "")
+	waitFor(t, "source before cancelled exclusion", func() bool { return tg.backends["src"].reads.Load() == 1 })
+	done := asyncReadExclude(ctx, tg.client)
+	waitFor(t, "exclusion to cancel", func() bool { return readFenceState(t, tg.client).Exclusions["src"] == "run-a" })
+	if err := tg.client.IncludeReads(ctx, "src", "run-a"); err != nil {
+		t.Fatal(err)
+	}
+	wantAPIError(t, <-done, http.StatusConflict, "read_exclusion_conflict")
+	<-read
+}
+
+func TestReadExclusionRequiresDrainedWriteHold(t *testing.T) {
+	tg := newReadFenceGW(t)
+	status, code := tg.adminDo(t, http.MethodPost, "/v1/reads/exclude", "Bearer "+testToken, fenceBody("src", "run-a"))
+	if status != http.StatusConflict || code != "writes_not_drained" {
+		t.Fatalf("unheld exclusion: %d %s", status, code)
+	}
+	unblock := tg.backends["src"].blockWrites()
+	defer unblock()
+	write := tg.asyncWrite(context.Background(), "existing-write")
+	waitFor(t, "write already running", func() bool { return tg.backends["src"].activeWrites.Load() == 1 })
+	held := make(chan error, 1)
+	go func() { held <- tg.client.HoldWrites(context.Background()) }()
+	waitFor(t, "write hold while draining", func() bool { return tg.g.state(defaultWindow).WritesHeld })
+	status, code = tg.adminDo(t, http.MethodPost, "/v1/reads/exclude", "Bearer "+testToken, fenceBody("src", "run-a"))
+	if status != http.StatusConflict || code != "writes_not_drained" {
+		t.Fatalf("undrained exclusion: %d %s", status, code)
+	}
+	unblock()
+	<-write
+	if err := <-held; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadExclusionInclusionSurvivesConcurrentBackgroundSave(t *testing.T) {
+	tg := newReadFenceGW(t)
+	ctx := context.Background()
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				tg.g.save()
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	for range 20 {
+		if err := tg.client.ExcludeReads(ctx, "src", "run-a"); err != nil {
+			t.Fatal(err)
+		}
+		if err := tg.client.IncludeReads(ctx, "src", "run-a"); err != nil {
+			t.Fatal(err)
+		}
+		st, err := loadState(tg.g.cfg.StateFile)
+		if err != nil || len(st.ReadExclusions) != 0 {
+			t.Fatalf("background save restored an acknowledged inclusion's old lease: %+v %v", st, err)
 		}
 	}
 }
