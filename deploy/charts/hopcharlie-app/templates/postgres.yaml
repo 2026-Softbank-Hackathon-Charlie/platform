@@ -13,6 +13,7 @@
 {{- if and $backupOn (not $region) }}
 {{- fail "profile.s3.region is required for postgres backups: the backup bucket is in that region" }}
 {{- end }}
+{{- $topo := include "hopcharlie-app.dbTopology" $ | fromJson }}
 # CNPG creates the database app owned by user app and the Secret
 # <name>-app, whose uri is the services' DATABASE_URL.
 apiVersion: postgresql.cnpg.io/v1
@@ -25,13 +26,38 @@ metadata:
     app.kubernetes.io/part-of: {{ $.Values.values.app }}
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 spec:
+  {{- if $.Values.profile.observability.enabled }}
+  inheritedMetadata:
+    labels:
+      observability.hopcharlie.dev/enabled: "true"
+      observability.hopcharlie.dev/kind: database
+      hopcharlie.dev/app: {{ $.Values.values.app | quote }}
+      hopcharlie.dev/service: {{ $pg.name | quote }}
+  {{- end }}
   instances: 1
   # CNPG restarts a newly promoted primary with a smart shutdown that waits for
   # every client session up to this many seconds. The default 180 keeps the new
   # primary down for minutes after a migration (migration-engine ADR 0009).
+  {{- if $topo.cluster }}
+  # Paired databases (ADR 0063) use 1: the demoted primary restarts as a
+  # replica during the write hold, and 5 seconds of smart shutdown made the
+  # switchover about 4 seconds longer (migration-engine ADR 0013).
+  smartShutdownTimeout: 1
+  postgresql:
+    parameters:
+      # The new primary waits for the demoted one's shutdown checkpoint over
+      # streaming replication; after the old primary restarts, a replica
+      # retries the connection after this interval (PostgreSQL default 5s).
+      wal_retrieve_retry_interval: 1s
+  {{- else }}
   smartShutdownTimeout: 5
+  {{- end }}
   storage:
+    {{- if $topo.cluster }}
+    size: {{ $profile.topologyStorageSize | default $profile.storageSize | default "1Gi" }}
+    {{- else }}
     size: {{ $profile.storageSize | default "1Gi" }}
+    {{- end }}
     {{- with $profile.storageClass }}
     storageClass: {{ . }}
     {{- end }}
@@ -49,6 +75,63 @@ spec:
       parameters:
         barmanObjectName: {{ $cluster }}
         serverName: {{ $cluster }}
+  {{- end }}
+  {{- with $topo.cluster }}
+  {{- $ns := $.Release.Namespace }}
+  # One half of a CNPG distributed topology (infra ADR 0063). Both
+  # environments' databases share the app account (the sealed Secret
+  # <cluster>-app, so CNPG makes none) and the CA app-pg-ca, with which CNPG
+  # issues and renews this server's and streaming_replica's certificates, so
+  # each side's certificates pass on the other and no Secret is copied
+  # between clusters. The database born primary runs initdb; the other is
+  # born a replica of it. Argo CD ignores replica, externalClusters and
+  # certificates after creation: the migration engine moves the primary
+  # through replica.primary.
+  bootstrap:
+    {{- if $topo.isPrimary }}
+    initdb:
+      database: app
+      owner: app
+      secret:
+        name: {{ . }}-app
+    {{- else }}
+    pg_basebackup:
+      source: {{ $topo.primary }}
+      database: app
+      owner: app
+      secret:
+        name: {{ . }}-app
+    {{- end }}
+  certificates:
+    serverCASecret: app-pg-ca
+    clientCASecret: app-pg-ca
+    # The names the peer reaches this database by: its egress Service.
+    serverAltDNSNames:
+      - {{ . }}-to-{{ $topo.env }}.{{ $ns }}.svc
+      - {{ . }}-to-{{ $topo.env }}.{{ $ns }}.svc.cluster.local
+  replica:
+    self: {{ $topo.self }}
+    primary: {{ $topo.primary }}
+    source: {{ $topo.source }}
+  externalClusters:
+    - name: {{ $topo.self }}
+      connectionParameters:
+        host: {{ . }}-rw.{{ $ns }}.svc
+        user: streaming_replica
+        dbname: postgres
+        sslmode: verify-full
+      sslCert: {name: {{ . }}-replication, key: tls.crt}
+      sslKey: {name: {{ . }}-replication, key: tls.key}
+      sslRootCert: {name: app-pg-ca, key: ca.crt}
+    - name: {{ $topo.source }}
+      connectionParameters:
+        host: {{ $topo.egressService }}.{{ $ns }}.svc.cluster.local
+        user: streaming_replica
+        dbname: postgres
+        sslmode: verify-full
+      sslCert: {name: {{ . }}-replication, key: tls.crt}
+      sslKey: {name: {{ . }}-replication, key: tls.key}
+      sslRootCert: {name: app-pg-ca, key: ca.crt}
   {{- end }}
 {{- if $backupOn }}
 ---
