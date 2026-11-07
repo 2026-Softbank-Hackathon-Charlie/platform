@@ -5522,6 +5522,7 @@ type WrittenRecordStats struct {
 	Count      int64                       `json:"count"`
 	Coverage   *WrittenRecordStatsCoverage `json:"coverage,omitempty"`
 	Generation *string                     `json:"generation,omitempty"`
+
 	// LastReceivedAt Server receipt time of the latest valid authenticated application collector batch, including identical retries. Independent of the committed-write timestamp; absent when collector activity has not been observed.
 	LastReceivedAt *time.Time `json:"lastReceivedAt,omitempty"`
 	LastSeq        *int64     `json:"lastSeq,omitempty"`
