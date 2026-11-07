@@ -2,7 +2,6 @@ package fileguard
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -172,7 +171,7 @@ func downloadInventory(ctx context.Context, source string, s *snapshot, execute 
 		if remaining == 0 {
 			remaining = 1
 		} // zero-length objects still need materializing
-		if execute(ctx, io.Discard, "copy", source, s.dir, "--files-from-raw", paths, "--ignore-times", "--no-traverse", "--transfers", "4", "--checkers", "4", "--buffer-size", "1Mi", "--multi-thread-streams", "0", "--max-backlog", "256", "--max-transfer", fmt.Sprintf("%dB", remaining), "--cutoff-mode", "HARD", "--retries", "1", "--low-level-retries", "1") != nil {
+		if execute(ctx, io.Discard, "copy", source, s.dir, "--files-from-raw", paths, "--ignore-times", "--no-traverse", "--transfers", "16", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0", "--max-backlog", "256", "--max-transfer", fmt.Sprintf("%dB", remaining), "--cutoff-mode", "HARD", "--retries", "1", "--low-level-retries", "1") != nil {
 			return ErrRead
 		}
 		for _, o := range window {
@@ -334,51 +333,48 @@ func (s *Syncer) Readable(ctx context.Context, remote string) error {
 
 // transfer runs rclone op ("sync" or "copy") from a new inspected snapshot.
 func (s *Syncer) transfer(ctx context.Context, op, src, dst string) (result files.SyncResult, err error) {
-	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
-	shot, err := s.prepare(ctx, src, dst)
-	if shot != nil {
-		raw, _ := json.Marshal(shot.report)
-		result.Output = string(raw)
-	}
+	timing := newOperationTiming()
+	var shot *snapshot
+	defer func() {
+		if e := timing.close(shot); e != nil {
+			err = e
+		}
+		result.Duration = time.Since(timing.started)
+		result.Output = timing.output(shot)
+	}()
+	shot, err = timing.prepare(ctx, s, src, dst)
 	if err != nil {
 		return result, err
 	}
-	defer func() {
-		if e := shot.close(); e != nil {
-			err = e
-		}
-	}()
 	// Ignore size/mtime shortcuts: every object sent comes from inspected bytes.
-	if err = s.execute(ctx, io.Discard, op, shot.dir, dst, "--ignore-times"); err != nil {
+	if err = timing.execute(s.execute, "upload")(ctx, io.Discard, op, shot.dir, dst, "--ignore-times", "--transfers", "16", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0"); err != nil {
 		return result, ErrTransfer
 	}
-	if err = s.execute(ctx, io.Discard, "check", shot.dir, dst, "--download", "--one-way"); err != nil {
+	if err = timing.execute(s.execute, "targetCheck")(ctx, io.Discard, "check", shot.dir, dst, "--download", "--one-way", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0"); err != nil {
 		return result, ErrTransfer
 	}
-	raw, _ := json.Marshal(shot.report)
-	return files.SyncResult{Duration: time.Since(start), Output: string(raw)}, nil
+	return result, nil
 }
 
 func (s *Syncer) Check(ctx context.Context, src, dst string) (result files.CheckResult, err error) {
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
-	shot, err := s.prepare(ctx, src, dst)
-	if shot != nil {
-		raw, _ := json.Marshal(shot.report)
-		result.Output = string(raw)
-	}
+	timing := newOperationTiming()
+	var shot *snapshot
+	defer func() {
+		if e := timing.close(shot); e != nil {
+			err = e
+		}
+		result.Output = timing.output(shot)
+	}()
+	shot, err = timing.prepare(ctx, s, src, dst)
 	if err != nil {
 		return result, err
 	}
-	defer func() {
-		if e := shot.close(); e != nil {
-			err = e
-		}
-	}()
-	if err = s.execute(ctx, io.Discard, "check", shot.dir, dst, "--download", "--one-way"); err != nil {
+	if err = timing.execute(s.execute, "targetCheck")(ctx, io.Discard, "check", shot.dir, dst, "--download", "--one-way", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0"); err != nil {
 		return result, ErrTransfer
 	}
-	return files.CheckResult{OK: true, Matching: shot.report.Objects, Output: result.Output}, nil
+	return files.CheckResult{OK: true, Matching: shot.report.Objects}, nil
 }
