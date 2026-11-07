@@ -235,7 +235,7 @@ func TestExclusiveUnknownInflightWriteCannotBeReleased(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	state := filepath.Join(dir, "s.json")
 	free := func() string {
 		l, err := net.Listen("tcp", "127.0.0.1:0")

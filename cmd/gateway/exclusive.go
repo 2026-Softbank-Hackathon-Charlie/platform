@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -142,12 +143,19 @@ func runExclusive(ctx context.Context, cfg gateway.Config, publicAddr, adminAddr
 		}
 	}
 	var accepting atomic.Bool
+	var admission sync.Mutex
+	var active sync.WaitGroup
 	guard := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			admission.Lock()
 			if !accepting.Load() {
+				admission.Unlock()
 				unavailable(w)
 				return
 			}
+			active.Add(1)
+			admission.Unlock()
+			defer active.Done()
 			if unclean {
 				w.Header().Set("X-Hopcharlie-Recovery", "required")
 				if !readMethod(r.Method) || r.URL.Path == "/readyz" {
@@ -176,7 +184,9 @@ func runExclusive(ctx context.Context, cfg gateway.Config, publicAddr, adminAddr
 	accepting.Store(true)
 	log.Info("gateway owns exclusive state; restored routing and holds")
 	<-ctx.Done()
+	admission.Lock()
 	accepting.Store(false)
+	admission.Unlock()
 	gw.BeginShutdown()
 	// Close owner listeners before waiting. Relay pods now fail closed, and
 	// cannot reach a half-drained owner through a cached keep-alive connection.
@@ -188,6 +198,16 @@ func runExclusive(ctx context.Context, cfg gateway.Config, publicAddr, adminAddr
 			log.Error("exclusive gateway drain incomplete; lock retained until process exit")
 		}
 		done()
+	}
+	// http.Server.Shutdown does not wait for hijacked connections (WebSocket
+	// upgrades). Their owner handlers must also finish before ownership moves.
+	finished := make(chan struct{})
+	go func() { active.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		drained = false
+		log.Error("exclusive owner still has active or upgraded requests; lock retained until process exit")
 	}
 	stopHealth()
 	if drained {
