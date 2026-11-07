@@ -123,6 +123,7 @@ type router struct {
 	readExclusions       map[string]string
 	readActivity         map[string]*readActivity
 	readExclusionChanged chan struct{}
+	retired              bool // a deleted router cannot start any new attempt
 }
 
 // Gateway is the proxy plus its admin API.
@@ -140,8 +141,9 @@ type Gateway struct {
 
 	// Lock order: optional controlMu, saveMu, appsMu, router mu. Never save
 	// while holding appsMu/router mu, and never hold controlMu while draining.
-	appsMu sync.RWMutex
-	apps   map[string]*router // registered through the admin API
+	appsMu  sync.RWMutex
+	apps    map[string]*router // registered through the admin API
+	retired map[string]*router // deleted generations still draining before name reuse
 
 	saveMu sync.Mutex
 	// Serializes administrative state changes and their persistence. Hold
@@ -164,7 +166,7 @@ func New(cfg Config) (*Gateway, error) {
 	if err := cfg.checkAI(); err != nil {
 		return nil, err
 	}
-	g := &Gateway{cfg: cfg, log: cfg.Log, shutdown: make(chan struct{}), apps: map[string]*router{}}
+	g := &Gateway{cfg: cfg, log: cfg.Log, shutdown: make(chan struct{}), apps: map[string]*router{}, retired: map[string]*router{}}
 	g.prom = newMetrics(g)
 	def, err := g.newRouter(cfg.DefaultApp, cfg.Backends, g.log, g.prom.def.view(prometheus.Labels{}))
 	if err != nil {
@@ -410,6 +412,11 @@ func (rt *router) serve(w http.ResponseWriter, r *http.Request) {
 
 func (rt *router) serveRead(w http.ResponseWriter, r *http.Request) {
 	rt.mu.Lock()
+	if rt.retired {
+		rt.mu.Unlock()
+		unknownApp(w, rt.name)
+		return
+	}
 	b := rt.pickReadLocked()
 	if b == nil {
 		rt.mu.Unlock()
@@ -611,6 +618,11 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 	arrived := time.Now()
 	buffered := false
 	rt.mu.Lock()
+	if rt.retired {
+		rt.mu.Unlock()
+		unknownApp(w, rt.name)
+		return
+	}
 	for rt.held {
 		if rt.g.shuttingDown() {
 			rt.mu.Unlock()
@@ -674,6 +686,12 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 		}
 		defer rt.writeDone()
 		rt.dispatchWrite(w, r, b, arrived)
+		return
+	}
+	// A body may have been read while a hold ended and the app was deleted.
+	if rt.retired {
+		rt.mu.Unlock()
+		unknownApp(w, rt.name)
 		return
 	}
 	b := rt.byName[rt.writeBackend]
@@ -1088,7 +1106,7 @@ func (g *Gateway) Run(ctx context.Context) {
 
 func (rt *router) checkBackend(ctx context.Context, client *http.Client, b *backend) {
 	rt.mu.Lock()
-	if rt.byName[b.name] != b || rt.readExclusions[b.name] != "" {
+	if rt.retired || rt.byName[b.name] != b || rt.readExclusions[b.name] != "" {
 		rt.mu.Unlock()
 		return
 	}

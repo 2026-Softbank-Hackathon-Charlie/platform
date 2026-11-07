@@ -21,6 +21,48 @@ type readActivity struct {
 	idle  chan struct{}
 }
 
+// lockControl acquires the existing control/router lock order and rejects a
+// handler that looked up this router just before DELETE retired it.
+func (rt *router) lockControl(w http.ResponseWriter) bool {
+	rt.g.controlMu.Lock()
+	rt.mu.Lock()
+	if !rt.retired {
+		return true
+	}
+	rt.mu.Unlock()
+	rt.g.controlMu.Unlock()
+	unknownApp(w, rt.name)
+	return false
+}
+
+func (rt *router) drainingLocked() bool {
+	if rt.inflightWrites != 0 || rt.buffering != 0 || rt.inflightReads.Load() != 0 {
+		return true
+	}
+	for _, activity := range rt.readActivity {
+		if activity.count != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Called with appsMu held. A tombstone needs no persistence: process restart
+// also removes every old request, while the deleted app stays absent on disk.
+func (g *Gateway) reapRetiredLocked(name string) bool {
+	rt := g.retired[name]
+	if rt == nil {
+		return false
+	}
+	rt.mu.Lock()
+	active := rt.drainingLocked()
+	rt.mu.Unlock()
+	if !active {
+		delete(g.retired, name)
+	}
+	return active
+}
+
 // reserveReadLocked registers a selected attempt before releasing the same
 // mutex that selects it. Planned retries count too: they may touch the source
 // after the first backend answers, even when no source request is running yet.
@@ -101,8 +143,9 @@ func (rt *router) handleExcludeReads(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rt.g.controlMu.Lock()
-	rt.mu.Lock()
+	if !rt.lockControl(w) {
+		return
+	}
 	if rt.byName[req.Backend] == nil {
 		rt.mu.Unlock()
 		rt.g.controlMu.Unlock()
@@ -155,9 +198,10 @@ func (rt *router) handleIncludeReads(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rt.g.controlMu.Lock()
+	if !rt.lockControl(w) {
+		return
+	}
 	defer rt.g.controlMu.Unlock()
-	rt.mu.Lock()
 	if rt.byName[req.Backend] == nil {
 		rt.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "unknown_backend", "read exclusion backend is not configured")

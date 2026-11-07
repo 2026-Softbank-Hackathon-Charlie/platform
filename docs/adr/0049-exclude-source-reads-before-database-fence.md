@@ -31,6 +31,13 @@ GET state는 선택적 capability와 backend별 lease·예약 수를 제공한�
 활성 lease 중 PUT·DELETE, 제외 backend로 Route·양수 읽기 가중치, 그 backend가
 writer인 상태의 Release를 거부한다. 다른 target으로의 Route는 허용한다.
 
+제외 직전 앱 이름이 삭제·재등록되는 경계도 보호한다. DELETE는 등록을 제거하되
+이전 세대의 읽기·retry·health·쓰기와 dispatch 슬롯 대기·본문 버퍼 예약이 남으면
+일시적인 tombstone을 둔다. 같은 이름의 PUT는 409 `app_draining`이며, 기존 요청은
+끝까지 처리한다. 삭제 전 router를 찾아 놓은 요청도 이후 새 upstream이나 제어
+동작을 시작하지 못한다. 모든 예약이 끝나면 재등록할 수 있다. 재시작에는 이전
+요청이 없으므로 tombstone은 영속화하지 않고, 삭제한 앱은 상태 파일에서도 제거한다.
+
 ## 검토한 대안
 
 전체 in-flight 0만 기다리면 계속되는 target 트래픽 때문에 source drain이 끝나지

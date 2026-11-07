@@ -455,3 +455,117 @@ func TestReadExclusionInclusionSurvivesConcurrentBackgroundSave(t *testing.T) {
 		}
 	}
 }
+
+func TestDeletedAppGenerationDrainsBeforeNameReuse(t *testing.T) {
+	tg := newTestGW(t, Config{StateFile: filepath.Join(t.TempDir(), "state.json"), AppDomain: testDomain}, "src")
+	spec, backends := appBackends(t, "shop", "src")
+	ctx := context.Background()
+	if err := tg.client.PutApp(ctx, "shop", spec); err != nil {
+		t.Fatal(err)
+	}
+	old := tg.g.lookup("shop")
+	backends["src"].delay.Store(int64(200 * time.Millisecond))
+	read := tg.asyncHostDo(ctx, http.MethodGet, "shop."+testDomain, "/orders", "")
+	waitFor(t, "old app read started", func() bool { return backends["src"].reads.Load() == 1 })
+	if err := tg.client.DeleteApp(ctx, "shop"); err != nil {
+		t.Fatal(err)
+	}
+	wantAPIError(t, tg.client.PutApp(ctx, "shop", spec), http.StatusConflict, "app_draining")
+	st, err := loadState(tg.g.cfg.StateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := st.Apps["shop"]; exists {
+		t.Fatal("deleted app remained registered on disk")
+	}
+	if r := <-read; r.err != nil || r.status != http.StatusOK {
+		t.Fatalf("existing read did not finish after deletion: %+v", r)
+	}
+	waitFor(t, "old generation read reservation released", func() bool {
+		old.mu.Lock()
+		defer old.mu.Unlock()
+		return !old.drainingLocked()
+	})
+	if err := tg.client.PutApp(ctx, "shop", spec); err != nil {
+		t.Fatal(err)
+	}
+	if tg.g.lookup("shop") == old {
+		t.Fatal("name reuse revived a retired router")
+	}
+}
+
+func TestDeletedAppGenerationIncludesQueuedAndDetachedWrites(t *testing.T) {
+	tg := newTestGW(t, Config{AppDomain: testDomain, MaxConcurrentWrites: 1}, "src")
+	spec, backends := appBackends(t, "shop", "src")
+	if err := tg.client.PutApp(context.Background(), "shop", spec); err != nil {
+		t.Fatal(err)
+	}
+	old := tg.g.lookup("shop")
+	unblock := backends["src"].blockWrites()
+	defer unblock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := tg.asyncHostDo(ctx, http.MethodPost, "shop."+testDomain, "/orders", "first")
+	waitFor(t, "first old write reached backend", func() bool { return backends["src"].activeWrites.Load() == 1 })
+	second := tg.asyncHostDo(context.Background(), http.MethodPost, "shop."+testDomain, "/orders", "second")
+	waitFor(t, "old write waiting for a dispatch slot", func() bool {
+		old.mu.Lock()
+		defer old.mu.Unlock()
+		return old.inflightWrites == 2
+	})
+	cancel()
+	<-first
+	if err := tg.client.DeleteApp(context.Background(), "shop"); err != nil {
+		t.Fatal(err)
+	}
+	wantAPIError(t, tg.client.PutApp(context.Background(), "shop", spec), http.StatusConflict, "app_draining")
+	unblock()
+	if r := <-second; r.err != nil || r.status != http.StatusOK {
+		t.Fatalf("queued old write did not finish: %+v", r)
+	}
+	waitFor(t, "old writes finished", func() bool {
+		old.mu.Lock()
+		defer old.mu.Unlock()
+		return !old.drainingLocked()
+	})
+	if err := tg.client.PutApp(context.Background(), "shop", spec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCapturedDeletedRouterCannotStartNewAttemptsOrControls(t *testing.T) {
+	tg := newTestGW(t, Config{AppDomain: testDomain}, "src")
+	spec, backends := appBackends(t, "shop", "src")
+	if err := tg.client.PutApp(context.Background(), "shop", spec); err != nil {
+		t.Fatal(err)
+	}
+	old := tg.g.lookup("shop")
+	if err := tg.client.DeleteApp(context.Background(), "shop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.client.PutApp(context.Background(), "shop", spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		method, body string
+		handler      func(http.ResponseWriter, *http.Request)
+	}{
+		{http.MethodGet, "", old.serveRead},
+		{http.MethodPost, "write", old.serveWrite},
+		{http.MethodPost, "", old.handleHold},
+		{http.MethodPost, "", old.handleRelease},
+		{http.MethodPost, `{"backend":"src"}`, old.handleRoute},
+		{http.MethodPost, `{"readWeights":{"src":100}}`, old.handleWeights},
+		{http.MethodPost, fenceBody("src", "run-a"), old.handleExcludeReads},
+		{http.MethodPost, fenceBody("src", "run-a"), old.handleIncludeReads},
+	} {
+		response := httptest.NewRecorder()
+		test.handler(response, httptest.NewRequest(test.method, "http://gateway/", strings.NewReader(test.body)))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("retired handler started work: %d %s", response.Code, response.Body.String())
+		}
+	}
+	if backends["src"].reads.Load() != 0 || backends["src"].got("write") != 0 {
+		t.Fatal("captured retired router sent an untracked upstream request")
+	}
+}

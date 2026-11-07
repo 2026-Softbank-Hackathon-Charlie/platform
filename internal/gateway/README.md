@@ -100,6 +100,9 @@ POST /v1/reads/include {"backend":"source","lease":"unique-run-owner"}
   역할·HBA 복원을 확인해야 한다. 게이트웨이는 SQL 상태를 확인하지 않는다.
 - lease가 있는 앱은 PUT·DELETE를 거부하고, 제외한 backend로의 Route·양수 읽기 가중치·
   해당 backend가 writer인 상태의 Release를 거부한다. 다른 target으로 Route는 가능하다.
+- DELETE한 앱의 이전 읽기·예약 retry·health·쓰기·dispatch 대기가 끝나기 전에는 같은
+  이름의 PUT를 409 `app_draining`으로 거부한다. 기존 요청은 끝내고, 삭제 전 router를
+  찾아 둔 요청이 이후 새 upstream이나 제어 동작을 시작하는 경계도 차단한다.
 
 lease는 한 실행이 생성한 고유한 1–128자 영숫자·`._:-` 식별자이며 관리자 인증을
 대체하지 않는다. restart에도 제외를 복원한다. 활성 lease가 있는 동안 이를 모르는

@@ -176,7 +176,7 @@ func (rt *router) serveAI(w http.ResponseWriter, r *http.Request) {
 	r.ContentLength = int64(len(body))
 	r.GetBody = nil
 	rt.mu.Lock()
-	if rt.held || rt.g.shuttingDown() {
+	if rt.retired || rt.held || rt.g.shuttingDown() {
 		rt.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "AI routing unavailable")
 		return

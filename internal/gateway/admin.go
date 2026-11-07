@@ -84,8 +84,9 @@ func (g *Gateway) auth(h http.HandlerFunc) http.HandlerFunc {
 // not drain in time is reverted before answering.
 func (rt *router) handleHold(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	rt.g.controlMu.Lock()
-	rt.mu.Lock()
+	if !rt.lockControl(w) {
+		return
+	}
 	changed := !rt.held
 	if changed {
 		rt.startHoldLocked(start)
@@ -157,8 +158,9 @@ func (rt *router) handleHold(w http.ResponseWriter, r *http.Request) {
 // now, so route-then-release sends them to the new backend.
 func (rt *router) handleRelease(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	rt.g.controlMu.Lock()
-	rt.mu.Lock()
+	if !rt.lockControl(w) {
+		return
+	}
 	excludedWriter := rt.readExclusions[rt.writeBackend] != ""
 	rt.mu.Unlock()
 	if excludedWriter {
@@ -205,9 +207,10 @@ func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
 	if !rt.g.decodeJSON(w, r, &req) {
 		return
 	}
-	rt.g.controlMu.Lock()
+	if !rt.lockControl(w) {
+		return
+	}
 	defer rt.g.controlMu.Unlock()
-	rt.mu.Lock()
 	if _, ok := rt.byName[req.Backend]; !ok {
 		names := rt.namesLocked()
 		rt.mu.Unlock()
@@ -239,9 +242,10 @@ func (rt *router) handleWeights(w http.ResponseWriter, r *http.Request) {
 	if !rt.g.decodeJSON(w, r, &req) {
 		return
 	}
-	rt.g.controlMu.Lock()
+	if !rt.lockControl(w) {
+		return
+	}
 	defer rt.g.controlMu.Unlock()
-	rt.mu.Lock()
 	if err := validateWeights(req.ReadWeights, rt.namesLocked()); err != nil {
 		rt.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "invalid_weights", err.Error())
@@ -307,7 +311,7 @@ func (rt *router) state(window time.Duration) apiv1.TrafficState {
 		Totals:       make(map[string]apiv1.BackendTotals, len(backends)),
 		UpdatedAt:    now.UTC(),
 	}
-	supported := rt.g.cfg.StateFile != ""
+	supported := rt.g.cfg.StateFile != "" && !rt.retired
 	exclusions := maps.Clone(rt.readExclusions)
 	inFlight := make(map[string]int, len(backends))
 	for _, b := range backends {
