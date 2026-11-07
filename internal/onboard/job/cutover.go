@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -181,6 +182,26 @@ func (r *Runner) plan(ctx context.Context, x *rec) ([]byte, plans.OnboardingScop
 	return raw, scope, err
 }
 
+// superuserTarget is the new primary's DSN (the platform's route to its
+// -rw service, as the plan's target) as the source's fence user: roles were
+// replicated physically, so its password is the source's.
+func (r *Runner) superuserTarget(ctx context.Context, x *rec) (string, error) {
+	target, err := r.cfg.Apps.Target(ctx, x.row.App, x.doc.TargetEnv)
+	if err != nil {
+		return "", err
+	}
+	pw, err := r.open(x, secrets.OnboardingSuperuserPassword, x.row.SuperuserPasswordNonce, x.row.SuperuserPasswordCiphertext)
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(os.ExpandEnv(target.Endpoint.Dsn))
+	if err != nil || x.facts == nil || x.facts.DB == nil || x.facts.DB.FenceUser == "" {
+		return "", errors.New("the target's DSN or the fence user is not known")
+	}
+	u.User = url.UserPassword(x.facts.DB.FenceUser, pw)
+	return u.String(), nil
+}
+
 func (r *Runner) publicService(ctx context.Context, app string) (appspec.Service, int, error) {
 	a, err := r.cfg.Store.GetApp(ctx, app)
 	if err != nil {
@@ -322,11 +343,11 @@ func (r *Runner) postRun(ctx context.Context, x *rec) (bool, error) {
 	}
 	if !x.postRunDone("drop_replicator") {
 		if r.cfg.SourceDB != nil {
-			target, err := r.cfg.Apps.Target(ctx, x.row.App, x.doc.TargetEnv)
+			dsn, err := r.superuserTarget(ctx, x)
 			if err != nil {
 				return false, err
 			}
-			if err := r.cfg.SourceDB.DropRole(ctx, os.ExpandEnv(target.Endpoint.Dsn), onboard.ReplicationUser); err != nil {
+			if err := r.cfg.SourceDB.DropRole(ctx, dsn, onboard.ReplicationUser); err != nil {
 				r.event(ctx, x, apiv1.OnboardingEventKindLog, "drop "+onboard.ReplicationUser+": "+err.Error(), nil)
 				return false, nil
 			}

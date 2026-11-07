@@ -315,4 +315,10 @@ func (w *world) Check(_ context.Context, host, db, user, pw, repl string) error 
 	w.did("check source")
 	return nil
 }
-func (w *world) DropRole(_ context.Context, _, role string) error { w.did("drop " + role); return nil }
+func (w *world) DropRole(_ context.Context, dsn, role string) error {
+	if dsn != "postgres://moim:pw@h:5432/moim" {
+		w.t.Errorf("drop with %s", dsn)
+	}
+	w.did("drop " + role)
+	return nil
+}
