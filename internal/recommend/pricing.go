@@ -100,7 +100,9 @@ func (p *Prices) fetch(ctx context.Context, endpoint, expectedLocation string, n
 		return priceEntry{}, errors.New("price source too large")
 	}
 	d := json.NewDecoder(bytes.NewReader(body))
-	if d.Decode(&data) != nil || d.Decode(new(any)) != io.EOF || data.Manifest.Currency != "USD" || data.Manifest.Source != "ec2-ondemand-without-sec-sel" || data.Manifest.Published.IsZero() || data.Manifest.Published.After(now.Add(5*time.Minute)) || now.Sub(data.Manifest.Published) > 7*24*time.Hour {
+	// Match the sandbox snapshot's maximum observedAt clock skew. Otherwise
+	// a locally accepted price would invalidate the whole AI input later.
+	if d.Decode(&data) != nil || d.Decode(new(any)) != io.EOF || data.Manifest.Currency != "USD" || data.Manifest.Source != "ec2-ondemand-without-sec-sel" || data.Manifest.Published.IsZero() || data.Manifest.Published.After(now.Add(30*time.Second)) || now.Sub(data.Manifest.Published) > 7*24*time.Hour {
 		return priceEntry{}, errors.New("price source invalid or stale")
 	}
 	if len(data.Regions) != 1 {

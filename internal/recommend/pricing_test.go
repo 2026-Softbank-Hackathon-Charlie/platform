@@ -52,7 +52,7 @@ func TestPublicPricesCacheAndExactRegion(t *testing.T) {
 }
 func TestPublicPricesRejectStaleMalformedAndOversizedBodies(t *testing.T) {
 	now := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
-	for _, body := range []string{priceFixture(now.Add(-8*24*time.Hour), "Asia Pacific (Seoul)", "0.12"), priceFixture(now, "Asia Pacific (Seoul)", "NaN"), priceFixture(now, "Asia Pacific (Seoul)", "0"), strings.Repeat(" ", 4<<20) + "{}"} {
+	for _, body := range []string{priceFixture(now.Add(-8*24*time.Hour), "Asia Pacific (Seoul)", "0.12"), priceFixture(now.Add(31*time.Second), "Asia Pacific (Seoul)", "0.12"), priceFixture(now, "Asia Pacific (Seoul)", "NaN"), priceFixture(now, "Asia Pacific (Seoul)", "0"), strings.Repeat(" ", 4<<20) + "{}"} {
 		p := NewPrices()
 		p.client.Transport = priceTransport(func(*http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
