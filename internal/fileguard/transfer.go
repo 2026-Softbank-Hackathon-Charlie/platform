@@ -144,56 +144,50 @@ func take(ctx context.Context, source string, reviews []Review, binary string, e
 }
 
 func downloadInventory(ctx context.Context, source string, s *snapshot, execute command) error {
-	window := make([]object, 0, inventoryChunk)
-	var staged int64
-	flush := func() error {
-		if len(window) == 0 {
-			return nil
-		}
+	// Inventory sorting remains chunked, but a transfer need not restart its
+	// process, credentials and connections at each 256-object sort boundary.
+	// The literal list is streamed to disk and already capped at MaxObjects;
+	// the single bounded pool retains the same hard total transfer budget.
+	if ctx.Err() != nil {
+		return ErrRead
+	}
+	paths := filepath.Join(s.root, "files.txt")
+	f, err := os.OpenFile(paths, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return ErrRead
+	}
+	err = s.inventory.walk(func(o object) error {
 		if ctx.Err() != nil {
 			return ErrRead
 		}
-		paths := filepath.Join(s.root, "files.txt")
-		f, err := os.OpenFile(paths, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-		if err != nil {
+		if _, err := io.WriteString(f, o.Path+"\n"); err != nil {
 			return ErrRead
-		}
-		for _, o := range window {
-			if _, err := io.WriteString(f, o.Path+"\n"); err != nil {
-				f.Close()
-				return ErrRead
-			}
-		}
-		if f.Close() != nil {
-			return ErrRead
-		}
-		remaining := MaxTotalBytes - staged
-		if remaining == 0 {
-			remaining = 1
-		} // zero-length objects still need materializing
-		if execute(ctx, io.Discard, "copy", source, s.dir, "--files-from-raw", paths, "--ignore-times", "--no-traverse", "--transfers", "16", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0", "--max-backlog", "256", "--max-transfer", fmt.Sprintf("%dB", remaining), "--cutoff-mode", "HARD", "--retries", "1", "--low-level-retries", "1") != nil {
-			return ErrRead
-		}
-		for _, o := range window {
-			info, err := os.Lstat(filepath.Join(s.dir, filepath.FromSlash(o.Path)))
-			if err != nil || !info.Mode().IsRegular() || info.Size() != o.Size {
-				return ErrChanged
-			}
-			staged += o.Size
-		}
-		window = window[:0]
-		return nil
-	}
-	if err := s.inventory.walk(func(o object) error {
-		window = append(window, o)
-		if len(window) == inventoryChunk {
-			return flush()
 		}
 		return nil
-	}); err != nil {
+	})
+	closeErr := f.Close()
+	if err != nil {
 		return err
 	}
-	return flush()
+	if closeErr != nil {
+		return ErrRead
+	}
+	if s.inventory.count == 0 {
+		return nil
+	}
+	if execute(ctx, io.Discard, "copy", source, s.dir, "--files-from-raw", paths, "--ignore-times", "--no-traverse", "--transfers", "16", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0", "--max-backlog", "256", "--max-transfer", fmt.Sprintf("%dB", MaxTotalBytes), "--cutoff-mode", "HARD", "--retries", "1", "--low-level-retries", "1") != nil {
+		return ErrRead
+	}
+	return s.inventory.walk(func(o object) error {
+		if ctx.Err() != nil {
+			return ErrRead
+		}
+		info, err := os.Lstat(filepath.Join(s.dir, filepath.FromSlash(o.Path)))
+		if err != nil || !info.Mode().IsRegular() || info.Size() != o.Size {
+			return ErrChanged
+		}
+		return nil
+	})
 }
 
 func readObject(dir string, o object) ([]byte, error) {
@@ -217,7 +211,7 @@ func readObject(dir string, o object) ([]byte, error) {
 func (s *snapshot) verify(ctx context.Context) error {
 	count := 0
 	err := filepath.WalkDir(s.dir, func(name string, d os.DirEntry, err error) error {
-		if err != nil || d.Type()&os.ModeSymlink != 0 {
+		if err != nil || ctx.Err() != nil || d.Type()&os.ModeSymlink != 0 {
 			return ErrChanged
 		}
 		if !d.IsDir() {
@@ -228,11 +222,7 @@ func (s *snapshot) verify(ctx context.Context) error {
 	if err != nil || count != s.inventory.count {
 		return ErrChanged
 	}
-	r, err := scanEach(ctx, s.dir, s.inventory.walk, s.reviews, s.binary)
-	if err != nil || r.ManifestDigest != s.report.ManifestDigest {
-		return ErrChanged
-	}
-	return nil
+	return s.verifyInspection(ctx)
 }
 
 // Inspector downloads and scans without sending anything to a destination.
