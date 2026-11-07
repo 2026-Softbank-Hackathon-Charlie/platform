@@ -212,3 +212,7 @@ func TailscaleContainer(app string) string { return "hopcharlie-ts-" + app }
 
 // TailscaleVolume is the named volume of the Tailscale container's state.
 func TailscaleVolume(app string) string { return TailscaleContainer(app) + "-state" }
+
+// AppName matches an app name (pkg/appspec): the label of an onboarding's
+// service URL.
+var AppName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`)
