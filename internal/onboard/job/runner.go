@@ -64,14 +64,12 @@ type Config struct {
 type Runner struct {
 	cfg Config
 
-	mu   sync.Mutex
-	busy map[string]bool
+	mu       sync.Mutex
+	busy     map[string]bool
+	starting map[string]bool // Cutover between reserving and storing the run
 	wg   sync.WaitGroup
 	ctx  context.Context // set by Run; steps outlive requests
 
-	// cutoverMu serializes putting LEGACY_PGPASSWORD into the process
-	// environment and the reservation that expands it.
-	cutoverMu sync.Mutex
 }
 
 // New returns a runner; Run starts it.
@@ -85,7 +83,7 @@ func New(cfg Config) *Runner {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Runner{cfg: cfg, busy: map[string]bool{}, ctx: context.Background()}
+	return &Runner{cfg: cfg, busy: map[string]bool{}, starting: map[string]bool{}, ctx: context.Background()}
 }
 
 // Run works on every onboarding that is not done from where its row says
@@ -141,6 +139,11 @@ func (r *Runner) kick(id string) {
 			r.mu.Lock()
 			delete(r.busy, id)
 			r.mu.Unlock()
+		}()
+		defer func() {
+			if p := recover(); p != nil {
+				r.cfg.Log.Error("onboarding step panicked", "onboarding", id, "panic", fmt.Sprint(p))
+			}
 		}()
 		r.Advance(ctx, id)
 	}()
@@ -367,6 +370,12 @@ func (r *Runner) Approve(ctx context.Context, id, headSha, actor string) (apiv1.
 		return apiv1.Onboarding{}, fmt.Errorf("%w: the default branch is at %s", ErrHeadMismatch, x.facts.GitHub.Head)
 	}
 	x, err = r.update(ctx, id, []string{store.OnboardingAwaitingApproval}, func(x *rec) (string, error) {
+		if x.doc.Deleting {
+			return "", ErrDeleting
+		}
+		if x.doc.Pr != nil && x.doc.Pr.HeadSha != headSha {
+			return "", fmt.Errorf("%w: the test ran at %s", ErrHeadMismatch, x.doc.Pr.HeadSha)
+		}
 		now := r.cfg.Now()
 		x.doc.ApprovedAt, x.doc.ApprovedBy, x.doc.ApprovedSha = &now, &actor, &headSha
 		return store.OnboardingConnecting, nil
@@ -419,6 +428,9 @@ func (r *Runner) Resume(ctx context.Context, id, actor string) (apiv1.Onboarding
 			}
 			x.doc.FailedState, x.doc.Failure = nil, nil
 			x.doc.Internal.Waiting = false
+			if to == store.OnboardingPatching {
+				x.doc.Internal.HopaiJob = ""
+			}
 			return to, nil
 		case x.doc.Internal.Waiting:
 			x.doc.Internal.Waiting = false
@@ -486,13 +498,25 @@ func CuttingOver(st store.OnboardingStore) func(ctx context.Context, app string)
 			return false, err
 		}
 		for _, o := range list {
-			if o.App == app && o.State == store.OnboardingCuttingOver {
-				return true, nil
+			if o.App != app || o.State != store.OnboardingCuttingOver {
+				continue
 			}
+			// Once the run succeeded the platform redeploys the app itself
+			// (postRun), with its replicas and without cold.
+			var d struct {
+				Internal struct {
+					PostRun []string `json:"postRun"`
+				} `json:"internal"`
+			}
+			_ = json.Unmarshal(o.Doc, &d)
+			return !contains(d.Internal.PostRun, postRunDone), nil
 		}
 		return false, nil
 	}
 }
+
+// postRunDone is the PostRun step that marks the run succeeded.
+const postRunDone = "run"
 
 // PushAllowed reports whether repo has an onboarding in patching or
 // checking that is not being deleted, which may get a push token (ADR

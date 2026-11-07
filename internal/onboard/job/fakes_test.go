@@ -56,6 +56,7 @@ type world struct {
 
 	noPostgres bool // the registered platform.yaml has no postgres resource
 	rotated    bool // connect says the replication password changed
+	lostRun    bool // no run of the plan was found after a restart
 
 	runStatus  apiv1.RunStatus
 	reserveErr error
@@ -319,6 +320,12 @@ func (w *world) Release(context.Context, string)               { w.did("release"
 func (w *world) Start(context.Context, runs.StartOptions) (apiv1.Run, error) {
 	w.did("run")
 	return apiv1.Run{RunId: "run1"}, nil
+}
+func (w *world) FindRun(_ context.Context, planID string) (apiv1.Run, bool, error) {
+	if w.lostRun {
+		return apiv1.Run{}, false, nil
+	}
+	return apiv1.Run{RunId: "run1", PlanId: planID}, true, nil
 }
 func (w *world) Get(context.Context, string) (apiv1.Run, error) {
 	return apiv1.Run{RunId: "run1", Status: w.runStatus}, nil

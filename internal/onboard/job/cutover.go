@@ -40,6 +40,9 @@ func (r *Runner) Cutover(ctx context.Context, id, actor string) (apiv1.Onboardin
 	// The state first: nothing deploys the app from here (CuttingOver).
 	attempt := x.doc.Internal.Attempt + 1
 	x, err = r.update(ctx, id, []string{store.OnboardingReady}, func(x *rec) (string, error) {
+		if x.doc.Deleting {
+			return "", ErrDeleting
+		}
 		x.doc.Internal.Attempt, x.doc.Internal.PlanRef, x.doc.Internal.PostRun = attempt, "", nil
 		x.doc.RunId = nil
 		return store.OnboardingCuttingOver, nil
@@ -47,61 +50,64 @@ func (r *Runner) Cutover(ctx context.Context, id, actor string) (apiv1.Onboardin
 	if err != nil {
 		return apiv1.Onboarding{}, err
 	}
-	run, ref, err := r.startRun(ctx, x, actor)
+	r.mu.Lock()
+	r.starting[id] = true
+	r.mu.Unlock()
+	run, err := r.startRun(ctx, x, actor)
+	r.mu.Lock()
+	delete(r.starting, id)
+	r.mu.Unlock()
 	if err != nil {
 		_ = r.fail(ctx, id, store.OnboardingCuttingOver, fmt.Errorf("the cutover did not start: %w", err))
 		o, _ := r.Get(ctx, id)
 		return o, err
 	}
-	x, err = r.update(ctx, id, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
-		x.doc.RunId, x.doc.Internal.PlanRef = &run.RunId, ref
-		return "", nil
-	})
-	if err != nil {
-		return apiv1.Onboarding{}, err
-	}
-	r.event(ctx, x, apiv1.OnboardingEventKindStep, "cutover run "+run.RunId+" started by "+actor, map[string]any{"runId": run.RunId, "planRef": ref})
+	r.event(ctx, x, apiv1.OnboardingEventKindStep, "cutover run "+run.RunId+" started by "+actor, map[string]any{"runId": run.RunId})
 	r.kick(id)
-	return View(x.row)
+	return r.Get(ctx, id)
 }
 
-// startRun writes, reserves and starts the plan of x's attempt.
-func (r *Runner) startRun(ctx context.Context, x *rec, actor string) (apiv1.Run, string, error) {
+// startRun writes, reserves and starts the plan of x's attempt. The plan's
+// ref is stored once reserved and the run's id as soon as it started, so a
+// crash in between leaves what cuttingOver needs to find them.
+func (r *Runner) startRun(ctx context.Context, x *rec, actor string) (apiv1.Run, error) {
 	raw, scope, err := r.plan(ctx, x)
 	if err != nil {
-		return apiv1.Run{}, "", err
+		return apiv1.Run{}, err
 	}
 	if err := gates(x); err != nil {
-		return apiv1.Run{}, "", err
+		return apiv1.Run{}, err
 	}
-	pw, err := r.open(x, secrets.OnboardingSuperuserPassword, x.row.SuperuserPasswordNonce, x.row.SuperuserPasswordCiphertext)
-	if err != nil {
-		return apiv1.Run{}, "", err
-	}
-	r.cutoverMu.Lock()
-	defer r.cutoverMu.Unlock()
-	// plan.Parse expands the DSN from the process environment.
-	_ = os.Setenv(onboard.LegacyPasswordEnv, pw)
 	res, ref, err := r.cfg.Cutover.ReserveOnboarding(ctx, raw, actor, scope)
-	_ = os.Unsetenv(onboard.LegacyPasswordEnv)
 	if err != nil {
-		return apiv1.Run{}, ref, err
+		return apiv1.Run{}, err
+	}
+	if _, err := r.update(ctx, x.row.ID, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
+		x.doc.Internal.PlanRef = ref
+		return "", nil
+	}); err != nil {
+		r.cfg.Cutover.Release(ctx, ref)
+		return apiv1.Run{}, err
 	}
 	run, err := r.cfg.Cutover.Start(ctx, runs.StartOptions{PlanRef: ref, Plan: res.Plan, Source: res.Summary.Source, Target: res.Summary.Target,
 		Actor: actor, AutoSwitch: true})
 	if err != nil {
 		r.cfg.Cutover.Release(ctx, ref)
-		return apiv1.Run{}, ref, err
+		return apiv1.Run{}, err
 	}
+	_, uerr := r.update(ctx, x.row.ID, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
+		x.doc.RunId = &run.RunId
+		return "", nil
+	})
 	if err := r.cfg.Cutover.Started(ctx, ref, run.RunId); err != nil {
-		return run, ref, err
+		r.cfg.Log.Warn("onboarding: link the plan to its run", "onboarding", x.row.ID, "err", err)
 	}
-	return run, ref, nil
+	return run, uerr
 }
 
 // Scope is the plans.OnboardingScope of an onboarding's plan id, for
-// resuming its halted run (plans.Service.SetOnboardingScopes). It puts the
-// fence user's password into the environment again for the parse.
+// resuming its halted run (plans.Service.SetOnboardingScopes), with the
+// fence user's password the parse expands.
 func (r *Runner) Scope(ctx context.Context, planID string) (plans.OnboardingScope, bool, error) {
 	n := len(onboard.IDPrefix) + 12
 	if len(planID) <= n || !onboard.ID.MatchString(planID[:n]) || planID[n] != '-' {
@@ -118,11 +124,6 @@ func (r *Runner) Scope(ctx context.Context, planID string) (plans.OnboardingScop
 	if err != nil {
 		return plans.OnboardingScope{}, false, err
 	}
-	pw, err := r.open(x, secrets.OnboardingSuperuserPassword, x.row.SuperuserPasswordNonce, x.row.SuperuserPasswordCiphertext)
-	if err != nil {
-		return plans.OnboardingScope{}, false, err
-	}
-	_ = os.Setenv(onboard.LegacyPasswordEnv, pw)
 	return scope, true, nil
 }
 
@@ -161,7 +162,7 @@ func (r *Runner) plan(ctx context.Context, x *rec) ([]byte, plans.OnboardingScop
 	p := map[string]any{
 		"id": onboard.PlanID(x.row.ID, x.doc.Internal.Attempt),
 		"source": map[string]any{"kind": "external", "name": onboard.SourceName, "env": onboard.SourceName, "namespace": "", "cluster": "",
-			"dsn": "postgres://" + f.DB.FenceUser + ":${" + onboard.LegacyPasswordEnv + "}@" + host + "/" + f.DB.Database + "?sslmode=prefer"},
+			"dsn": "postgres://" + url.PathEscape(f.DB.FenceUser) + ":${" + onboard.LegacyPasswordEnv + "}@" + host + "/" + url.PathEscape(f.DB.Database) + "?sslmode=prefer"},
 		"target": tgt,
 		"verify": map[string]any{"fenceGate": true},
 	}
@@ -173,7 +174,11 @@ func (r *Runner) plan(ctx context.Context, x *rec) ([]byte, plans.OnboardingScop
 		p["gateway"] = map[string]any{"mode": "http", "url": plans.GatewayAppURL(target.GatewayURL, x.row.App), "token": "${GATEWAY_TOKEN}",
 			"sourceBackend": onboard.SourceName, "targetBackend": backend}
 	}
-	scope := plans.OnboardingScope{App: x.row.App, SourceHost: host, SmokeURL: smoke}
+	pw, err := r.open(x, secrets.OnboardingSuperuserPassword, x.row.SuperuserPasswordNonce, x.row.SuperuserPasswordCiphertext)
+	if err != nil {
+		return nil, plans.OnboardingScope{}, err
+	}
+	scope := plans.OnboardingScope{App: x.row.App, SourceHost: host, SmokeURL: smoke, Password: pw}
 	if f.Storage != nil && target.Bucket != "" {
 		scope.SourceBucket = onboard.SourceName + ":" + f.Storage.Bucket
 		p["files"] = map[string]any{"source": scope.SourceBucket, "target": target.Bucket}
@@ -260,9 +265,27 @@ func quantity(s string) int64 {
 // before the promotion goes back to ready, a halt waits for the run's resume.
 func (r *Runner) cuttingOver(ctx context.Context, x *rec) (bool, error) {
 	if x.doc.RunId == nil {
-		return false, nil // Cutover is starting it
+		r.mu.Lock()
+		starting := r.starting[x.row.ID]
+		r.mu.Unlock()
+		if starting {
+			return false, nil // Cutover is starting it
+		}
+		// The server stopped between the reservation and storing the run.
+		run, ok, err := r.cfg.Cutover.FindRun(ctx, onboard.PlanID(x.row.ID, x.doc.Internal.Attempt))
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, errors.New("the cutover run did not start; resume goes back to ready")
+		}
+		_, err = r.update(ctx, x.row.ID, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
+			x.doc.RunId = &run.RunId
+			return "", nil
+		})
+		return err == nil, err
 	}
-	if !x.postRunDone("run") {
+	if !x.postRunDone(postRunDone) {
 		run, err := r.cfg.Cutover.Get(ctx, *x.doc.RunId)
 		if err != nil {
 			return false, err
@@ -270,7 +293,7 @@ func (r *Runner) cuttingOver(ctx context.Context, x *rec) (bool, error) {
 		switch run.Status {
 		case apiv1.RunStatusSucceeded:
 			_, err := r.update(ctx, x.row.ID, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
-				x.doc.Internal.PostRun = append(x.doc.Internal.PostRun, "run")
+				x.doc.Internal.PostRun = append(x.doc.Internal.PostRun, postRunDone)
 				return "", nil
 			})
 			return err == nil, err

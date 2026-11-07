@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
 // OnboardingRole is store.Plan.SubmittedRole of a cutover plan an
@@ -39,6 +42,22 @@ type OnboardingScope struct {
 	// only target.app.smokeUrl the plan may have (the engine needs one for
 	// a cold app); its smoke requests must be GET or HEAD.
 	SmokeURL string
+	// Password is the fence user's password: LegacyPasswordEnv is set to
+	// it only while the plan is parsed, under a lock, and unset right after.
+	Password string
+}
+
+// legacyEnvMu serializes setting LegacyPasswordEnv for a parse.
+var legacyEnvMu sync.Mutex
+
+// parseOnboarding parses raw with the onboarding's policy, with
+// LegacyPasswordEnv in the process environment for plan.Parse only.
+func (s *Service) parseOnboarding(ctx context.Context, policy Policy, raw []byte, scope OnboardingScope) (*plan.Plan, apiv1.PlanSummary, error) {
+	legacyEnvMu.Lock()
+	defer legacyEnvMu.Unlock()
+	_ = os.Setenv(LegacyPasswordEnv, scope.Password)
+	defer os.Unsetenv(LegacyPasswordEnv)
+	return s.parseWith(ctx, policy.withOnboarding(scope), raw)
 }
 
 // OnboardingScopes finds the scope of an onboarding's plan by its id, for
@@ -118,7 +137,7 @@ func (s *Service) ReserveOnboarding(ctx context.Context, raw []byte, actor strin
 	if err != nil {
 		return Reserved{}, "", err
 	}
-	p, sum, err := s.parseWith(ctx, policy.withOnboarding(scope), raw)
+	p, sum, err := s.parseOnboarding(ctx, policy, raw, scope)
 	if err != nil {
 		return Reserved{}, "", err
 	}
@@ -170,6 +189,6 @@ func (s *Service) loadOnboarding(ctx context.Context, row store.Plan) (*plan.Pla
 	if err != nil {
 		return nil, err
 	}
-	p, _, err := s.parseWith(ctx, policy.withOnboarding(scope), row.Raw)
+	p, _, err := s.parseOnboarding(ctx, policy, row.Raw, scope)
 	return p, err
 }

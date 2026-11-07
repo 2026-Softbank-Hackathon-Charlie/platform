@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"os"
 	"errors"
 	"strings"
 	"testing"
@@ -40,10 +41,10 @@ func onbPolicy() Policy {
 	return p
 }
 
-var onbScope = OnboardingScope{App: "shop", SourceHost: onbHost, SourceBucket: "legacy:moim-files", SmokeURL: "https://shop.eks.example"}
+var onbScope = OnboardingScope{App: "shop", SourceHost: onbHost, SourceBucket: "legacy:moim-files", SmokeURL: "https://shop.eks.example", Password: "fence-pw"}
 
 func TestReserveOnboarding(t *testing.T) {
-	t.Setenv(LegacyPasswordEnv, "fence-pw")
+	t.Setenv(LegacyPasswordEnv, "")
 	t.Setenv("DST_PGPASSWORD", "app-pw")
 	st := storetest.NewMemory()
 	s := New(onbPolicy(), st)
@@ -60,6 +61,9 @@ func TestReserveOnboarding(t *testing.T) {
 	row, err := st.GetPlan(context.Background(), ref)
 	if err != nil || row.Status != store.PlanStarting || row.SubmittedRole != OnboardingRole {
 		t.Fatalf("stored %+v %v", row, err)
+	}
+	if v, set := os.LookupEnv(LegacyPasswordEnv); set || v != "" {
+		t.Fatal("the fence password stayed in the process environment")
 	}
 	if strings.Contains(string(row.Raw), "fence-pw") {
 		t.Fatal("the stored plan holds the expanded password")

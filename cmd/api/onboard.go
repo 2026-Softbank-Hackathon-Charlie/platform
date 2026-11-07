@@ -122,6 +122,18 @@ func (c cutover) Start(ctx context.Context, o runs.StartOptions) (apiv1.Run, err
 	return c.runs.Start(ctx, o)
 }
 func (c cutover) Get(ctx context.Context, id string) (apiv1.Run, error) { return c.runs.Get(ctx, id) }
+func (c cutover) FindRun(ctx context.Context, planID string) (apiv1.Run, bool, error) {
+	list, err := c.runs.List(ctx)
+	if err != nil {
+		return apiv1.Run{}, false, err
+	}
+	for _, r := range list { // newest first
+		if r.PlanId == planID {
+			return r, true, nil
+		}
+	}
+	return apiv1.Run{}, false, nil
+}
 
 // kubeOps is job.Kube with the workload clusters' clients: clients reads,
 // engine is the identity a migration run patches replica.primary with
