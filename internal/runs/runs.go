@@ -650,9 +650,21 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 		ts, err := r.stepState(l, stepStart, stepDur)
 		// Probe reads go to the target at random by weight, so a step can come
 		// up short by chance. Extend it once with another batch over another
-		// stepDuration, then judge the whole step. Without probes more time
-		// would not bring more requests.
-		if n := ts.Stats[dst].Requests; err == nil && probe.cancel != nil && n < int64(minRequests) {
+		// stepDuration, then judge the step again over everything since its
+		// start (at most the last 300s). Without probes more time would not
+		// bring more requests. Errors already over the limit fail at once, and
+		// a step too small for one more batch to fill the gap (1%) moves on.
+		s := ts.Stats[dst]
+		if n := s.Requests; err == nil && probe.cancel != nil && n < int64(minRequests) &&
+			s.ErrorRate <= *opts.Gate.MaxErrorRate && n+int64(probeCount(minRequests, w)*w/100) >= int64(minRequests) {
+			select {
+			case <-ctx.Done():
+				return false, "aborted during the canary"
+			case <-r.stopCh:
+				l.markInterrupted()
+				return false, "the platform is shutting down"
+			default:
+			}
 			l.emitPlatform(engine.EventLog, "", fmt.Sprintf("only %d requests reached %s at %d%%; extending the step by %s with more probe reads", n, dst, w, stepDur),
 				map[string]any{"weight": w, "requests": n, "minRequests": minRequests, "extension": stepDur.String()})
 			probe = r.probe(ctx, l, probeCount(minRequests, w), stepDur, timeout)
@@ -725,7 +737,7 @@ func (r *Runner) waitStep(ctx context.Context, l *live, probe probing, d time.Du
 }
 
 // stepState reads the gateway's request stats over everything the step sent
-// since start.
+// since start, at most the last 300s.
 func (r *Runner) stepState(l *live, start time.Time, stepDur time.Duration) (apiv1.TrafficState, error) {
 	// whole seconds rounded up, so the step's first reads stay in; the gateway keeps 300s
 	window := min(max(time.Since(start).Truncate(time.Second)+time.Second, stepDur), 300*time.Second)

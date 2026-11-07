@@ -951,6 +951,50 @@ func TestCanaryExtendsOnlyOnce(t *testing.T) {
 	}
 }
 
+// Errors already over the limit fail a small step at once, even with probes:
+// waiting another step would only send more reads to a broken target.
+func TestCanaryErrorsFailWithoutExtension(t *testing.T) {
+	h := newHarness(t, func(_ *harness, rc *runs.Config, _ *Deps) {
+		rc.Probe = func(context.Context, string) error { return nil }
+	})
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 4, ErrorRate: 0.5, P95Millis: 40}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, Canary: &apiv1.CanaryOptions{Weights: []int{10, 100}, StepDuration: ptr("20ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusRolledBack))
+	c := run.Canary
+	if len(c.Steps) != 1 || *c.Steps[0].Verdict != apiv1.CanaryStepVerdictFailed ||
+		!strings.Contains(c.Steps[0].Gate.Reason, "error rate 50.00% over only 4 requests") {
+		t.Fatalf("canary: %+v", c.Steps)
+	}
+	if n := extensionEvents(h.stream(id, "")); n != 0 {
+		t.Fatalf("extension events: %d", n)
+	}
+}
+
+// A 1% step is not extended: one more batch would bring about 3 reads to the
+// target, not enough to fill the gap. The next step still is.
+func TestCanarySkipsAnExtensionThatCannotFill(t *testing.T) {
+	h := newHarness(t, func(_ *harness, rc *runs.Config, _ *Deps) {
+		rc.Probe = func(context.Context, string) error { return nil }
+	})
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 3, P95Millis: 30}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, Canary: &apiv1.CanaryOptions{Weights: []int{1, 100}, StepDuration: ptr("20ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusRolledBack))
+	if c := run.Canary; len(c.Steps) != 2 || *c.Steps[0].Verdict != apiv1.CanaryStepVerdictInconclusive {
+		t.Fatalf("canary: %+v", c.Steps)
+	}
+	msgs := h.stream(id, "")
+	if n := extensionEvents(msgs); n != 1 {
+		t.Fatalf("extension events: %d, want only the 100%% step's", n)
+	}
+	for _, m := range msgs {
+		if strings.Contains(m.data, "extending the step") && !strings.Contains(m.data, "at 100%") {
+			t.Fatalf("extension event: %s", m.data)
+		}
+	}
+}
+
 func TestCanaryNeedsGateway(t *testing.T) {
 	h := newHarness(t)
 	ref := h.approved(planJSON("p1", "a", "b", false)) // gateway mode none

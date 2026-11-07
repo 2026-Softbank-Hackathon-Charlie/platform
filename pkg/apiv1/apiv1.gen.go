@@ -2083,7 +2083,9 @@ type BucketSample struct {
 // must pass with enough requests. When the platform sends synthetic
 // probe reads, a step whose target got fewer than `gate.minRequests` is
 // extended once by another `stepDuration` with more probe reads and then
-// judged over the whole step. Gradual steps such as
+// judged over the whole step (at most the last 300s). It is not extended
+// when the errors are already over the limit or when one more batch could
+// not bring enough requests (as at 1%). Gradual steps such as
 // 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 type CanaryOptions struct {
 	Gate         *GateThresholds `json:"gate,omitempty"`
@@ -2104,7 +2106,9 @@ type CanaryResult struct {
 	// must pass with enough requests. When the platform sends synthetic
 	// probe reads, a step whose target got fewer than `gate.minRequests` is
 	// extended once by another `stepDuration` with more probe reads and then
-	// judged over the whole step. Gradual steps such as
+	// judged over the whole step (at most the last 300s). It is not extended
+	// when the errors are already over the limit or when one more batch could
+	// not bring enough requests (as at 1%). Gradual steps such as
 	// 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 	Options CanaryOptions `json:"options"`
 	Passed  *bool         `json:"passed,omitempty"`
@@ -3975,7 +3979,9 @@ type StartMigrationRequest struct {
 	// must pass with enough requests. When the platform sends synthetic
 	// probe reads, a step whose target got fewer than `gate.minRequests` is
 	// extended once by another `stepDuration` with more probe reads and then
-	// judged over the whole step. Gradual steps such as
+	// judged over the whole step (at most the last 300s). It is not extended
+	// when the errors are already over the limit or when one more batch could
+	// not bring enough requests (as at 1%). Gradual steps such as
 	// 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 	Canary *CanaryOptions `json:"canary,omitempty"`
 
