@@ -201,3 +201,28 @@ func TestModelLabelsDoNotExposeAddressesOrCredentialLikeStrings(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyUsageRequiresExplicitTokenUnits(t *testing.T) {
+	for _, raw := range []string{
+		`{"usage":{"input":12,"output":24,"total":36,"unit":"CHARACTERS"}}`,
+		`{"usage":{"input":12,"output":24,"total":36}}`,
+		`{"usage":{"input":12,"output":24,"total":36,"unit":null}}`,
+	} {
+		var wire wireObservation
+		if err := json.Unmarshal([]byte(raw), &wire); err != nil {
+			t.Fatal(err)
+		}
+		m := metrics(wire)
+		if m.InputTokens != nil || m.OutputTokens != nil || m.TotalTokens != nil {
+			t.Fatal("non-token or unknown legacy unit became token counts")
+		}
+	}
+	var modern wireObservation
+	if err := json.Unmarshal([]byte(`{"usageDetails":{"input":0,"output":2,"total":2},"usage":{"input":100,"unit":"CHARACTERS"}}`), &modern); err != nil {
+		t.Fatal(err)
+	}
+	m := metrics(modern)
+	if m.InputTokens == nil || *m.InputTokens != 0 || m.OutputTokens == nil || *m.OutputTokens != 2 {
+		t.Fatal("modern token usage was replaced by legacy units")
+	}
+}

@@ -207,7 +207,12 @@ func number(m map[string]json.RawMessage, k string) *float64 {
 func metrics(w wireObservation) Metrics {
 	usage := w.UsageDetails
 	if len(usage) == 0 {
-		usage = w.Usage
+		// Legacy usage may count characters or another unit. Only an explicit
+		// TOKENS unit can become token metrics; missing units remain unknown.
+		var unit string
+		if json.Unmarshal(w.Usage["unit"], &unit) == nil && unit == "TOKENS" {
+			usage = w.Usage
+		}
 	}
 	m := Metrics{InputTokens: number(usage, "input"), OutputTokens: number(usage, "output"), TotalTokens: number(usage, "total"), CostUSD: number(w.CostDetails, "total")}
 	if m.CostUSD == nil && w.CalculatedTotalCost != nil && *w.CalculatedTotalCost >= 0 && *w.CalculatedTotalCost <= 1e15 && !math.IsNaN(*w.CalculatedTotalCost) && !math.IsInf(*w.CalculatedTotalCost, 0) {
