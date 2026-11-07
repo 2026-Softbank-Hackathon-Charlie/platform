@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -12,6 +13,7 @@ import (
 type operationTiming struct {
 	started time.Time
 	phases  map[string]time.Duration
+	pending sync.WaitGroup
 }
 
 func newOperationTiming() *operationTiming {
@@ -24,6 +26,8 @@ func newOperationTiming() *operationTiming {
 
 func (t *operationTiming) execute(next command, phase string) command {
 	return func(ctx context.Context, out io.Writer, args ...string) error {
+		t.pending.Add(1)
+		defer t.pending.Done()
 		started := time.Now()
 		defer func() { t.phases[phase] += time.Since(started) }()
 		return next(ctx, out, args...)
@@ -33,6 +37,10 @@ func (t *operationTiming) execute(next command, phase string) command {
 func (t *operationTiming) prepare(ctx context.Context, s *Syncer, src, dst string) (*snapshot, error) {
 	started := time.Now()
 	defer func() {
+		// streamListing cancels its producer on an invalid listing, but may
+		// return before the producer exits. Finish cancelled commands before
+		// reading their timing or returning/cleaning the operation snapshot.
+		t.pending.Wait()
 		t.phases["prepare"] = time.Since(started)
 		// Includes local inventory work, scans, policy callbacks and staging I/O;
 		// sourceInventory/sourceDownload are subsets of prepare, not extra time.

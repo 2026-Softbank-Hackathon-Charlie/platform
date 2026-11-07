@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestTransferPoolsKeepFullInspectionAndTargetProof(t *testing.T) {
@@ -92,6 +93,52 @@ func TestFailedTargetProofRetainsTimingAndCleansSnapshot(t *testing.T) {
 	}
 	if _, err := os.Stat(r.stage); !os.IsNotExist(err) {
 		t.Fatal("failed transfer retained its private staging")
+	}
+}
+
+func TestEarlyListingFailureWaitsForCommandCancellation(t *testing.T) {
+	s := makeSyncer(cleanRemote(), allow)
+	cancelled, release := make(chan struct{}), make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	s.execute = func(ctx context.Context, out io.Writer, args ...string) error {
+		if args[0] != "lsjson" {
+			return errors.New("unexpected transfer after invalid listing")
+		}
+		_, _ = io.WriteString(out, `[{"Path":"../unsafe","Size":0}]`)
+		<-ctx.Done()
+		close(cancelled)
+		<-release
+		return ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Sync(context.Background(), "src:bucket", "dst:bucket")
+		done <- err
+	}()
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("invalid listing did not cancel its producer")
+	}
+	select {
+	case <-done:
+		t.Fatal("timing and cleanup completed while command was still running")
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(release)
+	released = true
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("invalid listing allowed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled command finished but operation did not return")
 	}
 }
 
