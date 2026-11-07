@@ -7,6 +7,33 @@ import (
 	"time"
 )
 
+// Defines values for AIActivityEventKind.
+const (
+	AIActivityEventKindBlocked    AIActivityEventKind = "blocked"
+	AIActivityEventKindModel      AIActivityEventKind = "model"
+	AIActivityEventKindRehearsal  AIActivityEventKind = "rehearsal"
+	AIActivityEventKindToolCall   AIActivityEventKind = "tool_call"
+	AIActivityEventKindToolResult AIActivityEventKind = "tool_result"
+)
+
+// Valid indicates whether the value is a known member of the AIActivityEventKind enum.
+func (e AIActivityEventKind) Valid() bool {
+	switch e {
+	case AIActivityEventKindBlocked:
+		return true
+	case AIActivityEventKindModel:
+		return true
+	case AIActivityEventKindRehearsal:
+		return true
+	case AIActivityEventKindToolCall:
+		return true
+	case AIActivityEventKindToolResult:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AIRunStatus.
 const (
 	AIRunStatusFailed    AIRunStatus = "failed"
@@ -103,6 +130,27 @@ func (e AgentSessionStatus) Valid() bool {
 	case AgentSessionStatusRunning:
 		return true
 	case AgentSessionStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AppDBReadinessEnvironmentRole.
+const (
+	AppDBReadinessEnvironmentRolePrimary AppDBReadinessEnvironmentRole = "primary"
+	AppDBReadinessEnvironmentRoleReplica AppDBReadinessEnvironmentRole = "replica"
+	AppDBReadinessEnvironmentRoleUnknown AppDBReadinessEnvironmentRole = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the AppDBReadinessEnvironmentRole enum.
+func (e AppDBReadinessEnvironmentRole) Valid() bool {
+	switch e {
+	case AppDBReadinessEnvironmentRolePrimary:
+		return true
+	case AppDBReadinessEnvironmentRoleReplica:
+		return true
+	case AppDBReadinessEnvironmentRoleUnknown:
 		return true
 	default:
 		return false
@@ -297,15 +345,18 @@ func (e DeploymentStatus) Valid() bool {
 
 // Defines values for DeploymentTrigger.
 const (
-	DeploymentTriggerManual   DeploymentTrigger = "manual"
-	DeploymentTriggerPush     DeploymentTrigger = "push"
-	DeploymentTriggerRedeploy DeploymentTrigger = "redeploy"
-	DeploymentTriggerRegister DeploymentTrigger = "register"
+	DeploymentTriggerEnvironment DeploymentTrigger = "environment"
+	DeploymentTriggerManual      DeploymentTrigger = "manual"
+	DeploymentTriggerPush        DeploymentTrigger = "push"
+	DeploymentTriggerRedeploy    DeploymentTrigger = "redeploy"
+	DeploymentTriggerRegister    DeploymentTrigger = "register"
 )
 
 // Valid indicates whether the value is a known member of the DeploymentTrigger enum.
 func (e DeploymentTrigger) Valid() bool {
 	switch e {
+	case DeploymentTriggerEnvironment:
+		return true
 	case DeploymentTriggerManual:
 		return true
 	case DeploymentTriggerPush:
@@ -400,6 +451,312 @@ func (e ObserveStepVerdict) Valid() bool {
 	case ObserveStepVerdictOk:
 		return true
 	case ObserveStepVerdictViolated:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingCheckResult.
+const (
+	OnboardingCheckResultFailed  OnboardingCheckResult = "failed"
+	OnboardingCheckResultPassed  OnboardingCheckResult = "passed"
+	OnboardingCheckResultRunning OnboardingCheckResult = "running"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingCheckResult enum.
+func (e OnboardingCheckResult) Valid() bool {
+	switch e {
+	case OnboardingCheckResultFailed:
+		return true
+	case OnboardingCheckResultPassed:
+		return true
+	case OnboardingCheckResultRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingEventKind.
+const (
+	OnboardingEventKindError OnboardingEventKind = "error"
+	OnboardingEventKindHuman OnboardingEventKind = "human"
+	OnboardingEventKindLog   OnboardingEventKind = "log"
+	OnboardingEventKindState OnboardingEventKind = "state"
+	OnboardingEventKindStep  OnboardingEventKind = "step"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingEventKind enum.
+func (e OnboardingEventKind) Valid() bool {
+	switch e {
+	case OnboardingEventKindError:
+		return true
+	case OnboardingEventKindHuman:
+		return true
+	case OnboardingEventKindLog:
+		return true
+	case OnboardingEventKindState:
+		return true
+	case OnboardingEventKindStep:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingFactsSummaryCloud.
+const (
+	OnboardingFactsSummaryCloudAws OnboardingFactsSummaryCloud = "aws"
+	OnboardingFactsSummaryCloudGcp OnboardingFactsSummaryCloud = "gcp"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingFactsSummaryCloud enum.
+func (e OnboardingFactsSummaryCloud) Valid() bool {
+	switch e {
+	case OnboardingFactsSummaryCloudAws:
+		return true
+	case OnboardingFactsSummaryCloudGcp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingFactsSummaryDbLibc.
+const (
+	OnboardingFactsSummaryDbLibcGlibc OnboardingFactsSummaryDbLibc = "glibc"
+	OnboardingFactsSummaryDbLibcMusl  OnboardingFactsSummaryDbLibc = "musl"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingFactsSummaryDbLibc enum.
+func (e OnboardingFactsSummaryDbLibc) Valid() bool {
+	switch e {
+	case OnboardingFactsSummaryDbLibcGlibc:
+		return true
+	case OnboardingFactsSummaryDbLibcMusl:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingFindingCode.
+const (
+	OnboardingFindingCodeAlterSystemDisabled          OnboardingFindingCode = "alter_system_disabled"
+	OnboardingFindingCodeAppAccountSuperuser          OnboardingFindingCode = "app_account_superuser"
+	OnboardingFindingCodeAppCodeChangeRequired        OnboardingFindingCode = "app_code_change_required"
+	OnboardingFindingCodeAutoConfSettings             OnboardingFindingCode = "auto_conf_settings"
+	OnboardingFindingCodeCheckFailed                  OnboardingFindingCode = "check_failed"
+	OnboardingFindingCodeCollationDependentConstraint OnboardingFindingCode = "collation_dependent_constraint"
+	OnboardingFindingCodeDataVolumeOutOfScope         OnboardingFindingCode = "data_volume_out_of_scope"
+	OnboardingFindingCodeDbNotPostgresContainer       OnboardingFindingCode = "db_not_postgres_container"
+	OnboardingFindingCodeDiskTooSmall                 OnboardingFindingCode = "disk_too_small"
+	OnboardingFindingCodeDomainOutOfScope             OnboardingFindingCode = "domain_out_of_scope"
+	OnboardingFindingCodeDriftLastDeploy              OnboardingFindingCode = "drift_last_deploy"
+	OnboardingFindingCodeDriftRunningRevision         OnboardingFindingCode = "drift_running_revision"
+	OnboardingFindingCodeGcpInspectionNotYet          OnboardingFindingCode = "gcp_inspection_not_yet"
+	OnboardingFindingCodeGlibcReleaseMismatch         OnboardingFindingCode = "glibc_release_mismatch"
+	OnboardingFindingCodeHoldBudgetExceeded           OnboardingFindingCode = "hold_budget_exceeded"
+	OnboardingFindingCodeIcuVersionUnavailable        OnboardingFindingCode = "icu_version_unavailable"
+	OnboardingFindingCodeImageUnavailable             OnboardingFindingCode = "image_unavailable"
+	OnboardingFindingCodeInstanceNotFound             OnboardingFindingCode = "instance_not_found"
+	OnboardingFindingCodeLegacyDeployStopped          OnboardingFindingCode = "legacy_deploy_stopped"
+	OnboardingFindingCodeManagedDatabase              OnboardingFindingCode = "managed_database"
+	OnboardingFindingCodeMaxWalSendersZero            OnboardingFindingCode = "max_wal_senders_zero"
+	OnboardingFindingCodeNameTooLong                  OnboardingFindingCode = "name_too_long"
+	OnboardingFindingCodeNoComposeProject             OnboardingFindingCode = "no_compose_project"
+	OnboardingFindingCodeNoSuperuser                  OnboardingFindingCode = "no_superuser"
+	OnboardingFindingCodeNotHttps                     OnboardingFindingCode = "not_https"
+	OnboardingFindingCodePasswordEncryptionMd5        OnboardingFindingCode = "password_encryption_md5"
+	OnboardingFindingCodeReindexRequired              OnboardingFindingCode = "reindex_required"
+	OnboardingFindingCodeRoleReadOnlySetting          OnboardingFindingCode = "role_read_only_setting"
+	OnboardingFindingCodeStorageOutOfScope            OnboardingFindingCode = "storage_out_of_scope"
+	OnboardingFindingCodeVmInAutoscalingGroup         OnboardingFindingCode = "vm_in_autoscaling_group"
+	OnboardingFindingCodeVmIsEksNode                  OnboardingFindingCode = "vm_is_eks_node"
+	OnboardingFindingCodeVmNotSsmManaged              OnboardingFindingCode = "vm_not_ssm_managed"
+	OnboardingFindingCodeWalKeepSizeCommandLine       OnboardingFindingCode = "wal_keep_size_command_line"
+	OnboardingFindingCodeWalLevelMinimal              OnboardingFindingCode = "wal_level_minimal"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingFindingCode enum.
+func (e OnboardingFindingCode) Valid() bool {
+	switch e {
+	case OnboardingFindingCodeAlterSystemDisabled:
+		return true
+	case OnboardingFindingCodeAppAccountSuperuser:
+		return true
+	case OnboardingFindingCodeAppCodeChangeRequired:
+		return true
+	case OnboardingFindingCodeAutoConfSettings:
+		return true
+	case OnboardingFindingCodeCheckFailed:
+		return true
+	case OnboardingFindingCodeCollationDependentConstraint:
+		return true
+	case OnboardingFindingCodeDataVolumeOutOfScope:
+		return true
+	case OnboardingFindingCodeDbNotPostgresContainer:
+		return true
+	case OnboardingFindingCodeDiskTooSmall:
+		return true
+	case OnboardingFindingCodeDomainOutOfScope:
+		return true
+	case OnboardingFindingCodeDriftLastDeploy:
+		return true
+	case OnboardingFindingCodeDriftRunningRevision:
+		return true
+	case OnboardingFindingCodeGcpInspectionNotYet:
+		return true
+	case OnboardingFindingCodeGlibcReleaseMismatch:
+		return true
+	case OnboardingFindingCodeHoldBudgetExceeded:
+		return true
+	case OnboardingFindingCodeIcuVersionUnavailable:
+		return true
+	case OnboardingFindingCodeImageUnavailable:
+		return true
+	case OnboardingFindingCodeInstanceNotFound:
+		return true
+	case OnboardingFindingCodeLegacyDeployStopped:
+		return true
+	case OnboardingFindingCodeManagedDatabase:
+		return true
+	case OnboardingFindingCodeMaxWalSendersZero:
+		return true
+	case OnboardingFindingCodeNameTooLong:
+		return true
+	case OnboardingFindingCodeNoComposeProject:
+		return true
+	case OnboardingFindingCodeNoSuperuser:
+		return true
+	case OnboardingFindingCodeNotHttps:
+		return true
+	case OnboardingFindingCodePasswordEncryptionMd5:
+		return true
+	case OnboardingFindingCodeReindexRequired:
+		return true
+	case OnboardingFindingCodeRoleReadOnlySetting:
+		return true
+	case OnboardingFindingCodeStorageOutOfScope:
+		return true
+	case OnboardingFindingCodeVmInAutoscalingGroup:
+		return true
+	case OnboardingFindingCodeVmIsEksNode:
+		return true
+	case OnboardingFindingCodeVmNotSsmManaged:
+		return true
+	case OnboardingFindingCodeWalKeepSizeCommandLine:
+		return true
+	case OnboardingFindingCodeWalLevelMinimal:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingHumanActionKind.
+const (
+	OnboardingHumanActionKindDeleteDnsRecord  OnboardingHumanActionKind = "delete_dns_record"
+	OnboardingHumanActionKindInstallGithubApp OnboardingHumanActionKind = "install_github_app"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingHumanActionKind enum.
+func (e OnboardingHumanActionKind) Valid() bool {
+	switch e {
+	case OnboardingHumanActionKindDeleteDnsRecord:
+		return true
+	case OnboardingHumanActionKindInstallGithubApp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingLegacyChangeKind.
+const (
+	OnboardingLegacyChangeKindDbRouteCreated            OnboardingLegacyChangeKind = "db_route_created"
+	OnboardingLegacyChangeKindHbaLineAdded              OnboardingLegacyChangeKind = "hba_line_added"
+	OnboardingLegacyChangeKindInstanceTagged            OnboardingLegacyChangeKind = "instance_tagged"
+	OnboardingLegacyChangeKindPostgresRoleCreated       OnboardingLegacyChangeKind = "postgres_role_created"
+	OnboardingLegacyChangeKindReplicationRoleCreated    OnboardingLegacyChangeKind = "replication_role_created"
+	OnboardingLegacyChangeKindTailscaleContainerStarted OnboardingLegacyChangeKind = "tailscale_container_started"
+	OnboardingLegacyChangeKindTailscaleDeviceJoined     OnboardingLegacyChangeKind = "tailscale_device_joined"
+	OnboardingLegacyChangeKindTailscaleVolumeCreated    OnboardingLegacyChangeKind = "tailscale_volume_created"
+	OnboardingLegacyChangeKindWalKeepSizeAdded          OnboardingLegacyChangeKind = "wal_keep_size_added"
+	OnboardingLegacyChangeKindWorkflowDisabled          OnboardingLegacyChangeKind = "workflow_disabled"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingLegacyChangeKind enum.
+func (e OnboardingLegacyChangeKind) Valid() bool {
+	switch e {
+	case OnboardingLegacyChangeKindDbRouteCreated:
+		return true
+	case OnboardingLegacyChangeKindHbaLineAdded:
+		return true
+	case OnboardingLegacyChangeKindInstanceTagged:
+		return true
+	case OnboardingLegacyChangeKindPostgresRoleCreated:
+		return true
+	case OnboardingLegacyChangeKindReplicationRoleCreated:
+		return true
+	case OnboardingLegacyChangeKindTailscaleContainerStarted:
+		return true
+	case OnboardingLegacyChangeKindTailscaleDeviceJoined:
+		return true
+	case OnboardingLegacyChangeKindTailscaleVolumeCreated:
+		return true
+	case OnboardingLegacyChangeKindWalKeepSizeAdded:
+		return true
+	case OnboardingLegacyChangeKindWorkflowDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingState.
+const (
+	OnboardingStateAwaitingApproval OnboardingState = "awaiting_approval"
+	OnboardingStateChecking         OnboardingState = "checking"
+	OnboardingStateConnecting       OnboardingState = "connecting"
+	OnboardingStateCuttingOver      OnboardingState = "cutting_over"
+	OnboardingStateDecommissioning  OnboardingState = "decommissioning"
+	OnboardingStateDiscovering      OnboardingState = "discovering"
+	OnboardingStateDone             OnboardingState = "done"
+	OnboardingStateFailed           OnboardingState = "failed"
+	OnboardingStatePatching         OnboardingState = "patching"
+	OnboardingStateReady            OnboardingState = "ready"
+	OnboardingStateRegistering      OnboardingState = "registering"
+	OnboardingStateSyncing          OnboardingState = "syncing"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingState enum.
+func (e OnboardingState) Valid() bool {
+	switch e {
+	case OnboardingStateAwaitingApproval:
+		return true
+	case OnboardingStateChecking:
+		return true
+	case OnboardingStateConnecting:
+		return true
+	case OnboardingStateCuttingOver:
+		return true
+	case OnboardingStateDecommissioning:
+		return true
+	case OnboardingStateDiscovering:
+		return true
+	case OnboardingStateDone:
+		return true
+	case OnboardingStateFailed:
+		return true
+	case OnboardingStatePatching:
+		return true
+	case OnboardingStateReady:
+		return true
+	case OnboardingStateRegistering:
+		return true
+	case OnboardingStateSyncing:
 		return true
 	default:
 		return false
@@ -724,6 +1081,72 @@ func (e SecurityDeployedImageState) Valid() bool {
 	}
 }
 
+// Defines values for SecurityEPSSState.
+const (
+	SecurityEPSSStateNoCve     SecurityEPSSState = "no_cve"
+	SecurityEPSSStateNotScored SecurityEPSSState = "not_scored"
+	SecurityEPSSStateScored    SecurityEPSSState = "scored"
+	SecurityEPSSStateUnknown   SecurityEPSSState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SecurityEPSSState enum.
+func (e SecurityEPSSState) Valid() bool {
+	switch e {
+	case SecurityEPSSStateNoCve:
+		return true
+	case SecurityEPSSStateNotScored:
+		return true
+	case SecurityEPSSStateScored:
+		return true
+	case SecurityEPSSStateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityExceptionTarget.
+const (
+	SecurityExceptionTargetFinding       SecurityExceptionTarget = "finding"
+	SecurityExceptionTargetVulnerability SecurityExceptionTarget = "vulnerability"
+)
+
+// Valid indicates whether the value is a known member of the SecurityExceptionTarget enum.
+func (e SecurityExceptionTarget) Valid() bool {
+	switch e {
+	case SecurityExceptionTargetFinding:
+		return true
+	case SecurityExceptionTargetVulnerability:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityExploitSourceState.
+const (
+	SecurityExploitSourceStateIdle        SecurityExploitSourceState = "idle"
+	SecurityExploitSourceStateOk          SecurityExploitSourceState = "ok"
+	SecurityExploitSourceStateStale       SecurityExploitSourceState = "stale"
+	SecurityExploitSourceStateUnavailable SecurityExploitSourceState = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the SecurityExploitSourceState enum.
+func (e SecurityExploitSourceState) Valid() bool {
+	switch e {
+	case SecurityExploitSourceStateIdle:
+		return true
+	case SecurityExploitSourceStateOk:
+		return true
+	case SecurityExploitSourceStateStale:
+		return true
+	case SecurityExploitSourceStateUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SecurityFindingKind.
 const (
 	SecurityFindingKindConfiguration SecurityFindingKind = "configuration"
@@ -763,6 +1186,30 @@ func (e SecurityImageScanStatus) Valid() bool {
 	case SecurityImageScanStatusSucceeded:
 		return true
 	case SecurityImageScanStatusUnsupported:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SecurityKEVState.
+const (
+	SecurityKEVStateListed    SecurityKEVState = "listed"
+	SecurityKEVStateNoCve     SecurityKEVState = "no_cve"
+	SecurityKEVStateNotListed SecurityKEVState = "not_listed"
+	SecurityKEVStateUnknown   SecurityKEVState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SecurityKEVState enum.
+func (e SecurityKEVState) Valid() bool {
+	switch e {
+	case SecurityKEVStateListed:
+		return true
+	case SecurityKEVStateNoCve:
+		return true
+	case SecurityKEVStateNotListed:
+		return true
+	case SecurityKEVStateUnknown:
 		return true
 	default:
 		return false
@@ -988,6 +1435,36 @@ func (e SecurityVulnerabilitySeverity) Valid() bool {
 	}
 }
 
+// Defines values for SourceRetentionResponseJobStatus.
+const (
+	SourceRetentionResponseJobStatusBlocked   SourceRetentionResponseJobStatus = "blocked"
+	SourceRetentionResponseJobStatusCancelled SourceRetentionResponseJobStatus = "cancelled"
+	SourceRetentionResponseJobStatusCaptured  SourceRetentionResponseJobStatus = "captured"
+	SourceRetentionResponseJobStatusDeleted   SourceRetentionResponseJobStatus = "deleted"
+	SourceRetentionResponseJobStatusDeleting  SourceRetentionResponseJobStatus = "deleting"
+	SourceRetentionResponseJobStatusScheduled SourceRetentionResponseJobStatus = "scheduled"
+)
+
+// Valid indicates whether the value is a known member of the SourceRetentionResponseJobStatus enum.
+func (e SourceRetentionResponseJobStatus) Valid() bool {
+	switch e {
+	case SourceRetentionResponseJobStatusBlocked:
+		return true
+	case SourceRetentionResponseJobStatusCancelled:
+		return true
+	case SourceRetentionResponseJobStatusCaptured:
+		return true
+	case SourceRetentionResponseJobStatusDeleted:
+		return true
+	case SourceRetentionResponseJobStatusDeleting:
+		return true
+	case SourceRetentionResponseJobStatusScheduled:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StepStatus.
 const (
 	StepStatusFailed    StepStatus = "failed"
@@ -1057,6 +1534,150 @@ func (e StorageKeyUse) Valid() bool {
 	}
 }
 
+// Defines values for WriteVerificationCoverage.
+const (
+	WriteVerificationCoverageReportedRecords    WriteVerificationCoverage = "reported_records"
+	WriteVerificationCoverageReservationInserts WriteVerificationCoverage = "reservation_inserts"
+)
+
+// Valid indicates whether the value is a known member of the WriteVerificationCoverage enum.
+func (e WriteVerificationCoverage) Valid() bool {
+	switch e {
+	case WriteVerificationCoverageReportedRecords:
+		return true
+	case WriteVerificationCoverageReservationInserts:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WriteVerificationScope.
+const (
+	WriteVerificationScopeApplicationCommits WriteVerificationScope = "application_commits"
+	WriteVerificationScopeClientAcknowledged WriteVerificationScope = "client_acknowledged"
+	WriteVerificationScopeUnspecified        WriteVerificationScope = "unspecified"
+)
+
+// Valid indicates whether the value is a known member of the WriteVerificationScope enum.
+func (e WriteVerificationScope) Valid() bool {
+	switch e {
+	case WriteVerificationScopeApplicationCommits:
+		return true
+	case WriteVerificationScopeClientAcknowledged:
+		return true
+	case WriteVerificationScopeUnspecified:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WriteVerificationStatus.
+const (
+	WriteVerificationStatusFailed        WriteVerificationStatus = "failed"
+	WriteVerificationStatusMeasured      WriteVerificationStatus = "measured"
+	WriteVerificationStatusNoRecords     WriteVerificationStatus = "no_records"
+	WriteVerificationStatusNotConfigured WriteVerificationStatus = "not_configured"
+	WriteVerificationStatusNotReached    WriteVerificationStatus = "not_reached"
+)
+
+// Valid indicates whether the value is a known member of the WriteVerificationStatus enum.
+func (e WriteVerificationStatus) Valid() bool {
+	switch e {
+	case WriteVerificationStatusFailed:
+		return true
+	case WriteVerificationStatusMeasured:
+		return true
+	case WriteVerificationStatusNoRecords:
+		return true
+	case WriteVerificationStatusNotConfigured:
+		return true
+	case WriteVerificationStatusNotReached:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WrittenRecordStatsCoverage.
+const (
+	WrittenRecordStatsCoverageReportedRecords    WrittenRecordStatsCoverage = "reported_records"
+	WrittenRecordStatsCoverageReservationInserts WrittenRecordStatsCoverage = "reservation_inserts"
+)
+
+// Valid indicates whether the value is a known member of the WrittenRecordStatsCoverage enum.
+func (e WrittenRecordStatsCoverage) Valid() bool {
+	switch e {
+	case WrittenRecordStatsCoverageReportedRecords:
+		return true
+	case WrittenRecordStatsCoverageReservationInserts:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WrittenRecordStatsScope.
+const (
+	WrittenRecordStatsScopeApplicationCommits WrittenRecordStatsScope = "application_commits"
+	WrittenRecordStatsScopeClientAcknowledged WrittenRecordStatsScope = "client_acknowledged"
+	WrittenRecordStatsScopeUnspecified        WrittenRecordStatsScope = "unspecified"
+)
+
+// Valid indicates whether the value is a known member of the WrittenRecordStatsScope enum.
+func (e WrittenRecordStatsScope) Valid() bool {
+	switch e {
+	case WrittenRecordStatsScopeApplicationCommits:
+		return true
+	case WrittenRecordStatsScopeClientAcknowledged:
+		return true
+	case WrittenRecordStatsScopeUnspecified:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WrittenRecordsRequestCoverage.
+const (
+	WrittenRecordsRequestCoverageReportedRecords    WrittenRecordsRequestCoverage = "reported_records"
+	WrittenRecordsRequestCoverageReservationInserts WrittenRecordsRequestCoverage = "reservation_inserts"
+)
+
+// Valid indicates whether the value is a known member of the WrittenRecordsRequestCoverage enum.
+func (e WrittenRecordsRequestCoverage) Valid() bool {
+	switch e {
+	case WrittenRecordsRequestCoverageReportedRecords:
+		return true
+	case WrittenRecordsRequestCoverageReservationInserts:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WrittenRecordsRequestScope.
+const (
+	WrittenRecordsRequestScopeApplicationCommits WrittenRecordsRequestScope = "application_commits"
+	WrittenRecordsRequestScopeClientAcknowledged WrittenRecordsRequestScope = "client_acknowledged"
+	WrittenRecordsRequestScopeUnspecified        WrittenRecordsRequestScope = "unspecified"
+)
+
+// Valid indicates whether the value is a known member of the WrittenRecordsRequestScope enum.
+func (e WrittenRecordsRequestScope) Valid() bool {
+	switch e {
+	case WrittenRecordsRequestScopeApplicationCommits:
+		return true
+	case WrittenRecordsRequestScopeClientAcknowledged:
+		return true
+	case WrittenRecordsRequestScopeUnspecified:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StreamAgentEventsParamsFormat.
 const (
 	StreamAgentEventsParamsFormatJson StreamAgentEventsParamsFormat = "json"
@@ -1073,6 +1694,55 @@ func (e StreamAgentEventsParamsFormat) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// AIActivity defines model for AIActivity.
+type AIActivity struct {
+	Events  []AIActivityEvent `json:"events"`
+	Since   time.Time         `json:"since"`
+	Summary AIActivitySummary `json:"summary"`
+}
+
+// AIActivityEvent defines model for AIActivityEvent.
+type AIActivityEvent struct {
+	Kind  AIActivityEventKind `json:"kind"`
+	Model *string             `json:"model,omitempty"`
+
+	// Outcome tool_result: ok or error; rehearsal: the engine's result
+	Outcome *string `json:"outcome,omitempty"`
+
+	// Passed rehearsal: whether it passed
+	Passed *bool `json:"passed,omitempty"`
+
+	// Seconds rehearsal: how long it took
+	Seconds *int `json:"seconds,omitempty"`
+
+	// StopReason model: tool_use or end_turn
+	StopReason *string   `json:"stopReason,omitempty"`
+	Time       time.Time `json:"time"`
+	TokensIn   *int      `json:"tokensIn,omitempty"`
+	TokensOut  *int      `json:"tokensOut,omitempty"`
+
+	// Tool tool_call, tool_result, blocked: the tool's name
+	Tool *string `json:"tool,omitempty"`
+
+	// ToolCalls model: the tools it asked for
+	ToolCalls *[]string `json:"toolCalls,omitempty"`
+}
+
+// AIActivityEventKind defines model for AIActivityEvent.Kind.
+type AIActivityEventKind string
+
+// AIActivitySummary defines model for AIActivitySummary.
+type AIActivitySummary struct {
+	Blocked    int            `json:"blocked"`
+	LastEvent  *time.Time     `json:"lastEvent,omitempty"`
+	Model      *string        `json:"model,omitempty"`
+	ModelCalls int            `json:"modelCalls"`
+	Rehearsals int            `json:"rehearsals"`
+	TokensIn   int            `json:"tokensIn"`
+	TokensOut  int            `json:"tokensOut"`
+	Tools      map[string]int `json:"tools"`
 }
 
 // AIRun defines model for AIRun.
@@ -1271,24 +1941,137 @@ type AppCreated struct {
 	Deployment Deployment `json:"deployment"`
 }
 
-// AppDBTopology The database pair of the app's default instance (ADR 0030), present
-// only for an app registered in exactly two environments while the
-// server sets PLATFORM_APP_DB_TOPOLOGY. Its postgres database is born
-// primary in `primary` and a streaming replica of it in `replica`, so
-// a migration can move it between the two. These are the roles the
-// databases were created with; a migration swaps them in the clusters
-// and does not change these fields. Branch instances keep their own
-// database in each environment.
+// AppDBReadiness Whether `POST /v1/migrations` can move the app between the two
+// environments of its pair now (ADR 0043). Only `GET /v1/apps/{name}`
+// has it; it reads the traffic gateway and both environments' CNPG
+// Clusters in parallel, each within 3 seconds, and reuses what it read
+// for the app for 10 seconds (the deployments and migration runs are
+// read every time, and a run that ended since is a reason to read
+// again). `ready` is true only when both environments are the
+// app's, no migration of the app is in progress, the default instance's
+// newest deployment that got to each of them is healthy there, the
+// traffic gateway has a backend for both (when the app has a public
+// service), both Clusters are healthy, their `spec.replica` fit the
+// migration engine's topology check (one is primary, the other follows
+// it) and the gateway writes to the environment whose Cluster is the
+// primary. WAL lag is not looked at; the migration's prepare and
+// presync check it again.
+//
+// `reason` is the first check that failed, or `ready`:
+// replica_missing (an environment of the pair is not the app's),
+// migration_in_progress (a migration run of the app is active, by the
+// rule `POST /v1/migrations` uses: not ended and running or awaiting its
+// switch; or the gateway holds its writes), deploy_pending (a deployment to an environment is not
+// finished, or none got there healthy and none is going: the message
+// says to send `POST /v1/apps/{name}/environments` again),
+// app_degraded (that deployment left the environment Degraded: the app
+// probably writes to the database when it starts, which a replica
+// refuses; migrate it with the engine's cold mode), deploy_failed (that
+// deployment failed there otherwise), gateway_unreachable,
+// gateway_backend_missing, cluster_unreadable, cluster_not_healthy,
+// topology_mismatch, write_backend_mismatch (the gateway's write
+// backend is not the environment whose Cluster is primary). A
+// deployment that stopped before it got to an environment, such as a
+// failed build, is passed over. `message` says the same in a sentence.
+type AppDBReadiness struct {
+	// Environments The pair's two environments, primary first.
+	Environments []AppDBReadinessEnvironment `json:"environments"`
+
+	// Message Example: both databases are healthy and the replica follows the primary
+	Message string `json:"message"`
+	Ready   bool   `json:"ready"`
+
+	// Reason Example: ready
+	Reason string `json:"reason"`
+}
+
+// AppDBReadinessEnvironment defines model for AppDBReadinessEnvironment.
+type AppDBReadinessEnvironment struct {
+	// Deployed the default instance's newest deployment that got to the environment is healthy there
+	Deployed bool `json:"deployed"`
+
+	// Env Example: gke
+	Env string `json:"env"`
+
+	// GatewayBackend the traffic gateway has a backend for it (true when the app has no public service)
+	GatewayBackend bool `json:"gatewayBackend"`
+
+	// Healthy the Cluster is in healthy state with every instance ready
+	Healthy bool `json:"healthy"`
+
+	// InApp the environment is one of the app's
+	InApp bool `json:"inApp"`
+
+	// Phase the Cluster's status.phase, when it was read
+	//
+	// Example: Cluster in healthy state
+	Phase *string `json:"phase,omitempty"`
+
+	// Role from the Cluster's spec.replica: primary when replica.primary is the Cluster itself or absent; unknown when it could not be read
+	Role AppDBReadinessEnvironmentRole `json:"role"`
+}
+
+// AppDBReadinessEnvironmentRole from the Cluster's spec.replica: primary when replica.primary is the Cluster itself or absent; unknown when it could not be read
+type AppDBReadinessEnvironmentRole string
+
+// AppDBTopology The database pair of the app's default instance (ADR 0030, ADR 0043),
+// present only while the server sets PLATFORM_APP_DB_TOPOLOGY for an app
+// with a postgres resource registered in exactly two environments, or in
+// one environment while exactly one other environment has a database
+// host template. Its postgres database is born primary in `primary` and
+// a streaming replica of it in `replica`, so a migration can move it
+// between the two. These are the roles the databases were created with;
+// a migration swaps them in the clusters and does not change these
+// fields. `replicaPresent` is false while `replica` is not one of the
+// app's environments (`POST /v1/apps/{name}/environments` adds it).
+// Branch instances keep their own database in each environment.
 type AppDBTopology struct {
 	// Primary the environment where the database is born primary (the app's first environment)
 	//
 	// Example: gke
 	Primary string `json:"primary"`
 
+	// Readiness Whether `POST /v1/migrations` can move the app between the two
+	// environments of its pair now (ADR 0043). Only `GET /v1/apps/{name}`
+	// has it; it reads the traffic gateway and both environments' CNPG
+	// Clusters in parallel, each within 3 seconds, and reuses what it read
+	// for the app for 10 seconds (the deployments and migration runs are
+	// read every time, and a run that ended since is a reason to read
+	// again). `ready` is true only when both environments are the
+	// app's, no migration of the app is in progress, the default instance's
+	// newest deployment that got to each of them is healthy there, the
+	// traffic gateway has a backend for both (when the app has a public
+	// service), both Clusters are healthy, their `spec.replica` fit the
+	// migration engine's topology check (one is primary, the other follows
+	// it) and the gateway writes to the environment whose Cluster is the
+	// primary. WAL lag is not looked at; the migration's prepare and
+	// presync check it again.
+	//
+	// `reason` is the first check that failed, or `ready`:
+	// replica_missing (an environment of the pair is not the app's),
+	// migration_in_progress (a migration run of the app is active, by the
+	// rule `POST /v1/migrations` uses: not ended and running or awaiting its
+	// switch; or the gateway holds its writes), deploy_pending (a deployment to an environment is not
+	// finished, or none got there healthy and none is going: the message
+	// says to send `POST /v1/apps/{name}/environments` again),
+	// app_degraded (that deployment left the environment Degraded: the app
+	// probably writes to the database when it starts, which a replica
+	// refuses; migrate it with the engine's cold mode), deploy_failed (that
+	// deployment failed there otherwise), gateway_unreachable,
+	// gateway_backend_missing, cluster_unreadable, cluster_not_healthy,
+	// topology_mismatch, write_backend_mismatch (the gateway's write
+	// backend is not the environment whose Cluster is primary). A
+	// deployment that stopped before it got to an environment, such as a
+	// failed build, is passed over. `message` says the same in a sentence.
+	Readiness *AppDBReadiness `json:"readiness,omitempty"`
+
 	// Replica the environment where the database is born a replica of primary
 	//
 	// Example: eks
 	Replica string `json:"replica"`
+
+	// ReplicaPresent `replica` is one of the app's environments
+	ReplicaPresent bool `json:"replicaPresent"`
 }
 
 // AppDatabase defines model for AppDatabase.
@@ -1323,17 +2106,20 @@ type AppDeploy struct {
 	// CreatedBy the token name that registered the app
 	CreatedBy string `json:"createdBy"`
 
-	// DbTopology The database pair of the app's default instance (ADR 0030), present
-	// only for an app registered in exactly two environments while the
-	// server sets PLATFORM_APP_DB_TOPOLOGY. Its postgres database is born
-	// primary in `primary` and a streaming replica of it in `replica`, so
-	// a migration can move it between the two. These are the roles the
-	// databases were created with; a migration swaps them in the clusters
-	// and does not change these fields. Branch instances keep their own
-	// database in each environment.
+	// DbTopology The database pair of the app's default instance (ADR 0030, ADR 0043),
+	// present only while the server sets PLATFORM_APP_DB_TOPOLOGY for an app
+	// with a postgres resource registered in exactly two environments, or in
+	// one environment while exactly one other environment has a database
+	// host template. Its postgres database is born primary in `primary` and
+	// a streaming replica of it in `replica`, so a migration can move it
+	// between the two. These are the roles the databases were created with;
+	// a migration swaps them in the clusters and does not change these
+	// fields. `replicaPresent` is false while `replica` is not one of the
+	// app's environments (`POST /v1/apps/{name}/environments` adds it).
+	// Branch instances keep their own database in each environment.
 	DbTopology *AppDBTopology `json:"dbTopology,omitempty"`
 
-	// Environments The environments the app is deployed to, in PLATFORM_ENVS_FILE order.
+	// Environments The environments the app is deployed to. Those it was registered with come first, in PLATFORM_ENVS_FILE order, then the ones added with POST /v1/apps/{name}/environments, in the order they were added; the first is never removed.
 	//
 	// Example: ["gke","eks"]
 	Environments []string `json:"environments"`
@@ -1418,6 +2204,42 @@ type AppEnvironment struct {
 
 	// Env Example: gke
 	Env string `json:"env"`
+}
+
+// AppEnvironmentAddRequest defines model for AppEnvironmentAddRequest.
+type AppEnvironmentAddRequest struct {
+	// Environment An environment of this server (GET /v1/envs) that the app is not in yet.
+	//
+	// Example: gke
+	Environment string `json:"environment"`
+}
+
+// AppEnvironmentAdded The app with the new environment, and the deployment that takes it there (trigger environment), queued.
+type AppEnvironmentAdded struct {
+	// App An application from PLATFORM_APPS_FILE, registered from GitHub, or
+	// both under one name. `namespace`, `database` and `environments` are
+	// what migrations use; `deploy` is set for registered apps. A
+	// registered app that is not in the file has `namespace` = name,
+	// `database` = `{name: app, user: app, schemas: []}` and no
+	// `environments`.
+	App App `json:"app"`
+
+	// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
+	Deployment Deployment `json:"deployment"`
+}
+
+// AppEnvironmentRemoved The app without the environment, and the deployment to its remaining environments (trigger environment) when one was queued.
+type AppEnvironmentRemoved struct {
+	// App An application from PLATFORM_APPS_FILE, registered from GitHub, or
+	// both under one name. `namespace`, `database` and `environments` are
+	// what migrations use; `deploy` is set for registered apps. A
+	// registered app that is not in the file has `namespace` = name,
+	// `database` = `{name: app, user: app, schemas: []}` and no
+	// `environments`.
+	App App `json:"app"`
+
+	// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
+	Deployment *Deployment `json:"deployment,omitempty"`
 }
 
 // AppEnvironmentStatus An instance's live state in one environment, from the Argo CD
@@ -1990,7 +2812,12 @@ type BucketSample struct {
 // reads back on the source and ends the run as `rolled_back`. A step with
 // fewer than `gate.minRequests` requests and no other breach is
 // `inconclusive` and the canary moves on, except at the last step, which
-// must pass with enough requests. Gradual steps such as
+// must pass with enough requests. When the platform sends synthetic
+// probe reads, a step whose target got fewer than `gate.minRequests` is
+// extended once by another `stepDuration` with more probe reads and then
+// judged over the whole step (at most the last 300s). It is not extended
+// when the errors are already over the limit or when one more batch could
+// not bring enough requests (as at 1%). Gradual steps such as
 // 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 type CanaryOptions struct {
 	Gate         *GateThresholds `json:"gate,omitempty"`
@@ -2008,7 +2835,12 @@ type CanaryResult struct {
 	// reads back on the source and ends the run as `rolled_back`. A step with
 	// fewer than `gate.minRequests` requests and no other breach is
 	// `inconclusive` and the canary moves on, except at the last step, which
-	// must pass with enough requests. Gradual steps such as
+	// must pass with enough requests. When the platform sends synthetic
+	// probe reads, a step whose target got fewer than `gate.minRequests` is
+	// extended once by another `stepDuration` with more probe reads and then
+	// judged over the whole step (at most the last 300s). It is not extended
+	// when the errors are already over the limit or when one more batch could
+	// not bring enough requests (as at 1%). Gradual steps such as
 	// 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 	Options CanaryOptions `json:"options"`
 	Passed  *bool         `json:"passed,omitempty"`
@@ -2136,6 +2968,7 @@ type Deployment struct {
 	// push: a push to a branch the app deploys (the GitHub webhook).
 	// manual: POST /v1/apps/{name}/deployments.
 	// redeploy: POST /v1/apps/{name}/deployments with `redeploy`: the last healthy deployment's commit and images again, without a build, to apply changed secrets.
+	// environment: POST /v1/apps/{name}/environments or DELETE /v1/apps/{name}/environments/{env}: the default instance's last healthy deployment's commit and images again, without a build, to all of the app's environments after one was added or removed.
 	Trigger DeploymentTrigger `json:"trigger"`
 
 	// TriggeredBy the token name (register, manual), or github:<login> of the pusher (push)
@@ -2270,6 +3103,7 @@ type DeploymentStatus string
 // push: a push to a branch the app deploys (the GitHub webhook).
 // manual: POST /v1/apps/{name}/deployments.
 // redeploy: POST /v1/apps/{name}/deployments with `redeploy`: the last healthy deployment's commit and images again, without a build, to apply changed secrets.
+// environment: POST /v1/apps/{name}/environments or DELETE /v1/apps/{name}/environments/{env}: the default instance's last healthy deployment's commit and images again, without a build, to all of the app's environments after one was added or removed.
 type DeploymentTrigger string
 
 // DeviceLogin A device login as the console shows it to an administrator. It never contains the device code. `role` is the role the CLI token gets, set once approved.
@@ -2339,6 +3173,9 @@ type EngineOutcome string
 
 // EnginePlan The migration-engine plan (migration-engine/pkg/plan). `${VAR}` references are expanded on the server.
 type EnginePlan struct {
+	// AllowSourceRewire Opt-in for approved three-environment registered database groups. Before holding writes, prepare may CAS-update only the current primary's future replica source to the directly following target. It never reparents the target or changes a primary role.
+	AllowSourceRewire *bool `json:"allowSourceRewire,omitempty"`
+
 	// Files Object storage moved with rclone. source and target must each be exactly a bucket the server registers (an app's bucket in PLATFORM_APPS_FILE, or PLATFORM_PLAN_BUCKETS) and must differ; rclone remotes and their credentials come from the server's environment (RCLONE_CONFIG_<REMOTE>_*), never from the plan. rclone must be "rclone" or omitted, and only allowed flags pass.
 	Files *struct {
 		Flags  *[]string `json:"flags,omitempty"`
@@ -2656,6 +3493,329 @@ type ObserveStep struct {
 // ObserveStepVerdict defines model for ObserveStep.Verdict.
 type ObserveStepVerdict string
 
+// Onboarding defines model for Onboarding.
+type Onboarding struct {
+	// App The app's name: serviceUrl's label.
+	//
+	// Example: moimroom-legacy
+	App        string     `json:"app"`
+	ApprovedAt *time.Time `json:"approvedAt,omitempty"`
+	ApprovedBy *string    `json:"approvedBy,omitempty"`
+
+	// ApprovedSha The PR head commit that was approved.
+	ApprovedSha *string `json:"approvedSha,omitempty"`
+
+	// Check The test deployment of the PR branch.
+	Check     *OnboardingCheck `json:"check,omitempty"`
+	CreatedAt time.Time        `json:"createdAt"`
+	CreatedBy string           `json:"createdBy"`
+
+	// Deleting DELETE was asked for and is undoing what was done.
+	Deleting bool `json:"deleting"`
+
+	// Facts The parts of the discovery's facts the console shows. The full facts are pkg/onboard/facts.Facts and go only to hopai.
+	Facts *OnboardingFactsSummary `json:"facts,omitempty"`
+
+	// FailedState With state failed, the state it failed in, which resume goes back to.
+	FailedState *OnboardingState `json:"failedState,omitempty"`
+
+	// Failure Why it failed, or why a step of a deletion failed.
+	Failure *string `json:"failure,omitempty"`
+
+	// HumanActions What a person has to do, which the platform cannot (ADR 0042, "한 번 하는 설정"). The platform checks it itself; resume checks again at once.
+	HumanActions []OnboardingHumanAction `json:"humanActions"`
+
+	// Id onb- and 12 lowercase hex digits; also the name of the test app and the start of the cutover plan ids (<id>-<attempt>)
+	//
+	// Example: onb-3f9a1c2b7d4e
+	Id string `json:"id"`
+
+	// LegacyChanges What was added to or changed on the source VM, its database, GitHub and the management cluster, in the order it was done. DELETE undoes them in reverse.
+	LegacyChanges []OnboardingLegacyChange `json:"legacyChanges"`
+
+	// LegacyDeployStopped The source's deploy workflows are disabled (from connecting on,
+	// until it is deleted). The console says so on every screen while
+	// it is true.
+	LegacyDeployStopped bool `json:"legacyDeployStopped"`
+
+	// PlannedLegacyChanges What connecting will do once approved, for the approval screen, in order. Set from awaiting_approval on.
+	PlannedLegacyChanges *[]OnboardingPlannedChange `json:"plannedLegacyChanges,omitempty"`
+	Pr                   *OnboardingPR              `json:"pr,omitempty"`
+
+	// Repo Example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy
+	Repo   string           `json:"repo"`
+	Report OnboardingReport `json:"report"`
+
+	// RunId The cutover's migration run, from cutting_over on.
+	RunId *string `json:"runId,omitempty"`
+
+	// ServiceUrl Example: https://moimroom-legacy.hopcharlie.dev
+	ServiceUrl string `json:"serviceUrl"`
+
+	// State Where an onboarding is (ADR 0042, "흐름과 상태"). `failed` keeps the
+	// state it failed in in `failedState`.
+	State OnboardingState `json:"state"`
+
+	// TargetEnv The environment it moves to; empty until discovery chose it.
+	//
+	// Example: eks
+	TargetEnv string    `json:"targetEnv"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// OnboardingApproveRequest defines model for OnboardingApproveRequest.
+type OnboardingApproveRequest struct {
+	// HeadSha The PR head commit the operator reviewed (`pr.headSha`).
+	HeadSha string `json:"headSha"`
+}
+
+// OnboardingCheck The test deployment of the PR branch.
+type OnboardingCheck struct {
+	// App The temporary app, named after the onboarding id and deleted when the test ends.
+	//
+	// Example: onb-3f9a1c2b7d4e
+	App string `json:"app"`
+
+	// Attempts Test deployments so far, at most 2.
+	Attempts     int                   `json:"attempts"`
+	DeploymentId *string               `json:"deploymentId,omitempty"`
+	Message      *string               `json:"message,omitempty"`
+	Result       OnboardingCheckResult `json:"result"`
+
+	// StartSeconds From the Deployment's creation until it was Ready.
+	StartSeconds *float32 `json:"startSeconds,omitempty"`
+}
+
+// OnboardingCheckResult defines model for OnboardingCheck.Result.
+type OnboardingCheckResult string
+
+// OnboardingDNSRecord delete_dns_record: the individual record to delete, so the wildcard sends the name to the gateway.
+type OnboardingDNSRecord struct {
+	// Name Example: moimroom-legacy.hopcharlie.dev
+	Name string `json:"name"`
+
+	// Type Example: A
+	Type string `json:"type"`
+
+	// Value Example: 203.0.113.10
+	Value string `json:"value"`
+}
+
+// OnboardingDrift What runs differs from the default branch's head. Shown first; it does not block.
+type OnboardingDrift struct {
+	Head string `json:"head"`
+
+	// LastDeployCommit The commit of the newest successful deploy workflow run.
+	LastDeployCommit *string `json:"lastDeployCommit,omitempty"`
+
+	// RunningRevision The org.opencontainers.image.revision label of the running image.
+	RunningRevision *string `json:"runningRevision,omitempty"`
+}
+
+// OnboardingEvent One step of an onboarding.
+// - state: it entered `state`; `message` may say more.
+// - step: something it did or found in `state`.
+// - log: one line of output (hopai, the test deployment, an SSM command) in `message`.
+// - human: it waits for a person (`humanActions`).
+// - error: a step failed; `message` is why.
+type OnboardingEvent struct {
+	Data         *map[string]interface{} `json:"data,omitempty"`
+	Kind         OnboardingEventKind     `json:"kind"`
+	Message      *string                 `json:"message,omitempty"`
+	OnboardingId string                  `json:"onboardingId"`
+	Seq          int64                   `json:"seq"`
+
+	// State Where an onboarding is (ADR 0042, "흐름과 상태"). `failed` keeps the
+	// state it failed in in `failedState`.
+	State OnboardingState `json:"state"`
+	Time  time.Time       `json:"time"`
+}
+
+// OnboardingEventKind defines model for OnboardingEvent.Kind.
+type OnboardingEventKind string
+
+// OnboardingFactsSummary The parts of the discovery's facts the console shows. The full facts are pkg/onboard/facts.Facts and go only to hopai.
+type OnboardingFactsSummary struct {
+	// Bucket The source bucket of the app's files.
+	Bucket *string                      `json:"bucket,omitempty"`
+	Cloud  *OnboardingFactsSummaryCloud `json:"cloud,omitempty"`
+
+	// ComposeProject Example: moimroom
+	ComposeProject *string `json:"composeProject,omitempty"`
+
+	// Containers compose services: container names
+	Containers *[]string `json:"containers,omitempty"`
+
+	// DbDatabase Example: moimroom
+	DbDatabase *string `json:"dbDatabase,omitempty"`
+
+	// DbImage Example: postgres:17.11-alpine
+	DbImage *string                       `json:"dbImage,omitempty"`
+	DbLibc  *OnboardingFactsSummaryDbLibc `json:"dbLibc,omitempty"`
+
+	// DbOwner Example: moimroom
+	DbOwner *string `json:"dbOwner,omitempty"`
+
+	// DbServerVersionNum Example: 170011
+	DbServerVersionNum *int   `json:"dbServerVersionNum,omitempty"`
+	DbSizeBytes        *int64 `json:"dbSizeBytes,omitempty"`
+
+	// DefaultBranch Example: main
+	DefaultBranch *string `json:"defaultBranch,omitempty"`
+
+	// DeployWorkflows The workflows that deploy to the VM, which connecting disables.
+	DeployWorkflows *[]string `json:"deployWorkflows,omitempty"`
+
+	// Head The default branch's head commit.
+	Head *string `json:"head,omitempty"`
+
+	// Image The CNPG image chosen, pinned by digest.
+	Image *string `json:"image,omitempty"`
+
+	// InstanceId Example: i-0abc1234def567890
+	InstanceId  *string `json:"instanceId,omitempty"`
+	ObjectCount *int64  `json:"objectCount,omitempty"`
+
+	// PublicIp Example: 203.0.113.10
+	PublicIp *string `json:"publicIp,omitempty"`
+
+	// Region Example: ap-northeast-2
+	Region *string `json:"region,omitempty"`
+
+	// Reindex "schema.index" names rebuilt after the promotion
+	Reindex    *[]string `json:"reindex,omitempty"`
+	SsmManaged *bool     `json:"ssmManaged,omitempty"`
+
+	// StorageSize Example: 2Gi
+	StorageSize *string `json:"storageSize,omitempty"`
+}
+
+// OnboardingFactsSummaryCloud defines model for OnboardingFactsSummary.Cloud.
+type OnboardingFactsSummaryCloud string
+
+// OnboardingFactsSummaryDbLibc defines model for OnboardingFactsSummary.DbLibc.
+type OnboardingFactsSummaryDbLibc string
+
+// OnboardingFinding defines model for OnboardingFinding.
+type OnboardingFinding struct {
+	// Code pkg/onboard/facts BlockerCodes for blockers, WarningCodes for warnings.
+	Code    OnboardingFindingCode `json:"code"`
+	Message string                `json:"message"`
+
+	// Subject What it is about, such as a container, setting or index.
+	Subject *string `json:"subject,omitempty"`
+}
+
+// OnboardingFindingCode pkg/onboard/facts BlockerCodes for blockers, WarningCodes for warnings.
+type OnboardingFindingCode string
+
+// OnboardingHumanAction defines model for OnboardingHumanAction.
+type OnboardingHumanAction struct {
+	// Done The platform saw it done (the App can read the repository; the name resolves to the gateway).
+	Done bool                      `json:"done"`
+	Kind OnboardingHumanActionKind `json:"kind"`
+
+	// Record delete_dns_record: the individual record to delete, so the wildcard sends the name to the gateway.
+	Record *OnboardingDNSRecord `json:"record,omitempty"`
+
+	// Url install_github_app: the App's installation page
+	//
+	// Example: https://github.com/apps/hopcharlie-platform/installations/new
+	Url *string `json:"url,omitempty"`
+}
+
+// OnboardingHumanActionKind defines model for OnboardingHumanAction.Kind.
+type OnboardingHumanActionKind string
+
+// OnboardingLegacyChange One thing added to the source or done for it, in order:
+// workflow_disabled (`target` the workflow path), instance_tagged
+// (the instance id), postgres_role_created, replication_role_created
+// (`hopcharlie_replicator`), tailscale_volume_created,
+// tailscale_container_started, tailscale_device_joined (the tailnet
+// hostname), hba_line_added (the line), wal_keep_size_added (the
+// line), db_route_created (the management cluster's Service).
+type OnboardingLegacyChange struct {
+	At     time.Time                  `json:"at"`
+	Kind   OnboardingLegacyChangeKind `json:"kind"`
+	Target string                     `json:"target"`
+
+	// UndoneAt When DELETE undid it.
+	UndoneAt *time.Time `json:"undoneAt,omitempty"`
+}
+
+// OnboardingLegacyChangeKind defines model for OnboardingLegacyChangeKind.
+type OnboardingLegacyChangeKind string
+
+// OnboardingList defines model for OnboardingList.
+type OnboardingList struct {
+	Onboardings []Onboarding `json:"onboardings"`
+}
+
+// OnboardingPR defines model for OnboardingPR.
+type OnboardingPR struct {
+	HeadSha string `json:"headSha"`
+	Merged  *bool  `json:"merged,omitempty"`
+
+	// Number Example: 12
+	Number int `json:"number"`
+
+	// Url Example: https://github.com/2026-Softbank-Hackathon-Charlie/moimroom-legacy/pull/12
+	Url string `json:"url"`
+}
+
+// OnboardingPlannedChange One thing connecting will do, as the approval screen shows it:
+// `target` as in OnboardingLegacyChange and `detail` the exact value,
+// such as the hba line with the compose network's subnet
+// (`host replication hopcharlie_replicator 172.18.0.0/16 scram-sha-256`),
+// the Tailscale container and its image digest, or the roles made.
+type OnboardingPlannedChange struct {
+	Detail *string                    `json:"detail,omitempty"`
+	Kind   OnboardingLegacyChangeKind `json:"kind"`
+	Target string                     `json:"target"`
+}
+
+// OnboardingReport defines model for OnboardingReport.
+type OnboardingReport struct {
+	// Blockers Why it cannot go on (pkg/onboard/facts Block* codes). Any blocker stops it in failed.
+	Blockers []OnboardingFinding `json:"blockers"`
+
+	// Drift What runs differs from the default branch's head. Shown first; it does not block.
+	Drift *OnboardingDrift `json:"drift,omitempty"`
+
+	// HoldBudgetSeconds The gateway's MaxHold less 15 seconds.
+	//
+	// Example: 40
+	HoldBudgetSeconds *float32 `json:"holdBudgetSeconds,omitempty"`
+
+	// HoldSeconds The estimated write hold of the cutover.
+	HoldSeconds *float32 `json:"holdSeconds,omitempty"`
+
+	// Warnings What the operator should know before approving (pkg/onboard/facts Warn* codes).
+	Warnings []OnboardingFinding `json:"warnings"`
+}
+
+// OnboardingRequest defines model for OnboardingRequest.
+type OnboardingRequest struct {
+	// Repo owner/name of the app's repository, without .git.
+	//
+	// Example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy
+	Repo string `json:"repo"`
+
+	// ServiceUrl Where the app answers now, https://<label>.<app domain>. The label is the app's name.
+	//
+	// Example: https://moimroom-legacy.hopcharlie.dev
+	ServiceUrl string `json:"serviceUrl"`
+
+	// TargetEnv The environment to move it to. Default the VM's cloud's (eks for AWS, gke for GCP).
+	//
+	// Example: eks
+	TargetEnv *string `json:"targetEnv,omitempty"`
+}
+
+// OnboardingState Where an onboarding is (ADR 0042, "흐름과 상태"). `failed` keeps the
+// state it failed in in `failedState`.
+type OnboardingState string
+
 // PlanAttachment defines model for PlanAttachment.
 type PlanAttachment struct {
 	// Name Example: target.yaml
@@ -2784,6 +3944,9 @@ type PlanSummary struct {
 
 	// Target The non-secret view of a plan endpoint.
 	Target PlanEndpoint `json:"target"`
+
+	// WrittenRecordsConfigured Whether this submitted plan configures verify.writtenRecords. Does not prove collection or verification succeeded. Absent for historical summaries and older servers; absence means unknown, not false.
+	WrittenRecordsConfigured *bool `json:"writtenRecordsConfigured,omitempty"`
 }
 
 // Principal defines model for Principal.
@@ -2954,14 +4117,15 @@ type RunResult struct {
 	// MissingRows source rows missing on the target
 	MissingRows *int64 `json:"missingRows,omitempty"`
 
-	// MissingWrites k6-confirmed writes missing on the target
+	// MissingWrites Missing rows in a nonempty reported-write snapshot that was actually checked; absent when unmeasured.
 	MissingWrites *int64 `json:"missingWrites,omitempty"`
 
 	// Requests requests the gateway served during the run
 	Requests *int64 `json:"requests,omitempty"`
 
 	// Verified the verify report found no problems
-	Verified *bool `json:"verified,omitempty"`
+	Verified          *bool              `json:"verified,omitempty"`
+	WriteVerification *WriteVerification `json:"writeVerification,omitempty"`
 }
 
 // RunStatus running: steps are executing.
@@ -3211,6 +4375,115 @@ type SecurityDeployedImage struct {
 // - unknown: no instance label, no running or recorded digest, or the records could not be read.
 type SecurityDeployedImageState string
 
+// SecurityEPSS The FIRST Exploit Prediction Scoring System score of the CVE.
+type SecurityEPSS struct {
+	// Date the score date (YYYY-MM-DD)
+	//
+	// Example: 2026-11-06
+	Date *string `json:"date,omitempty"`
+
+	// Percentile 0..1: the share of scored CVEs with a lower or equal score
+	//
+	// Example: 0.92
+	Percentile *float64 `json:"percentile,omitempty"`
+
+	// Probability 0..1: estimated probability of exploitation activity in the next 30 days
+	//
+	// Example: 0.042
+	Probability *float64 `json:"probability,omitempty"`
+
+	// State - scored: FIRST has a score for the CVE.
+	// - not_scored: FIRST answered and has no score for the CVE.
+	// - unknown: no answer in the last 3 days; this is not "not scored".
+	// - no_cve: the vulnerability has no CVE id.
+	State SecurityEPSSState `json:"state"`
+}
+
+// SecurityEPSSState - scored: FIRST has a score for the CVE.
+// - not_scored: FIRST answered and has no score for the CVE.
+// - unknown: no answer in the last 3 days; this is not "not scored".
+// - no_cve: the vulnerability has no CVE id.
+type SecurityEPSSState string
+
+// SecurityException An operator's time-limited exception for one finding or vulnerability
+// (SEC-08, ADR 0034). It never changes severity. Active while not revoked
+// and before expiresAt; a severity change does not end it.
+type SecurityException struct {
+	CreatedAt time.Time `json:"createdAt"`
+	CreatedBy string    `json:"createdBy"`
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Id Example: sx_3f2a9c1b
+	Id        string     `json:"id"`
+	Reason    string     `json:"reason"`
+	RevokedAt *time.Time `json:"revokedAt,omitempty"`
+	RevokedBy *string    `json:"revokedBy,omitempty"`
+
+	// TargetId a SecurityFinding id or a SecurityVulnerability id
+	TargetId   string                  `json:"targetId"`
+	TargetType SecurityExceptionTarget `json:"targetType"`
+}
+
+// SecurityExceptionList defines model for SecurityExceptionList.
+type SecurityExceptionList struct {
+	Exceptions []SecurityException `json:"exceptions"`
+}
+
+// SecurityExceptionRequest defines model for SecurityExceptionRequest.
+type SecurityExceptionRequest struct {
+	// ExpiresAt after now and at most 30 days later; at most 7 days for a KEV-listed vulnerability
+	ExpiresAt  time.Time               `json:"expiresAt"`
+	Reason     string                  `json:"reason"`
+	TargetId   string                  `json:"targetId"`
+	TargetType SecurityExceptionTarget `json:"targetType"`
+}
+
+// SecurityExceptionTarget defines model for SecurityExceptionTarget.
+type SecurityExceptionTarget string
+
+// SecurityExploitSource The state of one exploitation evidence source for this report (SEC-07).
+type SecurityExploitSource struct {
+	// CollectedAt the last successful read
+	CollectedAt *time.Time `json:"collectedAt,omitempty"`
+	Message     string     `json:"message"`
+
+	// Name cisa-kev or first-epss
+	//
+	// Example: cisa-kev
+	Name string `json:"name"`
+
+	// State - ok: read and current.
+	// - stale: the last refresh failed; values read earlier (at most 3 days old) are used.
+	// - unavailable: nothing current was read; values are unknown.
+	// - idle: nothing to look up (no CVE in the report).
+	State SecurityExploitSourceState `json:"state"`
+
+	// Version KEV catalogVersion, or the EPSS score date
+	Version *string `json:"version,omitempty"`
+}
+
+// SecurityExploitSourceState - ok: read and current.
+// - stale: the last refresh failed; values read earlier (at most 3 days old) are used.
+// - unavailable: nothing current was read; values are unknown.
+// - idle: nothing to look up (no CVE in the report).
+type SecurityExploitSourceState string
+
+// SecurityExploitation Exploitation evidence for the vulnerability's CVE (SEC-07, ADR 0034),
+// read when the report is built. It is a separate basis for priority and
+// never changes `severity`; scores are not combined. VEX is not applied.
+type SecurityExploitation struct {
+	// Cve the CVE looked up: the advisory, or its first CVE alias; absent when there is none
+	//
+	// Example: CVE-2024-6387
+	Cve *string `json:"cve,omitempty"`
+
+	// Epss The FIRST Exploit Prediction Scoring System score of the CVE.
+	Epss SecurityEPSS `json:"epss"`
+
+	// Kev The CISA Known Exploited Vulnerabilities catalog.
+	Kev SecurityKEV `json:"kev"`
+}
+
 // SecurityFinding One security or governance signal, normalised across vendors.
 type SecurityFinding struct {
 	Category SecurityCategory `json:"category"`
@@ -3235,6 +4508,11 @@ type SecurityFinding struct {
 	//
 	// Example: gke
 	Environment string `json:"environment"`
+
+	// Exception An operator's time-limited exception for one finding or vulnerability
+	// (SEC-08, ADR 0034). It never changes severity. Active while not revoked
+	// and before expiresAt; a severity change does not end it.
+	Exception *SecurityException `json:"exception,omitempty"`
 
 	// Id stable across collections: a hash of environment, source, check, resource and, where it has one, the vendor's own finding id (GuardDuty finding id, Security Hub finding ARN) or the rule's protocol, ports and CIDRs
 	Id string `json:"id"`
@@ -3321,8 +4599,45 @@ type SecurityImageScan struct {
 // - unsupported: the scanner cannot read this image (e.g. no package database).
 type SecurityImageScanStatus string
 
+// SecurityKEV The CISA Known Exploited Vulnerabilities catalog.
+type SecurityKEV struct {
+	// CatalogVersion Example: 2026.11.04
+	CatalogVersion *string `json:"catalogVersion,omitempty"`
+
+	// DateAdded YYYY-MM-DD; listed only
+	//
+	// Example: 2026-11-04
+	DateAdded *string `json:"dateAdded,omitempty"`
+
+	// DueDate the catalog's remediation due date for US federal agencies (YYYY-MM-DD); listed only
+	//
+	// Example: 2026-11-18
+	DueDate *string `json:"dueDate,omitempty"`
+
+	// Ransomware the catalog's knownRansomwareCampaignUse is Known; listed only
+	Ransomware *bool `json:"ransomware,omitempty"`
+
+	// State - listed: the CVE is in the catalog.
+	// - not_listed: a catalog read in the last 3 days does not have the CVE.
+	// - unknown: no catalog read in the last 3 days; this is not "not listed".
+	// - no_cve: the vulnerability has no CVE id, so the catalog does not apply.
+	State SecurityKEVState `json:"state"`
+}
+
+// SecurityKEVState - listed: the CVE is in the catalog.
+// - not_listed: a catalog read in the last 3 days does not have the CVE.
+// - unknown: no catalog read in the last 3 days; this is not "not listed".
+// - no_cve: the vulnerability has no CVE id, so the catalog does not apply.
+type SecurityKEVState string
+
 // SecurityOCSFExport defines model for SecurityOCSFExport.
 type SecurityOCSFExport struct {
+	// Controls OCSF Compliance Finding (2003) events, one per control evaluation
+	// (not_applicable left out), as the OCSF schema defines them
+	// (snake_case keys, `time` in epoch milliseconds). Their shape is
+	// the OCSF standard's, not this API's, so it is not repeated here.
+	Controls []map[string]interface{} `json:"controls"`
+
 	// Findings OCSF Detection Finding (2004) and Compliance Finding (2003) events,
 	// as the OCSF schema defines them (snake_case keys, `time` in epoch
 	// milliseconds). Their shape is the OCSF standard's, not this API's,
@@ -3336,6 +4651,12 @@ type SecurityOCSFExport struct {
 	//
 	// Example: 1.9.0
 	OcsfVersion string `json:"ocsfVersion"`
+
+	// Vulnerabilities OCSF Vulnerability Finding (2002) events, one per vulnerability,
+	// as the OCSF schema defines them (snake_case keys, `time` in epoch
+	// milliseconds). Their shape is the OCSF standard's, not this API's,
+	// so it is not repeated here.
+	Vulnerabilities []map[string]interface{} `json:"vulnerabilities"`
 }
 
 // SecurityPackage defines model for SecurityPackage.
@@ -3564,11 +4885,21 @@ type SecurityVulnerability struct {
 	// Advisory the advisory id: a CVE, or a GHSA or distribution id where there is no CVE
 	//
 	// Example: CVE-2024-6387
-	Advisory string                        `json:"advisory"`
-	Aliases  []string                      `json:"aliases"`
-	Cvss     []SecurityCVSS                `json:"cvss"`
-	Digest   string                        `json:"digest"`
-	FixState SecurityVulnerabilityFixState `json:"fixState"`
+	Advisory string         `json:"advisory"`
+	Aliases  []string       `json:"aliases"`
+	Cvss     []SecurityCVSS `json:"cvss"`
+	Digest   string         `json:"digest"`
+
+	// Exception An operator's time-limited exception for one finding or vulnerability
+	// (SEC-08, ADR 0034). It never changes severity. Active while not revoked
+	// and before expiresAt; a severity change does not end it.
+	Exception *SecurityException `json:"exception,omitempty"`
+
+	// Exploitation Exploitation evidence for the vulnerability's CVE (SEC-07, ADR 0034),
+	// read when the report is built. It is a separate basis for priority and
+	// never changes `severity`; scores are not combined. VEX is not applied.
+	Exploitation *SecurityExploitation         `json:"exploitation,omitempty"`
+	FixState     SecurityVulnerabilityFixState `json:"fixState"`
 
 	// FixedVersions empty when the source names no fixed version; that does not mean there is no fix
 	FixedVersions []string `json:"fixedVersions"`
@@ -3595,7 +4926,9 @@ type SecurityVulnerabilityFixState string
 
 // SecurityVulnerabilityReport defines model for SecurityVulnerabilityReport.
 type SecurityVulnerabilityReport struct {
-	GeneratedAt time.Time `json:"generatedAt"`
+	// ExploitSources KEV and EPSS read state for this report (SEC-07); absent when the server does not look them up.
+	ExploitSources *[]SecurityExploitSource `json:"exploitSources,omitempty"`
+	GeneratedAt    time.Time                `json:"generatedAt"`
 
 	// RunningImages Containers of running pods outside system namespaces, by environment, namespace, workload and container. An environment whose cluster could not be read has none; see `sources` of `GET /v1/security`.
 	RunningImages []SecurityRunningImage `json:"runningImages"`
@@ -3663,6 +4996,28 @@ type SeverityCounts struct {
 	Total    int `json:"total"`
 }
 
+// SourceRetentionResponse defines model for SourceRetentionResponse.
+type SourceRetentionResponse struct {
+	Job *struct {
+		DueAt *time.Time `json:"dueAt,omitempty"`
+
+		// KeepForNanos Server policy at enrollment, in nanoseconds.
+		KeepForNanos int64 `json:"keepForNanos"`
+		Pods         []struct {
+			Name string `json:"name"`
+			Uid  string `json:"uid"`
+		} `json:"pods"`
+		Reason    *string                          `json:"reason,omitempty"`
+		RunId     string                           `json:"runId"`
+		SourceUID string                           `json:"sourceUID"`
+		Status    SourceRetentionResponseJobStatus `json:"status"`
+		TargetUID *string                          `json:"targetUID,omitempty"`
+	} `json:"job,omitempty"`
+}
+
+// SourceRetentionResponseJobStatus defines model for SourceRetentionResponse.Job.Status.
+type SourceRetentionResponseJobStatus string
+
 // SourceStats The source database as the capacity gate measures it. A hot standby
 // target needs max_connections and max_worker_processes of at least the
 // source's to start, and the gate wants max_connections of at least
@@ -3707,7 +5062,12 @@ type StartMigrationRequest struct {
 	// reads back on the source and ends the run as `rolled_back`. A step with
 	// fewer than `gate.minRequests` requests and no other breach is
 	// `inconclusive` and the canary moves on, except at the last step, which
-	// must pass with enough requests. Gradual steps such as
+	// must pass with enough requests. When the platform sends synthetic
+	// probe reads, a step whose target got fewer than `gate.minRequests` is
+	// extended once by another `stepDuration` with more probe reads and then
+	// judged over the whole step (at most the last 300s). It is not extended
+	// when the errors are already over the limit or when one more batch could
+	// not bring enough requests (as at 1%). Gradual steps such as
 	// 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 	Canary *CanaryOptions `json:"canary,omitempty"`
 
@@ -3869,10 +5229,42 @@ type WeightsRequest struct {
 	ReadWeights map[string]int `json:"readWeights"`
 }
 
-// WrittenRecord One write a load generator saw succeed, in the engine's written-records format.
+// WriteVerification defines model for WriteVerification.
+type WriteVerification struct {
+	Checked *int64 `json:"checked,omitempty"`
+
+	// CollectedRecords Input records frozen for this run, never the current live stream count.
+	CollectedRecords *int64                     `json:"collectedRecords,omitempty"`
+	Coverage         *WriteVerificationCoverage `json:"coverage,omitempty"`
+
+	// CutoffSeq Maximum observed sequence included in the verification input. Late reports are not included.
+	CutoffSeq *int64     `json:"cutoffSeq,omitempty"`
+	LatestAt  *time.Time `json:"latestAt,omitempty"`
+	Missing   *int64     `json:"missing,omitempty"`
+
+	// Reason Stable reason code; no raw provider errors.
+	Reason *string                 `json:"reason,omitempty"`
+	Scope  *WriteVerificationScope `json:"scope,omitempty"`
+	Status WriteVerificationStatus `json:"status"`
+	Stream *string                 `json:"stream,omitempty"`
+}
+
+// WriteVerificationCoverage defines model for WriteVerification.Coverage.
+type WriteVerificationCoverage string
+
+// WriteVerificationScope defines model for WriteVerification.Scope.
+type WriteVerificationScope string
+
+// WriteVerificationStatus defines model for WriteVerification.Status.
+type WriteVerificationStatus string
+
+// WrittenRecord One producer-reported table/PK receipt; scope identifies application commits or client acknowledgements.
 type WrittenRecord struct {
-	// At when the write succeeded; defaults to when the server received it
+	// At Producer event recording time; app outbox INSERT time is before commit completion. Defaults to server receipt time.
 	At *time.Time `json:"at,omitempty"`
+
+	// EventId Optional stable producer event identifier; retries of identical events are deduplicated within the stream.
+	EventId *string `json:"eventId,omitempty"`
 
 	// Pk the primary key as text; composite keys as "(a,b)"
 	//
@@ -3887,23 +5279,44 @@ type WrittenRecord struct {
 
 // WrittenRecordStats defines model for WrittenRecordStats.
 type WrittenRecordStats struct {
-	Count int64 `json:"count"`
+	Count      int64                       `json:"count"`
+	Coverage   *WrittenRecordStatsCoverage `json:"coverage,omitempty"`
+	Generation *string                     `json:"generation,omitempty"`
+	LastSeq    *int64                      `json:"lastSeq,omitempty"`
 
 	// LatestAt the newest record's time; absent when the stream is empty
-	LatestAt *time.Time `json:"latestAt,omitempty"`
-	Stream   string     `json:"stream"`
+	LatestAt *time.Time               `json:"latestAt,omitempty"`
+	Scope    *WrittenRecordStatsScope `json:"scope,omitempty"`
+	Stream   string                   `json:"stream"`
 }
+
+// WrittenRecordStatsCoverage defines model for WrittenRecordStats.Coverage.
+type WrittenRecordStatsCoverage string
+
+// WrittenRecordStatsScope defines model for WrittenRecordStats.Scope.
+type WrittenRecordStatsScope string
 
 // WrittenRecordsAccepted defines model for WrittenRecordsAccepted.
 type WrittenRecordsAccepted struct {
-	// Accepted records stored
+	// Accepted Input records accepted atomically; identical eventId retries count as accepted without increasing stored count.
 	Accepted int `json:"accepted"`
 }
 
 // WrittenRecordsRequest defines model for WrittenRecordsRequest.
 type WrittenRecordsRequest struct {
-	Records []WrittenRecord `json:"records"`
+	Coverage *WrittenRecordsRequestCoverage `json:"coverage,omitempty"`
+
+	// Generation Source database generation; required for application commit receipts.
+	Generation *string                     `json:"generation,omitempty"`
+	Records    []WrittenRecord             `json:"records"`
+	Scope      *WrittenRecordsRequestScope `json:"scope,omitempty"`
 }
+
+// WrittenRecordsRequestCoverage defines model for WrittenRecordsRequest.Coverage.
+type WrittenRecordsRequestCoverage string
+
+// WrittenRecordsRequestScope defines model for WrittenRecordsRequest.Scope.
+type WrittenRecordsRequestScope string
 
 // AppName defines model for AppName.
 type AppName = string
@@ -3916,6 +5329,9 @@ type EnvName = string
 
 // InstanceName Example: moimroom--dev
 type InstanceName = string
+
+// OnboardingId Example: onb-3f9a1c2b7d4e
+type OnboardingId = string
 
 // PlanRef defines model for PlanRef.
 type PlanRef = string
@@ -3943,6 +5359,9 @@ type Internal = Error
 
 // NotFound defines model for NotFound.
 type NotFound = Error
+
+// NotImplemented defines model for NotImplemented.
+type NotImplemented = Error
 
 // TooLarge defines model for TooLarge.
 type TooLarge = Error
@@ -3976,6 +5395,12 @@ type StreamAgentEventsParams struct {
 
 // StreamAgentEventsParamsFormat defines parameters for StreamAgentEvents.
 type StreamAgentEventsParamsFormat string
+
+// GetAIActivityParams defines parameters for GetAIActivity.
+type GetAIActivityParams struct {
+	// Minutes how far back to read
+	Minutes *int `form:"minutes,omitempty" json:"minutes,omitempty"`
+}
 
 // ListAIRunsParams defines parameters for ListAIRuns.
 type ListAIRunsParams struct {
@@ -4019,6 +5444,22 @@ type StartMigrationParams struct {
 
 // StreamMigrationEventsParams defines parameters for StreamMigrationEvents.
 type StreamMigrationEventsParams struct {
+	// After Replay events with seq greater than this. Same as Last-Event-ID.
+	After       *int64  `form:"after,omitempty" json:"after,omitempty"`
+	LastEventID *string `json:"Last-Event-ID,omitempty"`
+}
+
+// PreserveSourceJSONBody defines parameters for PreserveSource.
+type PreserveSourceJSONBody struct {
+	// Keep true cancels automatic cleanup permanently for this run.
+	Keep *bool `json:"keep,omitempty"`
+
+	// RetainUntil A later deadline, in the future and no more than 30 days from now.
+	RetainUntil *time.Time `json:"retainUntil,omitempty"`
+}
+
+// StreamOnboardingEventsParams defines parameters for StreamOnboardingEvents.
+type StreamOnboardingEventsParams struct {
 	// After Replay events with seq greater than this. Same as Last-Event-ID.
 	After       *int64  `form:"after,omitempty" json:"after,omitempty"`
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
@@ -4095,6 +5536,9 @@ type ValidateAppSpecJSONRequestBody = AppSpecValidateRequest
 // CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
 type CreateDeploymentJSONRequestBody = DeploymentCreateRequest
 
+// AddAppEnvironmentJSONRequestBody defines body for AddAppEnvironment for application/json ContentType.
+type AddAppEnvironmentJSONRequestBody = AppEnvironmentAddRequest
+
 // CreateAppInstanceJSONRequestBody defines body for CreateAppInstance for application/json ContentType.
 type CreateAppInstanceJSONRequestBody = AppInstanceCreateRequest
 
@@ -4122,8 +5566,17 @@ type StartMigrationJSONRequestBody = StartMigrationRequest
 // AbortMigrationJSONRequestBody defines body for AbortMigration for application/json ContentType.
 type AbortMigrationJSONRequestBody = AbortRequest
 
+// PreserveSourceJSONRequestBody defines body for PreserveSource for application/json ContentType.
+type PreserveSourceJSONRequestBody PreserveSourceJSONBody
+
 // RollbackMigrationJSONRequestBody defines body for RollbackMigration for application/json ContentType.
 type RollbackMigrationJSONRequestBody = RollbackRequest
+
+// StartOnboardingJSONRequestBody defines body for StartOnboarding for application/json ContentType.
+type StartOnboardingJSONRequestBody = OnboardingRequest
+
+// ApproveOnboardingJSONRequestBody defines body for ApproveOnboarding for application/json ContentType.
+type ApproveOnboardingJSONRequestBody = OnboardingApproveRequest
 
 // SubmitPlanJSONRequestBody defines body for SubmitPlan for application/json ContentType.
 type SubmitPlanJSONRequestBody = EnginePlan
@@ -4139,6 +5592,9 @@ type RejectPlanJSONRequestBody = ReviewRequest
 
 // InspectBucketJSONRequestBody defines body for InspectBucket for application/json ContentType.
 type InspectBucketJSONRequestBody = BucketInspectRequest
+
+// CreateSecurityExceptionJSONRequestBody defines body for CreateSecurityException for application/json ContentType.
+type CreateSecurityExceptionJSONRequestBody = SecurityExceptionRequest
 
 // SubmitSecurityScanJSONRequestBody defines body for SubmitSecurityScan for application/json ContentType.
 type SubmitSecurityScanJSONRequestBody = SecurityScanSubmission

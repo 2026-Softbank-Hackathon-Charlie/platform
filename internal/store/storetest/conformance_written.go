@@ -17,10 +17,40 @@ var planToolsCases = []struct {
 }{
 	{"WrittenAppendList", testWrittenAppendList},
 	{"WrittenStats", testWrittenStats},
+	{"WrittenReceiptRetry", testWrittenReceiptRetry},
 	{"AttachmentPutGet", testAttachmentPutGet},
 	{"AttachmentOnlyWhilePending", testAttachmentOnlyWhilePending},
 	{"AttachmentCopies", testAttachmentCopies},
 	{"AttachmentRaisesRevision", testAttachmentRaisesRevision},
+}
+
+func testWrittenReceiptRetry(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	r := written("app.reservations", "91", 2)
+	r.EventID, r.Scope, r.Coverage, r.Generation = "reservation-91", "application_commits", "reservation_inserts", "db-1"
+	must(t, s.AppendWrittenRecords(ctx, "app-demo", []store.WrittenRecord{r, r}))
+	r.ReceivedAt = at(8)
+	must(t, s.AppendWrittenRecords(ctx, "app-demo", []store.WrittenRecord{r}))
+	st, err := s.WrittenRecordStats(ctx, "app-demo")
+	must(t, err)
+	if st.Count != 1 || st.LastSeq <= 0 || st.Generation != "db-1" || st.Scope != "application_commits" || st.Coverage != "reservation_inserts" {
+		t.Fatalf("retry stats: %+v", st)
+	}
+	for _, change := range []func(*store.WrittenRecord){func(r *store.WrittenRecord) { r.PK = "92" }, func(r *store.WrittenRecord) { r.Generation = "db-2" }, func(r *store.WrittenRecord) { r.Scope = "client_acknowledged" }, func(r *store.WrittenRecord) { r.Coverage = "reported_records" }} {
+		bad := r
+		change(&bad)
+		fresh := r
+		fresh.PK = "100"
+		fresh.EventID = "reservation-100"
+		if err := s.AppendWrittenRecords(ctx, "app-demo", []store.WrittenRecord{fresh, bad}); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("conflict: %v", err)
+		}
+		st, err = s.WrittenRecordStats(ctx, "app-demo")
+		must(t, err)
+		if st.Count != 1 {
+			t.Fatalf("failed batch leaked a row: %+v", st)
+		}
+	}
 }
 
 // written is a record that happened n minutes after the base and arrived a minute later.

@@ -13,6 +13,8 @@ import (
 
 // AppSpec is the body of PUT /apps/{app}.
 type AppSpec struct {
+	// HealthPath is the app readiness endpoint. Empty inherits the gateway default.
+	HealthPath string `json:"healthPath,omitempty"`
 	// Backends maps each environment to the app's URL there.
 	Backends map[string]string `json:"backends"`
 	// WriteBackend receives every write.
@@ -20,11 +22,22 @@ type AppSpec struct {
 	// ReadWeights split reads over the backends, summing to 100. Empty sends
 	// every read to WriteBackend.
 	ReadWeights map[string]int `json:"readWeights,omitempty"`
+	// Dial maps a backend to the address ("host:port") the gateway
+	// connects to instead of its URL's host, keeping the URL's host as the
+	// TLS server name and the Host header (ADR 0042): the legacy backend of
+	// an onboarding is https://<app>.<domain> dialled at the VM's public
+	// IP, so the gateway does not reach itself once the name points at it.
+	// Backends without an entry dial their URL. The proxy and the health
+	// checks both use it, and it is part of the saved state and of whether
+	// a replace keeps a backend. This gateway does not do it yet and
+	// refuses a non-empty Dial (dial_not_supported).
+	Dial map[string]string `json:"dial,omitempty"`
 }
 
 // AppInfo is one app in GET /apps and the answer to PUT /apps/{app}.
 type AppInfo struct {
-	Name string `json:"name"`
+	HealthPath string `json:"healthPath,omitempty"`
+	Name       string `json:"name"`
 	// Default marks the app that the gateway's configuration (-backends)
 	// serves. It cannot be replaced or deleted through the API.
 	Default bool `json:"default"`
@@ -34,6 +47,8 @@ type AppInfo struct {
 	WriteBackend string            `json:"writeBackend"`
 	ReadWeights  map[string]int    `json:"readWeights"`
 	WritesHeld   bool              `json:"writesHeld"`
+	// Dial is AppSpec.Dial; empty without any.
+	Dial map[string]string `json:"dial,omitempty"`
 }
 
 // AppList is the answer to GET /apps.
@@ -122,8 +137,20 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var spec AppSpec
-	if !decodeJSON(w, r, &spec) {
+	if !g.decodeJSON(w, r, &spec) {
 		return
+	}
+	if len(spec.Dial) > 0 {
+		writeError(w, http.StatusBadRequest, "dial_not_supported", "dial is not supported by this gateway yet (ADR 0042)")
+		return
+	}
+	if spec.HealthPath != "" && !validHealthPath(spec.HealthPath) {
+		writeError(w, http.StatusBadRequest, "invalid_health_path", "healthPath must be a local HTTP path without fragment")
+		return
+	}
+	healthPath := spec.HealthPath
+	if healthPath == "" {
+		healthPath = g.cfg.HealthPath
 	}
 	bcs, err := parseBackendMap(spec.Backends)
 	if err != nil {
@@ -148,6 +175,11 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reading and validating an administrator's body must not hold up another
+	// app's Hold/Route/Release. Mutable state is still checked and changed in
+	// the same control transaction, including an app held while decoding.
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
 	g.appsMu.Lock()
 	rt, exists := g.apps[name]
 	if !exists {
@@ -163,6 +195,12 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if exists {
 		rt.backends, rt.byName, _ = rt.newBackends(bcs, rt.byName)
+	}
+	if rt.healthPath != healthPath {
+		rt.healthPath = healthPath
+		for _, b := range rt.backends {
+			b.healthy.Store(false)
+		}
 	}
 	rt.writeBackend = spec.WriteBackend
 	rt.readWeights = rt.fullWeightsLocked(weights)
@@ -184,6 +222,8 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 // handleDeleteApp removes a registered app. Its host answers 404 from then on;
 // requests already being proxied finish.
 func (g *Gateway) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
 	name := r.PathValue("app")
 	if name == g.router.name {
 		defaultApp(w, name)
@@ -226,6 +266,7 @@ func (rt *router) info() AppInfo {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	info := AppInfo{
+		HealthPath:   rt.healthPath,
 		Name:         rt.name,
 		Default:      rt == rt.g.router,
 		Backends:     make(map[string]string, len(rt.backends)),

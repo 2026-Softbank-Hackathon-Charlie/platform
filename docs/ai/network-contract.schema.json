@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "platformCommit",
+    "app",
+    "ingressAccessVerified",
+    "ingress",
+    "control",
+    "backends",
+    "sourceIndependentEvidence",
+    "limits"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "platformCommit": {
+      "const": "ed55d28e1afb4c96a45300f0ca9966e7167faf60"
+    },
+    "app": {
+      "const": "moimroom-ai"
+    },
+    "ingressAccessVerified": {
+      "type": "boolean"
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inferenceUrl",
+        "resourceRef",
+        "runtimeImageDigest",
+        "tokenEnv",
+        "listen",
+        "adminListen",
+        "stateFile",
+        "tlsEvidence"
+      ],
+      "properties": {
+        "inferenceUrl": {
+          "type": "string",
+          "pattern": "^https://[^/]+/api/chat$"
+        },
+        "resourceRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtimeImageDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "tokenEnv": {
+          "const": "AI_GATEWAY_TOKEN"
+        },
+        "listen": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adminListen": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stateFile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tlsEvidence": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseUrl",
+        "tokenEnv",
+        "resourceRef"
+      ],
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "pattern": "^https?://[^/]+$"
+        },
+        "tokenEnv": {
+          "const": "GATEWAY_ADMIN_TOKEN"
+        },
+        "resourceRef": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "backends": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gcp",
+        "laptop"
+      ],
+      "properties": {
+        "gcp": {
+          "$ref": "#/$defs/backend"
+        },
+        "laptop": {
+          "$ref": "#/$defs/backend"
+        }
+      }
+    },
+    "sourceIndependentEvidence": {
+      "type": "string",
+      "minLength": 1
+    },
+    "limits": {
+      "const": {
+        "inputRunes": 2000,
+        "numCtx": 2048,
+        "numPredict": 128,
+        "backendConcurrency": 1,
+        "appConcurrency": 2,
+        "gatewayTimeoutSeconds": 12,
+        "appGlobalSeconds": 15
+      }
+    }
+  },
+  "$defs": {
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseUrl",
+        "localBaseUrl",
+        "resourceRef",
+        "transportKind",
+        "transportEvidence",
+        "version",
+        "model",
+        "manifest",
+        "owner"
+      ],
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "pattern": "^https?://[^/]+$"
+        },
+        "localBaseUrl": {
+          "enum": [
+            "http://127.0.0.1:11434",
+            "http://127.0.0.1:11435"
+          ]
+        },
+        "resourceRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transportKind": {
+          "enum": [
+            "existing-private-proxy",
+            "existing-ssh-forward"
+          ]
+        },
+        "transportEvidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "const": "0.40.14"
+        },
+        "model": {
+          "const": "qwen2.5:1.5b-instruct-q4_K_M"
+        },
+        "manifest": {
+          "const": "65ec06548149b04c096a120e4a6da9d4017ea809c91734ea5631e89f96ddc57b"
+        },
+        "owner": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pid",
+                "startedUtc",
+                "executable"
+              ],
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startedUtc": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "executable": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -31,12 +31,14 @@ type memory struct {
 	seq     int64
 	auditID int64
 
-	tools   memoryPlanTools // written records and plan attachments (memory_written.go)
-	agent   agentMemory     // agent sessions and events (memory_agent.go)
-	deploy  deployMemory    // apps, deployments, their events and webhook deliveries (memory_deploy.go)
-	auth    authMemory      // sessions and device logins (memory_auth.go)
-	secrets secretsMemory   // app secrets and instance storage (memory_secrets.go)
-	scans   scansMemory     // the latest scan of each image digest (memory_scans.go)
+	tools      memoryPlanTools  // written records and plan attachments (memory_written.go)
+	agent      agentMemory      // agent sessions and events (memory_agent.go)
+	deploy     deployMemory     // apps, deployments, their events and webhook deliveries (memory_deploy.go)
+	auth       authMemory       // sessions and device logins (memory_auth.go)
+	secrets    secretsMemory    // app secrets and instance storage (memory_secrets.go)
+	scans      scansMemory      // the latest scan of each image digest (memory_scans.go)
+	exceptions exceptionsMemory // security exceptions (memory_exceptions.go)
+	onboard    onboardMemory    // onboardings and their events (memory_onboarding.go)
 }
 
 // NewMemory returns an empty in-memory store with the same semantics as the

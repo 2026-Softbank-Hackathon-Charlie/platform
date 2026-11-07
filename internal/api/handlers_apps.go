@@ -181,13 +181,17 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // newAppDatabase makes the database pair of an app being registered (ADR
-// 0030), or returns nil when it gets none: the setting is off, the app is
-// not in exactly two environments, one of them has no database host
-// template (Config.AppDBEnvs), its platform.yaml has no postgres resource,
-// or there is no secrets key to store the pair with.
+// 0030, ADR 0043), or returns nil when it gets none: the setting is off,
+// pairEnvs finds no pair for the app's environments, its platform.yaml has
+// no postgres resource, there is no secrets key to store the pair with, or
+// the app is registered in one environment that cannot seal the pair's
+// values (no usable sealed-secrets certificate). The pair of one
+// environment is the platform's own choice, so without sealing there the
+// app registers as before, without it, rather than with a first deployment
+// that cannot succeed.
 func (s *Server) newAppDatabase(app store.App, spec appspec.Spec) (*store.AppDatabase, error) {
-	if !s.cfg.AppDBTopology || len(app.Environments) != 2 ||
-		!slices.Contains(s.cfg.AppDBEnvs, app.Environments[0]) || !slices.Contains(s.cfg.AppDBEnvs, app.Environments[1]) ||
+	envs := s.pairEnvs(app.Environments)
+	if !s.cfg.AppDBTopology || envs == nil ||
 		!slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres }) {
 		return nil, nil
 	}
@@ -195,11 +199,41 @@ func (s *Server) newAppDatabase(app store.App, spec appspec.Spec) (*store.AppDat
 		s.cfg.Log.Warn("PLATFORM_APP_DB_TOPOLOGY is on, but there is no PLATFORM_SECRETS_KEY: registering the app without a database pair", "app", app.Name)
 		return nil, nil
 	}
-	db, err := deploy.NewAppDatabase(s.d.Secrets, app.Name, app.Environments, app.CreatedAt)
+	if len(app.Environments) == 1 && (s.d.SealingConfigured == nil || !s.d.SealingConfigured(app.Environments[0])) {
+		s.cfg.Log.Warn("environment has no usable sealed-secrets certificate: registering the app in one environment without a database pair, so it cannot be added to another environment later", "app", app.Name, "env", app.Environments[0])
+		return nil, nil
+	}
+	db, err := deploy.NewAppDatabase(s.d.Secrets, app.Name, envs, app.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("make the database pair of %s: %w", app.Name, err)
 	}
 	return &db, nil
+}
+
+// pairEnvs returns the primary and the peer of the database pair of an app
+// registered in envs, or nil when it gets none. Two or three environments that all
+// have a database host template (Config.AppDBEnvs) are the pair, the first
+// the primary (ADR 0030). One environment with a template is the primary
+// when exactly one other environment has a template: that one is the peer,
+// where the database does not exist until the environment is added (ADR
+// 0043). Three members retain the first two as their original anchors (ADR
+// 0044). Anything else has no pair.
+func (s *Server) pairEnvs(envs []string) []string {
+	if !slices.ContainsFunc(envs, func(e string) bool { return slices.Contains(s.cfg.AppDBEnvs, e) }) {
+		return nil
+	}
+	switch len(envs) {
+	case 2, 3:
+		if !slices.ContainsFunc(envs, func(e string) bool { return !slices.Contains(s.cfg.AppDBEnvs, e) }) {
+			return envs
+		}
+	case 1:
+		others := slices.DeleteFunc(slices.Clone(s.cfg.AppDBEnvs), func(e string) bool { return e == envs[0] })
+		if len(others) == 1 {
+			return []string{envs[0], others[0]}
+		}
+	}
+	return nil
 }
 
 // POST /v1/apps/{name}/instances: add a branch of a registered app as its
@@ -485,6 +519,16 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
+	if db != nil && view.Deploy != nil && view.Deploy.DbTopology != nil {
+		// Only here: it reads both workload clusters (ADR 0043).
+		var spec appspec.Spec
+		if err := json.Unmarshal(a.Spec, &spec); err != nil {
+			s.internal(w, r, fmt.Errorf("the stored spec of %s: %w", a.Name, err))
+			return
+		}
+		ready := s.dbReadiness(r.Context(), a, *db, deps[a.Name], spec)
+		view.Deploy.DbTopology.Readiness = &ready
+	}
 	writeJSON(w, http.StatusOK, view)
 }
 
@@ -583,7 +627,7 @@ func (s *Server) appDeploy(a store.App, branches []store.AppBranch, deps map[str
 	}
 	out.Instances = append(out.Instances, def)
 	if db != nil {
-		out.DbTopology = &apiv1.AppDBTopology{Primary: db.PrimaryEnv, Replica: db.PeerEnv}
+		out.DbTopology = &apiv1.AppDBTopology{Primary: db.PrimaryEnv, Replica: db.PeerEnv, ReplicaPresent: slices.Contains(a.Environments, db.PeerEnv)}
 	}
 	for _, b := range branches {
 		out.Instances = append(out.Instances, s.appInstance(a, b, deps[b.Instance]))

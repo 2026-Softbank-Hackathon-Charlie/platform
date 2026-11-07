@@ -48,6 +48,9 @@ func TestDeployProbesTheBackendBeforeTheGateway(t *testing.T) {
 		t.Fatalf("deployment %s %q", got.Status, got.Error)
 	}
 	want := probeCall{"http://shop-web.shop.gke.test:8080", "/healthz"}
+	if app, ok := te.gw.app("shop"); !ok || app.HealthPath != "/healthz" {
+		t.Fatal("deployer did not propagate the public service health check")
+	}
 	if calls := te.probe.called(); len(calls) != 1 || calls[0] != want {
 		t.Errorf("probes %+v, want one %+v", calls, want)
 	}

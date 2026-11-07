@@ -290,6 +290,9 @@ func (p Policy) checkPasswordRef(role, ref string, hosts []string) error {
 
 // checkParsed validates fields that reach the filesystem, processes or network.
 func (p Policy) checkParsed(pl *plan.Plan, hosts dbHosts) error {
+	if pl.Decommission != nil {
+		return fmt.Errorf("decommission is not accepted by the platform; source retirement uses the server-owned retention policy")
+	}
 	if !planID.MatchString(pl.ID) {
 		return fmt.Errorf("id %q must be lowercase letters, digits and '-' (at most 63)", pl.ID)
 	}

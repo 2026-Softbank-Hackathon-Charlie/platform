@@ -5,7 +5,9 @@ name: Publish platform image
 # pins it in infra main with one direct commit (infra ADR 0025). Argo CD
 # deploys infra main from there. A newer push cancels the older ci run and
 # this workflow's older run, so only the latest commit is pinned. Running it
-# by hand publishes main again, if ci passed on it.
+# by hand publishes main again, if ci passed on it. The optional minio flavor
+# is manual-only and publishes an artifact without pinning infra. Automatic
+# default pins preserve the flavor selected by a reviewed infra change.
 #
 # Settings > Secrets and variables > Actions:
 #   variable AWS_DEPLOY_ROLE_ARN      infra output image_publish_role_arns.platform
@@ -21,6 +23,12 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      flavor:
+        description: 'default: publish and preserve infra flavor; minio: AGPL opt-in artifact only, no infra pin'
+        type: choice
+        default: default
+        options: [default, minio]
 
 permissions:
   contents: read
@@ -28,7 +36,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: platform-image-publish
+  group: platform-image-publish-${{ inputs.flavor || 'default' }}
   cancel-in-progress: true
 
 jobs:
@@ -36,11 +44,12 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
-    runs-on: [self-hosted, hopcharlie]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       # The commit ci checked; github.sha of a workflow_run is main's latest.
       SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      IMAGE_FLAVOR: ${{ inputs.flavor || 'default' }}
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
       AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
       ECR_PLATFORM_REPOSITORY: ${{ vars.ECR_PLATFORM_REPOSITORY }}
@@ -58,7 +67,10 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           [ -n "$AWS_DEPLOY_ROLE_ARN" ] || fail "Repository variable AWS_DEPLOY_ROLE_ARN is not set"
           [ -n "$ECR_PLATFORM_REPOSITORY" ] || fail "Repository variable ECR_PLATFORM_REPOSITORY is not set"
-          [ "$HAS_INFRA_PR_TOKEN" = true ] || fail "Repository secret INFRA_PR_TOKEN is not set"
+          [[ "$IMAGE_FLAVOR" = default || "$IMAGE_FLAVOR" = minio ]] || fail "Unknown image flavor"
+          if [ "$IMAGE_FLAVOR" = default ]; then
+            [ "$HAS_INFRA_PR_TOKEN" = true ] || fail "Repository secret INFRA_PR_TOKEN is not set"
+          fi
           [ "$HAS_MODULE_READ_TOKEN" = true ] || fail "Repository secret MODULE_READ_TOKEN is not set"
           re='^([0-9]{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com/hopcharlie/platform$'
           [[ "$ECR_PLATFORM_REPOSITORY" =~ $re ]] || fail "ECR_PLATFORM_REPOSITORY must be <account>.dkr.ecr.<region>.amazonaws.com/hopcharlie/platform"
@@ -121,8 +133,10 @@ jobs:
       - name: Build binaries
         run: |
           mkdir -p deploy/docker/bin
+          build_tags=()
+          if [ "$IMAGE_FLAVOR" = minio ]; then build_tags=(-tags minio); fi
           for cmd in api gateway; do
-            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "deploy/docker/bin/hopcharlie-$cmd" "./cmd/$cmd"
+            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build "${build_tags[@]}" -trimpath -ldflags "-s -w" -o "deploy/docker/bin/hopcharlie-$cmd" "./cmd/$cmd"
           done
 
       - name: AWS credentials (OIDC)
@@ -145,6 +159,7 @@ jobs:
           export DOCKER_CONFIG="$RUNNER_TEMP/docker"
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
           tag="${SOURCE_SHA:0:7}"
+          if [ "$IMAGE_FLAVOR" = minio ]; then tag="$tag-minio"; fi
           docker buildx build --platform linux/amd64 --provenance=false --sbom=false --push \
             --metadata-file "$RUNNER_TEMP/image.json" -t "$ECR_PLATFORM_REPOSITORY:$tag" deploy/docker
           digest="$(jq -r '."containerimage.digest" // empty' "$RUNNER_TEMP/image.json")"
@@ -152,8 +167,16 @@ jobs:
           echo "image=$ECR_PLATFORM_REPOSITORY:$tag@$digest" >> "$GITHUB_OUTPUT"
 
       - name: Pin the image in infra main
+        if: env.IMAGE_FLAVOR == 'default'
         env:
           GH_TOKEN: ${{ secrets.INFRA_PR_TOKEN }}
           INFRA_REPOSITORY: 2026-Softbank-Hackathon-Charlie/infra
           IMAGE: ${{ steps.image.outputs.image }}
         run: python3 .github/scripts/pin-infra-image.py
+
+      - name: MinIO artifact requires separate infra review
+        if: env.IMAGE_FLAVOR == 'minio'
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          printf '## MinIO image published (opt-in)\n\nImage: `%s`\n\nIncludes the optional MinIO admin client (AGPL-3.0). No infra pin or deployment was performed. Select this digest only through a separately reviewed infra change. Subsequent default publishes preserve that selection and do not update this MinIO release.\n' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"

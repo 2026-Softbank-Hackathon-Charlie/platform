@@ -24,6 +24,18 @@ type fakeRemover struct {
 	mu      sync.Mutex
 	err     error
 	removed []string
+	// removeEnv, when set, does what RemoveEnvironment does to the store.
+	removeEnv func(app, env string) error
+	// applications are the Argo CD Applications that exist; applicationsErr
+	// fails ApplicationExists.
+	applications    map[string]bool
+	applicationsErr error
+}
+
+func (f *fakeRemover) ApplicationExists(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.applications[name], f.applicationsErr
 }
 
 func (f *fakeRemover) RemoveApp(_ context.Context, name string) error {
@@ -43,6 +55,19 @@ func (f *fakeRemover) RemoveInstance(_ context.Context, app, branch string) erro
 		return f.err
 	}
 	f.removed = append(f.removed, app+"@"+branch)
+	return nil
+}
+
+func (f *fakeRemover) RemoveEnvironment(_ context.Context, app, env string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.removed = append(f.removed, app+"/"+env)
+	if f.removeEnv != nil {
+		return f.removeEnv(app, env)
+	}
 	return nil
 }
 
@@ -286,6 +311,46 @@ func TestDeleteApp(t *testing.T) {
 	h2.registerShop()
 	if code, b := h2.do("DELETE", "/v1/apps/shop", opToken, nil); code != 503 || errorCode(t, b) != "github_not_configured" {
 		t.Fatalf("no remover: %d %s", code, b)
+	}
+}
+
+// storeRemover deletes the app from the store, like the executor's
+// RemoveApp does last.
+type storeRemover struct {
+	fakeRemover
+	store store.Store
+}
+
+func (f *storeRemover) RemoveApp(ctx context.Context, name string) error {
+	if err := f.fakeRemover.RemoveApp(ctx, name); err != nil {
+		return err
+	}
+	return f.store.DeleteApp(ctx, name)
+}
+
+// TestDeleteAppKeepsTheFileEntry deletes a registered app that is also in
+// PLATFORM_APPS_FILE: the registered app goes, and the list goes on showing
+// the file's entry, without deploy, until the file drops it.
+func TestDeleteAppKeepsTheFileEntry(t *testing.T) {
+	rm := &storeRemover{}
+	h := newHarness(t, withApps(""), withGitHub(shopGitHub(), nil), func(_ *harness, _ *runs.Config, d *Deps) { d.Remover = rm })
+	rm.store = h.store
+	created := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	spec := []byte(`{"name":"x","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":8080,"public":true,"replicas":1}]}`)
+	if err := h.store.CreateApp(t.Context(), store.App{Name: "moimroom", Repo: "acme/moimroom", Branch: "main", Environments: []string{"eks"}, Spec: spec, SpecCommit: headSHA, CreatedBy: "op", CreatedAt: created}); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := h.do("DELETE", "/v1/apps/moimroom", opToken, nil); code != 202 || !slices.Equal(rm.removed, []string{"moimroom"}) {
+		t.Fatalf("delete: %d %s, removed %v", code, b, rm.removed)
+	}
+	code, b := h.do("GET", "/v1/apps", viewerToken, nil)
+	list := decode[apiv1.AppList](t, b).Apps
+	if code != 200 || len(list) != 1 || list[0].Name != "moimroom" || list[0].Deploy != nil || len(list[0].Environments) == 0 {
+		t.Fatalf("list after delete: %d %s", code, b)
+	}
+	// Only a registered app can be deleted; the file's entry is not one.
+	if code, b := h.do("DELETE", "/v1/apps/moimroom", opToken, nil); code != 409 || errorCode(t, b) != "app_not_registered" {
+		t.Fatalf("delete again: %d %s", code, b)
 	}
 }
 

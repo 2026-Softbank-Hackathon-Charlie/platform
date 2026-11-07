@@ -1,0 +1,104 @@
+{{- /*
+The tailnet paths between the environments' databases of a
+values.dbTopology app (infra ADR 0063). The Tailscale operator in
+profile.dbNetwork.proxyNamespace runs a proxy for each Service; the
+hopcharlie-db-network release's ProxyClasses label those proxies and its
+shared NetworkPolicies admit them.
+*/}}
+{{- $topo := include "hopcharlie-app.dbTopology" . | fromJson }}
+{{- $net := .Values.profile.dbNetwork | default dict }}
+{{- if and $topo.cluster $net.enabled }}
+{{- range list "tailnetDomain" "ingressTag" "egressTag" "ingressProxyClass" "egressProxyClass" "proxyNamespace" }}
+{{- if not (get $net .) }}
+{{- fail (printf "profile.dbNetwork.%s is required with profile.dbNetwork.enabled" .) }}
+{{- end }}
+{{- end }}
+{{- /* No peer yet (peerPresent false, infra ADR 0074): the tailnet objects come when the peer environment is added. */}}
+{{- if $topo.peerPresent }}
+{{- $ns := .Release.Namespace }}
+{{- $root := . }}
+# This database's primary on the tailnet, for the peer's replica. Drawn on
+# both sides: after a migration this side is the one the peer follows.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $topo.ingressService }}
+  labels:
+    {{- include "hopcharlie-app.namespaceLabels" . | nindent 4 }}
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: {{ $topo.ingressHost | quote }}
+    tailscale.com/tags: {{ $net.ingressTag | quote }}
+    tailscale.com/proxy-class: {{ $net.ingressProxyClass | quote }}
+spec:
+  type: ClusterIP
+  selector:
+    cnpg.io/cluster: {{ $topo.cluster | quote }}
+    cnpg.io/instanceRole: primary
+  ports:
+    - {name: postgres, port: 5432, targetPort: 5432, protocol: TCP}
+{{- range $topo.peers }}
+---
+# The peer's database, the externalCluster this side replicates from. The
+# operator replaces externalName with its proxy's address; the
+# ApplicationSet ignores that field so selfHeal does not put it back.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .egressService }}
+  labels:
+    {{- include "hopcharlie-app.namespaceLabels" $root | nindent 4 }}
+  annotations:
+    tailscale.com/tailnet-fqdn: {{ printf "%s.%s" .peerHost $net.tailnetDomain | quote }}
+    tailscale.com/hostname: {{ .egressHost | quote }}
+    tailscale.com/tags: {{ $net.egressTag | quote }}
+    tailscale.com/proxy-class: {{ $net.egressProxyClass | quote }}
+spec:
+  type: ExternalName
+  externalName: placeholder
+  ports:
+    - {name: postgres, port: 5432, targetPort: 5432, protocol: TCP}
+{{- end }}
+{{- if .Values.profile.networkPolicy.enabled }}
+---
+# Replication through the two proxies, which run in the operator's
+# namespace. Only with the namespace's own policy: without it nothing
+# isolates the database pod, and this policy alone would.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $topo.cluster }}-replication
+  labels:
+    {{- include "hopcharlie-app.namespaceLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: {{ $topo.cluster | quote }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $net.proxyNamespace }}
+          podSelector:
+            matchLabels:
+              tailscale.com/parent-resource: {{ $topo.ingressService | quote }}
+              tailscale.com/parent-resource-ns: {{ $ns | quote }}
+      ports:
+        - {protocol: TCP, port: 5432}
+  egress:
+    {{- range $topo.peers }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $net.proxyNamespace }}
+          podSelector:
+            matchLabels:
+              tailscale.com/parent-resource: {{ .egressService | quote }}
+              tailscale.com/parent-resource-ns: {{ $ns | quote }}
+      ports:
+        - {protocol: TCP, port: 5432}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

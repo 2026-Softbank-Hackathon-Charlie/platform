@@ -17,11 +17,41 @@ import (
 const ns = "hopcharlie-db-network"
 
 // pairs is a fake Pairs. getErr, when set for an app, is what
-// GetAppDatabase returns for it.
+// GetAppDatabase returns for it. Every pair's app exists, in envs[app] or
+// else in both environments of the pair.
 type pairs struct {
 	list    []store.AppDatabase
 	listErr error
 	getErr  map[string]error
+	envs    map[string][]string
+	appsErr error
+}
+
+func (p *pairs) ListApps(context.Context) ([]store.App, error) {
+	var out []store.App
+	for _, d := range p.list {
+		a, _ := p.GetApp(context.Background(), d.App)
+		out = append(out, a)
+	}
+	return out, p.appsErr
+}
+
+func (p *pairs) GetApp(_ context.Context, name string) (store.App, error) {
+	for _, d := range p.list {
+		if d.App == name {
+			envs, ok := p.envs[name]
+			if !ok {
+				envs = []string{d.PrimaryEnv, d.PeerEnv}
+			}
+			return store.App{Name: name, Environments: envs}, nil
+		}
+	}
+	return store.App{}, store.ErrNotFound
+}
+
+// both is the app of pair d in both of its environments.
+func both(d store.AppDatabase) store.App {
+	return store.App{Name: d.App, Environments: []string{d.PrimaryEnv, d.PeerEnv}}
 }
 
 func (p *pairs) ListAppDatabases(context.Context) ([]store.AppDatabase, error) {
@@ -117,7 +147,7 @@ func TestParseRoutes(t *testing.T) {
 
 func TestEnsureCreatesTheContractService(t *testing.T) {
 	m, cs := newManager(t, &pairs{})
-	if err := m.Ensure(context.Background(), pair("moimroom-mig")); err != nil {
+	if err := m.Ensure(context.Background(), pair("moimroom-mig"), both(pair("moimroom-mig"))); err != nil {
 		t.Fatal(err)
 	}
 	for _, env := range []string{"eks", "gke"} {
@@ -162,7 +192,7 @@ func TestEnsureCreatesTheContractService(t *testing.T) {
 func TestEnsureIsIdempotentAndNeverUpdates(t *testing.T) {
 	m, cs := newManager(t, &pairs{})
 	ctx := context.Background()
-	if err := m.Ensure(ctx, pair("shop")); err != nil {
+	if err := m.Ensure(ctx, pair("shop"), both(pair("shop"))); err != nil {
 		t.Fatal(err)
 	}
 	// The operator points the Service at its proxy.
@@ -172,7 +202,7 @@ func TestEnsureIsIdempotentAndNeverUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	cs.ClearActions()
-	if err := m.Ensure(ctx, pair("shop")); err != nil {
+	if err := m.Ensure(ctx, pair("shop"), both(pair("shop"))); err != nil {
 		t.Fatal(err)
 	}
 	if v := verbs(cs); len(v) != 0 {
@@ -187,7 +217,7 @@ func TestEnsureLeavesAForeignServiceAlone(t *testing.T) {
 	foreign := service("db-eks-shop", map[string]string{"app.kubernetes.io/managed-by": "Helm"})
 	other := service("db-gke-shop", ourLabels("other", "gke")) // ours, but of another app
 	m, cs := newManager(t, &pairs{}, foreign, other)
-	err := m.Ensure(context.Background(), pair("shop"))
+	err := m.Ensure(context.Background(), pair("shop"), both(pair("shop")))
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("err = %v, want ErrConflict", err)
 	}
@@ -314,4 +344,88 @@ func TestFromEnv(t *testing.T) {
 			t.Errorf("%s: no error", name)
 		}
 	}
+}
+
+// TestRoutesFollowTheAppsEnvironments: a pair whose peer is not one of the
+// app's environments (registered in one, or taken out again, ADR 0043) has
+// no routes, as they are for migrating between the two, and its routes go.
+func TestRoutesFollowTheAppsEnvironments(t *testing.T) {
+	ctx := context.Background()
+	alone := &pairs{list: []store.AppDatabase{pair("shop")}, envs: map[string][]string{"shop": {"gke"}}}
+
+	t.Run("ensure", func(t *testing.T) {
+		m, cs := newManager(t, alone)
+		if err := m.Ensure(ctx, pair("shop"), store.App{Name: "shop", Environments: []string{"gke"}}); err != nil {
+			t.Fatal(err)
+		}
+		if v := verbs(cs); len(v) != 0 {
+			t.Fatalf("routes for a pair whose peer is not the app's: %v", v)
+		}
+	})
+
+	t.Run("reconcile deletes the routes after an environment is removed", func(t *testing.T) {
+		m, cs := newManager(t, alone, service("db-eks-shop", ourLabels("shop", "eks")), service("db-gke-shop", ourLabels("shop", "gke")))
+		if err := m.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"db-eks-shop", "db-gke-shop"} {
+			if _, ok := get(t, cs, name); ok {
+				t.Fatalf("%s not deleted", name)
+			}
+		}
+	})
+
+	t.Run("reconcile deletes nothing when the apps cannot be listed", func(t *testing.T) {
+		p := &pairs{list: alone.list, envs: alone.envs, appsErr: errors.New("database down")}
+		m, cs := newManager(t, p, service("db-eks-shop", ourLabels("shop", "eks")))
+		if err := m.Reconcile(ctx); err == nil {
+			t.Fatal("no error")
+		}
+		if v := verbs(cs); len(v) != 0 {
+			t.Fatalf("wrote %v", v)
+		}
+	})
+
+	t.Run("sync after an environment is added and removed", func(t *testing.T) {
+		p := &pairs{list: []store.AppDatabase{pair("shop")}, envs: map[string][]string{"shop": {"gke"}}}
+		m, cs := newManager(t, p)
+		if err := m.Sync(ctx, "shop"); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"db-eks-shop", "db-gke-shop"} {
+			if _, ok := get(t, cs, name); ok {
+				t.Fatalf("%s before eks was added", name)
+			}
+		}
+		p.envs["shop"] = []string{"gke", "eks"}
+		if err := m.Sync(ctx, "shop"); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"db-eks-shop", "db-gke-shop"} {
+			if _, ok := get(t, cs, name); !ok {
+				t.Fatalf("no %s once eks was added", name)
+			}
+		}
+		p.envs["shop"] = []string{"gke"}
+		if err := m.Sync(ctx, "shop"); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"db-eks-shop", "db-gke-shop"} {
+			if _, ok := get(t, cs, name); ok {
+				t.Fatalf("%s kept after eks was removed", name)
+			}
+		}
+		// No pair: every route of the app goes.
+		p.envs["shop"] = []string{"gke", "eks"}
+		if err := m.Sync(ctx, "shop"); err != nil {
+			t.Fatal(err)
+		}
+		p.list = nil
+		if err := m.Sync(ctx, "shop"); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := get(t, cs, "db-gke-shop"); ok {
+			t.Fatal("route kept without a pair")
+		}
+	})
 }

@@ -44,6 +44,11 @@ type Sealed struct {
 	// <cluster>-app, and PGCA its CA, SealedSecret app-pg-ca; both nil
 	// without a pair.
 	PGApp, PGCA map[string]string
+	// PGLegacy is hopcharlie_replicator's account of an onboarded app's
+	// source (ADR 0042), SealedSecret <cluster>-legacy (basic-auth:
+	// username, password); nil for every other app. Render refuses it
+	// until it renders it (gitops.go).
+	PGLegacy map[string]string
 }
 
 // SealedS3 is a sealed bucket key.
@@ -57,7 +62,7 @@ type SealedBackup struct {
 }
 
 func (s *Sealed) empty() bool {
-	return s == nil || (s.S3 == nil && s.PGBackup == nil && len(s.App) == 0 && len(s.PGApp) == 0 && len(s.PGCA) == 0)
+	return s == nil || (s.S3 == nil && s.PGBackup == nil && len(s.App) == 0 && len(s.PGApp) == 0 && len(s.PGCA) == 0 && len(s.PGLegacy) == 0)
 }
 
 // backupSuffix ends the name an app's backup bucket and its user are made
@@ -74,6 +79,19 @@ func BackupInstance(app string) string { return app + backupSuffix }
 // the same name gets a new, empty path, where Barman's check that a new
 // database's WAL archive is empty passes (ADR 0025).
 func BackupPath(registered time.Time) string { return registered.UTC().Format("20060102T150405Z") }
+
+// backupPath is the path in env's backup bucket of the app registered at
+// registered, whose database pair is d (nil without one). The peer of a
+// pair whose peer environment was removed from the app before gets
+// BackupPath with the pair's PeerGeneration, "-1" after the first removal:
+// the database that was there left its WAL under the old path, and a new
+// replica needs an empty one (ADR 0043). Every other path is BackupPath.
+func (d *sealedDatabase) backupPath(registered time.Time, env string) string {
+	if d == nil || env != d.row.PeerEnv || d.row.PeerGeneration == 0 {
+		return BackupPath(registered)
+	}
+	return fmt.Sprintf("%s-%d", BackupPath(registered), d.row.PeerGeneration)
+}
 
 // checksumKeyID is where the bucket's key id goes in the checksum input. A
 // secret name cannot look like it, so it never collides with one.
@@ -157,7 +175,7 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 				if err != nil {
 					return nil, err
 				}
-				sealed.PGBackup = &SealedBackup{SealedS3: *key, Bucket: backupDrv.Bucket(BackupInstance(app.Name)), Path: BackupPath(app.CreatedAt)}
+				sealed.PGBackup = &SealedBackup{SealedS3: *key, Bucket: backupDrv.Bucket(BackupInstance(app.Name)), Path: db.backupPath(app.CreatedAt, env.Env)}
 				j.keys = append(j.keys, sealedKey{env: env.Env, drv: backupDrv, in: storage.Instance{App: app.Name, Name: BackupInstance(app.Name)}, id: backupKeyID, pods: true, backup: true})
 			}
 			if len(values) > 0 {
@@ -171,7 +189,7 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 				sealed.AppChecksum = j.e.cfg.Secrets.Checksum(app.Name, j.d.Instance, in)
 			}
 			if db != nil {
-				if topology, err = db.topology(env.Env); err != nil {
+				if topology, err = db.topology(env.Env, app.Environments); err != nil {
 					return nil, err
 				}
 				ns := Namespace(j.d.Instance)
@@ -215,19 +233,30 @@ type sealedDatabase struct {
 	ca      map[string]string // Secret app-pg-ca
 }
 
-// topology is values.dbTopology of the file of env: the same in both
-// environments' files.
-func (d *sealedDatabase) topology(env string) (*DBTopology, error) {
-	if env != d.row.PrimaryEnv && env != d.row.PeerEnv {
-		return nil, fmt.Errorf("the database pair of %s is in %s and %s, not in %s", d.row.App, d.row.PrimaryEnv, d.row.PeerEnv, env)
+// topology is values.dbTopology of the file of env, for an app in appEnvs:
+// the same in both environments' files. While the peer is not one of
+// appEnvs (an app registered in one environment, ADR 0043) it says so, and
+// only the primary's file can be rendered.
+func (d *sealedDatabase) topology(env string, appEnvs []string) (*DBTopology, error) {
+	if !slices.Contains(appEnvs, env) || len(appEnvs) > 3 || !slices.Contains(appEnvs, d.row.PrimaryEnv) {
+		return nil, fmt.Errorf("environment %s is not a valid member of the database group of %s", env, d.row.App)
 	}
-	return &DBTopology{Primary: d.row.PrimaryEnv, Peer: d.row.PeerEnv}, nil
+	t := &DBTopology{Primary: d.row.PrimaryEnv, Peer: d.row.PeerEnv, PeerAbsent: !slices.Contains(appEnvs, d.row.PeerEnv)}
+	if len(appEnvs) > 2 {
+		if t.PeerAbsent {
+			return nil, fmt.Errorf("the database group of %s must retain its original peer", d.row.App)
+		}
+		t.Members = slices.Clone(appEnvs)
+	} else if env != d.row.PrimaryEnv && env != d.row.PeerEnv {
+		return nil, fmt.Errorf("the original database pair of %s does not include %s", d.row.App, env)
+	}
+	return t, nil
 }
 
 // appDatabase returns the database pair the deployment seals: only the
 // default instance's, only with a postgres resource, and only for an app
-// that has one (registered with PLATFORM_APP_DB_TOPOLOGY in two
-// environments). nil otherwise, so the gitops files stay as they were.
+// that has one (registered with PLATFORM_APP_DB_TOPOLOGY, ADR 0030, ADR
+// 0043). nil otherwise, so the gitops files stay as they were.
 func (j *job) appDatabase(ctx context.Context, app store.App, spec appspec.Spec) (*sealedDatabase, error) {
 	i := slices.IndexFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres })
 	if j.d.Instance != app.Name || i < 0 {
@@ -306,7 +335,8 @@ func (j *job) sealer(env string) (*sealing.Sealer, error) {
 // returns the key sealed for the instance's Secret app-s3, the key's id and
 // the driver. With backup it does the same for the app's backup bucket
 // (ADR 0025): the driver's instance <app>---pg, the Secret app-pgbackup and
-// a row in the backup storage, which no cleanup ever deletes.
+// a row in the backup storage, which CleanupStorage deletes once the app is
+// gone (ADR 0037).
 //
 //   - No stored key: a new bucket key, sealed and stored.
 //   - A stored key sealed with the current certificate: the driver checks
@@ -473,10 +503,13 @@ func (j *job) deleteOldKeys(ctx context.Context) {
 const DefaultCleanupInterval = 5 * time.Minute
 
 // CleanupStorage deletes the buckets and keys of instances that no longer
-// exist (ADR 0016): for every stored row whose app or instance is gone it
-// calls the environment's driver to delete the user, its keys and the
-// bucket, and then deletes the row. A failure keeps the row for the next
-// run. It returns how many rows it deleted.
+// exist (ADR 0016) or no longer deploy to the row's environment (ADR 0043),
+// and the backup buckets and keys of apps that no longer exist (ADR 0037):
+// for every stored row whose app or instance is gone, or whose environment
+// was removed from the app, it calls the environment's driver to delete the
+// user, its keys and the bucket with every object version, and then deletes
+// the row. A failure keeps the row for the next run. It returns how many
+// rows it deleted.
 func (e *Executor) CleanupStorage(ctx context.Context) (int, error) {
 	if e.cfg.Storage == nil {
 		return 0, nil
@@ -487,14 +520,16 @@ func (e *Executor) CleanupStorage(ctx context.Context) (int, error) {
 	}
 	done := 0
 	for _, row := range rows {
-		live, err := e.instanceExists(ctx, row.App, row.Instance)
+		live, err := e.storageLive(ctx, row)
 		if err != nil {
 			return done, err
 		}
 		if live {
 			continue
 		}
-		if err := e.deleteStorage(ctx, row); errors.Is(err, errStuck) {
+		if err := e.deleteStorage(ctx, row, false); errors.Is(err, errKept) {
+			continue
+		} else if errors.Is(err, errStuck) {
 			e.cfg.Log.Error("cannot delete the bucket and key of a deleted instance; an operator deletes them and the instance_storage row (ADR 0016)",
 				"instance", row.Instance, "env", row.Env, "driver", row.Driver, "bucket", row.Bucket, "err", err)
 			continue
@@ -506,15 +541,69 @@ func (e *Executor) CleanupStorage(ctx context.Context) (int, error) {
 		done++
 		e.cfg.Log.Info("deleted the bucket and key of a deleted instance", "instance", row.Instance, "env", row.Env, "bucket", row.Bucket)
 	}
+	backups, err := e.cfg.Store.ListBackupStorage(ctx)
+	if err != nil {
+		return done, fmt.Errorf("list the apps' backup buckets: %w", err)
+	}
+	for _, row := range backups {
+		if _, err := e.cfg.Store.GetApp(ctx, row.App); err == nil {
+			continue
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return done, err
+		}
+		if err := e.deleteStorage(ctx, row, true); errors.Is(err, errAppLive) {
+			continue
+		} else if errors.Is(err, errStuck) {
+			e.cfg.Log.Error("cannot delete the backup bucket and key of a deleted app; an operator deletes them and the backup_storage row (ADR 0025, 0037)",
+				"app", row.App, "env", row.Env, "driver", row.Driver, "bucket", row.Bucket, "err", err)
+			continue
+		} else if err != nil {
+			e.cfg.Log.Warn("delete the backup bucket and key of a deleted app; trying again later",
+				"app", row.App, "env", row.Env, "bucket", row.Bucket, "err", err)
+			continue
+		}
+		done++
+		e.cfg.Log.Info("deleted the backup bucket and key of a deleted app", "app", row.App, "env", row.Env, "bucket", row.Bucket)
+	}
 	return done, nil
 }
 
+// errAppLive means the app of a backup row was registered again before
+// deleteStorage took its lock; the row is the new app's now.
+var errAppLive = errors.New("the app is registered again")
+
+// errKept means a row's instance deploys to its environment again (the
+// environment was added back meanwhile), so its bucket stays.
+var errKept = errors.New("the bucket is in use again")
+
 // deleteStorage deletes one row's bucket and key under the instance's
-// lock, then the row.
-func (e *Executor) deleteStorage(ctx context.Context, row store.InstanceStorage) error {
-	l := e.lock(row.Instance)
+// lock, then the row. Under the lock it reads again whether the row is
+// still unused: an environment added back meanwhile keeps it (errKept), as
+// a deployment of the instance there uses the bucket. With backup the row
+// is an app's backup bucket (ADR 0025), made under the lock of the app's
+// default instance. Under that lock it checks again that the app is gone:
+// an app registered again under the same name and deployed since the
+// caller's check made its backup key in this bucket, so the row is kept
+// (errAppLive).
+func (e *Executor) deleteStorage(ctx context.Context, row store.InstanceStorage, backup bool) error {
+	lock := row.Instance
+	if backup {
+		lock = row.App
+	}
+	l := e.lock(lock)
 	l.Lock()
 	defer l.Unlock()
+	if backup {
+		if _, err := e.cfg.Store.GetApp(ctx, row.App); err == nil {
+			return errAppLive
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	} else if live, err := e.storageLive(ctx, row); err != nil {
+		return err
+	} else if live {
+		return errKept
+	}
 	drv, err := e.cfg.Storage(row.Env)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errStuck, err)
@@ -525,10 +614,29 @@ func (e *Executor) deleteStorage(ctx context.Context, row store.InstanceStorage)
 	if err := drv.Delete(ctx, storage.Instance{App: row.App, Name: row.Instance}); err != nil {
 		return err
 	}
-	if err := e.cfg.Store.DeleteInstanceStorage(ctx, row.Instance, row.Env); err != nil && !errors.Is(err, store.ErrNotFound) {
+	del := func() error { return e.cfg.Store.DeleteInstanceStorage(ctx, row.Instance, row.Env) }
+	if backup {
+		del = func() error { return e.cfg.Store.DeleteBackupStorage(ctx, row.App, row.Env) }
+	}
+	if err := del(); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
 	return nil
+}
+
+// storageLive reports whether a bucket row is still used: its app is
+// registered, has the instance and deploys to the row's environment.
+func (e *Executor) storageLive(ctx context.Context, row store.InstanceStorage) (bool, error) {
+	a, err := e.cfg.Store.GetApp(ctx, row.App)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if !slices.Contains(a.Environments, row.Env) {
+		return false, nil
+	}
+	return e.instanceExists(ctx, row.App, row.Instance)
 }
 
 // instanceExists reports whether app is registered and has the instance.

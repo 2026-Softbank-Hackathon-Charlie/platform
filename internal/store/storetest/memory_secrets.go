@@ -185,3 +185,27 @@ func (m *memory) GetBackupStorage(_ context.Context, app, env string) (store.Ins
 	}
 	return s, nil
 }
+
+func (m *memory) ListBackupStorage(_ context.Context) ([]store.InstanceStorage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []store.InstanceStorage{}
+	for _, s := range m.secrets.backup {
+		out = append(out, s)
+	}
+	slices.SortFunc(out, func(a, b store.InstanceStorage) int {
+		return cmp.Or(cmp.Compare(a.App, b.App), cmp.Compare(a.Env, b.Env))
+	})
+	return out, nil
+}
+
+func (m *memory) DeleteBackupStorage(_ context.Context, app, env string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := storageKey{app, env}
+	if _, ok := m.secrets.backup[k]; !ok {
+		return fmt.Errorf("%w: backup storage of app %s in %s", store.ErrNotFound, app, env)
+	}
+	delete(m.secrets.backup, k)
+	return nil
+}

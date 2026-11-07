@@ -67,9 +67,11 @@ func (s *Postgres) CreateAppWithDatabase(ctx context.Context, a App, d AppDataba
 	if err := insertApp(ctx, tx, a); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO app_databases (`+appDatabaseColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+	_, err = tx.Exec(ctx, `INSERT INTO app_databases (`+appDatabaseColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
 		d.App, d.PrimaryEnv, d.PeerEnv, d.KeyVersion, d.KeyCheck, d.PasswordNonce, d.PasswordCiphertext,
-		d.CACert, d.CAKeyNonce, d.CAKeyCiphertext, d.CreatedAt)
+		d.CACert, d.CAKeyNonce, d.CAKeyCiphertext, d.CreatedAt, d.PeerGeneration,
+		d.SourceKind, d.Image, d.Database, d.Owner, d.StorageSize, d.ExternalHost,
+		d.ReplicationPasswordNonce, d.ReplicationPasswordCiphertext, reindexArray(d.Reindex))
 	if isUniqueViolation(err) {
 		return fmt.Errorf("%w: app %s already has a database pair", ErrConflict, a.Name)
 	}
@@ -127,11 +129,41 @@ func (s *Postgres) UpdateApp(ctx context.Context, a App) error {
 	if added {
 		return fmt.Errorf("%w: %s is an added branch of app %s", ErrBranchExists, a.Branch, a.Name)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE apps SET branch = $2, environments = $3, auto_deploy = $4, spec = $5, spec_commit = $6
-		WHERE name = $1`, a.Name, a.Branch, a.Environments, a.AutoDeploy, a.Spec, a.SpecCommit); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE apps SET branch = $2, auto_deploy = $3, spec = $4, spec_commit = $5
+		WHERE name = $1`, a.Name, a.Branch, a.AutoDeploy, a.Spec, a.SpecCommit); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// SetAppEnvironments compares and sets in one UPDATE; when it matches no
+// row, a second read tells a missing app from other environments.
+func (s *Postgres) SetAppEnvironments(ctx context.Context, name string, from, to []string) error {
+	if !Clean(name) {
+		return fmt.Errorf("%w: app %q", ErrNotFound, name)
+	}
+	if len(to) == 0 {
+		return fmt.Errorf("app %s: an app keeps at least one environment", name)
+	}
+	clean := func(list []string) []string {
+		out := make([]string, len(list))
+		for i, e := range list {
+			out[i] = CleanText(e)
+		}
+		return out
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE apps SET environments = $3 WHERE name = $1 AND environments = $2`, name, clean(from), clean(to))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	cur, err := s.GetApp(ctx, name)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: app %s is in %v, not %v", ErrConflict, name, cur.Environments, from)
 }
 
 // DeleteApp deletes the app row first. Its lock waits for a CreateDeployment,
@@ -572,4 +604,13 @@ func (s *Postgres) RecordWebhookDelivery(ctx context.Context, id string, at time
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// reindexArray is l for a text[] NOT NULL column: pgx sends a nil slice
+// as NULL.
+func reindexArray(l []string) []string {
+	if l == nil {
+		return []string{}
+	}
+	return l
 }

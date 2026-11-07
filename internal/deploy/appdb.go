@@ -9,15 +9,16 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"slices"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 )
 
-// The database pair of an app registered in exactly two environments (ADR
-// 0030): the default instance's database is born primary in the app's first
-// environment and a replica of it in the other. Both clusters get the same
+// The database group of an app registered in two or three environments (ADR
+// 0030, 0044): the default instance's database is born primary in the app's first
+// environment and a replica of it in the others. All clusters get the same
 // app password (Secret <cluster>-app) and the same CA (Secret app-pg-ca),
 // with which CNPG issues each cluster's server and streaming_replica
 // certificates, so each side's replication certificate passes on the other.
@@ -37,10 +38,10 @@ const AppDBPort = "5432"
 
 // NewAppDatabase makes the database pair of app, registered in envs at now:
 // a new password and CA, encrypted with c. The database is born primary in
-// envs[0]. It needs exactly two environments.
+// envs[0]. Two or three environments share the same credentials and CA.
 func NewAppDatabase(c *secrets.Cipher, app string, envs []string, now time.Time) (store.AppDatabase, error) {
-	if len(envs) != 2 || envs[0] == envs[1] {
-		return store.AppDatabase{}, fmt.Errorf("a database pair needs exactly two environments, not %q", envs)
+	if len(envs) < 2 || len(envs) > 3 || slices.Contains(envs, "") || len(slices.Compact(slices.Sorted(slices.Values(envs)))) != len(envs) {
+		return store.AppDatabase{}, fmt.Errorf("a database group needs two or three distinct environments, not %q", envs)
 	}
 	password, err := newAppDBPassword()
 	if err != nil {

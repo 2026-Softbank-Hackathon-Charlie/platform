@@ -35,6 +35,19 @@ type AppRemover interface {
 	// from the store. store.ErrNotFound when the app does not have the
 	// branch; otherwise the same errors as RemoveApp.
 	RemoveInstance(ctx context.Context, app, branch string) error
+	// RemoveEnvironment takes env out of an app (ADR 0043): it commits the
+	// removal of apps/<instance>/<env>.yaml of every instance, takes env's
+	// backend out of every instance's gateway app and sets the app's
+	// environments to the others. store.ErrNotFound when the app does not
+	// exist; deploy.ErrDeploymentInProgress, deploy.ErrEnvironmentInUse,
+	// deploy.ErrWritesHeld, deploy.ErrNotInEnvironment,
+	// deploy.ErrPrimaryEnvironment and deploy.ErrAppChanged when it changed
+	// nothing for those reasons; otherwise the same errors as RemoveApp.
+	RemoveEnvironment(ctx context.Context, app, env string) error
+	// ApplicationExists reports whether Argo CD still has the Application
+	// (deploy.ApplicationName), such as one an environment removal is
+	// deleting.
+	ApplicationExists(ctx context.Context, name string) (bool, error)
 }
 
 // DeploymentEventPoll is how often a deployment's event stream reads new

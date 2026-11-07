@@ -160,7 +160,7 @@ go run ./cmd/gateway
 | `PLATFORM_CAPACITY_GATE` | `on`이면 새 run을 시작하기 전에 원본·대상 DB를 몇 초 동안 측정해, 대상 접속 한도가 부족하거나 replica가 `catchupTimeout` 안에 따라잡지 못하면 409 `capacity_insufficient` ([ADR 0014](docs/adr/0014-capacity-preflight.md)). 측정하지 못한 값은 막지 않음. 롤백은 면제. 기본 `off` |
 | `PLATFORM_PARITY_FILE` | 동등성 파일 ([예시](examples/parity.yaml), [ADR 0022](docs/adr/0022-parity-audit-mode.md)). 설정하면 새 run 시작 직전에 대상 클러스터에서 앱 ServiceAccount의 SubjectAccessReview와 대상 Prometheus의 scrape 상태를 검사해 감사 로그 `parity`에 남김. **막지 않음**(mode `audit`만 있음). [3환경 예시](examples/parity-three-environments.yaml)로 Secret 메타데이터·감사 수집기 가용성·Barman 백업 상태도 선택적으로 검사([ADR 0029](docs/adr/0029-parity-resource-evidence.md)). 미설정은 `probe_not_configured`, 시크릿 사용·감사 전달·복구 검증은 여전히 `unknown`. 롤백은 면제. 비우면 기록 없음 |
 | `PLATFORM_VERSION_GATE` | 새 run을 시작하기 전에 원본과 대상의 PostgreSQL 메이저 버전을 비교해, 다르면 409 `version_mismatch` ([ADR 0020](docs/adr/0020-pg-major-version-gate.md)). 대상은 DB에 접속되면 그 값, 아니면 manifest의 `spec.imageCatalogRef.major`나 `spec.imageName` 태그. 읽지 못하면 unknown으로 기록하고 막지 않음. 롤백은 면제. 기본 `on`, `off`로 끔 |
-| `PLATFORM_REACH_GATE` | 계획을 승인할 때 원본 DB가 API가 실행되는 곳에서 닿는지 본다. 이름이 해석되지 않거나 포트에 연결되지 않거나 로그인이 거절되면 409 `db_unreachable`이고 계획은 승인 대기로 남는다 ([ADR 0035](docs/adr/0035-source-reachability-at-approval.md)). 대상은 아직 없을 수 있어 막지 않고, 판단하지 못하면 막지 않는다. 기본 `on`, `off`로 끔 |
+| `PLATFORM_REACH_GATE` | 계획을 승인할 때 원본 DB가 API가 실행되는 곳에서 닿는지 본다. 이름이 해석되지 않거나 포트에 연결되지 않거나 로그인이 거절되면 409 `db_unreachable`이고 계획은 승인 대기로 남는다 ([ADR 0048](docs/adr/0048-source-reachability-at-approval.md)). 대상은 아직 없을 수 있어 막지 않고, 판단하지 못하면 막지 않는다. 기본 `on`, `off`로 끔 |
 | `PLATFORM_GITHUB_*`, `PLATFORM_APP_DOMAIN` | 앱을 등록하고 배포하는 GitHub App. [GitHub App 설정](#github-app-설정) 참고 |
 
 ### 관리자 비밀번호 해시
@@ -357,6 +357,11 @@ Plan은 서버의 파일을 경로 대신 이름으로 가리킵니다. 정책�
 - 앞선 롤백의 시작이 실패했으면(예: `cluster_busy`) 그 Plan은 `approved`로 남고, 다음 롤백 요청은 새 Plan을 만들지 않고 그 Plan을 다시 시작합니다. 그 Plan을 `POST /v1/migrations`로 직접 시작해도 run에 `rollbackOf`가 붙으므로, 그 뒤의 롤백 요청은 409 `run_state_conflict`로 그 run을 알려 줍니다.
 
 CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks --stream moimroom-demo --submit`, `charlie plan attach REF --name target.yaml -f target.yaml`, `charlie written-records moimroom-demo`, `charlie migrate rollback RUNID --watch`를 씁니다.
+
+Plan 요약의 `writtenRecordsConfigured`는 승인 전에 쓰기 기록 연결 여부를 알려 줍니다.
+`false`인 Plan은 그대로 시작하면 쓰기 누락이 미측정으로 남고, 필드가 없는 과거 요약은
+설정 미확인입니다. `true`도 수집·검증 성공을 의미하지 않습니다.
+[ADR 0046](docs/adr/0046-show-written-record-configuration-before-approval.md)에 진단 근거와 활성화 순서를 기록했습니다.
 ## 보안 거버넌스 뷰와 에이전트 활동 기록
 
 ### `GET /v1/security` (viewer)

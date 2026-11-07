@@ -53,8 +53,10 @@ type AuditCollector struct {
 // AppResources must be reviewed separately per environment. Names are not
 // inferred from a Plan, copied from another environment, or submitted by AI.
 type AppResources struct {
-	Secrets []probes.SecretRequirement `json:"secrets,omitempty"`
-	Backup  *Backup                    `json:"backup,omitempty"`
+	CloudIAM    *probes.CloudIAM           `json:"cloudIAM,omitempty"`
+	Secrets     []probes.SecretRequirement `json:"secrets,omitempty"`
+	SecretUsage *probes.SecretUsage        `json:"secretUsage,omitempty"`
+	Backup      *Backup                    `json:"backup,omitempty"`
 }
 
 type Backup struct {
@@ -186,6 +188,17 @@ func (c Config) validate(envs []string) error {
 			if b := resources.Backup; b != nil {
 				if _, err := b.maxAge(); err != nil || b.Cluster == "" || len(validation.IsDNS1123Subdomain(b.Cluster)) != 0 {
 					return bad("apps[%d].environments: backup needs cluster and maxAge from 1m to 720h", i)
+				}
+				configured = true
+			}
+			if u := resources.SecretUsage; u != nil {
+				if err := u.Validate(resources.Secrets); err != nil {
+					return bad("apps[%d].environments: invalid secretUsage binding", i)
+				}
+			}
+			if cloud := resources.CloudIAM; cloud != nil {
+				if err := cloud.Validate(); err != nil {
+					return bad("apps[%d].environments: invalid cloudIAM policy", i)
 				}
 				configured = true
 			}

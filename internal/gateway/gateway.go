@@ -96,6 +96,7 @@ type holdGen struct {
 // router is one app: its backends, routing, hold and stats. Apps share
 // nothing else, so holding one app's writes never delays another's.
 type router struct {
+	ai      *aiState // guarded by mu
 	g       *Gateway
 	name    string
 	log     *slog.Logger
@@ -117,6 +118,8 @@ type router struct {
 	buffering      int      // held writes still reading their body; count towards MaxHeld
 	inflightWrites int      // includes released writes not yet dispatched
 	writesIdle     chan struct{}
+	writeSlots     chan struct{}
+	healthPath     string
 }
 
 // Gateway is the proxy plus its admin API.
@@ -132,11 +135,17 @@ type Gateway struct {
 	shutdown chan struct{} // closed by BeginShutdown
 	stopOnce sync.Once
 
-	// Lock order: saveMu, then appsMu, then a router's mu.
+	// Lock order: optional controlMu, saveMu, appsMu, router mu. Never save
+	// while holding appsMu/router mu, and never hold controlMu while draining.
 	appsMu sync.RWMutex
 	apps   map[string]*router // registered through the admin API
 
 	saveMu sync.Mutex
+	// Serializes administrative state changes and their persistence. Hold
+	// releases this lock before draining so an operator can still cancel it.
+	controlMu         sync.Mutex
+	persistenceFailed atomic.Bool
+	bufferedBytes     atomic.Int64
 }
 
 // New builds a gateway and restores routing from the state file, if any. A
@@ -147,6 +156,9 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, errors.New("no backends configured")
 	}
 	if err := cfg.checkApps(); err != nil {
+		return nil, err
+	}
+	if err := cfg.checkAI(); err != nil {
 		return nil, err
 	}
 	g := &Gateway{cfg: cfg, log: cfg.Log, shutdown: make(chan struct{}), apps: map[string]*router{}}
@@ -164,7 +176,7 @@ func New(cfg Config) (*Gateway, error) {
 }
 
 func (g *Gateway) newRouter(name string, bcs []BackendConfig, log *slog.Logger, m *routerMetrics) (*router, error) {
-	rt := &router{g: g, name: name, log: log, metrics: m, writesIdle: make(chan struct{})}
+	rt := &router{g: g, name: name, log: log, metrics: m, writesIdle: make(chan struct{}), writeSlots: make(chan struct{}, g.cfg.MaxConcurrentWrites), healthPath: g.cfg.HealthPath}
 	var err error
 	rt.backends, rt.byName, err = rt.newBackends(bcs, nil)
 	if err != nil {
@@ -256,6 +268,12 @@ func (g *Gateway) restoreApp(name string, pa persistedApp) error {
 	}
 	if err := rt.restore(&pa.persistedState); err != nil {
 		return err
+	}
+	if pa.HealthPath != "" {
+		if !validHealthPath(pa.HealthPath) {
+			return errors.New("invalid persisted app health path")
+		}
+		rt.healthPath = pa.HealthPath
 	}
 	g.apps[name] = rt
 	return nil
@@ -354,6 +372,24 @@ func (g *Gateway) serveProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *router) serve(w http.ResponseWriter, r *http.Request) {
+	if rt.aiEnabled() {
+		rt.serveAI(w, r)
+		return
+	}
+	start := time.Now()
+	class := classWrite
+	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		class = classRead
+	}
+	sw := &statusWriter{ResponseWriter: w}
+	defer func() {
+		code := sw.status()
+		if sw.code == 0 && r.Context().Err() != nil {
+			code = statusClientClosed
+		}
+		rt.metrics.endToEnd.WithLabelValues(class, strconv.Itoa(code)).Observe(time.Since(start).Seconds())
+	}()
+	w = sw
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		rt.serveRead(w, r)
@@ -548,6 +584,7 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 		if !buffered {
 			if rt.waitingLocked() >= rt.g.cfg.MaxHeld {
 				rt.mu.Unlock()
+				rt.metrics.holdWait.WithLabelValues("rejected").Observe(time.Since(arrived).Seconds())
 				retryLater(w, "too_many_held_writes", "writes are paused for a migration; retry shortly")
 				return
 			}
@@ -555,11 +592,36 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 			// memory held writes use.
 			rt.buffering++
 			rt.mu.Unlock()
-			err := bufferBody(r)
+			if r.Body != nil && r.Body != http.NoBody {
+				if !rt.g.reserveHeldBuffer() {
+					rt.mu.Lock()
+					rt.buffering--
+					rt.mu.Unlock()
+					rt.metrics.holdWait.WithLabelValues("rejected").Observe(time.Since(arrived).Seconds())
+					retryLater(w, "buffer_budget_exhausted", "held request body memory budget is full; not forwarded")
+					return
+				}
+				defer rt.g.bufferedBytes.Add(-heldBufferReservation)
+			}
+			bodyDeadline := arrived.Add(rt.g.cfg.MaxHold)
+			if limit := time.Now().Add(rt.g.cfg.BodyReadTimeout); limit.Before(bodyDeadline) {
+				bodyDeadline = limit
+			}
+			err := bufferBodyUntil(w, r, bodyDeadline)
 			rt.mu.Lock()
 			rt.buffering--
 			if err != nil {
 				rt.mu.Unlock()
+				rt.metrics.holdWait.WithLabelValues("body_error").Observe(time.Since(arrived).Seconds())
+				if errors.Is(err, errBodyTimeout) {
+					if time.Since(arrived) >= rt.g.cfg.MaxHold {
+						rt.metrics.holdExpired.Inc()
+						retryLater(w, "hold_timeout", "write expired while receiving its body; not forwarded")
+					} else {
+						writeError(w, http.StatusRequestTimeout, "body_timeout", "request body did not arrive in time; not forwarded")
+					}
+					return
+				}
 				rt.metrics.heldDropped.Inc()
 				writeError(w, http.StatusBadRequest, "bad_request", "could not read the request body: "+err.Error())
 				return
@@ -575,13 +637,58 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer rt.writeDone()
-		rt.forward(w, r, b, classWrite, nil)
+		rt.dispatchWrite(w, r, b, arrived)
 		return
 	}
 	b := rt.byName[rt.writeBackend]
 	rt.inflightWrites++
 	rt.mu.Unlock()
 	defer rt.writeDone()
+	rt.dispatchWrite(w, r, b, arrived)
+}
+
+// Account conservatively for ReadAll growth and the retained streaming prefix.
+const heldBufferReservation int64 = 2 * (maxBufferedBody + 1)
+
+func (g *Gateway) reserveHeldBuffer() bool {
+	for {
+		used := g.bufferedBytes.Load()
+		if used > g.cfg.MaxBufferedBytes-heldBufferReservation {
+			return false
+		}
+		if g.bufferedBytes.CompareAndSwap(used, used+heldBufferReservation) {
+			return true
+		}
+	}
+}
+
+// Queued writes remain in inflightWrites: a subsequent hold must drain them
+// too. New requests share the limiter so they cannot bypass a release burst.
+func (rt *router) dispatchWrite(w http.ResponseWriter, r *http.Request, b *backend, arrived time.Time) {
+	queuedAt := time.Now()
+	observe := func(outcome string) {
+		rt.metrics.writeQueue.WithLabelValues(outcome).Observe(time.Since(queuedAt).Seconds())
+	}
+	ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(rt.g.cfg.MaxHold))
+	defer cancel()
+	select {
+	case rt.writeSlots <- struct{}{}:
+		defer func() { <-rt.writeSlots }()
+	case <-ctx.Done():
+		observe("not_forwarded")
+		if r.Context().Err() == nil {
+			retryLater(w, "write_queue_timeout", "write expired in dispatch queue; not forwarded")
+		}
+		return
+	}
+	if ctx.Err() != nil {
+		observe("not_forwarded")
+		if r.Context().Err() == nil {
+			retryLater(w, "write_queue_timeout", "write expired in dispatch queue; not forwarded")
+		}
+		return
+	}
+	observe("dispatched")
 	rt.forward(w, r, b, classWrite, nil)
 }
 
@@ -608,6 +715,30 @@ func bufferBody(r *http.Request) error {
 	return nil
 }
 
+var errBodyTimeout = errors.New("held request body timed out")
+
+func bufferBodyUntil(w http.ResponseWriter, r *http.Request, deadline time.Time) error {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+	controller := http.NewResponseController(w)
+	// A network read deadline interrupts net/http's body read and Close.
+	// Closing also supports non-network readers such as io.Pipe in tests.
+	_ = controller.SetReadDeadline(deadline)
+	body := r.Body
+	done := make(chan struct{})
+	timer := time.AfterFunc(time.Until(deadline), func() { _ = body.Close(); close(done) })
+	err := bufferBody(r)
+	if !timer.Stop() {
+		<-done
+	}
+	_ = controller.SetReadDeadline(time.Time{})
+	if !time.Now().Before(deadline) {
+		return errBodyTimeout
+	}
+	return err
+}
+
 func retryLater(w http.ResponseWriter, code, msg string) {
 	w.Header().Set("Retry-After", "1")
 	writeError(w, http.StatusServiceUnavailable, code, msg)
@@ -618,7 +749,14 @@ func retryLater(w http.ResponseWriter, code, msg string) {
 // cannot wait any longer (MaxHold since it arrived, or the gateway is shutting
 // down) is answered with 503, and one whose client left is dropped. Then
 // awaitRelease returns nil.
-func (rt *router) awaitRelease(w http.ResponseWriter, r *http.Request, gen *holdGen, arrived time.Time) *backend {
+func (rt *router) awaitRelease(w http.ResponseWriter, r *http.Request, gen *holdGen, arrived time.Time) (selected *backend) {
+	defer func() {
+		outcome := "not_forwarded"
+		if selected != nil {
+			outcome = "released"
+		}
+		rt.metrics.holdWait.WithLabelValues(outcome).Observe(time.Since(arrived).Seconds())
+	}()
 	timeout := time.NewTimer(max(rt.g.cfg.MaxHold-time.Since(arrived), 0))
 	defer timeout.Stop()
 	var gone, expired bool
@@ -743,6 +881,13 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 				pr.Out.Header["X-Forwarded-For"] = xff
 			}
 			pr.SetURL(b.url)
+			if rt.aiEnabled() {
+				pr.Out.Header.Del("Authorization")
+				pr.Out.Header.Del("X-Hop-Backend")
+				pr.Out.Header.Del("Cookie")
+				pr.Out.Header.Set("X-Request-Id", pr.In.Header.Get("X-Request-Id"))
+				pr.Out.Trailer = nil
+			}
 			pr.SetXForwarded()
 			if proto := pr.In.Header.Get("X-Forwarded-Proto"); proto != "" {
 				pr.Out.Header.Set("X-Forwarded-Proto", proto)
@@ -752,15 +897,23 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 		FlushInterval: -1, // stream SSE and chunked responses as they come
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Set(headerBackend, b.name)
+			if rt.aiEnabled() {
+				resp.Header.Set("X-Hop-Backend", b.name)
+				resp.Header.Set("Cache-Control", "no-store")
+				resp.Trailer.Del("X-Hop-Backend")
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if rt.aiEnabled() {
+				w.Header().Set("X-Hop-Backend", b.name)
+			}
 			client := r.Context()
 			if c, ok := client.Value(clientCtxKey{}).(context.Context); ok {
 				client = c // a write, whose r.Context() outlives the client
 			}
 			switch {
-			case errors.Is(context.Cause(r.Context()), errWriteTimeout):
+			case errors.Is(context.Cause(r.Context()), errWriteTimeout) || (rt.aiEnabled() && errors.Is(r.Context().Err(), context.DeadlineExceeded)):
 				rt.log.Warn("write timed out", "backend", b.name, "method", r.Method, "path", r.URL.Path,
 					"writeTimeout", g.cfg.WriteTimeout.String())
 				w.Header().Set(headerBackend, b.name)
@@ -790,7 +943,7 @@ var errWriteTimeout = errors.New("write timeout")
 // (nil otherwise): when it discarded the answer, the attempt is counted as
 // retried, not as a failure the client saw.
 func (rt *router) forward(w http.ResponseWriter, r *http.Request, b *backend, class string, retry *retryWriter) {
-	if class == classWrite {
+	if class == classWrite && !rt.aiEnabled() {
 		// A write stays in flight until the backend answers, even when its
 		// client leaves: the backend may still commit it, and hold must wait
 		// for that. The timeout also gives ReverseProxy a context it can end.
@@ -799,10 +952,15 @@ func (rt *router) forward(w http.ResponseWriter, r *http.Request, b *backend, cl
 		r = r.WithContext(context.WithValue(ctx, clientCtxKey{}, r.Context()))
 	}
 	sw := &statusWriter{ResponseWriter: w}
+	if rt.aiEnabled() {
+		sw.aiBackend, sw.requestID = b.name, r.Header.Get("X-Request-Id")
+	}
+	returned := false
 	start := time.Now()
 	// Deferred because ReverseProxy panics with http.ErrAbortHandler when a
 	// streamed body breaks, and that request must still be counted.
 	defer func() {
+		rt.finishAI(r, sw.status(), returned)
 		d := time.Since(start)
 		code := sw.status()
 		b.stats.record(time.Now(), d, code >= 500, retry != nil && retry.failed)
@@ -810,16 +968,23 @@ func (rt *router) forward(w http.ResponseWriter, r *http.Request, b *backend, cl
 		rt.metrics.duration.WithLabelValues(b.name, class).Observe(d.Seconds())
 	}()
 	b.proxy.ServeHTTP(sw, r)
+	returned = true
 }
 
 // statusWriter records the response status. Unwrap lets ReverseProxy reach
 // the real writer for flushing and protocol upgrades.
 type statusWriter struct {
 	http.ResponseWriter
-	code int
+	code                 int
+	aiBackend, requestID string
 }
 
 func (w *statusWriter) WriteHeader(code int) {
+	if w.aiBackend != "" && code >= 200 {
+		w.Header().Set("X-Hop-Backend", w.aiBackend)
+		w.Header().Set("X-Request-Id", w.requestID)
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if w.code == 0 && code >= 200 { // 1xx are informational
 		w.code = code
 	}
@@ -827,6 +992,9 @@ func (w *statusWriter) WriteHeader(code int) {
 }
 
 func (w *statusWriter) Write(p []byte) (int, error) {
+	if w.code == 0 && w.aiBackend != "" {
+		w.WriteHeader(http.StatusOK)
+	}
 	if w.code == 0 {
 		w.code = http.StatusOK
 	}
@@ -860,7 +1028,7 @@ func (g *Gateway) Run(ctx context.Context) {
 			}
 		}
 	}()
-	client := &http.Client{Transport: g.cfg.HealthTransport, Timeout: healthTimeout}
+	client := &http.Client{Transport: g.cfg.HealthTransport, Timeout: healthTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	t := time.NewTicker(g.cfg.HealthInterval)
 	defer t.Stop()
 	for {
@@ -883,16 +1051,29 @@ func (g *Gateway) Run(ctx context.Context) {
 }
 
 func (rt *router) checkBackend(ctx context.Context, client *http.Client, b *backend) {
-	err := probe(ctx, client, b.url.JoinPath(rt.g.cfg.HealthPath).String())
+	rt.mu.Lock()
+	path := rt.healthPath
+	rt.mu.Unlock()
+	parsed, _ := url.ParseRequestURI(path)
+	u := b.url.JoinPath(parsed.EscapedPath())
+	u.RawQuery = parsed.RawQuery
+	err := probe(ctx, client, u.String())
 	if ctx.Err() != nil {
 		return // shutting down; keep the last real result
 	}
 	now := time.Now()
 	msg := probeError(err)
+	rt.mu.Lock()
+	if rt.healthPath != path || rt.byName[b.name] != b {
+		rt.mu.Unlock()
+		return
+	}
 	b.hmu.Lock()
 	b.lastCheck, b.lastErr = now, msg
 	b.hmu.Unlock()
-	if was := b.healthy.Swap(err == nil); was != (err == nil) {
+	was := b.healthy.Swap(err == nil)
+	rt.mu.Unlock()
+	if was != (err == nil) {
 		if err != nil {
 			rt.log.Warn("backend unhealthy", "backend", b.name, "err", msg)
 		} else {
@@ -918,6 +1099,10 @@ func probeError(err error) string {
 	if err == nil {
 		return ""
 	}
+	var requestError *url.Error
+	if errors.As(err, &requestError) {
+		return probeError(requestError.Err)
+	}
 	var dns *net.DNSError
 	if errors.As(err, &dns) {
 		return "dns: " + dns.Error()
@@ -936,7 +1121,7 @@ func probe(ctx context.Context, client *http.Client, u string) error {
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10)) // lets the connection be reused
 	resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 399 {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("health check returned %s", resp.Status)
 	}
 	return nil

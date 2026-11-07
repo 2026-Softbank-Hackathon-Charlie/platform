@@ -4,40 +4,74 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
-const writtenColumns = `seq, stream, tbl, pk, at, received_at`
+const writtenColumns = `seq, stream, tbl, pk, at, received_at, event_id, scope, coverage, generation`
 
 func scanWritten(row pgx.Row) (WrittenRecord, error) {
 	var w WrittenRecord
-	if err := row.Scan(&w.Seq, &w.Stream, &w.Table, &w.PK, &w.At, &w.ReceivedAt); err != nil {
+	if err := row.Scan(&w.Seq, &w.Stream, &w.Table, &w.PK, &w.At, &w.ReceivedAt, &w.EventID, &w.Scope, &w.Coverage, &w.Generation); err != nil {
 		return WrittenRecord{}, err
 	}
 	w.At, w.ReceivedAt = w.At.UTC(), w.ReceivedAt.UTC()
 	return w, nil
 }
 
-// AppendWrittenRecords inserts the batch with one statement. WITH ORDINALITY
-// keeps Seq in the order the client sent the records.
+// AppendWrittenRecords commits a batch atomically. Stream serialization keeps
+// exported sequence cutoffs stable even when reporters retry concurrently.
 func (s *Postgres) AppendWrittenRecords(ctx context.Context, stream string, recs []WrittenRecord) error {
 	if len(recs) == 0 {
 		return nil
 	}
-	tbls, pks := make([]string, len(recs)), make([]string, len(recs))
-	ats, received := make([]time.Time, len(recs)), make([]time.Time, len(recs))
-	for i, r := range recs {
-		tbls[i], pks[i], ats[i], received[i] = r.Table, r.PK, r.At, r.ReceivedAt
+	recs = append([]WrittenRecord(nil), recs...)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO written_records (stream, tbl, pk, at, received_at)
-		SELECT $1, t.tbl, t.pk, t.at, t.received_at
-		FROM unnest($2::text[], $3::text[], $4::timestamptz[], $5::timestamptz[])
-			WITH ORDINALITY AS t(tbl, pk, at, received_at, ord)
-		ORDER BY t.ord`,
-		stream, tbls, pks, ats, received)
-	return err
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "written-records:"+stream); err != nil {
+		return err
+	}
+	for i := range recs {
+		if recs[i].Scope == "" {
+			recs[i].Scope = "unspecified"
+		}
+		if recs[i].Coverage == "" {
+			recs[i].Coverage = "reported_records"
+		}
+	}
+	var previousGeneration, previousScope, previousCoverage string
+	err = tx.QueryRow(ctx, `SELECT generation,scope,coverage FROM written_records WHERE stream=$1 LIMIT 1`, stream).Scan(&previousGeneration, &previousScope, &previousCoverage)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if err == nil && (previousGeneration != recs[0].Generation || previousScope != recs[0].Scope || previousCoverage != recs[0].Coverage) {
+		return fmt.Errorf("%w: written record stream belongs to another database generation", ErrConflict)
+	}
+	for _, r := range recs {
+		if r.Generation != recs[0].Generation || r.Scope != recs[0].Scope || r.Coverage != recs[0].Coverage {
+			return fmt.Errorf("%w: mixed database generations", ErrConflict)
+		}
+		var seq int64
+		err = tx.QueryRow(ctx, `INSERT INTO written_records(stream,tbl,pk,at,received_at,event_id,scope,coverage,generation)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT(stream,event_id) WHERE event_id<>'' DO NOTHING
+		RETURNING seq`, stream, r.Table, r.PK, r.At, r.ReceivedAt, r.EventID, r.Scope, r.Coverage, r.Generation).Scan(&seq)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// An acknowledged retry must not rewrite the stored receipt or create
+			// WAL churn on every append-only source sweep.
+			err = tx.QueryRow(ctx, `SELECT seq FROM written_records WHERE stream=$1 AND event_id=$2 AND tbl=$3 AND pk=$4 AND at=$5 AND scope=$6 AND coverage=$7 AND generation=$8`, stream, r.EventID, r.Table, r.PK, r.At, r.Scope, r.Coverage, r.Generation).Scan(&seq)
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: written record event identifier was reused", ErrConflict)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Postgres) ListWrittenRecords(ctx context.Context, stream string, afterSeq int64, limit int) ([]WrittenRecord, error) {
@@ -55,7 +89,7 @@ func (s *Postgres) ListWrittenRecords(ctx context.Context, stream string, afterS
 
 func (s *Postgres) WrittenRecordStats(ctx context.Context, stream string) (WrittenStats, error) {
 	var st WrittenStats
-	err := s.pool.QueryRow(ctx, `SELECT count(*), max(at) FROM written_records WHERE stream = $1`, stream).Scan(&st.Count, &st.LatestAt)
+	err := s.pool.QueryRow(ctx, `SELECT count(*), max(at),coalesce(max(seq),0),CASE WHEN count(DISTINCT scope)=1 THEN min(scope) ELSE 'unspecified' END,CASE WHEN count(DISTINCT coverage)=1 THEN min(coverage) ELSE 'reported_records' END,coalesce(min(generation),'') FROM written_records WHERE stream = $1`, stream).Scan(&st.Count, &st.LatestAt, &st.LastSeq, &st.Scope, &st.Coverage, &st.Generation)
 	if st.LatestAt != nil {
 		t := st.LatestAt.UTC()
 		st.LatestAt = &t

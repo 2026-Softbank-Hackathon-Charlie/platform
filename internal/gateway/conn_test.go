@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -42,17 +43,20 @@ func newCountedGW(t *testing.T, cfg Config) (*testGW, *atomic.Int64) {
 	return tg, conns
 }
 
-// read sends one read through the gateway and waits until the gateway's
-// backend connection is back in its pool: ReverseProxy returns it only after
-// the client already has the whole answer, so a read sent right away could
-// otherwise dial a second connection.
+// read consumes the response before closing it, so client cancellation cannot
+// discard the gateway's backend connection. Allow ReverseProxy to finish
+// returning that connection to its pool before the next request.
 func (tg *testGW) read(t *testing.T) {
 	t.Helper()
 	resp, err := http.Get(tg.proxy.URL + "/items")
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, err = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
