@@ -3,8 +3,7 @@
 // contract the other parts are built against: the names the platform
 // gives what it makes, the hopai Job's input and the plan it hands the
 // migration engine. The job that drives an onboarding through its states
-// comes with the implementation; until then the API answers 501 behind
-// PLATFORM_ONBOARDING=1 and nothing here runs.
+// is internal/onboard/job, behind PLATFORM_ONBOARDING=1.
 //
 // What the other parts read elsewhere:
 //
