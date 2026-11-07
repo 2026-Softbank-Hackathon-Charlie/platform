@@ -96,7 +96,8 @@ type holdGen struct {
 // router is one app: its backends, routing, hold and stats. Apps share
 // nothing else, so holding one app's writes never delays another's.
 type router struct {
-	ai      *aiState // guarded by mu
+	ai      *aiState       // guarded by mu
+	canary  *AICanaryState // guarded by mu; dedicated AI route only
 	g       *Gateway
 	name    string
 	log     *slog.Logger
@@ -251,6 +252,9 @@ func (g *Gateway) restore() error {
 		}
 	}
 	// Fail at start, not mid-cutover, when the state file cannot be written.
+	if err := g.initializeAIQuality(st); err != nil {
+		return err
+	}
 	if err := g.trySave(); err != nil {
 		return fmt.Errorf("write state file: %w", err)
 	}
@@ -1076,6 +1080,7 @@ func (w *statusWriter) status() int {
 // the time of each round, and closes idle proxy connections every
 // ConnRecycle, until ctx ends.
 func (g *Gateway) Run(ctx context.Context) {
+	go g.runAIQuality(ctx)
 	go func() {
 		t := time.NewTicker(g.cfg.ConnRecycle)
 		defer t.Stop()
