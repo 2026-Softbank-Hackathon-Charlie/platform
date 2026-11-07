@@ -241,3 +241,17 @@ func fmtBool(b bool) string {
 	}
 	return "promotion"
 }
+
+func TestRewirePlanCannotRetireSourceThroughBackendDirectly(t *testing.T) {
+	for _, p := range []*plan.Plan{nil, {AllowSourceRewire: true}} {
+		// Empty clients make any attempted Kubernetes call fail: the guard
+		// must reject before consulting or deleting live objects.
+		k := &Kube{}
+		if err := k.Check(t.Context(), p, Job{}, time.Time{}); err == nil {
+			t.Fatal("three-member source check was accepted")
+		}
+		if done, err := k.Remove(t.Context(), p, Job{Status: "deleting"}); err == nil || done {
+			t.Fatalf("three-member removal accepted: done=%v err=%v", done, err)
+		}
+	}
+}

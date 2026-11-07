@@ -107,6 +107,27 @@ func TestRegisteredTwoEnvironmentDraftDoesNotOptInToSourceRewire(t *testing.T) {
 	}
 }
 
+func TestThreeEnvironmentDraftAndAuthorizationAllowAllSixDirections(t *testing.T) {
+	f := newRegistryFixture(t)
+	f.register("mig", "pw")
+	preserveRegistryPasswordEnvironment(t, "mig")
+	addThirdRegistryEnvironment(t, f, "mig")
+	for _, source := range []string{"gke", "eks", "onprem"} {
+		for _, target := range []string{"gke", "eks", "onprem"} {
+			if source == target {
+				continue
+			}
+			t.Run(source+"-to-"+target, func(t *testing.T) {
+				p := enginePlanFromThreeEnvironmentDraft(t, f, "mig", source, target)
+				allowed, err := f.cat.SourceRewireAllowed(t.Context(), &p)
+				if !p.AllowSourceRewire || err != nil || !allowed {
+					t.Fatalf("direction rejected: opt-in=%v allowed=%v error=%v", p.AllowSourceRewire, allowed, err)
+				}
+			})
+		}
+	}
+}
+
 func TestRegisteredThreeEnvironmentMissingPhotoBucketFailsClosed(t *testing.T) {
 	for _, missing := range [][]string{{"onprem"}, {"gke"}, {"gke", "onprem"}} {
 		t.Run(strings.Join(missing, "+"), func(t *testing.T) {
