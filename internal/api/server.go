@@ -174,6 +174,10 @@ type Deps struct {
 	// stack's ClickHouse (aiobs.Client); nil answers GET /v1/ai-activity 503
 	// observability_not_configured.
 	AIActivity AIActivityReader
+	// AppObs summarises one app's logs from the observability stack's
+	// ClickHouse (aiobs.Client); nil answers GET /v1/apps/{name}/observability 503
+	// observability_not_configured.
+	AppObs AppObserver
 	// AIRuns starts the AI runner as a Job (airun.Runner); nil answers the
 	// /v1/ai-runs endpoints 503 ai_runner_not_configured.
 	AIRuns AIRunner
@@ -224,6 +228,11 @@ type AppDBRoutes interface {
 // oldest first (aiobs.Client).
 type AIActivityReader interface {
 	Events(ctx context.Context, since time.Time, limit int) ([]aiobs.Event, error)
+}
+
+// AppObserver summarises one app's logs since a time (aiobs.Client).
+type AppObserver interface {
+	App(ctx context.Context, app string, since time.Time) (aiobs.AppObservation, error)
 }
 
 // AIRunner starts and lists AI runner Jobs (airun.Runner).
@@ -332,6 +341,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/apps", viewer, s.listApps)
 	s.route("POST /v1/plans/draft", agent, s.draftPlan)
 	s.route("GET /v1/ai-activity", viewer, s.getAIActivity)
+	s.route("GET /v1/apps/{name}/observability", viewer, s.getAppObservability)
 	s.route("GET /v1/ai-runs", viewer, s.listAIRuns)
 	s.route("POST /v1/ai-runs", operator, s.startAIRun)
 	s.route("POST /v1/residency/buckets/inspect", agent, s.inspectBucket)

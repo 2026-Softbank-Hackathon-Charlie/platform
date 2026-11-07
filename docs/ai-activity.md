@@ -39,3 +39,14 @@ infra 저장소 PR이 하는 일(chart의 `api.aiobs`, NetworkPolicy, 관리 환
 4. NetworkPolicy가 API Pod에서 `observability`의 ClickHouse Pod 8123으로 가는 길을 연다.
 
 `GET /v1/ai-activity`는 `viewer` 권한이면 된다.
+
+## 앱별 관측 요약 (`GET /v1/apps/{name}/observability`)
+
+콘솔의 앱 화면에서 "관측" 팝업이 쓴다. 같은 ClickHouse 설정을 쓰고 `viewer` 권한이면 된다.
+
+- **등록된 앱만** 답한다(파일 앱 또는 저장소의 앱). 모르는 이름은 ClickHouse를 부르기 전에 404이므로, 이름으로 플랫폼 자신의 서비스 로그를 읽을 수 없다.
+- 앱의 서비스는 `ServiceName`이 앱 이름과 같거나 `<앱>-`로 시작하는 것이다(`docker-doom-web`, `moimroom-mig-db`). 앱 이름이 다른 앱 이름의 앞부분이면(예: `moimroom`과 `moimroom-mig`) 앞의 앱이 뒤 앱의 로그도 센다.
+- 답: 줄/오류/경고 합계, 서비스별 합계와 마지막 시각, 5분 단위 시계열, 많이 반복된 오류·경고 패턴(최대 10개, 오류 먼저).
+- **일반 로그 줄은 돌려주지 않는다.** 오류·경고 줄만 패턴으로 돌려주고, 그 전에 가린다(`Redact`): URL의 비밀번호, Bearer/Basic 토큰, 이름에 password·token·secret·key·cookie가 든 항목의 값, 이메일, AWS 키, 글자와 숫자가 섞인 긴 문자열이나 32자 이상 문자열. 숫자와 id는 `#`, `«id»`로 접어 같은 실패를 하나로 센다. 모든 비밀을 알아볼 수는 없다.
+- 쿼리 세 개(서비스별, 5분별, 오류·경고 줄 최대 500개). 모두 파라미터로 묶고 5초 제한이다.
+- 미확인: 실제 ClickHouse에서의 실행, `SeverityText`가 소문자 `error`/`warn`으로 들어온다는 가정(수집기의 transform이 소문자로 바꾼다는 설정을 읽었다).

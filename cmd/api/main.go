@@ -466,6 +466,7 @@ func main() {
 				log.Error("AI activity is off; /v1/ai-activity answers 503", "err", err)
 			} else {
 				deps.AIActivity = c
+				deps.AppObs = c
 				log.Info("AI activity enabled", "table", c.Table)
 			}
 		}
