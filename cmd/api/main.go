@@ -515,6 +515,7 @@ func main() {
 			} else {
 				deps.AIActivity = c
 				deps.AppObs = c
+				deps.AIServices = c
 				log.Info("AI activity enabled", "table", c.Table)
 			}
 		}

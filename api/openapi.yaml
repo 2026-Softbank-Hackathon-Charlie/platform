@@ -1737,6 +1737,33 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/apps/{name}/ai-services:
+    get:
+      tags: [apps]
+      operationId: getAppAIServices
+      description: |
+        App-scoped AI client dependencies from HyperDX/ClickStack OTLP traces.
+        A 24-hour history locates previously observed routes; requests counts only
+        distinct exported client spans in the requested window, not all traffic.
+        Caller deployment is separate from model hosting. Accelerator and hosting
+        attributes are reported evidence, not independent hardware attestation.
+        Ordinary dependency.name=ai spans establish usage with unknown location.
+        Unknown, unavailable and unconfigured observations never mean no AI or zero
+        total calls. No raw spans, URLs, prompts, credentials or request IDs return.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: minutes, in: query, schema: { type: integer, minimum: 1, maximum: 60, default: 5 } }
+      responses:
+        "200":
+          description: Observed topology, or explicit source unavailability without invented services.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AIServiceTopology" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/ai-activity:
     get:
       tags: [plans]
@@ -3429,6 +3456,67 @@ components:
         buckets: { type: array, items: { $ref: "#/components/schemas/AppObservationBucket" } }
         services: { type: array, items: { $ref: "#/components/schemas/AppObservationService" } }
         patterns: { type: array, items: { $ref: "#/components/schemas/AppObservationPattern" }, description: "the most repeated, errors first, at most 10" }
+
+    AIServiceTopology:
+      type: object
+      required: [app, generatedAt, window, sources, services]
+      properties:
+        app: { type: string }
+        generatedAt: { type: string, format: date-time }
+        window:
+          type: object
+          required: [from, to]
+          properties:
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+        sources:
+          type: array
+          items:
+            type: object
+            required: [name, status, message]
+            properties:
+              name: { type: string }
+              status: { type: string, enum: [observed, unobserved, unavailable, not_configured] }
+              message: { type: string }
+        services:
+          type: array
+          maxItems: 128
+          items: { $ref: "#/components/schemas/AIServiceObservation" }
+
+    AIServiceObservation:
+      type: object
+      required: [id, serviceId, name, kind, callerEnv, location, activity, evidence]
+      properties:
+        id: { type: string, description: Route identity for this caller and physical service. }
+        serviceId: { type: string, description: "Observed physical-service identity, shared across callers." }
+        name: { type: string }
+        kind: { type: string, enum: [self_hosted, managed, external, unknown] }
+        callerEnv: { type: string, description: Empty when the caller deployment was not instrumented. }
+        model: { type: string }
+        location:
+          type: object
+          required: [accelerator]
+          properties:
+            environment: { type: string }
+            provider: { type: string }
+            region: { type: string }
+            accelerator: { type: string, enum: [gpu, cpu, unknown] }
+        activity:
+          type: object
+          required: [state]
+          properties:
+            state: { type: string, enum: [active, idle, unknown] }
+            requests: { type: integer, format: int64, minimum: 0, description: "Observed exported client-span count in the window, not an estimate of all requests." }
+            lastSeen: { type: string, format: date-time }
+        evidence:
+          type: array
+          items:
+            type: object
+            required: [source, observedAt, detail]
+            properties:
+              source: { type: string }
+              observedAt: { type: string, format: date-time }
+              detail: { type: string }
 
     AIActivityEvent:
       type: object
