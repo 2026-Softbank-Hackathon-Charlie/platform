@@ -40,6 +40,8 @@ type Service struct {
 	version   VersionGate   // nil: no PostgreSQL major version check (version.go)
 
 	appDBs AppDatabases // nil: only the policy's own hosts and passwords
+
+	onboardings OnboardingScopes // nil: an onboarding's plan cannot be loaded again (onboarding.go)
 }
 
 // AppDatabases are the databases of the apps registered from GitHub with a
@@ -80,18 +82,33 @@ func (s *Service) Parse(raw []byte) (*plan.Plan, error) {
 // registered apps' databases are read first, and the passwords the plan
 // may use are put into the environment once the policy allowed them.
 func (s *Service) parse(ctx context.Context, raw []byte) (*plan.Plan, apiv1.PlanSummary, error) {
+	policy, err := s.registeredPolicy(ctx)
+	if err != nil {
+		return nil, apiv1.PlanSummary{}, err
+	}
+	return s.parseWith(ctx, policy, raw)
+}
+
+// registeredPolicy is the server's policy with the registered apps'
+// databases and buckets.
+func (s *Service) registeredPolicy(ctx context.Context) (Policy, error) {
 	policy := s.policy
 	if s.appDBs != nil {
 		pw, ah, err := s.appDBs.RegistryHosts(ctx)
 		if err != nil {
-			return nil, apiv1.PlanSummary{}, fmt.Errorf("read the registered apps' databases: %w", err)
+			return Policy{}, fmt.Errorf("read the registered apps' databases: %w", err)
 		}
 		buckets, err := s.appDBs.RegistryBuckets(ctx)
 		if err != nil {
-			return nil, apiv1.PlanSummary{}, fmt.Errorf("read the registered apps' buckets: %w", err)
+			return Policy{}, fmt.Errorf("read the registered apps' buckets: %w", err)
 		}
 		policy = policy.withRegistered(pw, ah, buckets)
 	}
+	return policy, nil
+}
+
+// parseWith is parse with policy.
+func (s *Service) parseWith(ctx context.Context, policy Policy, raw []byte) (*plan.Plan, apiv1.PlanSummary, error) {
 	hosts, err := policy.checkRefs(raw)
 	if err != nil {
 		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
@@ -317,7 +334,12 @@ func (s *Service) Load(ctx context.Context, ref string) (*plan.Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, _, err := s.parse(ctx, row.Raw)
+	var p *plan.Plan
+	if row.SubmittedRole == OnboardingRole {
+		p, err = s.loadOnboarding(ctx, row)
+	} else {
+		p, _, err = s.parse(ctx, row.Raw)
+	}
 	if err != nil {
 		return nil, err
 	}
