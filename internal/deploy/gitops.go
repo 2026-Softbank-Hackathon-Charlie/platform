@@ -86,7 +86,7 @@ type File struct {
 // is the environment where it is born primary, Peer the other one, where it
 // is born a replica. Both environments' files have the same values; the
 // chart takes the side that is not the file's env as the one to follow.
-// PeerAbsent says Peer is not one of the app's environments yet (ADR 0037):
+// PeerAbsent says Peer is not one of the app's environments yet (ADR 0043):
 // only Primary's file is rendered then, with values.dbTopology.peerPresent
 // false, and the chart draws the same Cluster without the tailnet objects.
 // With the peer present the key is left out, which the chart reads as true,

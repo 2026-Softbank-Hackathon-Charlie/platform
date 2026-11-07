@@ -252,7 +252,7 @@ func TestLookup(t *testing.T) {
 
 // TestRegistryLeavesOutAPeerTheAppIsNotIn: an app registered in one
 // environment has a pair whose peer is not one of its environments (ADR
-// 0037); the catalog, the policy and the drafts know only its primary
+// 0043); the catalog, the policy and the drafts know only its primary
 // until the peer is added.
 func TestRegistryLeavesOutAPeerTheAppIsNotIn(t *testing.T) {
 	f := newRegistryFixture(t)

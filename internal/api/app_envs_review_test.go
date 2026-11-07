@@ -33,7 +33,7 @@ func removedFixture(t *testing.T) *envFixture {
 
 // TestAddEnvironmentBackWaitsForCleanup: an environment removed before is
 // added back only once Argo CD deleted its Application and nothing is left
-// in the namespace there (ADR 0037).
+// in the namespace there (ADR 0043).
 func TestAddEnvironmentBackWaitsForCleanup(t *testing.T) {
 	for name, c := range map[string]struct {
 		prep   func(f *envFixture)
@@ -329,7 +329,7 @@ func TestDBReadinessReadsInParallelAndCaches(t *testing.T) {
 // to the environments it was asked for (here none named, stored before the
 // add with the old list) that supersedes the environment's deployment does
 // not take the new environment along. Readiness says deploy_pending and to
-// send the add again, which queues the deployment (ADR 0037).
+// send the add again, which queues the deployment (ADR 0043).
 func TestSupersededEnvironmentDeploymentAsksForAnotherAdd(t *testing.T) {
 	f := newEnvFixture(t)
 	f.register("gke")

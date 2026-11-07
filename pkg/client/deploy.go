@@ -69,13 +69,13 @@ func (c *Client) DeleteAppInstance(ctx context.Context, app, instance string) er
 
 // AddAppEnvironment adds an environment to a registered app and queues a
 // deployment of the default instance to all of the app's environments, the
-// new one included (ADR 0037).
+// new one included (ADR 0043).
 func (c *Client) AddAppEnvironment(ctx context.Context, app string, req apiv1.AppEnvironmentAddRequest) (*apiv1.AppEnvironmentAdded, error) {
 	return call[apiv1.AppEnvironmentAdded](ctx, c, request{method: http.MethodPost, path: "/v1/apps/%s/environments", params: []string{app}, body: req})
 }
 
 // RemoveAppEnvironment takes an environment back out of a registered app;
-// Argo CD then removes its workloads there (ADR 0037). The answer's
+// Argo CD then removes its workloads there (ADR 0043). The answer's
 // Deployment is set when a deployment to the remaining environments was
 // queued.
 func (c *Client) RemoveAppEnvironment(ctx context.Context, app, env string) (*apiv1.AppEnvironmentRemoved, error) {

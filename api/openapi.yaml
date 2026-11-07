@@ -1709,7 +1709,7 @@ paths:
       tags: [apps]
       operationId: addAppEnvironment
       description: |
-        Add an environment to a registered app (ADR 0037) and queue a
+        Add an environment to a registered app (ADR 0043) and queue a
         deployment of the default instance (trigger `environment`) to all of
         the app's environments, the new one included. The deployment repeats
         the default instance's last healthy deployment: its commit, images and
@@ -1814,7 +1814,7 @@ paths:
       tags: [apps]
       operationId: removeAppEnvironment
       description: |
-        Take an environment back out of a registered app (ADR 0037), for an
+        Take an environment back out of a registered app (ADR 0043), for an
         environment added by mistake or whose deployment cannot get healthy.
         The platform takes the environment's backend out of every instance's
         traffic gateway app (first, so no request goes to workloads that are
@@ -4453,7 +4453,7 @@ components:
 
     AppDBTopology:
       description: |
-        The database pair of the app's default instance (ADR 0030, ADR 0037),
+        The database pair of the app's default instance (ADR 0030, ADR 0043),
         present only while the server sets PLATFORM_APP_DB_TOPOLOGY for an app
         with a postgres resource registered in exactly two environments, or in
         one environment while exactly one other environment has a database
@@ -4475,7 +4475,7 @@ components:
     AppDBReadiness:
       description: |
         Whether `POST /v1/migrations` can move the app between the two
-        environments of its pair now (ADR 0037). Only `GET /v1/apps/{name}`
+        environments of its pair now (ADR 0043). Only `GET /v1/apps/{name}`
         has it; it reads the traffic gateway and both environments' CNPG
         Clusters in parallel, each within 3 seconds, and reuses what it read
         for the app for 10 seconds (the deployments and migration runs are

@@ -2,7 +2,7 @@
 // registered apps (ADR 0030, "관리 쪽 DB 경로"): for each app with a database
 // pair it creates, in the cluster the API runs in, one Tailscale egress
 // Service per environment of the pair while both are the app's environments
-// (ADR 0037), named after the environment's database host template, and
+// (ADR 0043), named after the environment's database host template, and
 // deletes them when the app or one of the environments goes. The Tailscale operator
 // turns each Service into a proxy to the app's database in that environment.
 //
@@ -72,7 +72,7 @@ type Pairs interface {
 // and only while both environments of the pair are environments of app a.
 // The routes are for migrating between the two, so a pair whose peer was
 // never added, or was removed again, has none, and no egress proxy stands
-// for it (ADR 0037).
+// for it (ADR 0043).
 func (m *Manager) envs(d store.AppDatabase, a store.App) []string {
 	if !slices.Contains(a.Environments, d.PrimaryEnv) || !slices.Contains(a.Environments, d.PeerEnv) {
 		return nil
@@ -449,7 +449,7 @@ func (m *Manager) Added(d store.AppDatabase) {
 }
 
 // Changed makes the routes of an app whose environments just changed (ADR
-// 0037) follow them, in the background. A failure is only logged; Run
+// 0043) follow them, in the background. A failure is only logged; Run
 // reconciles later.
 func (m *Manager) Changed(app string) {
 	go func() {

@@ -475,7 +475,7 @@ func main() {
 	deps.Secrets = secretsKey
 	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }
 	deps.SealingConfigured = func(env string) bool { _, err := envSvc.Sealer(env); return err == nil }
-	// The readiness of a database pair (ADR 0037) reads the app's CNPG
+	// The readiness of a database pair (ADR 0043) reads the app's CNPG
 	// Clusters with the platform's own workload credentials.
 	workloads := workloadClients(envSvc)
 	deps.DBCluster = dbClusterReader(workloads)
@@ -710,7 +710,7 @@ func dbClusterReader(clients func(string) (dynamic.Interface, error)) api.DBClus
 // workloadResidue lists one Service and one Pod of a namespace in an
 // environment's workload cluster (the platform's observer role lists both,
 // infra ADR 0063), for whether an environment removed from an app is gone
-// (ADR 0037).
+// (ADR 0043).
 func workloadResidue(clients func(string) (dynamic.Interface, error)) api.WorkloadResidue {
 	kinds := []struct {
 		kind string

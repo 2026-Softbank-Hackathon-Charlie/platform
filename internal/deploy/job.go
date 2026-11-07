@@ -338,7 +338,7 @@ func (j *job) commit(ctx context.Context, app store.App, spec appspec.Spec) (str
 	var sha string
 	var changed bool
 	err := j.locked(ctx, func() error {
-		// Environments are added and removed under this lock (ADR 0037):
+		// Environments are added and removed under this lock (ADR 0043):
 		// the files follow the app as it is now, and a deployment to an
 		// environment the app no longer has writes nothing.
 		app, err := j.e.cfg.Store.GetApp(ctx, app.Name)
@@ -390,7 +390,7 @@ func followsApp(trigger string) bool {
 
 // followEnvironments makes a deployment that follows the app (followsApp)
 // go to app's environments as they are now, under the instance's lock
-// before the commit, and stores that (ADR 0037). A push stored before an
+// before the commit, and stores that (ADR 0043). A push stored before an
 // environment was added, which supersedes the environment's deployment,
 // so deploys there too, and one stored before an environment was removed
 // does not write its file again. Other deployments are left as they are.

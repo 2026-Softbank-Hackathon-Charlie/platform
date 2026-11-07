@@ -26,7 +26,7 @@ type AppDatabase struct {
 	CAKeyNonce         []byte
 	CAKeyCiphertext    []byte
 	// PeerGeneration counts the removals of PeerEnv from the app (ADR
-	// 0037). The peer's backup path has it once it is not 0, so a peer
+	// 0043). The peer's backup path has it once it is not 0, so a peer
 	// added back archives to a new, empty path.
 	PeerGeneration int
 	CreatedAt      time.Time

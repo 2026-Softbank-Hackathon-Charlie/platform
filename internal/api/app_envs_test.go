@@ -19,7 +19,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
-// Adding and removing an environment of a registered app (ADR 0037).
+// Adding and removing an environment of a registered app (ADR 0043).
 
 // fakeGatewayApps is GatewayApps over a list; err fails it.
 type fakeGatewayApps struct {

@@ -181,7 +181,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // newAppDatabase makes the database pair of an app being registered (ADR
-// 0030, ADR 0037), or returns nil when it gets none: the setting is off,
+// 0030, ADR 0043), or returns nil when it gets none: the setting is off,
 // pairEnvs finds no pair for the app's environments, its platform.yaml has
 // no postgres resource, there is no secrets key to store the pair with, or
 // the app is registered in one environment that cannot seal the pair's
@@ -216,7 +216,7 @@ func (s *Server) newAppDatabase(app store.App, spec appspec.Spec) (*store.AppDat
 // the primary (ADR 0030). One environment with a template is the primary
 // when exactly one other environment has a template: that one is the peer,
 // where the database does not exist until the environment is added (ADR
-// 0037). Anything else has no pair.
+// 0043). Anything else has no pair.
 func (s *Server) pairEnvs(envs []string) []string {
 	if !slices.ContainsFunc(envs, func(e string) bool { return slices.Contains(s.cfg.AppDBEnvs, e) }) {
 		return nil
@@ -519,7 +519,7 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if db != nil && view.Deploy != nil && view.Deploy.DbTopology != nil {
-		// Only here: it reads both workload clusters (ADR 0037).
+		// Only here: it reads both workload clusters (ADR 0043).
 		var spec appspec.Spec
 		if err := json.Unmarshal(a.Spec, &spec); err != nil {
 			s.internal(w, r, fmt.Errorf("the stored spec of %s: %w", a.Name, err))

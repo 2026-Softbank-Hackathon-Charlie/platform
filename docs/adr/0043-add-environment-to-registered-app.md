@@ -1,4 +1,4 @@
-# 0037. 등록한 앱에 환경을 나중에 더하고, 한 환경 앱의 DB도 처음부터 짝으로 만든다
+# 0043. 등록한 앱에 환경을 나중에 더하고, 한 환경 앱의 DB도 처음부터 짝으로 만든다
 
 - 상태: 제안
 - 날짜: 2026-11-07
@@ -156,7 +156,7 @@ WAL lag와 streaming 연결은 보지 않는다. Cluster 상태에 없고, 엔�
 
 - 워크로드 두 곳의 플랫폼 계정: Cluster `get`(readiness)과 네임스페이스 안 Service, Pod `list`(다시 더하기)만 쓴다. 모두 이미 있는 권한이다(infra ADR 0063의 migration과 observer). Secret 권한, RoleBinding 권한, 네임스페이스 `get`은 필요 없다.
 - 관리 EKS: 바뀌지 않는다. DB 경로 Service의 `create`, `delete`는 ADR 0030 추가와 같고, Application 읽기는 배포기가 이미 한다.
-- store: migration `0014_app_database_peer_generation.sql`이 `app_databases`에 `peer_generation integer NOT NULL DEFAULT 0`을 더한다. 지금 있는 짝은 0이라 경로가 바뀌지 않는다.
+- store: migration `0015_app_database_peer_generation.sql`이 `app_databases`에 `peer_generation integer NOT NULL DEFAULT 0`을 더한다. 지금 있는 짝은 0이라 경로가 바뀌지 않는다.
 
 ## 결과
 

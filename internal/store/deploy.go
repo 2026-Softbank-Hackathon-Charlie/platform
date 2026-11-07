@@ -232,7 +232,7 @@ type DeployStore interface {
 	UpdateApp(ctx context.Context, a App) error
 	// SetAppEnvironments replaces the environments of the app named name
 	// with to, in one conditional write that applies only while they are
-	// from (ADR 0037). ErrNotFound if the app does not exist; ErrConflict
+	// from (ADR 0043). ErrNotFound if the app does not exist; ErrConflict
 	// (wrapped) when its environments are not from; an error, and nothing
 	// changed, when to is empty.
 	SetAppEnvironments(ctx context.Context, name string, from, to []string) error

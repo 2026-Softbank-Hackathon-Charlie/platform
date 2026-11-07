@@ -347,7 +347,7 @@ func TestFromEnv(t *testing.T) {
 }
 
 // TestRoutesFollowTheAppsEnvironments: a pair whose peer is not one of the
-// app's environments (registered in one, or taken out again, ADR 0037) has
+// app's environments (registered in one, or taken out again, ADR 0043) has
 // no routes, as they are for migrating between the two, and its routes go.
 func TestRoutesFollowTheAppsEnvironments(t *testing.T) {
 	ctx := context.Background()

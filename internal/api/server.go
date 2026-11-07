@@ -184,19 +184,19 @@ type Deps struct {
 	// SealingConfigured reports whether an environment has a usable
 	// sealed-secrets certificate; nil means none has. Adding an
 	// environment whose deployment seals values to one without answers
-	// 503 sealing_not_configured (ADR 0037).
+	// 503 sealing_not_configured (ADR 0043).
 	SealingConfigured func(env string) bool
 	// Gateway reads the traffic gateway's apps, for whether it holds an
-	// app's writes and has its backends (ADR 0037); nil when there is no
+	// app's writes and has its backends (ADR 0043); nil when there is no
 	// gateway.
 	Gateway GatewayApps
 	// DBCluster reads an app database's CNPG Cluster in a workload cluster,
-	// for the readiness of a database pair (ADR 0037); nil leaves the
+	// for the readiness of a database pair (ADR 0043); nil leaves the
 	// readiness at cluster_unreadable.
 	DBCluster DBClusterReader
 	// WorkloadResidue says what is left in a namespace of an environment's
 	// workload cluster, for whether an environment removed from an app is
-	// gone before it is added again (ADR 0037); nil means it cannot tell.
+	// gone before it is added again (ADR 0043); nil means it cannot tell.
 	WorkloadResidue WorkloadResidue
 }
 
@@ -256,7 +256,7 @@ type Server struct {
 	logins     *auth.LoginLimiter // failed logins per username
 	loginSlots chan struct{}      // one token per bcrypt comparison in progress
 
-	ready readinessCache // what the readiness of database pairs read (ADR 0037)
+	ready readinessCache // what the readiness of database pairs read (ADR 0043)
 }
 
 // New wires the routes.

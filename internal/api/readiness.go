@@ -18,13 +18,13 @@ import (
 )
 
 // DBClusterTimeout bounds the read of one environment's CNPG Cluster, and
-// of the traffic gateway, for the readiness of a database pair (ADR 0037).
+// of the traffic gateway, for the readiness of a database pair (ADR 0043).
 // The reads run in parallel, so a GET waits at most this long for them.
 var DBClusterTimeout = 3 * time.Second
 
 // ReadinessCacheTTL is how long the readiness of a database pair reuses
 // what it read from the gateway and the workload clusters for an app (ADR
-// 0037). The console reads the app every few seconds; the deployments and
+// 0043). The console reads the app every few seconds; the deployments and
 // migration runs are read again every time.
 var ReadinessCacheTTL = 10 * time.Second
 

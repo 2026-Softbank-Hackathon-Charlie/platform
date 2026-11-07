@@ -135,7 +135,7 @@ func TestGitCLIGitOps(t *testing.T) {
 		t.Fatalf("second delete: %q %v %v", again, changed, err)
 	}
 
-	// A file is deleted on its own (an environment taken out, ADR 0037).
+	// A file is deleted on its own (an environment taken out, ADR 0043).
 	if _, _, err := g.Write(ctx, map[string][]byte{"apps/shop--dev/eks.yaml": []byte("e")}, "deploy shop--dev to eks"); err != nil {
 		t.Fatal(err)
 	}

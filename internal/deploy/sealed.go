@@ -80,7 +80,7 @@ func BackupPath(registered time.Time) string { return registered.UTC().Format("2
 // pair whose peer environment was removed from the app before gets
 // BackupPath with the pair's PeerGeneration, "-1" after the first removal:
 // the database that was there left its WAL under the old path, and a new
-// replica needs an empty one (ADR 0037). Every other path is BackupPath.
+// replica needs an empty one (ADR 0043). Every other path is BackupPath.
 func (d *sealedDatabase) backupPath(registered time.Time, env string) string {
 	if d == nil || env != d.row.PeerEnv || d.row.PeerGeneration == 0 {
 		return BackupPath(registered)
@@ -230,7 +230,7 @@ type sealedDatabase struct {
 
 // topology is values.dbTopology of the file of env, for an app in appEnvs:
 // the same in both environments' files. While the peer is not one of
-// appEnvs (an app registered in one environment, ADR 0037) it says so, and
+// appEnvs (an app registered in one environment, ADR 0043) it says so, and
 // only the primary's file can be rendered.
 func (d *sealedDatabase) topology(env string, appEnvs []string) (*DBTopology, error) {
 	if env != d.row.PrimaryEnv && env != d.row.PeerEnv {
@@ -242,7 +242,7 @@ func (d *sealedDatabase) topology(env string, appEnvs []string) (*DBTopology, er
 // appDatabase returns the database pair the deployment seals: only the
 // default instance's, only with a postgres resource, and only for an app
 // that has one (registered with PLATFORM_APP_DB_TOPOLOGY, ADR 0030, ADR
-// 0037). nil otherwise, so the gitops files stay as they were.
+// 0043). nil otherwise, so the gitops files stay as they were.
 func (j *job) appDatabase(ctx context.Context, app store.App, spec appspec.Spec) (*sealedDatabase, error) {
 	i := slices.IndexFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres })
 	if j.d.Instance != app.Name || i < 0 {
@@ -489,7 +489,7 @@ func (j *job) deleteOldKeys(ctx context.Context) {
 const DefaultCleanupInterval = 5 * time.Minute
 
 // CleanupStorage deletes the buckets and keys of instances that no longer
-// exist (ADR 0016) or no longer deploy to the row's environment (ADR 0037),
+// exist (ADR 0016) or no longer deploy to the row's environment (ADR 0043),
 // and the backup buckets and keys of apps that no longer exist (ADR 0037):
 // for every stored row whose app or instance is gone, or whose environment
 // was removed from the app, it calls the environment's driver to delete the

@@ -100,7 +100,7 @@ func withAppDBEnvs(envs ...string) option {
 
 // TestCreateAppInOneEnvironmentMakesDatabasePair: an app registered in one
 // environment while exactly one other has a host template is born with
-// the pair, the other environment its peer (ADR 0037).
+// the pair, the other environment its peer (ADR 0043).
 func TestCreateAppInOneEnvironmentMakesDatabasePair(t *testing.T) {
 	for _, tc := range []struct{ env, peer string }{{"gke", "eks"}, {"eks", "gke"}} {
 		t.Run(tc.env, func(t *testing.T) {

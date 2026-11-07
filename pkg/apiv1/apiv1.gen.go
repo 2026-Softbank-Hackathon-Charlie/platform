@@ -1636,7 +1636,7 @@ type AppCreated struct {
 }
 
 // AppDBReadiness Whether `POST /v1/migrations` can move the app between the two
-// environments of its pair now (ADR 0037). Only `GET /v1/apps/{name}`
+// environments of its pair now (ADR 0043). Only `GET /v1/apps/{name}`
 // has it; it reads the traffic gateway and both environments' CNPG
 // Clusters in parallel, each within 3 seconds, and reuses what it read
 // for the app for 10 seconds (the deployments and migration runs are
@@ -1708,7 +1708,7 @@ type AppDBReadinessEnvironment struct {
 // AppDBReadinessEnvironmentRole from the Cluster's spec.replica: primary when replica.primary is the Cluster itself or absent; unknown when it could not be read
 type AppDBReadinessEnvironmentRole string
 
-// AppDBTopology The database pair of the app's default instance (ADR 0030, ADR 0037),
+// AppDBTopology The database pair of the app's default instance (ADR 0030, ADR 0043),
 // present only while the server sets PLATFORM_APP_DB_TOPOLOGY for an app
 // with a postgres resource registered in exactly two environments, or in
 // one environment while exactly one other environment has a database
@@ -1726,7 +1726,7 @@ type AppDBTopology struct {
 	Primary string `json:"primary"`
 
 	// Readiness Whether `POST /v1/migrations` can move the app between the two
-	// environments of its pair now (ADR 0037). Only `GET /v1/apps/{name}`
+	// environments of its pair now (ADR 0043). Only `GET /v1/apps/{name}`
 	// has it; it reads the traffic gateway and both environments' CNPG
 	// Clusters in parallel, each within 3 seconds, and reuses what it read
 	// for the app for 10 seconds (the deployments and migration runs are
@@ -1800,7 +1800,7 @@ type AppDeploy struct {
 	// CreatedBy the token name that registered the app
 	CreatedBy string `json:"createdBy"`
 
-	// DbTopology The database pair of the app's default instance (ADR 0030, ADR 0037),
+	// DbTopology The database pair of the app's default instance (ADR 0030, ADR 0043),
 	// present only while the server sets PLATFORM_APP_DB_TOPOLOGY for an app
 	// with a postgres resource registered in exactly two environments, or in
 	// one environment while exactly one other environment has a database

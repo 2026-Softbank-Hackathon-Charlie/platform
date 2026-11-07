@@ -17,7 +17,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 )
 
-// Adding and removing an environment of a registered app (ADR 0037).
+// Adding and removing an environment of a registered app (ADR 0043).
 
 // runActive reports whether a migration run is in progress, with the rule
 // POST /v1/migrations uses to refuse another run on its clusters
@@ -31,7 +31,7 @@ func (s *Server) runActive(run apiv1.Run) bool {
 }
 
 // CleanupCheckTimeout bounds the reads that tell whether what an earlier
-// removal of an environment deletes is gone (ADR 0037).
+// removal of an environment deletes is gone (ADR 0043).
 var CleanupCheckTimeout = 5 * time.Second
 
 // POST /v1/apps/{name}/environments
@@ -182,7 +182,7 @@ func (s *Server) addAppEnvironment(w http.ResponseWriter, r *http.Request) {
 // Argo CD deleted the namespace, and a Service of the Tailscale operator
 // keeps its own until the operator deleted the proxy and its tailnet device,
 // so with neither left the new database gets the old hostname on the
-// tailnet again (ADR 0037). They are read whenever this server can read
+// tailnet again (ADR 0043). They are read whenever this server can read
 // them, so an app deleted and registered again under the same name, whose
 // deployments are gone with the old registration, still waits. A server
 // that cannot read them lets an app never deployed to env through (by its
@@ -382,7 +382,7 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 // that went to env healthy with an s3 resource and no public service, or
 // nil. Such an instance may have written files to its bucket in env without
 // the traffic gateway ever sending it a request, so removing env, which
-// deletes that bucket, is refused (ADR 0037). A deployment that recorded no
+// deletes that bucket, is refused (ADR 0043). A deployment that recorded no
 // platform.yaml is judged by the app's.
 func filesWithoutGateway(app store.App, all []store.Deployment, env string) *store.Deployment {
 	for i, d := range all {

@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Adding and removing an environment of an app (ADR 0037).
+// Adding and removing an environment of an app (ADR 0043).
 
 func TestRenderPeerAbsent(t *testing.T) {
 	spec, errs := appspec.Check([]byte(pgSpec))
@@ -69,7 +69,7 @@ func TestRenderPeerAbsent(t *testing.T) {
 
 // registerAlone registers app in env with a database pair whose peer is
 // not one of its environments, as POST /v1/apps does for one environment
-// (ADR 0037).
+// (ADR 0043).
 func (se *storageEnv) registerAlone(name, env, peer string) store.AppDatabase {
 	se.t.Helper()
 	spec, errs := appspec.Check([]byte(pgSpec))
@@ -374,7 +374,7 @@ func TestRemoveEnvironmentKeepsTheGatewayRouting(t *testing.T) {
 
 // TestEnvironmentDeploymentNeverReplacesANewerCommit: it is superseded like
 // a redeploy, so a push that is unfinished keeps it from running and a
-// later push replaces it (ADR 0037).
+// later push replaces it (ADR 0043).
 func TestEnvironmentDeploymentNeverReplacesANewerCommit(t *testing.T) {
 	te := newTestEnv(t)
 	te.register("shop", "gke", "eks")
@@ -410,7 +410,7 @@ func (te *testEnv) pushStoredTo(app, commit string, envs ...string) store.Deploy
 // TestPushFollowsTheAppsEnvironments: a push stored before an environment
 // was added (it supersedes the environment's deployment) deploys there too,
 // and one stored before an environment was removed leaves it out, instead
-// of failing (ADR 0037).
+// of failing (ADR 0043).
 func TestPushFollowsTheAppsEnvironments(t *testing.T) {
 	te := newTestEnv(t)
 	te.register("shop", "gke")
@@ -447,7 +447,7 @@ func TestPushFollowsTheAppsEnvironments(t *testing.T) {
 // TestPeerAddedBackGetsANewBackupPath: removing the peer of a database pair
 // counts up its generation, so the peer's next database archives under a
 // new, empty path in the backup bucket, while the primary's stays (ADR
-// 0037).
+// 0043).
 func TestPeerAddedBackGetsANewBackupPath(t *testing.T) {
 	se := newStorageEnv(t)
 	se.github.push("main", sha("p1"), map[string]string{"platform.yaml": pgSpec, "Dockerfile": "FROM scratch\n"})

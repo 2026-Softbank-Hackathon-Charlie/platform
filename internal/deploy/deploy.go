@@ -337,7 +337,7 @@ func (e *Executor) supersede(ctx context.Context, d store.Deployment) (bool, err
 	}
 	list = slices.DeleteFunc(list, func(o store.Deployment) bool { return o.ID == d.ID || store.DeploymentFinished(o.Status) })
 	// An environment deployment repeats the last healthy one too, so it
-	// must never replace a newer commit either (ADR 0037).
+	// must never replace a newer commit either (ADR 0043).
 	redeploy := func(o store.Deployment) bool { return o.Trigger == TriggerRedeploy || o.Trigger == TriggerEnvironment }
 	if redeploy(d) {
 		if i := slices.IndexFunc(list, func(o store.Deployment) bool { return !redeploy(o) }); i >= 0 {
@@ -540,7 +540,7 @@ const TriggerRedeploy = "redeploy"
 
 // TriggerEnvironment is the trigger of the deployment that takes the
 // default instance to the app's environments after one was added or
-// removed (apiv1.DeploymentTriggerEnvironment, ADR 0037). Like a redeploy
+// removed (apiv1.DeploymentTriggerEnvironment, ADR 0043). Like a redeploy
 // it repeats the last healthy deployment's images without a build, and
 // supersedes and is superseded as a redeploy: it never replaces a newer
 // commit, and a push or manual deployment, which goes to all of the app's
@@ -704,7 +704,7 @@ var (
 	ErrAppChanged = errors.New("the app changed meanwhile")
 )
 
-// RemoveEnvironment takes env out of a registered app (ADR 0037). Under the
+// RemoveEnvironment takes env out of a registered app (ADR 0043). Under the
 // locks of every instance of the app, and only while none of them has an
 // unfinished deployment, it takes env's backend out of every instance's
 // gateway app, commits the removal of apps/<instance>/<env>.yaml of every
@@ -824,7 +824,7 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 		e.cfg.Log.Warn("argo cd applicationset refresh after an environment removal", "app", name, "env", env, "err", err)
 	}
 	// The peer's database leaves its WAL in the backup bucket, so a peer
-	// added back archives under a new path (ADR 0037).
+	// added back archives under a new path (ADR 0043).
 	db, err := e.cfg.Store.GetAppDatabase(ctx, name)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -866,7 +866,7 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 }
 
 // ApplicationExists reports whether Argo CD still has the Application
-// name, such as one an environment removal is deleting (ADR 0037).
+// name, such as one an environment removal is deleting (ADR 0043).
 func (e *Executor) ApplicationExists(ctx context.Context, name string) (bool, error) {
 	st, err := e.cfg.Argo.Status(ctx, name)
 	if err != nil {

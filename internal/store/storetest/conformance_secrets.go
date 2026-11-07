@@ -586,7 +586,7 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	}
 	eqList(t, "app databases", apps, []string{"blog", "moimroom-mig"})
 
-	// NextPeerGeneration counts up one pair's peer removals (ADR 0037).
+	// NextPeerGeneration counts up one pair's peer removals (ADR 0043).
 	if _, err := s.NextPeerGeneration(ctx, "nothing"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("NextPeerGeneration of no pair = %v, want ErrNotFound", err)
 	}

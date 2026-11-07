@@ -84,7 +84,7 @@ func (e endpoint) hostPort() string { return net.JoinHostPort(e.host, "5432") }
 
 // endpoints are the pair's databases in the environments of appEnvs, the
 // app's, that have a host template: a peer the app was never added to, or
-// was taken out of again (ADR 0037), has no database. An environment whose
+// was taken out of again (ADR 0043), has no database. An environment whose
 // host or variable would not be allowed is left out.
 func (r *Registry) endpoints(d store.AppDatabase, appEnvs []string) []endpoint {
 	var out []endpoint

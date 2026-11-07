@@ -73,7 +73,7 @@ resources:
 
 // TestPlatformDBTopologyFile renders the primary's gitops file of a
 // database pair as the platform writes it, with the peer absent and then
-// present (ADR 0030, ADR 0037), through the chart with the tailnet path on:
+// present (ADR 0030, ADR 0043), through the chart with the tailnet path on:
 // with peerPresent false the chart draws the same Cluster and Secrets and
 // none of the tailnet objects; with the peer present it draws them too.
 func TestPlatformDBTopologyFile(t *testing.T) {
