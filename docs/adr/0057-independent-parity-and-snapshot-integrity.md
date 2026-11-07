@@ -11,7 +11,7 @@
 
 ## 결정
 
-- 고정된 5개 capability를 병렬 실행한다. 개별 30초 context, 전체 Gate 제한, 필수 항목 실패·미상 차단, 관측 신선도와 결과 순서를 보존한다. 모든 probe 종료를 기다린 뒤 보고서를 반환한다. 동일 인스턴스를 여러 capability에 등록하는 probe 구현은 동시 호출에 안전해야 한다.
+- 고정된 5개 capability를 병렬 실행한다. 개별 30초 context, 전체 Gate 제한, 필수 항목 실패·미상에 대한 `Passed=false` 판정, 관측 신선도와 결과 순서를 보존한다. 기존 audit 모드를 강제 차단 모드로 바꾸지 않는다. 모든 probe 종료를 기다린 뒤 보고서를 반환한다. 동일 인스턴스를 여러 capability에 등록하는 probe 구현은 동시 호출에 안전해야 한다.
 - 검증된 inventory를 메모리에 모으지 않고 literal 파일 목록으로 디스크에 기록한 뒤 단일 rclone 다운로드 세션을 사용한다. 10,000개 객체, 개별 16MiB, 합계 256MiB, 16개 worker, backlog 256, hard 전송 제한을 유지한다. rclone의 파일 목록도 최대 객체 수와 경로 길이로 한정된다.
 - 최초 내용 검사에서 생성한 manifest의 SHA256을 승인 근거로 유지한다. 승인 뒤에는 inventory·파일 목록 및 **모든 파일의 전체 바이트 SHA256**을 원래 manifest와 대조하고, manifest 자체도 원래 digest와 대조한다. 동일한 바이트에 대한 정규식·압축 해제의 두 번째 실행만 제거한다.
 - 매 presync/delta/fence/Check마다 새 스냅샷과 최초 DLP 검사를 수행한다. 다른 단계·실행의 승인 근거를 캐시하지 않는다. 대상에는 계속 전체 스냅샷을 보내고 `check --download`로 전체 바이트를 확인한다.
