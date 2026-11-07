@@ -130,6 +130,10 @@ type File struct {
 //	    pgBackup: {...}
 //	  backup: {...}
 //
+// The renderer takes them from the app's database row (source_kind
+// external) and its onboarding on every deployment, not from the
+// deployment that asked, so a push while syncing still renders cold.
+//
 // What the chart draws from them (ADR 0042 "4."), <cluster> being
 // <app>-<postgres resource>:
 //

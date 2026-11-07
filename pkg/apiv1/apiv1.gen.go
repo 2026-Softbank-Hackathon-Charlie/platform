@@ -541,6 +541,120 @@ func (e OnboardingFactsSummaryDbLibc) Valid() bool {
 	}
 }
 
+// Defines values for OnboardingFindingCode.
+const (
+	OnboardingFindingCodeAlterSystemDisabled          OnboardingFindingCode = "alter_system_disabled"
+	OnboardingFindingCodeAppAccountSuperuser          OnboardingFindingCode = "app_account_superuser"
+	OnboardingFindingCodeAppCodeChangeRequired        OnboardingFindingCode = "app_code_change_required"
+	OnboardingFindingCodeAutoConfSettings             OnboardingFindingCode = "auto_conf_settings"
+	OnboardingFindingCodeCheckFailed                  OnboardingFindingCode = "check_failed"
+	OnboardingFindingCodeCollationDependentConstraint OnboardingFindingCode = "collation_dependent_constraint"
+	OnboardingFindingCodeDataVolumeOutOfScope         OnboardingFindingCode = "data_volume_out_of_scope"
+	OnboardingFindingCodeDbNotPostgresContainer       OnboardingFindingCode = "db_not_postgres_container"
+	OnboardingFindingCodeDiskTooSmall                 OnboardingFindingCode = "disk_too_small"
+	OnboardingFindingCodeDomainOutOfScope             OnboardingFindingCode = "domain_out_of_scope"
+	OnboardingFindingCodeDriftLastDeploy              OnboardingFindingCode = "drift_last_deploy"
+	OnboardingFindingCodeDriftRunningRevision         OnboardingFindingCode = "drift_running_revision"
+	OnboardingFindingCodeGcpInspectionNotYet          OnboardingFindingCode = "gcp_inspection_not_yet"
+	OnboardingFindingCodeGlibcReleaseMismatch         OnboardingFindingCode = "glibc_release_mismatch"
+	OnboardingFindingCodeHoldBudgetExceeded           OnboardingFindingCode = "hold_budget_exceeded"
+	OnboardingFindingCodeIcuVersionUnavailable        OnboardingFindingCode = "icu_version_unavailable"
+	OnboardingFindingCodeImageUnavailable             OnboardingFindingCode = "image_unavailable"
+	OnboardingFindingCodeInstanceNotFound             OnboardingFindingCode = "instance_not_found"
+	OnboardingFindingCodeLegacyDeployStopped          OnboardingFindingCode = "legacy_deploy_stopped"
+	OnboardingFindingCodeManagedDatabase              OnboardingFindingCode = "managed_database"
+	OnboardingFindingCodeMaxWalSendersZero            OnboardingFindingCode = "max_wal_senders_zero"
+	OnboardingFindingCodeNameTooLong                  OnboardingFindingCode = "name_too_long"
+	OnboardingFindingCodeNoComposeProject             OnboardingFindingCode = "no_compose_project"
+	OnboardingFindingCodeNoSuperuser                  OnboardingFindingCode = "no_superuser"
+	OnboardingFindingCodeNotHttps                     OnboardingFindingCode = "not_https"
+	OnboardingFindingCodePasswordEncryptionMd5        OnboardingFindingCode = "password_encryption_md5"
+	OnboardingFindingCodeReindexRequired              OnboardingFindingCode = "reindex_required"
+	OnboardingFindingCodeRoleReadOnlySetting          OnboardingFindingCode = "role_read_only_setting"
+	OnboardingFindingCodeStorageOutOfScope            OnboardingFindingCode = "storage_out_of_scope"
+	OnboardingFindingCodeVmInAutoscalingGroup         OnboardingFindingCode = "vm_in_autoscaling_group"
+	OnboardingFindingCodeVmIsEksNode                  OnboardingFindingCode = "vm_is_eks_node"
+	OnboardingFindingCodeVmNotSsmManaged              OnboardingFindingCode = "vm_not_ssm_managed"
+	OnboardingFindingCodeWalKeepSizeCommandLine       OnboardingFindingCode = "wal_keep_size_command_line"
+	OnboardingFindingCodeWalLevelMinimal              OnboardingFindingCode = "wal_level_minimal"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingFindingCode enum.
+func (e OnboardingFindingCode) Valid() bool {
+	switch e {
+	case OnboardingFindingCodeAlterSystemDisabled:
+		return true
+	case OnboardingFindingCodeAppAccountSuperuser:
+		return true
+	case OnboardingFindingCodeAppCodeChangeRequired:
+		return true
+	case OnboardingFindingCodeAutoConfSettings:
+		return true
+	case OnboardingFindingCodeCheckFailed:
+		return true
+	case OnboardingFindingCodeCollationDependentConstraint:
+		return true
+	case OnboardingFindingCodeDataVolumeOutOfScope:
+		return true
+	case OnboardingFindingCodeDbNotPostgresContainer:
+		return true
+	case OnboardingFindingCodeDiskTooSmall:
+		return true
+	case OnboardingFindingCodeDomainOutOfScope:
+		return true
+	case OnboardingFindingCodeDriftLastDeploy:
+		return true
+	case OnboardingFindingCodeDriftRunningRevision:
+		return true
+	case OnboardingFindingCodeGcpInspectionNotYet:
+		return true
+	case OnboardingFindingCodeGlibcReleaseMismatch:
+		return true
+	case OnboardingFindingCodeHoldBudgetExceeded:
+		return true
+	case OnboardingFindingCodeIcuVersionUnavailable:
+		return true
+	case OnboardingFindingCodeImageUnavailable:
+		return true
+	case OnboardingFindingCodeInstanceNotFound:
+		return true
+	case OnboardingFindingCodeLegacyDeployStopped:
+		return true
+	case OnboardingFindingCodeManagedDatabase:
+		return true
+	case OnboardingFindingCodeMaxWalSendersZero:
+		return true
+	case OnboardingFindingCodeNameTooLong:
+		return true
+	case OnboardingFindingCodeNoComposeProject:
+		return true
+	case OnboardingFindingCodeNoSuperuser:
+		return true
+	case OnboardingFindingCodeNotHttps:
+		return true
+	case OnboardingFindingCodePasswordEncryptionMd5:
+		return true
+	case OnboardingFindingCodeReindexRequired:
+		return true
+	case OnboardingFindingCodeRoleReadOnlySetting:
+		return true
+	case OnboardingFindingCodeStorageOutOfScope:
+		return true
+	case OnboardingFindingCodeVmInAutoscalingGroup:
+		return true
+	case OnboardingFindingCodeVmIsEksNode:
+		return true
+	case OnboardingFindingCodeVmNotSsmManaged:
+		return true
+	case OnboardingFindingCodeWalKeepSizeCommandLine:
+		return true
+	case OnboardingFindingCodeWalLevelMinimal:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for OnboardingHumanActionKind.
 const (
 	OnboardingHumanActionKindDeleteDnsRecord  OnboardingHumanActionKind = "delete_dns_record"
@@ -3411,7 +3525,9 @@ type Onboarding struct {
 	// HumanActions What a person has to do, which the platform cannot (ADR 0042, "한 번 하는 설정"). The platform checks it itself; resume checks again at once.
 	HumanActions []OnboardingHumanAction `json:"humanActions"`
 
-	// Id Example: onb_3f9a1c2b7d4e
+	// Id onb- and 12 lowercase hex digits; also the name of the test app and the start of the cutover plan ids (<id>-<attempt>)
+	//
+	// Example: onb-3f9a1c2b7d4e
 	Id string `json:"id"`
 
 	// LegacyChanges What was added to or changed on the source VM, its database, GitHub and the management cluster, in the order it was done. DELETE undoes them in reverse.
@@ -3420,8 +3536,11 @@ type Onboarding struct {
 	// LegacyDeployStopped The source's deploy workflows are disabled (from connecting on,
 	// until it is deleted). The console says so on every screen while
 	// it is true.
-	LegacyDeployStopped bool          `json:"legacyDeployStopped"`
-	Pr                  *OnboardingPR `json:"pr,omitempty"`
+	LegacyDeployStopped bool `json:"legacyDeployStopped"`
+
+	// PlannedLegacyChanges What connecting will do once approved, for the approval screen, in order. Set from awaiting_approval on.
+	PlannedLegacyChanges *[]OnboardingPlannedChange `json:"plannedLegacyChanges,omitempty"`
+	Pr                   *OnboardingPR              `json:"pr,omitempty"`
 
 	// Repo Example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy
 	Repo   string           `json:"repo"`
@@ -3452,9 +3571,9 @@ type OnboardingApproveRequest struct {
 
 // OnboardingCheck The test deployment of the PR branch.
 type OnboardingCheck struct {
-	// App The temporary app, deleted when the test ends.
+	// App The temporary app, named after the onboarding id and deleted when the test ends.
 	//
-	// Example: moimroom-legacy-onb-1c2b7d
+	// Example: onb-3f9a1c2b7d4e
 	App string `json:"app"`
 
 	// Attempts Test deployments so far, at most 2.
@@ -3579,13 +3698,16 @@ type OnboardingFactsSummaryDbLibc string
 
 // OnboardingFinding defines model for OnboardingFinding.
 type OnboardingFinding struct {
-	// Code Example: auto_conf_settings
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	// Code pkg/onboard/facts BlockerCodes for blockers, WarningCodes for warnings.
+	Code    OnboardingFindingCode `json:"code"`
+	Message string                `json:"message"`
 
 	// Subject What it is about, such as a container, setting or index.
 	Subject *string `json:"subject,omitempty"`
 }
+
+// OnboardingFindingCode pkg/onboard/facts BlockerCodes for blockers, WarningCodes for warnings.
+type OnboardingFindingCode string
 
 // OnboardingHumanAction defines model for OnboardingHumanAction.
 type OnboardingHumanAction struct {
@@ -3621,7 +3743,7 @@ type OnboardingLegacyChange struct {
 	UndoneAt *time.Time `json:"undoneAt,omitempty"`
 }
 
-// OnboardingLegacyChangeKind defines model for OnboardingLegacyChange.Kind.
+// OnboardingLegacyChangeKind defines model for OnboardingLegacyChangeKind.
 type OnboardingLegacyChangeKind string
 
 // OnboardingList defines model for OnboardingList.
@@ -3639,6 +3761,17 @@ type OnboardingPR struct {
 
 	// Url Example: https://github.com/2026-Softbank-Hackathon-Charlie/moimroom-legacy/pull/12
 	Url string `json:"url"`
+}
+
+// OnboardingPlannedChange One thing connecting will do, as the approval screen shows it:
+// `target` as in OnboardingLegacyChange and `detail` the exact value,
+// such as the hba line with the compose network's subnet
+// (`host replication hopcharlie_replicator 172.18.0.0/16 scram-sha-256`),
+// the Tailscale container and its image digest, or the roles made.
+type OnboardingPlannedChange struct {
+	Detail *string                    `json:"detail,omitempty"`
+	Kind   OnboardingLegacyChangeKind `json:"kind"`
+	Target string                     `json:"target"`
 }
 
 // OnboardingReport defines model for OnboardingReport.
@@ -5194,7 +5327,7 @@ type EnvName = string
 // InstanceName Example: moimroom--dev
 type InstanceName = string
 
-// OnboardingId Example: onb_3f9a1c2b7d4e
+// OnboardingId Example: onb-3f9a1c2b7d4e
 type OnboardingId = string
 
 // PlanRef defines model for PlanRef.

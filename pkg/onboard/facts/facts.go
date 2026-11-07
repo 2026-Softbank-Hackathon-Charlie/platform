@@ -16,7 +16,11 @@
 // the next step there, ADR 0042 "범위"), and so on. Report says why.
 package facts
 
-import "time"
+import (
+	"fmt"
+	"net/url"
+	"time"
+)
 
 // Version is Facts.Version of this package's shape. A reader refuses a
 // higher one.
@@ -243,15 +247,19 @@ type EnvVar struct {
 	Secret bool `json:"secret"`
 	// Excluded says the value is not carried over, and why: ExcludePlatform
 	// (a name the platform sets: DATABASE_URL, PG*, S3_*, ADR 0024's
-	// reserved names) or ExcludeComposeRef (the value names a compose
-	// service, such as db:5432). Empty means it is carried over.
+	// reserved names), ExcludeComposeRef (the value names a compose
+	// service, such as db:5432) or ExcludeDBContainer (a variable of the
+	// database container, such as POSTGRES_PASSWORD, which the platform
+	// keeps only as the fence user's password). Empty means it is carried
+	// over.
 	Excluded string `json:"excluded,omitempty"`
 }
 
 // Why an environment variable is not carried over.
 const (
-	ExcludePlatform   = "platform"
-	ExcludeComposeRef = "compose_ref"
+	ExcludePlatform    = "platform"
+	ExcludeComposeRef  = "compose_ref"
+	ExcludeDBContainer = "db_container"
 )
 
 // Libc of the source database's image.
@@ -288,9 +296,21 @@ type DB struct {
 	LCNumeric  string `json:"lcNumeric"`
 	LCTime     string `json:"lcTime"`
 	LCMessages string `json:"lcMessages"`
-	// AutoConf are the settings whose sourcefile is postgresql.auto.conf
-	// (blocker auto_conf_settings): bootstrap copies them to the target.
-	AutoConf []Setting `json:"autoConf"`
+	// AutoConf are the names (never the values) of the settings whose
+	// sourcefile is postgresql.auto.conf (blocker auto_conf_settings):
+	// bootstrap copies them to the target.
+	AutoConf []string `json:"autoConf"`
+	// AllowAlterSystem is allow_alter_system (PostgreSQL 17 and later; empty
+	// before): off is blocker alter_system_disabled, as the fence is ALTER
+	// SYSTEM. WALLevel minimal is blocker wal_level_minimal and
+	// MaxWALSenders 0 blocker max_wal_senders_zero: either rules out
+	// streaming. PasswordEncryption md5 is blocker password_encryption_md5:
+	// the replication account would get an md5 hash its scram hba line
+	// refuses.
+	AllowAlterSystem   string `json:"allowAlterSystem,omitempty"`
+	WALLevel           string `json:"walLevel"`
+	MaxWALSenders      int    `json:"maxWalSenders"`
+	PasswordEncryption string `json:"passwordEncryption"`
 	// ReadOnlyRoleSettings are pg_db_role_setting entries that set
 	// default_transaction_read_only (blocker role_read_only_setting), as
 	// "role@database" with an empty side for "any".
@@ -343,12 +363,6 @@ type Database struct {
 	SizeBytes   int64  `json:"sizeBytes"`
 }
 
-// Setting is one server setting.
-type Setting struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
 // Index is one index.
 type Index struct {
 	Name      string `json:"name"` // schema.index, the form of target.reindex
@@ -377,6 +391,7 @@ const (
 // Storage is the app's object storage.
 type Storage struct {
 	Provider string `json:"provider"`
+	// Endpoint is scheme://host[:port] only (Endpoint strips the rest).
 	Endpoint string `json:"endpoint"` // https://s3.ap-northeast-2.amazonaws.com
 	Region   string `json:"region,omitempty"`
 	Bucket   string `json:"bucket"`
@@ -482,7 +497,23 @@ const (
 	BlockHoldBudget          = "hold_budget_exceeded"
 	BlockAppCodeChange       = "app_code_change_required" // the contract needs app code changes
 	BlockCheckFailed         = "check_failed"             // the test deployment failed twice
+	BlockAlterSystemOff      = "alter_system_disabled"    // allow_alter_system off
+	BlockWALLevelMinimal     = "wal_level_minimal"
+	BlockNoWALSenders        = "max_wal_senders_zero"
+	BlockPasswordMD5         = "password_encryption_md5"
+	BlockNameTooLong         = "name_too_long" // <cluster>-to-legacy over 63 characters
 )
+
+// BlockerCodes are every Block* code, in the order above; the OpenAPI enum
+// of OnboardingFinding.code holds them and WarningCodes.
+var BlockerCodes = []string{
+	BlockInstanceNotFound, BlockGCPInspection, BlockNotSSMManaged, BlockAutoScalingGroup, BlockEKSNode,
+	BlockNoCompose, BlockDBNotContainer, BlockManagedDatabase, BlockStorageOutOfScope, BlockDataVolume,
+	BlockDomainOutOfScope, BlockNotHTTPS, BlockNoImage, BlockICUVersion, BlockCollationConstraint,
+	BlockAutoConf, BlockRoleReadOnly, BlockWALKeepSizeCmdLine, BlockNoSuperuser, BlockDiskTooSmall,
+	BlockHoldBudget, BlockAppCodeChange, BlockCheckFailed, BlockAlterSystemOff, BlockWALLevelMinimal,
+	BlockNoWALSenders, BlockPasswordMD5, BlockNameTooLong,
+}
 
 // Warning codes.
 const (
@@ -493,3 +524,19 @@ const (
 	WarnAppSuperuser     = "app_account_superuser"  // advice: the app account is a superuser
 	WarnWorkflowsStopped = "legacy_deploy_stopped"  // shown from connecting until decommissioning
 )
+
+// WarningCodes are every Warn* code, in the order above.
+var WarningCodes = []string{
+	WarnDriftRevision, WarnDriftDeploy, WarnGlibcRelease, WarnReindex, WarnAppSuperuser, WarnWorkflowsStopped,
+}
+
+// Endpoint returns an object storage endpoint as Storage.Endpoint keeps it:
+// scheme://host[:port], without user info (a key written in the URL),
+// path, query or fragment.
+func Endpoint(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", fmt.Errorf("object storage endpoint is not an http(s) URL with a host")
+	}
+	return u.Scheme + "://" + u.Host, nil
+}

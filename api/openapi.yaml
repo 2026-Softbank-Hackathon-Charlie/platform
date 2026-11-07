@@ -2387,6 +2387,14 @@ paths:
         registered), onboarding_exists (409: the app has an onboarding that
         is not done), github_not_configured (503), secrets_not_configured
         (503), not_implemented (501). Role operator.
+
+        While an app name has an onboarding that is not done, these answer
+        409 onboarding_exists for that name: `POST /v1/apps`, `DELETE
+        /v1/apps/{name}`, `POST /v1/apps/{name}/environments`, `DELETE
+        /v1/apps/{name}/environments/{env}`, and plans (`POST /v1/plans`,
+        `POST /v1/plans/draft`, `POST /v1/migrations`) of the app's database
+        pair; the onboarding's own cutover plan is the exception. `POST
+        /v1/apps` also refuses names starting with `onb-`, the test apps'.
       requestBody:
         required: true
         content:
@@ -2459,13 +2467,16 @@ paths:
           `legacyChanges` entry is undone in reverse order, the gateway app
           and the registered app are deleted, then the onboarding. A merged
           PR stays merged.
-        - From `cutting_over` on: refused.
+        - From `cutting_over` on, and `failed` in `cutting_over` or
+          `decommissioning`: refused.
 
         The answer comes at once with `deleting` true; the onboarding is
         gone when `GET /v1/onboardings/{id}` answers 404. A step that fails
-        sets `failure` and leaves the onboarding, and the same request
-        tries again. Error codes: onboarding_not_found (404),
-        onboarding_state_conflict (409: `cutting_over` or later),
+        sets `failure` and leaves the onboarding with `deleting` true, and
+        only DELETE is accepted then: it tries again. Error codes:
+        onboarding_not_found (404), onboarding_state_conflict (409:
+        `cutting_over` or later, or `failed` in them), onboarding_deleting
+        (409: a deletion is running; one that failed is retried),
         not_implemented (501). Role operator.
       responses:
         "202":
@@ -2573,12 +2584,24 @@ paths:
         Move the app to the platform, in `ready` only: the platform submits
         and starts the onboarding's own migration plan (external source,
         cold target app) and keeps its run id in `runId`; the run is in
-        `GET /v1/migrations/{runId}`, without a rollback. When it succeeds
-        the onboarding goes to `decommissioning`.
+        `GET /v1/migrations/{runId}`, without a rollback. The plan is
+        reserved by the platform itself, not through `POST /v1/plans`, and
+        shows in `GET /v1/plans` with the id `<onboarding id>-<attempt>`.
+
+        How the run ends moves the onboarding:
+
+        - succeeded: `decommissioning`.
+        - rolled back or cancelled before the promotion (the source took the
+          writes back): `ready` again, so the operator can cut over again
+          with the next attempt.
+        - halted after the promotion: it stays `cutting_over`; the run goes
+          on with `POST /v1/migrations/{runId}/resume`.
+        - refused before a run started (the plan's gates): `failed` with
+          `failedState` `cutting_over`; resume goes back to `ready`.
 
         Error codes: onboarding_not_found (404), onboarding_state_conflict
-        (409: not `ready`), cluster_busy (409), not_implemented (501).
-        Role operator.
+        (409: not `ready`), onboarding_deleting (409), cluster_busy (409),
+        not_implemented (501). Role operator.
       responses:
         "202":
           description: The run started.
@@ -2631,11 +2654,12 @@ paths:
         entry not done, such as installing the GitHub App or deleting the
         DNS record) it checks again now instead of at the next poll. A
         failed cutover run is resumed through the run (`POST
-        /v1/migrations/{runId}/resume`), not here.
+        /v1/migrations/{runId}/resume`), not here. `failed` in `cutting_over`
+        (the run never started) goes back to `ready`, not to `cutting_over`.
 
         Error codes: onboarding_not_found (404), onboarding_state_conflict
-        (409: neither failed nor waiting for a person), not_implemented
-        (501). Role operator.
+        (409: neither failed nor waiting for a person), onboarding_deleting
+        (409: `deleting` is true), not_implemented (501). Role operator.
       responses:
         "202":
           description: Resumed.
@@ -2690,7 +2714,7 @@ components:
       name: id
       in: path
       required: true
-      schema: { type: string, example: onb_3f9a1c2b7d4e }
+      schema: { type: string, example: onb-3f9a1c2b7d4e }
     UserCode:
       name: userCode
       in: path
@@ -2720,7 +2744,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress, ai_run_active, onboarding_exists, onboarding_state_conflict, pr_head_mismatch"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress, ai_run_active, onboarding_exists, onboarding_state_conflict, pr_head_mismatch, onboarding_deleting"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -5392,7 +5416,7 @@ components:
       type: object
       required: [id, repo, serviceUrl, app, targetEnv, state, deleting, legacyDeployStopped, humanActions, report, legacyChanges, createdBy, createdAt, updatedAt]
       properties:
-        id: { type: string, example: onb_3f9a1c2b7d4e }
+        id: { type: string, example: onb-3f9a1c2b7d4e, description: "onb- and 12 lowercase hex digits; also the name of the test app and the start of the cutover plan ids (<id>-<attempt>)" }
         repo: { type: string, example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy }
         serviceUrl: { type: string, example: https://moimroom-legacy.hopcharlie.dev }
         app: { type: string, example: moimroom-legacy, description: "The app's name: serviceUrl's label." }
@@ -5417,6 +5441,10 @@ components:
         report: { $ref: "#/components/schemas/OnboardingReport" }
         pr: { $ref: "#/components/schemas/OnboardingPR" }
         check: { $ref: "#/components/schemas/OnboardingCheck" }
+        plannedLegacyChanges:
+          type: array
+          description: What connecting will do once approved, for the approval screen, in order. Set from awaiting_approval on.
+          items: { $ref: "#/components/schemas/OnboardingPlannedChange" }
         legacyChanges:
           type: array
           description: What was added to or changed on the source VM, its database, GitHub and the management cluster, in the order it was done. DELETE undoes them in reverse.
@@ -5493,7 +5521,10 @@ components:
       type: object
       required: [code, message]
       properties:
-        code: { type: string, example: auto_conf_settings }
+        code:
+          type: string
+          description: pkg/onboard/facts BlockerCodes for blockers, WarningCodes for warnings.
+          enum: [instance_not_found, gcp_inspection_not_yet, vm_not_ssm_managed, vm_in_autoscaling_group, vm_is_eks_node, no_compose_project, db_not_postgres_container, managed_database, storage_out_of_scope, data_volume_out_of_scope, domain_out_of_scope, not_https, image_unavailable, icu_version_unavailable, collation_dependent_constraint, auto_conf_settings, role_read_only_setting, wal_keep_size_command_line, no_superuser, disk_too_small, hold_budget_exceeded, app_code_change_required, check_failed, alter_system_disabled, wal_level_minimal, max_wal_senders_zero, password_encryption_md5, name_too_long, drift_running_revision, drift_last_deploy, glibc_release_mismatch, reindex_required, app_account_superuser, legacy_deploy_stopped]
         message: { type: string }
         subject: { type: string, description: "What it is about, such as a container, setting or index." }
 
@@ -5520,7 +5551,7 @@ components:
       type: object
       required: [app, result, attempts]
       properties:
-        app: { type: string, example: moimroom-legacy-onb-1c2b7d, description: "The temporary app, deleted when the test ends." }
+        app: { type: string, example: onb-3f9a1c2b7d4e, description: "The temporary app, named after the onboarding id and deleted when the test ends." }
         deploymentId: { type: string }
         result: { type: string, enum: [running, passed, failed] }
         attempts: { type: integer, description: "Test deployments so far, at most 2." }
@@ -5539,12 +5570,28 @@ components:
       type: object
       required: [kind, target, at]
       properties:
-        kind:
-          type: string
-          enum: [workflow_disabled, instance_tagged, postgres_role_created, replication_role_created, tailscale_volume_created, tailscale_container_started, tailscale_device_joined, hba_line_added, wal_keep_size_added, db_route_created]
+        kind: { $ref: "#/components/schemas/OnboardingLegacyChangeKind" }
         target: { type: string }
         at: { type: string, format: date-time }
         undoneAt: { type: string, format: date-time, description: "When DELETE undid it." }
+
+    OnboardingLegacyChangeKind:
+      type: string
+      enum: [workflow_disabled, instance_tagged, postgres_role_created, replication_role_created, tailscale_volume_created, tailscale_container_started, tailscale_device_joined, hba_line_added, wal_keep_size_added, db_route_created]
+
+    OnboardingPlannedChange:
+      description: |
+        One thing connecting will do, as the approval screen shows it:
+        `target` as in OnboardingLegacyChange and `detail` the exact value,
+        such as the hba line with the compose network's subnet
+        (`host replication hopcharlie_replicator 172.18.0.0/16 scram-sha-256`),
+        the Tailscale container and its image digest, or the roles made.
+      type: object
+      required: [kind, target]
+      properties:
+        kind: { $ref: "#/components/schemas/OnboardingLegacyChangeKind" }
+        target: { type: string }
+        detail: { type: string }
 
     OnboardingEvent:
       description: |
