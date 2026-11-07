@@ -188,8 +188,9 @@ func (s *scanner) inspectDigest(ctx context.Context, data []byte, depth int, dig
 	} else if review == "" {
 		// The operator's label covers images only: other unreadable bytes
 		// (non-UTF-8 text, compressed text, dumps, documents) may hold
-		// personal data the patterns would find, so they still deny.
-		if s.binary == "" || !knownImage(data) {
+		// personal data the patterns would find, so they still deny. So does
+		// printable text behind an image signature ("GIF89a" + records).
+		if s.binary == "" || !knownImage(data) || plainText(data) {
 			return nil, ErrUnsupported
 		}
 		labels = append(labels, s.binary)

@@ -138,7 +138,8 @@ func TestReviewCatalogIsImmutableAndPassedToInspector(t *testing.T) {
 
 func TestBinaryLabelReachesInspector(t *testing.T) {
 	g := contentGate(t, func(c *residency.Config) { sourceBucket(c).BinaryLabel = "kr-only" })
-	// The scanner labels the photos kr-only; the JP target must deny.
+	// Only the plumbing is checked here: the fake's labels stand in for the
+	// scanner's (internal/fileguard tests the labelling itself).
 	i := &controlledInspector{labels: []string{"global", "kr-only"}}
 	g.WithContentInspector(i)
 	v, err := g.Check(context.Background(), contentPlan())

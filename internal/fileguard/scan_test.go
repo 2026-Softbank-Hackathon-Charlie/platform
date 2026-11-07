@@ -171,10 +171,12 @@ func TestBinaryLabelClassifiesUnreadableObjects(t *testing.T) {
 	// Unreadable bytes that are not an image still deny: CP949 text, a
 	// pg_dump archive, gzip, a PDF.
 	for name, data := range map[string][]byte{
-		"cp949": {0xc8, 0xab, 0xb1, 0xe6, 0xb5, 0xbf, ',', '0', '1', '0'},
-		"dump":  []byte("PGDMP\x01\x0e\x00"),
-		"gzip":  {0x1f, 0x8b, 0x08, 0x00},
-		"pdf":   []byte("%PDF-1.7\nbody"),
+		"cp949":     {0xc8, 0xab, 0xb1, 0xe6, 0xb5, 0xbf, ',', '0', '1', '0'},
+		"dump":      []byte("PGDMP\x01\x0e\x00"),
+		"gzip":      {0x1f, 0x8b, 0x08, 0x00},
+		"gif-text":  []byte("GIF89a demo@example.invalid"),
+		"webp-text": []byte("RIFFabcdWEBP demo@example.invalid"),
+		"pdf":       []byte("%PDF-1.7\nbody"),
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
 			t.Fatal(err)
