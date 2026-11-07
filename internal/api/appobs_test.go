@@ -9,19 +9,22 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
 type fakeAppObs struct {
-	obs   aiobs.AppObservation
-	err   error
-	asked []string
-	since time.Time
+	obs     aiobs.AppObservation
+	err     error
+	asked   []string
+	since   time.Time
+	exclude []string
 }
 
-func (f *fakeAppObs) App(_ context.Context, app string, since time.Time) (aiobs.AppObservation, error) {
+func (f *fakeAppObs) App(_ context.Context, app string, since time.Time, exclude ...string) (aiobs.AppObservation, error) {
 	f.asked = append(f.asked, app)
 	f.since = since
+	f.exclude = exclude
 	return f.obs, f.err
 }
 
@@ -80,5 +83,27 @@ func TestAppObservabilityRejectsBadWindowAndHidesErrors(t *testing.T) {
 	code, b := h.do("GET", "/v1/apps/moimroom/observability", viewerToken, nil)
 	if code != 502 || errCode(t, b) != "observability_unavailable" || strings.Contains(string(b), "hunter2") || strings.Contains(string(b), "10.0.0.5") {
 		t.Fatalf("%d %s", code, b)
+	}
+}
+
+func TestAppObservabilityLeavesOutLongerNamedApps(t *testing.T) {
+	f := &fakeAppObs{}
+	h := newHarness(t, withApps(""), withAppObs(f))
+	for _, name := range []string{"moimroom-mig", "moimroomx", "pxls"} {
+		a := store.App{Name: name, Repo: "acme/" + name, Branch: "main", Environments: []string{"gke"},
+			Spec: []byte(`{"name":"` + name + `","services":[]}`), SpecCommit: "abc", CreatedBy: "op", CreatedAt: time.Now().UTC()}
+		if err := h.store.CreateApp(t.Context(), a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// moimroom (the apps file's) must not count moimroom-mig's services; moimroomx shares no prefix
+	if code, b := h.do("GET", "/v1/apps/moimroom/observability", viewerToken, nil); code != 200 {
+		t.Fatalf("%d %s", code, b)
+	}
+	if len(f.exclude) != 1 || f.exclude[0] != "moimroom-mig" {
+		t.Fatalf("exclude = %v", f.exclude)
+	}
+	if code, b := h.do("GET", "/v1/apps/moimroom-mig/observability", viewerToken, nil); code != 200 || len(f.exclude) != 0 {
+		t.Fatalf("%d %s exclude = %v", code, b, f.exclude)
 	}
 }
