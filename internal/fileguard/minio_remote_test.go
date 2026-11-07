@@ -248,7 +248,9 @@ func TestDisposableMinIOFileguard(t *testing.T) {
 	uploads := 0
 	actual := back.execute
 	back.execute = func(ctx context.Context, out io.Writer, args ...string) error {
-		if len(args) > 0 && (args[0] == "sync" || args[0] == "copy") {
+		// Snapshot download is also "copy". Count only mutations whose
+		// destination is the registered remote target, never local inspection.
+		if len(args) >= 3 && (args[0] == "sync" || args[0] == "copy") && args[2] == source {
 			uploads++
 		}
 		return actual(ctx, out, args...)
