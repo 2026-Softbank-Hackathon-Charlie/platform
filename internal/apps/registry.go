@@ -10,6 +10,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -88,7 +91,7 @@ func (e endpoint) hostPort() string { return net.JoinHostPort(e.host, "5432") }
 // host or variable would not be allowed is left out.
 func (r *Registry) endpoints(d store.AppDatabase, appEnvs []string) []endpoint {
 	var out []endpoint
-	for _, env := range []string{d.PrimaryEnv, d.PeerEnv} {
+	for _, env := range appEnvs {
 		tmpl, ok := r.HostTemplates[env]
 		if !ok || !slices.Contains(appEnvs, env) {
 			continue
@@ -134,6 +137,7 @@ func (r *Registry) app(ctx context.Context, name string) (App, store.AppDatabase
 	// (ADR 0016), named through the environment's remote (ADR 0032).
 	hasBucket := slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypeS3 })
 	out := App{Name: name, Namespace: name, Database: Database{Name: "app", User: "app"}, Environments: map[string]Environment{}}
+	out.filesRequired = hasBucket && len(r.BucketPrefixes) > 0
 	for _, e := range r.endpoints(d, a.Environments) {
 		env := Environment{CnpgCluster: name + "-" + spec.Resources[i].Name, DBHost: e.host, DBPort: 5432, PasswordEnv: e.passwordEnv}
 		if hasBucket {
@@ -153,6 +157,47 @@ type pairedApp struct {
 
 // endpoints are the pair's databases (Registry.endpoints).
 func (p pairedApp) endpoints(r *Registry) []endpoint { return r.endpoints(p.AppDatabase, p.envs) }
+
+// SourceRewireAllowed binds the opt-in to a registered three-member group,
+// including the environment's actual host, context, namespace and Cluster.
+// Static apps and plans that merely reuse an app's host cannot enable it.
+func (c *Catalog) SourceRewireAllowed(ctx context.Context, p *plan.Plan) (bool, error) {
+	if c.registry == nil || p == nil {
+		return false, nil
+	}
+	pairs, err := c.pairs(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, pair := range pairs {
+		if len(pair.envs) != 3 {
+			continue
+		}
+		a, _, found, err := c.registry.app(ctx, pair.App)
+		if err != nil {
+			return false, err
+		}
+		if !found || p.Source.Env == p.Target.Env {
+			continue
+		}
+		matches := func(ep plan.Endpoint) bool {
+			e, ok := a.Environments[ep.Env]
+			env, configured := c.env(ep.Env)
+			if !ok || !configured || ep.Context != env.KubeContext || ep.Namespace != a.Namespace || ep.Cluster != e.CnpgCluster {
+				return false
+			}
+			cfg, err := pgconn.ParseConfig(ep.DSN)
+			if err != nil || cfg.Host != e.DBHost || cfg.Port != uint16(5432) || cfg.Database != a.Database.Name || cfg.User != a.Database.User {
+				return false
+			}
+			return len(cfg.Fallbacks) == 0
+		}
+		if matches(p.Source) && matches(p.Target) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // pairs lists the pairs the catalog takes from the registry: not of an app
 // of the file, and of an app that is registered. Pairs are listed before

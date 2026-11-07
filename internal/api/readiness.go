@@ -73,6 +73,9 @@ type readinessCache struct {
 // first; spec is the default instance's platform.yaml.
 func (s *Server) dbReadiness(ctx context.Context, a store.App, db store.AppDatabase, deps []store.Deployment, spec appspec.Spec) apiv1.AppDBReadiness {
 	pair := []string{db.PrimaryEnv, db.PeerEnv}
+	if len(a.Environments) > 2 {
+		pair = slices.Clone(a.Environments)
+	}
 	out := apiv1.AppDBReadiness{Environments: make([]apiv1.AppDBReadinessEnvironment, len(pair))}
 	reason, message := "", ""
 	fail := func(r, m string) {
@@ -183,7 +186,13 @@ func (s *Server) dbReadiness(ctx context.Context, a store.App, db store.AppDatab
 		}
 	}
 	if reason == "" {
-		if err := pairTopology(reads.status[0], reads.status[1]); err != nil {
+		var err error
+		if len(pair) > 2 {
+			err = groupTopology(reads.status)
+		} else {
+			err = pairTopology(reads.status[0], reads.status[1])
+		}
+		if err != nil {
 			fail(reasonTopology, err.Error())
 		}
 	}
@@ -202,9 +211,49 @@ func (s *Server) dbReadiness(ctx context.Context, a store.App, db store.AppDatab
 	}
 	if reason == "" {
 		reason, message = readyReason, "both databases are healthy and the replica follows the primary"
+		if len(pair) > 2 {
+			message = "all database members are healthy and replication reaches one primary; migrations require a target directly following the selected source"
+		}
 	}
 	out.Ready, out.Reason, out.Message = reason == readyReason, reason, message
 	return out
+}
+
+// groupTopology allows cascading standbys but never independent primaries,
+// unknown upstreams or cycles. Eligibility of a selected migration edge is
+// checked separately by the engine, including actual SQL recovery state.
+func groupTopology(status []*cnpg.Status) error {
+	bySelf := make(map[string]*cnpg.Status, len(status))
+	primary := ""
+	for _, st := range status {
+		if st == nil || st.Self == "" || bySelf[st.Self] != nil {
+			return fmt.Errorf("database group has missing or duplicate member identities")
+		}
+		bySelf[st.Self] = st
+		if st.IsPrimary() {
+			if primary != "" {
+				return fmt.Errorf("database group has multiple primaries")
+			}
+			primary = st.Self
+		}
+	}
+	if primary == "" {
+		return fmt.Errorf("database group has no primary")
+	}
+	for _, st := range status {
+		if st.ReplicaSource == st.Self || bySelf[st.ReplicaSource] == nil || bySelf[st.ReplicaPrimary] == nil {
+			return fmt.Errorf("database group has an unknown or invalid replication reference")
+		}
+		seen := map[string]bool{}
+		for member := st.Self; member != primary; {
+			if seen[member] || bySelf[member] == nil {
+				return fmt.Errorf("database group has a replication cycle or unknown upstream")
+			}
+			seen[member] = true
+			member = bySelf[member].ReplicaSource
+		}
+	}
+	return nil
 }
 
 // readinessReads reads the gateway (with readGateway) and the Cluster of

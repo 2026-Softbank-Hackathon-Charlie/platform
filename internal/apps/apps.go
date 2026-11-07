@@ -34,6 +34,8 @@ type App struct {
 	Database  Database `json:"database"`
 	// Environments is keyed by environment name from PLATFORM_ENVS_FILE.
 	Environments map[string]Environment `json:"environments"`
+	// Registered s3 resources must not silently disappear from a file-enabled draft.
+	filesRequired bool
 }
 
 // Database is what the DSNs connect to and what verification compares.

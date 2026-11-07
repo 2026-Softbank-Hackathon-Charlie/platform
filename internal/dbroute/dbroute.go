@@ -69,7 +69,8 @@ type Pairs interface {
 }
 
 // envs are the environments of pair d that get a route: those with a route,
-// and only while both environments of the pair are environments of app a.
+// and only while both original environments of the pair remain in app a.
+// A registered third environment gets its own route (ADR 0044).
 // The routes are for migrating between the two, so a pair whose peer was
 // never added, or was removed again, has none, and no egress proxy stands
 // for it (ADR 0043).
@@ -78,7 +79,7 @@ func (m *Manager) envs(d store.AppDatabase, a store.App) []string {
 		return nil
 	}
 	var out []string
-	for _, env := range []string{d.PrimaryEnv, d.PeerEnv} {
+	for _, env := range a.Environments {
 		if _, ok := m.cfg.Routes[env]; ok {
 			out = append(out, env)
 		}

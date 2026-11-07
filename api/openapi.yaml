@@ -2567,6 +2567,10 @@ components:
       additionalProperties: false
       required: [id, source, target]
       properties:
+        allowSourceRewire:
+          type: boolean
+          default: false
+          description: Opt-in for approved three-environment registered database groups. Before holding writes, prepare may CAS-update only the current primary's future replica source to the directly following target. It never reparents the target or changes a primary role.
         id: { type: string }
         source: { $ref: "#/components/schemas/EnginePlanEndpoint" }
         target: { $ref: "#/components/schemas/EnginePlanEndpoint" }

@@ -1,6 +1,6 @@
 # 0030. 두 환경에 등록한 앱의 DB는 처음부터 이전 가능한 짝으로 만든다
 
-- 상태: 제안
+- 상태: 대체됨 (0044: 최대 세 환경으로 확장; 기존 공통 CA·비밀번호와 생성 앵커 유지)
 - 날짜: 2026-11-06
 - 관련 ADR: [0011](0011-github-app-deploy.md), [0015](0015-branch-instances.md), [0016](0016-app-object-storage.md), [0019](0019-app-secrets-and-redeploy.md), [0025](0025-app-postgres-backups.md), infra ADR 0048, 0060, 0063(차트, 이 ADR의 짝), migration-engine ADR 0001, 0006
 - 관련 PR: 이 PR(플랫폼), infra `feat/app-db-topology`(차트), infra #99(관리 EKS에서 앱 DB로 가는 길)

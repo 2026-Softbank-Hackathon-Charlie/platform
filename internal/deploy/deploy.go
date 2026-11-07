@@ -728,6 +728,13 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 	if err != nil {
 		return err
 	}
+	if len(app.Environments) > 2 {
+		if _, err := e.cfg.Store.GetAppDatabase(ctx, name); err == nil {
+			return fmt.Errorf("%w: removing members of a three-environment database group is unsupported", ErrEnvironmentInUse)
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	}
 	switch i := slices.Index(app.Environments, env); {
 	case i < 0:
 		return fmt.Errorf("%w: app %s is not in environment %s", ErrNotInEnvironment, name, env)

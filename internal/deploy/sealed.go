@@ -233,10 +233,19 @@ type sealedDatabase struct {
 // appEnvs (an app registered in one environment, ADR 0043) it says so, and
 // only the primary's file can be rendered.
 func (d *sealedDatabase) topology(env string, appEnvs []string) (*DBTopology, error) {
-	if env != d.row.PrimaryEnv && env != d.row.PeerEnv {
-		return nil, fmt.Errorf("the database pair of %s is in %s and %s, not in %s", d.row.App, d.row.PrimaryEnv, d.row.PeerEnv, env)
+	if !slices.Contains(appEnvs, env) || len(appEnvs) > 3 || !slices.Contains(appEnvs, d.row.PrimaryEnv) {
+		return nil, fmt.Errorf("environment %s is not a valid member of the database group of %s", env, d.row.App)
 	}
-	return &DBTopology{Primary: d.row.PrimaryEnv, Peer: d.row.PeerEnv, PeerAbsent: !slices.Contains(appEnvs, d.row.PeerEnv)}, nil
+	t := &DBTopology{Primary: d.row.PrimaryEnv, Peer: d.row.PeerEnv, PeerAbsent: !slices.Contains(appEnvs, d.row.PeerEnv)}
+	if len(appEnvs) > 2 {
+		if t.PeerAbsent {
+			return nil, fmt.Errorf("the database group of %s must retain its original peer", d.row.App)
+		}
+		t.Members = slices.Clone(appEnvs)
+	} else if env != d.row.PrimaryEnv && env != d.row.PeerEnv {
+		return nil, fmt.Errorf("the original database pair of %s does not include %s", d.row.App, env)
+	}
+	return t, nil
 }
 
 // appDatabase returns the database pair the deployment seals: only the

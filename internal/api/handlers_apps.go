@@ -211,19 +211,20 @@ func (s *Server) newAppDatabase(app store.App, spec appspec.Spec) (*store.AppDat
 }
 
 // pairEnvs returns the primary and the peer of the database pair of an app
-// registered in envs, or nil when it gets none. Two environments that both
+// registered in envs, or nil when it gets none. Two or three environments that all
 // have a database host template (Config.AppDBEnvs) are the pair, the first
 // the primary (ADR 0030). One environment with a template is the primary
 // when exactly one other environment has a template: that one is the peer,
 // where the database does not exist until the environment is added (ADR
-// 0043). Anything else has no pair.
+// 0043). Three members retain the first two as their original anchors (ADR
+// 0044). Anything else has no pair.
 func (s *Server) pairEnvs(envs []string) []string {
 	if !slices.ContainsFunc(envs, func(e string) bool { return slices.Contains(s.cfg.AppDBEnvs, e) }) {
 		return nil
 	}
 	switch len(envs) {
-	case 2:
-		if slices.Contains(s.cfg.AppDBEnvs, envs[1]) && slices.Contains(s.cfg.AppDBEnvs, envs[0]) {
+	case 2, 3:
+		if !slices.ContainsFunc(envs, func(e string) bool { return !slices.Contains(s.cfg.AppDBEnvs, e) }) {
 			return envs
 		}
 	case 1:

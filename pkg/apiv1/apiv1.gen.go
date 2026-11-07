@@ -2867,6 +2867,9 @@ type EngineOutcome string
 
 // EnginePlan The migration-engine plan (migration-engine/pkg/plan). `${VAR}` references are expanded on the server.
 type EnginePlan struct {
+	// AllowSourceRewire Opt-in for approved three-environment registered database groups. Before holding writes, prepare may CAS-update only the current primary's future replica source to the directly following target. It never reparents the target or changes a primary role.
+	AllowSourceRewire *bool `json:"allowSourceRewire,omitempty"`
+
 	// Files Object storage moved with rclone. source and target must each be exactly a bucket the server registers (an app's bucket in PLATFORM_APPS_FILE, or PLATFORM_PLAN_BUCKETS) and must differ; rclone remotes and their credentials come from the server's environment (RCLONE_CONFIG_<REMOTE>_*), never from the plan. rclone must be "rclone" or omitted, and only allowed flags pass.
 	Files *struct {
 		Flags  *[]string `json:"flags,omitempty"`

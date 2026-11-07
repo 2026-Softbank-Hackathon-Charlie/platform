@@ -62,13 +62,16 @@ func (c *Catalog) Draft(ctx context.Context, req apiv1.PlanDraftRequest) (apiv1.
 		return apiv1.EnginePlan{}, fmt.Errorf("%w: plan id %q is longer than 63 characters", ErrInvalid, id)
 	}
 	p := apiv1.EnginePlan{Id: id, Source: src, Target: dst}
+	if pair != nil && len(a.Environments) > 2 {
+		p.AllowSourceRewire = ptr(true)
+	}
 
 	wantFiles := req.Files == nil || *req.Files
 	switch {
 	case wantFiles && srcApp.Bucket != "" && dstApp.Bucket != "":
 		f := alloc(&p.Files)
 		f.Source, f.Target = srcApp.Bucket, dstApp.Bucket
-	case req.Files != nil && *req.Files:
+	case wantFiles && (a.filesRequired || (req.Files != nil && *req.Files)):
 		return apiv1.EnginePlan{}, fmt.Errorf("%w: files needs a bucket for %s in both %s and %s", ErrInvalid, a.Name, req.Source, req.Target)
 	}
 
