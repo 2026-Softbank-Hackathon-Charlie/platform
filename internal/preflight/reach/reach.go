@@ -8,7 +8,7 @@
 // written where its databases resolve (the AI runner's sandbox, a laptop on
 // the tailnet) and executed where the API runs, so a name that resolves in one
 // place can be unknown in the other; the rehearsal never sees that difference
-// (ADR 0049).
+// (ADR 0050).
 //
 // Only the source decides. The target database may not exist yet (the engine
 // creates it from the manifest), so its result is reported and never blocks.

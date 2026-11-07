@@ -18,7 +18,7 @@
 
 ## 승인 게이트: 원본 도달 검사
 
-`plans.Service.Approve`는 승인하기 전에 `reach`로 계획의 원본 DB가 API가 실행되는 곳에서 닿는지 본다. 이름이 해석되지 않거나(`dns`), 포트에 연결되지 않거나(`tcp`), 연결은 되는데 로그인이 거절되면(`auth`: 비밀번호 틀림, 접근 거부) 409 `db_unreachable`이고 계획은 승인 대기로 남는다. DB를 읽지 못하면 `unknown`으로 두는 시작 전 검사는 이 실패를 지나치므로, 엔진 `precheck`에서야 드러나던 것을 승인 단계로 당긴 것이다([ADR 0049](../../docs/adr/0049-source-reachability-at-approval.md)). 대상은 아직 없을 수 있어 보지 않고, 판단하지 못한 경우(해석기 시간 초과, 호스트가 없는 DSN)는 막지 않는다. 응답과 감사 기록에는 상태와 이유 코드만 담는다. `PLATFORM_REACH_GATE=off`로 끈다.
+`plans.Service.Approve`는 승인하기 전에 `reach`로 계획의 원본 DB가 API가 실행되는 곳에서 닿는지 본다. 이름이 해석되지 않거나(`dns`), 포트에 연결되지 않거나(`tcp`), 연결은 되는데 로그인이 거절되면(`auth`: 비밀번호 틀림, 접근 거부) 409 `db_unreachable`이고 계획은 승인 대기로 남는다. DB를 읽지 못하면 `unknown`으로 두는 시작 전 검사는 이 실패를 지나치므로, 엔진 `precheck`에서야 드러나던 것을 승인 단계로 당긴 것이다([ADR 0050](../../docs/adr/0050-source-reachability-at-approval.md)). 대상은 아직 없을 수 있어 보지 않고, 판단하지 못한 경우(해석기 시간 초과, 호스트가 없는 DSN)는 막지 않는다. 응답과 감사 기록에는 상태와 이유 코드만 담는다. `PLATFORM_REACH_GATE=off`로 끈다.
 
 ## 구현 범위
 
@@ -28,7 +28,7 @@
 | `inventory` | 실제 PostgreSQL 카탈로그 조회로 모든 DB의 테이블·파티션·구체화 뷰 수집, 접속 불가 DB·대용량 객체·미지원 식별자·timeout은 불완전 | DSN이 그 CNPG 클러스터를 가리키는지의 독립 검증, 이미 존재하는 replica 감지 |
 | `capacity` | `PLATFORM_CAPACITY_GATE=on`일 때 시작 전 실측. 대상 접속 한도 부족, replica가 `catchupTimeout` 안에 따라잡지 못함을 차단. 측정 못 한 값은 unknown이며 차단 안 함 ([ADR 0014](../../docs/adr/0014-capacity-preflight.md)) | 7일 피크 접속 수, 대상이 없을 때 회선 처리량, 승인 화면 미리보기 |
 | `pgversion` | 시작 전 원본·대상 PostgreSQL 메이저 버전 비교. 다르면 차단, 읽지 못하면 unknown이며 차단 안 함 ([ADR 0020](../../docs/adr/0020-pg-major-version-gate.md)) | 대상 manifest에 이미지가 없을 때 CNPG operator 기본 이미지 조회, 확장 버전 비교 |
-| `reach` | 승인할 때 원본 DB 이름 해석(DNS), TCP 연결, 로그인을 API 위치에서 확인. 이름이 없거나 연결이 안 열리거나 로그인이 거절되면 409 `db_unreachable`. 판단 못 하면 unknown이며 차단 안 함 ([ADR 0049](../../docs/adr/0049-source-reachability-at-approval.md)) | 로그인 뒤 SQL·복제 권한, 시작·재개 시점의 재확인, `/v1/plans/draft` 응답에 결과 담기 |
+| `reach` | 승인할 때 원본 DB 이름 해석(DNS), TCP 연결, 로그인을 API 위치에서 확인. 이름이 없거나 연결이 안 열리거나 로그인이 거절되면 409 `db_unreachable`. 판단 못 하면 unknown이며 차단 안 함 ([ADR 0050](../../docs/adr/0050-source-reachability-at-approval.md)) | 로그인 뒤 SQL·복제 권한, 시작·재개 시점의 재확인, `/v1/plans/draft` 응답에 결과 담기 |
 | `gate` | Plan → 물리 복제 + 버킷 복사 요청 변환, 시작 및 정상 파일 Sync/Check 경로 연결, 버킷/내용 검사 증거 첨부 | DB 재개·역방향 롤백의 공통 게이트 |
 | `fileguard` | 실제 전체 본문/SHA-256 검사, UTF-8/제한된 ZIP, 수동 exact-hash 분류, 매 패스 staging 고정 전송·다운로드 비교. 단위·실제 로컬 rclone·관련 race 검증 통과 | OCR/범용 DLP, 버전별 검사 캐시, 메타데이터 의미 보존, 운영 성능 검증 |
 | `paritygate` | `PLATFORM_PARITY_FILE`로 시작 직전 RBAC·Prometheus·선택적 리소스 실검사, 감사 로그 `parity` 기록. 결과와 무관하게 시작 | 차단 모드, 원본 dependency 발견, 승인 화면 표시 |
