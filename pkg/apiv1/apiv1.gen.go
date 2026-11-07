@@ -565,6 +565,90 @@ func (e EnginePlanEndpointKind) Valid() bool {
 	}
 }
 
+// Defines values for LLMObservabilitySampleLimit.
+const (
+	LLMObservabilitySampleLimitN100 LLMObservabilitySampleLimit = 100
+)
+
+// Valid indicates whether the value is a known member of the LLMObservabilitySampleLimit enum.
+func (e LLMObservabilitySampleLimit) Valid() bool {
+	switch e {
+	case LLMObservabilitySampleLimitN100:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LLMObservabilitySourceName.
+const (
+	LLMObservabilitySourceNameLangfuse LLMObservabilitySourceName = "langfuse"
+)
+
+// Valid indicates whether the value is a known member of the LLMObservabilitySourceName enum.
+func (e LLMObservabilitySourceName) Valid() bool {
+	switch e {
+	case LLMObservabilitySourceNameLangfuse:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LLMObservabilitySourceStatus.
+const (
+	LLMObservabilitySourceStatusNotConfigured LLMObservabilitySourceStatus = "not_configured"
+	LLMObservabilitySourceStatusObserved      LLMObservabilitySourceStatus = "observed"
+	LLMObservabilitySourceStatusScopeUnmapped LLMObservabilitySourceStatus = "scope_unmapped"
+	LLMObservabilitySourceStatusUnavailable   LLMObservabilitySourceStatus = "unavailable"
+	LLMObservabilitySourceStatusUnobserved    LLMObservabilitySourceStatus = "unobserved"
+	LLMObservabilitySourceStatusUnsupported   LLMObservabilitySourceStatus = "unsupported"
+)
+
+// Valid indicates whether the value is a known member of the LLMObservabilitySourceStatus enum.
+func (e LLMObservabilitySourceStatus) Valid() bool {
+	switch e {
+	case LLMObservabilitySourceStatusNotConfigured:
+		return true
+	case LLMObservabilitySourceStatusObserved:
+		return true
+	case LLMObservabilitySourceStatusScopeUnmapped:
+		return true
+	case LLMObservabilitySourceStatusUnavailable:
+		return true
+	case LLMObservabilitySourceStatusUnobserved:
+		return true
+	case LLMObservabilitySourceStatusUnsupported:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LLMObservationLevel.
+const (
+	LLMObservationLevelDEBUG   LLMObservationLevel = "DEBUG"
+	LLMObservationLevelDEFAULT LLMObservationLevel = "DEFAULT"
+	LLMObservationLevelERROR   LLMObservationLevel = "ERROR"
+	LLMObservationLevelWARNING LLMObservationLevel = "WARNING"
+)
+
+// Valid indicates whether the value is a known member of the LLMObservationLevel enum.
+func (e LLMObservationLevel) Valid() bool {
+	switch e {
+	case LLMObservationLevelDEBUG:
+		return true
+	case LLMObservationLevelDEFAULT:
+		return true
+	case LLMObservationLevelERROR:
+		return true
+	case LLMObservationLevelWARNING:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ObserveStepVerdict.
 const (
 	ObserveStepVerdictInconclusive ObserveStepVerdict = "inconclusive"
@@ -3748,6 +3832,82 @@ type InstanceSecrets struct {
 	Secrets []AppSecretInfo `json:"secrets"`
 }
 
+// LLMMetrics defines model for LLMMetrics.
+type LLMMetrics struct {
+	// CostUsd Reported Langfuse cost in USD; never estimated by the console.
+	CostUsd       *float32 `json:"costUsd"`
+	InputTokens   *float32 `json:"inputTokens"`
+	LatencyMillis *float32 `json:"latencyMillis"`
+	OutputTokens  *float32 `json:"outputTokens"`
+	TotalTokens   *float32 `json:"totalTokens"`
+}
+
+// LLMObservability defines model for LLMObservability.
+type LLMObservability struct {
+	App          string           `json:"app"`
+	GeneratedAt  time.Time        `json:"generatedAt"`
+	Observations []LLMObservation `json:"observations"`
+	Sample       struct {
+		Limit     LLMObservabilitySampleLimit `json:"limit"`
+		Returned  int                         `json:"returned"`
+		Truncated bool                        `json:"truncated"`
+	} `json:"sample"`
+	Source struct {
+		Name    LLMObservabilitySourceName   `json:"name"`
+		Reason  string                       `json:"reason"`
+		Status  LLMObservabilitySourceStatus `json:"status"`
+		Version *string                      `json:"version,omitempty"`
+	} `json:"source"`
+	Summary *LLMSummary `json:"summary"`
+	Window  struct {
+		From time.Time `json:"from"`
+		To   time.Time `json:"to"`
+	} `json:"window"`
+}
+
+// LLMObservabilitySampleLimit defines model for LLMObservability.Sample.Limit.
+type LLMObservabilitySampleLimit int
+
+// LLMObservabilitySourceName defines model for LLMObservability.Source.Name.
+type LLMObservabilitySourceName string
+
+// LLMObservabilitySourceStatus defines model for LLMObservability.Source.Status.
+type LLMObservabilitySourceStatus string
+
+// LLMObservation defines model for LLMObservation.
+type LLMObservation struct {
+	// CostUsd Reported Langfuse cost in USD; never estimated by the console.
+	CostUsd       *float32             `json:"costUsd"`
+	Id            string               `json:"id"`
+	InputTokens   *float32             `json:"inputTokens"`
+	LatencyMillis *float32             `json:"latencyMillis"`
+	Level         *LLMObservationLevel `json:"level"`
+	Model         *string              `json:"model,omitempty"`
+	OutputTokens  *float32             `json:"outputTokens"`
+	StartTime     time.Time            `json:"startTime"`
+	TotalTokens   *float32             `json:"totalTokens"`
+	TraceId       string               `json:"traceId"`
+
+	// Url Optional credential-free trace link from the trusted server UI base.
+	Url *string `json:"url,omitempty"`
+}
+
+// LLMObservationLevel defines model for LLMObservation.Level.
+type LLMObservationLevel string
+
+// LLMSummary defines model for LLMSummary.
+type LLMSummary struct {
+	// CostUsd Reported Langfuse cost in USD; never estimated by the console.
+	CostUsd       *float32 `json:"costUsd"`
+	Errors        *int     `json:"errors"`
+	Generations   int      `json:"generations"`
+	InputTokens   *float32 `json:"inputTokens"`
+	LatencyMillis *float32 `json:"latencyMillis"`
+	OutputTokens  *float32 `json:"outputTokens"`
+	TotalTokens   *float32 `json:"totalTokens"`
+	Traces        int      `json:"traces"`
+}
+
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
 	Password string `json:"password"`
@@ -5853,6 +6013,11 @@ type ListDeploymentsParams struct {
 
 	// Branch Only the deployments of this branch's instance. It must be a branch the app deploys.
 	Branch *string `form:"branch,omitempty" json:"branch,omitempty"`
+}
+
+// GetAppLLMObservabilityParams defines parameters for GetAppLLMObservability.
+type GetAppLLMObservabilityParams struct {
+	Minutes *int `form:"minutes,omitempty" json:"minutes,omitempty"`
 }
 
 // GetAppObservabilityParams defines parameters for GetAppObservability.

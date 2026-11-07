@@ -1764,6 +1764,37 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/apps/{name}/llm-observability:
+    get:
+      tags: [apps]
+      operationId: getAppLLMObservability
+      description: |
+        Read app-bound Langfuse generation metadata. Viewer, agent and operator.
+        Only registered apps are answered. Server configuration binds each app
+        to a project and an exact generation metadata key whose value is the
+        registered app name. Caller-provided projects, URLs and filters are rejected.
+        Public/secret project keys stay in mounted server files.
+        Source status distinguishes missing setup, unmapped scope, unsupported
+        version/API, collection failure and no scoped observation. None proves no AI.
+        At most 100 generations are sampled; counts and metrics describe that
+        sample, not all calls in the window. Missing metrics are null. Summary
+        latencyMillis is the sample mean, only when every duration is known.
+        Prompts, inputs, outputs, arbitrary metadata and provider error text are
+        never returned. Langfuse v3/v4 health selects its supported read API.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: minutes, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1440, default: 60 } }
+      responses:
+        "200":
+          description: Langfuse source state and the bounded generation sample.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LLMObservability" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/ai-activity:
     get:
       tags: [plans]
@@ -3517,6 +3548,71 @@ components:
               source: { type: string }
               observedAt: { type: string, format: date-time }
               detail: { type: string }
+
+    LLMMetrics:
+      type: object
+      required: [inputTokens, outputTokens, totalTokens, costUsd, latencyMillis]
+      properties:
+        inputTokens: { type: number, nullable: true, minimum: 0 }
+        outputTokens: { type: number, nullable: true, minimum: 0 }
+        totalTokens: { type: number, nullable: true, minimum: 0 }
+        costUsd: { type: number, nullable: true, minimum: 0, description: Reported Langfuse cost in USD; never estimated by the console. }
+        latencyMillis: { type: number, nullable: true, minimum: 0 }
+    LLMObservation:
+      allOf:
+        - $ref: "#/components/schemas/LLMMetrics"
+        - type: object
+          required: [id, traceId, startTime, level]
+          properties:
+            id: { type: string }
+            traceId: { type: string }
+            startTime: { type: string, format: date-time }
+            model: { type: string }
+            level: { type: string, nullable: true, enum: [ERROR, WARNING, DEFAULT, DEBUG] }
+            url: { type: string, format: uri, description: Optional credential-free trace link from the trusted server UI base. }
+    LLMSummary:
+      nullable: true
+      allOf:
+        - $ref: "#/components/schemas/LLMMetrics"
+        - type: object
+          required: [generations, traces, errors]
+          properties:
+            generations: { type: integer, minimum: 1, maximum: 100 }
+            traces: { type: integer, minimum: 1, maximum: 100 }
+            errors: { type: integer, nullable: true, minimum: 0, maximum: 100 }
+    LLMObservability:
+      type: object
+      additionalProperties: false
+      required: [app, generatedAt, window, source, sample, summary, observations]
+      properties:
+        app: { type: string }
+        generatedAt: { type: string, format: date-time }
+        window:
+          type: object
+          additionalProperties: false
+          required: [from, to]
+          properties:
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+        source:
+          type: object
+          additionalProperties: false
+          required: [name, status, reason]
+          properties:
+            name: { type: string, enum: [langfuse] }
+            status: { type: string, enum: [observed, unobserved, not_configured, scope_unmapped, unavailable, unsupported] }
+            reason: { type: string }
+            version: { type: string }
+        sample:
+          type: object
+          additionalProperties: false
+          required: [limit, returned, truncated]
+          properties:
+            limit: { type: integer, enum: [100] }
+            returned: { type: integer, minimum: 0, maximum: 100 }
+            truncated: { type: boolean }
+        summary: { $ref: "#/components/schemas/LLMSummary" }
+        observations: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/LLMObservation" } }
 
     AIActivityEvent:
       type: object
