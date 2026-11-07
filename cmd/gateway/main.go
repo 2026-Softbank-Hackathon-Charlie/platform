@@ -47,6 +47,7 @@ func main() {
 	healthPath := flag.String("health-path", gateway.DefaultHealthPath, "backend health check path")
 	connRecycle := flag.Duration("conn-recycle", gateway.DefaultConnRecycle, "how often idle backend connections are closed, so the next request resolves the backend's name again")
 	insecure := flag.Bool("insecure-no-auth", false, "run the admin API without GATEWAY_ADMIN_TOKEN (local development only)")
+	aiApp := flag.String("ai-app", "", "enable bounded AI demo on this dedicated default app (requires AI_GATEWAY_TOKEN)")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -60,7 +61,12 @@ func main() {
 		log.Error("invalid -backends / GATEWAY_BACKENDS", "err", err)
 		os.Exit(2)
 	}
+	var aiCfg *gateway.AIDemoConfig
+	if *aiApp != "" {
+		aiCfg = &gateway.AIDemoConfig{App: *aiApp, Token: os.Getenv("AI_GATEWAY_TOKEN")}
+	}
 	gw, err := gateway.New(gateway.Config{
+		AIDemo:              aiCfg,
 		Backends:            bs,
 		InitialBackend:      *initial,
 		StateFile:           *stateFile,

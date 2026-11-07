@@ -594,6 +594,13 @@ func TestAppMetrics(t *testing.T) {
 	tg.hostDo(ctx, http.MethodGet, "app.hopcharlie.dev", "/items", "")
 	tg.hostDo(ctx, http.MethodPost, "shop.hopcharlie.dev", "/orders", "w")
 
+	// Response EOF can precede forward's metrics and the outer in-flight defer.
+	shop := tg.g.lookup("shop")
+	waitFor(t, "completed app requests", func() bool {
+		shop.mu.Lock()
+		defer shop.mu.Unlock()
+		return tg.g.inflightReads.Load() == 0 && shop.inflightReads.Load() == 0 && shop.inflightWrites == 0
+	})
 	m := tg.metrics(t)
 	for _, want := range []string{
 		`charlie_gateway_requests_total{backend="gke",class="read",code="200"} 1`,

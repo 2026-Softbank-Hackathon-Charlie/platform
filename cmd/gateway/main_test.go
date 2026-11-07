@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"io"
 	"log/slog"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +19,61 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 )
+
+func TestAICommandStartup(t *testing.T) {
+	if mode := os.Getenv("HOP_AI_COMMAND_TEST"); mode != "" {
+		flag.CommandLine = flag.NewFlagSet("gateway", flag.ExitOnError)
+		os.Args = []string{"gateway", "-backends", "gcp=http://127.0.0.1:1,laptop=http://127.0.0.1:2", "-state-file", "", "-ai-app", "app"}
+		switch mode {
+		case "no-ai-token":
+			os.Unsetenv("AI_GATEWAY_TOKEN")
+			os.Args = append(os.Args, "-write-timeout", "12s")
+		case "no-admin-token":
+			os.Unsetenv("GATEWAY_ADMIN_TOKEN")
+			os.Args = append(os.Args, "-insecure-no-auth", "-write-timeout", "12s")
+		case "default-timeout":
+		case "help":
+			os.Args = []string{"gateway", "-h"}
+		}
+		main()
+		os.Exit(0)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		mode, want string
+		code       int
+	}{
+		{"no-ai-token", "both tokens", 1},
+		{"no-admin-token", "both tokens", 1},
+		{"default-timeout", "write timeout must be 12s", 1},
+		{"help", "-ai-app", 0},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			cmd := exec.Command(exe, "-test.run=^TestAICommandStartup$")
+			for _, v := range os.Environ() {
+				if !strings.HasPrefix(v, "AI_GATEWAY_TOKEN=") && !strings.HasPrefix(v, "GATEWAY_ADMIN_TOKEN=") && !strings.HasPrefix(v, "HOP_AI_COMMAND_TEST=") {
+					cmd.Env = append(cmd.Env, v)
+				}
+			}
+			cmd.Env = append(cmd.Env, "AI_GATEWAY_TOKEN=test-ai", "GATEWAY_ADMIN_TOKEN=test-admin", "HOP_AI_COMMAND_TEST="+tc.mode)
+			out, err := cmd.CombinedOutput()
+			code := 0
+			if err != nil {
+				if e, ok := err.(*exec.ExitError); ok {
+					code = e.ExitCode()
+				} else {
+					t.Fatal(err)
+				}
+			}
+			if code != tc.code || !strings.Contains(string(out), tc.want) {
+				t.Fatalf("exit=%d want=%d output=%s", code, tc.code, out)
+			}
+		})
+	}
+}
 
 type result struct {
 	status     int

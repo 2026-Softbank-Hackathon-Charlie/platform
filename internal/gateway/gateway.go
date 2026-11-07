@@ -96,6 +96,7 @@ type holdGen struct {
 // router is one app: its backends, routing, hold and stats. Apps share
 // nothing else, so holding one app's writes never delays another's.
 type router struct {
+	ai      *aiState // guarded by mu
 	g       *Gateway
 	name    string
 	log     *slog.Logger
@@ -155,6 +156,9 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, errors.New("no backends configured")
 	}
 	if err := cfg.checkApps(); err != nil {
+		return nil, err
+	}
+	if err := cfg.checkAI(); err != nil {
 		return nil, err
 	}
 	g := &Gateway{cfg: cfg, log: cfg.Log, shutdown: make(chan struct{}), apps: map[string]*router{}}
@@ -368,6 +372,10 @@ func (g *Gateway) serveProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *router) serve(w http.ResponseWriter, r *http.Request) {
+	if rt.aiEnabled() {
+		rt.serveAI(w, r)
+		return
+	}
 	start := time.Now()
 	class := classWrite
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
@@ -873,6 +881,13 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 				pr.Out.Header["X-Forwarded-For"] = xff
 			}
 			pr.SetURL(b.url)
+			if rt.aiEnabled() {
+				pr.Out.Header.Del("Authorization")
+				pr.Out.Header.Del("X-Hop-Backend")
+				pr.Out.Header.Del("Cookie")
+				pr.Out.Header.Set("X-Request-Id", pr.In.Header.Get("X-Request-Id"))
+				pr.Out.Trailer = nil
+			}
 			pr.SetXForwarded()
 			if proto := pr.In.Header.Get("X-Forwarded-Proto"); proto != "" {
 				pr.Out.Header.Set("X-Forwarded-Proto", proto)
@@ -882,15 +897,23 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 		FlushInterval: -1, // stream SSE and chunked responses as they come
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Set(headerBackend, b.name)
+			if rt.aiEnabled() {
+				resp.Header.Set("X-Hop-Backend", b.name)
+				resp.Header.Set("Cache-Control", "no-store")
+				resp.Trailer.Del("X-Hop-Backend")
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if rt.aiEnabled() {
+				w.Header().Set("X-Hop-Backend", b.name)
+			}
 			client := r.Context()
 			if c, ok := client.Value(clientCtxKey{}).(context.Context); ok {
 				client = c // a write, whose r.Context() outlives the client
 			}
 			switch {
-			case errors.Is(context.Cause(r.Context()), errWriteTimeout):
+			case errors.Is(context.Cause(r.Context()), errWriteTimeout) || (rt.aiEnabled() && errors.Is(r.Context().Err(), context.DeadlineExceeded)):
 				rt.log.Warn("write timed out", "backend", b.name, "method", r.Method, "path", r.URL.Path,
 					"writeTimeout", g.cfg.WriteTimeout.String())
 				w.Header().Set(headerBackend, b.name)
@@ -920,7 +943,7 @@ var errWriteTimeout = errors.New("write timeout")
 // (nil otherwise): when it discarded the answer, the attempt is counted as
 // retried, not as a failure the client saw.
 func (rt *router) forward(w http.ResponseWriter, r *http.Request, b *backend, class string, retry *retryWriter) {
-	if class == classWrite {
+	if class == classWrite && !rt.aiEnabled() {
 		// A write stays in flight until the backend answers, even when its
 		// client leaves: the backend may still commit it, and hold must wait
 		// for that. The timeout also gives ReverseProxy a context it can end.
@@ -929,10 +952,15 @@ func (rt *router) forward(w http.ResponseWriter, r *http.Request, b *backend, cl
 		r = r.WithContext(context.WithValue(ctx, clientCtxKey{}, r.Context()))
 	}
 	sw := &statusWriter{ResponseWriter: w}
+	if rt.aiEnabled() {
+		sw.aiBackend, sw.requestID = b.name, r.Header.Get("X-Request-Id")
+	}
+	returned := false
 	start := time.Now()
 	// Deferred because ReverseProxy panics with http.ErrAbortHandler when a
 	// streamed body breaks, and that request must still be counted.
 	defer func() {
+		rt.finishAI(r, sw.status(), returned)
 		d := time.Since(start)
 		code := sw.status()
 		b.stats.record(time.Now(), d, code >= 500, retry != nil && retry.failed)
@@ -940,16 +968,23 @@ func (rt *router) forward(w http.ResponseWriter, r *http.Request, b *backend, cl
 		rt.metrics.duration.WithLabelValues(b.name, class).Observe(d.Seconds())
 	}()
 	b.proxy.ServeHTTP(sw, r)
+	returned = true
 }
 
 // statusWriter records the response status. Unwrap lets ReverseProxy reach
 // the real writer for flushing and protocol upgrades.
 type statusWriter struct {
 	http.ResponseWriter
-	code int
+	code                 int
+	aiBackend, requestID string
 }
 
 func (w *statusWriter) WriteHeader(code int) {
+	if w.aiBackend != "" && code >= 200 {
+		w.Header().Set("X-Hop-Backend", w.aiBackend)
+		w.Header().Set("X-Request-Id", w.requestID)
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if w.code == 0 && code >= 200 { // 1xx are informational
 		w.code = code
 	}
@@ -957,6 +992,9 @@ func (w *statusWriter) WriteHeader(code int) {
 }
 
 func (w *statusWriter) Write(p []byte) (int, error) {
+	if w.code == 0 && w.aiBackend != "" {
+		w.WriteHeader(http.StatusOK)
+	}
 	if w.code == 0 {
 		w.code = http.StatusOK
 	}

@@ -50,6 +50,7 @@ type BackendConfig struct {
 
 // Config configures a Gateway.
 type Config struct {
+	AIDemo *AIDemoConfig // opt-in native chat contract on the default app
 	// Backends in a stable order; reads are picked in this order.
 	Backends []BackendConfig
 	// InitialBackend receives writes when there is no state file yet. Empty
