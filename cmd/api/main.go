@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
@@ -439,6 +440,33 @@ func main() {
 		deps.AIRuns = aiRuns
 	} else {
 		log.Info("PLATFORM_AIRUN_JOB_TEMPLATE is not set: the console cannot start the AI runner; run hopai by hand")
+	}
+	// Optional: read what the AI runner did from the observability stack's
+	// ClickHouse (the HyperDX store) so the console's migration map can show the
+	// real calls. A read-only ClickHouse user is expected; the password comes
+	// from a mounted file, never an environment value. A bad setting turns only
+	// /v1/ai-activity off (503).
+	if u := os.Getenv("PLATFORM_AIOBS_CLICKHOUSE_URL"); u != "" {
+		pw := ""
+		if f := os.Getenv("PLATFORM_AIOBS_CLICKHOUSE_PASSWORD_FILE"); f != "" {
+			raw, err := os.ReadFile(f)
+			if err != nil {
+				log.Error("AI activity is off: the ClickHouse password file cannot be read; /v1/ai-activity answers 503", "err", err)
+				u = ""
+			}
+			pw = strings.TrimSpace(string(raw))
+		}
+		if u != "" {
+			c, err := aiobs.New(u, os.Getenv("PLATFORM_AIOBS_CLICKHOUSE_USER"), pw, os.Getenv("PLATFORM_AIOBS_CLICKHOUSE_TABLE"))
+			if err != nil {
+				log.Error("AI activity is off; /v1/ai-activity answers 503", "err", err)
+			} else {
+				deps.AIActivity = c
+				log.Info("AI activity enabled", "table", c.Table)
+			}
+		}
+	} else {
+		log.Info("PLATFORM_AIOBS_CLICKHOUSE_URL is not set: /v1/ai-activity answers 503")
 	}
 	deps.Secrets = secretsKey
 	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }

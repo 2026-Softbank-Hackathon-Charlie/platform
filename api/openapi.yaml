@@ -1455,6 +1455,35 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/ai-activity:
+    get:
+      tags: [plans]
+      operationId: getAIActivity
+      description: |
+        What the AI runner (hopai) did lately, read from the observability
+        stack's ClickHouse (the HyperDX store): the model it asked, the
+        read-only tools the model requested, the sandbox steps and rehearsal
+        results. Only parsed fields are returned, never a raw log line. The
+        console draws its migration map from it. Without
+        PLATFORM_AIOBS_CLICKHOUSE_URL the server answers 503
+        `observability_not_configured`; if ClickHouse cannot be reached, 502
+        `observability_unavailable`.
+
+        Roles: viewer, agent, operator.
+      parameters:
+        - { name: minutes, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1440, default: 60 }, description: how far back to read }
+      responses:
+        "200":
+          description: The events, oldest first, and their totals.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AIActivity" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/ai-runs:
     get:
       tags: [plans]
@@ -2508,6 +2537,43 @@ components:
         requestedBy: { type: string }
         createdAt: { type: string, format: date-time }
         finishedAt: { type: string, format: date-time }
+
+    AIActivityEvent:
+      type: object
+      required: [time, kind]
+      properties:
+        time: { type: string, format: date-time }
+        kind: { type: string, enum: [model, tool_call, tool_result, blocked, rehearsal] }
+        tool: { type: string, description: "tool_call, tool_result, blocked: the tool's name" }
+        outcome: { type: string, description: "tool_result: ok or error; rehearsal: the engine's result" }
+        model: { type: string }
+        stopReason: { type: string, description: "model: tool_use or end_turn" }
+        toolCalls: { type: array, items: { type: string }, description: "model: the tools it asked for" }
+        tokensIn: { type: integer }
+        tokensOut: { type: integer }
+        passed: { type: boolean, description: "rehearsal: whether it passed" }
+        seconds: { type: integer, description: "rehearsal: how long it took" }
+
+    AIActivitySummary:
+      type: object
+      required: [modelCalls, tokensIn, tokensOut, tools, blocked, rehearsals]
+      properties:
+        modelCalls: { type: integer }
+        model: { type: string }
+        tokensIn: { type: integer }
+        tokensOut: { type: integer }
+        tools: { type: object, additionalProperties: { type: integer } }
+        blocked: { type: integer }
+        rehearsals: { type: integer }
+        lastEvent: { type: string, format: date-time }
+
+    AIActivity:
+      type: object
+      required: [since, events, summary]
+      properties:
+        since: { type: string, format: date-time }
+        events: { type: array, items: { $ref: "#/components/schemas/AIActivityEvent" } }
+        summary: { $ref: "#/components/schemas/AIActivitySummary" }
 
     AIRunList:
       type: object
