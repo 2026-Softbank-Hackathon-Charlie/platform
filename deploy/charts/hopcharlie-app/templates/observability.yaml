@@ -1,0 +1,59 @@
+{{- $o := .Values.profile.observability }}
+{{- if $o.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hopcharlie-observability-ca
+  labels:
+    {{- include "hopcharlie-app.namespaceLabels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  ca.crt: {{ $o.caBundle | quote }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: hopcharlie-otel-egress}
+spec:
+  podSelector:
+    matchLabels: {observability.hopcharlie.dev/kind: application}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: observability}
+          podSelector:
+            matchLabels: {observability.hopcharlie.dev/gateway: "true"}
+      ports: [{protocol: TCP, port: 4319}]
+{{- $pg := include "hopcharlie-app.resource" (dict "root" . "type" "postgres") | fromJson }}
+{{- if and $o.metricsEnabled $pg.name }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ printf "%s-%s" .Values.values.app $pg.name }}
+  labels: {observability.hopcharlie.dev/monitor: cnpg}
+spec:
+  selector:
+    matchLabels:
+      cnpg.io/cluster: {{ printf "%s-%s" .Values.values.app $pg.name }}
+  podMetricsEndpoints:
+    - {port: metrics, interval: 30s, scrapeTimeout: 10s}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: hopcharlie-cnpg-metrics}
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: {{ printf "%s-%s" .Values.values.app $pg.name }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: observability}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: prometheus, prometheus: monitoring-prometheus}
+      ports: [{protocol: TCP, port: 9187}]
+{{- end }}
+{{- end }}

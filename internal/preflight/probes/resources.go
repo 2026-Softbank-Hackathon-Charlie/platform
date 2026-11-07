@@ -58,6 +58,19 @@ type Secrets struct {
 	target   parity.Target
 	client   metadata.Interface
 	required []SecretRequirement
+	usage    *SecretUsage
+	fetch    UsageFetch
+}
+
+// WithUsage attaches an optional application runtime verifier. Metadata-only
+// callers retain the existing unknown usability result.
+func (p *Secrets) WithUsage(cfg SecretUsage, fetch UsageFetch) error {
+	if err := cfg.Validate(p.required); err != nil {
+		return err
+	}
+	cfg.Checks = append([]SecretUse(nil), cfg.Checks...)
+	p.usage, p.fetch = &cfg, fetch
+	return nil
 }
 
 // NewSecrets requires a metadata-only client (envs.NewReadClients removes
@@ -96,7 +109,20 @@ func (p *Secrets) Check(ctx context.Context, target parity.Target) (parity.Resul
 			break
 		}
 	}
-	appendCheck(&r, parity.Check{ID: "secret-usability", Status: parity.Unknown, Code: "secret_usability_not_verified"})
+	if p.usage == nil {
+		appendCheck(&r, parity.Check{ID: "secret-usability", Status: parity.Unknown, Code: "secret_usability_not_verified"})
+	} else {
+		for _, c := range checkSecretUsage(ctx, target, *p.usage, p.fetch, p.required) {
+			appendCheck(&r, c)
+		}
+		all := len(r.Checks) > 0
+		for _, c := range r.Checks {
+			all = all && c.Status == parity.Pass
+		}
+		if all {
+			r.Status, r.Code = parity.Pass, "secret_metadata_and_runtime_verified"
+		}
+	}
 	return r, nil
 }
 

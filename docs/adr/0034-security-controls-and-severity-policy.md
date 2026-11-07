@@ -71,3 +71,19 @@ Security Hub CSPM 통제 문서(2026-11-06 확인)에 맞췄다.
 - AWS Security Hub와 같은 방식으로 CRITICAL부터 LOW까지 등급별로 읽고, 활성이며 mute되지 않은 결과를 최대 50건 모은다. 심각도는 SCC가 준 값을 vendor 근거로 두고 원래 값(`sourceSeverity`)과 결과 이름(`sourceFindingId`)을 남긴다. 등급이 없으면 info다.
 - API가 꺼져 있거나 SCC가 활성화되지 않았으면 `not_configured`, 권한이 없으면 `error`다. 어느 경우에도 0건으로 세지 않는다. 활성화 전 Google은 "Security Command Center Legacy"를 말하는 400 INVALID_ARGUMENT를 돌려준다(2026-11-06 확인).
 - GKE 클러스터 내부는 계속 Kubernetes 검사(`gke`)가 맡는다. SCC 결과로 그 범위를 채우지 않는다.
+
+## 2026-11-07 악용 근거: KEV·EPSS(SEC-07)
+
+- `GET /v1/security/vulnerabilities`는 각 취약점의 CVE에 대해 CISA KEV 등재 여부와 FIRST EPSS 점수를 `exploitation`으로 붙인다. CVE는 advisory가 `CVE-`로 시작하면 그것, 아니면 첫 `CVE-` alias다. CVE가 없으면(GHSA만 있는 경우) 둘 다 `no_cve`이고 조회하지 않는다.
+- KEV는 `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json` 전체 카탈로그를 24시간마다 읽는다. 읽기가 실패하면 마지막 성공본을 최대 3일 쓰고(`stale`), 그 뒤에는 `unknown`이다. EPSS는 `https://api.first.org/data/v1/epss`에서 CVE 100개씩 읽고 24시간 캐시한다. 3일보다 오래된 점수는 `unknown`이다.
+- 보고서는 KEV·EPSS를 최대 8초 기다린다. 늦거나 실패하면 그 값만 `unknown`이고 취약점 목록은 그대로 돌려준다. 두 출처의 상태는 `exploitSources`로 남기고 화면의 수집 상태 탭에 행으로 보인다. `unknown`은 "미등재"나 "점수 없음"이 아니다.
+- KEV·EPSS는 심각도를 바꾸지 않고, CVSS와 합산한 점수도 만들지 않는다. 조치 우선순위의 별도 근거다. 화면의 기본 정렬은 KEV 등재 → 실행 중 → 심각도 → EPSS 순이며 행마다 그 이유를 보인다.
+- VEX는 적용하지 않는다. 우리 이미지에 대한 VEX 문서를 만드는 주체가 아직 없어서, "영향 없음"을 판정할 근거가 없다.
+
+## 2026-11-07 예외 승인과 감사(SEC-08)
+
+- operator 한 명이 사유(1~500자)와 만료일을 적어 발견 항목(finding)이나 취약점(vulnerability)에 예외를 바로 등록한다(`POST /v1/security/exceptions`). agent(AI)와 viewer는 등록·해제할 수 없다. 통제 평가는 대상이 아니다.
+- 만료는 필수이며 등록 시점부터 최대 30일이다. 서버의 KEV 캐시에 등재된 CVE의 취약점은 최대 7일이다. KEV 캐시가 비어 있으면 30일 규칙을 쓴다. 서버는 시작할 때 KEV 캐시를 미리 읽는다.
+- 예외는 해제되지 않았고 만료 전일 때만 활성이다. 대상마다 활성 예외는 하나뿐이다(409). 만료가 지나면 자동으로 미처리로 보이고, 심각도가 바뀌어도 기한 안의 예외는 유지한다.
+- 예외는 심각도를 바꾸지 않는다. 보고서는 활성 예외를 `exception` 필드로 붙이고, OCSF에서는 status_id 3 Suppressed, `status_detail`에 사유를 둔다. 예외 저장소를 읽지 못하면 예외 없이 보고서를 돌려준다.
+- 등록·해제는 기존 감사 로그에 누가, 대상, 사유, 만료와 함께 남는다. 발견 항목 수명(처음·마지막 발견, 해결 판정)과 재검사는 이번 범위에 넣지 않았다(해커톤 일정).

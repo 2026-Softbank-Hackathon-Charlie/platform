@@ -54,6 +54,7 @@ tags:
   - name: apps
   - name: deployments
   - name: github
+  - name: onboarding
 
 paths:
   /healthz:
@@ -501,6 +502,48 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/migrations/{runId}/retention:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [migrations]
+      operationId: getSourceRetention
+      description: Read the persisted source cleanup schedule. An absent job means this run was not enrolled. No historical enrollment is inferred from success.
+      responses:
+        "200":
+          description: Latest persisted cleanup status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SourceRetentionResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        default: { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [migrations]
+      operationId: preserveSource
+      description: Operator only. Extend retainUntil, or set keep=true to cancel automatic cleanup. Exactly one is required. Cannot shorten retention, enroll a run, or change a deleting/deleted/cancelled job. Serialized with migrations and the cleanup worker.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                retainUntil: { type: string, format: date-time, description: "A later deadline, in the future and no more than 30 days from now." }
+                keep: { type: boolean, description: true cancels automatic cleanup permanently for this run. }
+      responses:
+        "200":
+          description: Updated persisted schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SourceRetentionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/migrations/{runId}/events:
     parameters:
       - $ref: "#/components/parameters/RunId"
@@ -793,7 +836,19 @@ paths:
         Every event declares `metadata.version` and the `cloud` profile and
         follows the official class schema of that version; the platform's
         tests validate the mapping against it. Nothing new is read: each value
-        comes from the matching `SecurityFinding`. Error codes as for
+        comes from the matching `SecurityFinding`.
+
+        `vulnerabilities` and `controls` carry the data of
+        `GET /v1/security/vulnerabilities` and `GET /v1/security/controls`
+        (same collection, `environment` filter, KEV, EPSS and exceptions):
+        each vulnerability is a Vulnerability Finding (class 2002), Suppressed
+        with the exception's reason while an exception is active, and
+        `is_exploit_available` with the CISA KEV catalog URL only when the CVE
+        is KEV-listed; `cve.epss` only when FIRST has a score. Each control
+        evaluation is a Compliance Finding (class 2003) with
+        `compliance.status_id` Pass, Fail or Unknown; not_applicable
+        evaluations are left out. `severity` filters `findings` only. When
+        they cannot be built, the two arrays are empty. Error codes as for
         `/v1/security`.
       parameters:
         - name: environment
@@ -922,6 +977,73 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/security/exceptions:
+    get:
+      tags: [security]
+      operationId: listSecurityExceptions
+      description: |
+        Every security exception, active, expired and revoked (SEC-08, ADR
+        0034). Roles: viewer, agent, operator.
+      responses:
+        "200":
+          description: The exceptions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityExceptionList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [security]
+      operationId: createSecurityException
+      description: |
+        Records a time-limited exception for one finding or vulnerability
+        (SEC-08, ADR 0034). It never changes severity. `reason` is 1-500
+        characters after trimming. `expiresAt` is after now and at most 30
+        days later, or at most 7 days for a vulnerability whose CVE is
+        KEV-listed. 409 when the target already has an active exception.
+        Roles: operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecurityExceptionRequest" }
+      responses:
+        "201":
+          description: The stored exception.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityException" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+
+  /v1/security/exceptions/{id}:
+    delete:
+      tags: [security]
+      operationId: revokeSecurityException
+      description: |
+        Revokes an exception now (SEC-08). The record is kept with
+        `revokedAt` and `revokedBy`. 409 when it is already revoked.
+        Roles: operator.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The revoked exception.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityException" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
 
@@ -1124,12 +1246,18 @@ paths:
       tags: [migrations]
       operationId: appendWrittenRecords
       description: |
-        Record writes that a load generator saw succeed. When a run's plan sets
-        `verify.writtenRecords: "stream:<name>"`, the server writes every record
-        of the stream to a file right before the verify step, and the engine
-        checks that each one exists on the target database. Table names are
-        stored in lower case (unquoted PostgreSQL identifiers); control
-        characters in `table` or `pk` are refused. Roles: agent, operator.
+        Record real table/PK write receipts with declared scope/coverage. Application
+        commits do not prove client response delivery. Before verify, the server
+        freezes the central stream count/maximum sequence and exports that cohort;
+        late reports are excluded and complete collection is not guaranteed.
+        Table names use unquoted PostgreSQL identifiers; control characters in
+        table/PK are refused. General roles are agent and operator. Dedicated
+        application stream tokens can only POST their exact stream with
+        application_commits/reservation_inserts, app.reservations, a positive
+        integer PK, matching reservation-<pk> eventId, timestamp and generation.
+        These tokens cannot read streams or access other APIs. Stable eventId
+        retries deduplicate identical payloads; changed payload or stream
+        generation/scope/coverage returns 409 written_record_conflict atomically.
       requestBody:
         required: true
         content:
@@ -1141,6 +1269,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WrittenRecordsAccepted" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1334,6 +1463,35 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/ai-activity:
+    get:
+      tags: [plans]
+      operationId: getAIActivity
+      description: |
+        What the AI runner (hopai) did lately, read from the observability
+        stack's ClickHouse (the HyperDX store): the model it asked, the
+        read-only tools the model requested, the sandbox steps and rehearsal
+        results. Only parsed fields are returned, never a raw log line. The
+        console draws its migration map from it. Without
+        PLATFORM_AIOBS_CLICKHOUSE_URL the server answers 503
+        `observability_not_configured`; if ClickHouse cannot be reached, 502
+        `observability_unavailable`.
+
+        Roles: viewer, agent, operator.
+      parameters:
+        - { name: minutes, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1440, default: 60 }, description: how far back to read }
+      responses:
+        "200":
+          description: The events, oldest first, and their totals.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AIActivity" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
   /v1/ai-runs:
     get:
@@ -1530,15 +1688,195 @@ paths:
         instance's `apps/<instance>/` from the gitops repository, and forgets
         the app with its instances and deployments. Argo CD then deletes the
         Applications and the resources they created, so the app's data goes
-        with them; 202 means that is under way.
+        with them. The platform also removes every instance from the traffic
+        gateway and the app's database routes, and then deletes the buckets
+        and keys it made for the app: every instance's file bucket and the
+        Postgres backup bucket `<prefix><name>---pg` with its user, keys and
+        every object version (ADR 0016, 0037). A bucket that cannot be
+        deleted yet is retried every few minutes. 202 means that is under
+        way.
 
         Only registered apps can be deleted. Error codes: app_not_found (404),
         app_not_registered (409: the app is only in PLATFORM_APPS_FILE; an app
-        in both stays listed from the file), github_unreachable (502),
-        github_not_configured (503). Role operator.
+        in both stays listed from the file, without `deploy`, until the file
+        drops it), github_unreachable (502), github_not_configured (503).
+        Role operator.
       responses:
         "202":
           description: Unregistered; Argo CD is removing the workloads.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/apps/{name}/environments:
+    parameters:
+      - $ref: "#/components/parameters/AppName"
+    post:
+      tags: [apps]
+      operationId: addAppEnvironment
+      description: |
+        Add an environment to a registered app (ADR 0043) and queue a
+        deployment of the default instance (trigger `environment`) to all of
+        the app's environments, the new one included. The deployment repeats
+        the default instance's last healthy deployment: its commit, images and
+        platform.yaml, with the secrets as they are now. Nothing is built and
+        GitHub is not read. Images are pinned by digest; an image that was
+        deleted from its registry since makes the new environment Degraded and
+        the deployment fail, and a branch deployment builds it again.
+
+        A postgres app is added an environment only when it has a database
+        pair (ADR 0030) whose peer is that environment: the pair is made at
+        registration, also for an app registered in one environment while
+        exactly one other environment has a database host template. After the
+        deployment the database of the new environment is a streaming replica
+        of the app's database, and `POST /v1/migrations` can move the app
+        there once `deploy.dbTopology.readiness.ready` of `GET
+        /v1/apps/{name}` is true. Without such a pair the environment is
+        refused, as its database would be an independent primary that can
+        never be migrated. An app without a postgres resource is just added
+        the environment.
+
+        Branch instances (ADR 0015) go to the new environment at their next
+        deployment; this request queues none for them.
+
+        Sending the same request again: while the environment is in the app
+        and the default instance's newest deployment that got there (one that
+        stopped before it wrote the environment's file, such as a failed
+        build, is passed over) is healthy there, 409 environment_exists. While
+        it is in the app but that deployment failed or was superseded, or none
+        got there, and nothing is in progress, a new deployment is queued and
+        the answer is 202 again, so a failed add is retried by sending the
+        request again. A push stored while the environment was being added
+        deploys to the app's environments as they are when it commits, the
+        new one included.
+
+        Adding back an environment removed before (DELETE
+        /v1/apps/{name}/environments/{env}) waits until Argo CD deleted what
+        it had there: while an Application `<instance>-<env>` of the app is
+        still in the management cluster, or a Service or Pod is still in an
+        instance's namespace in the environment, 409
+        environment_cleanup_pending. The Tailscale operator's Services keep
+        their finalizer until it deleted their tailnet devices, so the new
+        database gets the same tailnet hostname again. This is read whenever
+        the server can read the clusters, also for an app deleted and
+        registered again under the same name. A peer added back
+        archives its database's WAL under a new path of the backup bucket.
+
+        Checked in this order. Error codes: invalid_request (400: no
+        `environment`), app_not_found (404), app_not_registered (409: the app
+        is only in PLATFORM_APPS_FILE), env_not_found (404: not an
+        environment of this server), environment_exists (409), deployment_in_progress
+        (409: a deployment of the default instance is not finished, an earlier
+        add included), migration_in_progress (409: a migration run of the app
+        is active, by the rule `POST /v1/migrations` uses to refuse another
+        run: it has not ended and is running or awaiting its switch, so a run
+        that ended halted or was interrupted is not; or the traffic gateway
+        holds the app's writes), nothing_to_redeploy (409: the default
+        instance has no healthy deployment; deploy the branch first),
+        db_pair_unavailable (409: platform.yaml has a postgres resource and the
+        app has no database pair whose peer is the environment, or the app is
+        also in PLATFORM_APPS_FILE), storage_not_configured (503: an s3
+        resource and the environment has no storage driver),
+        sealing_not_configured (503: the deployment seals values and the
+        environment has no sealed-secrets certificate),
+        environment_cleanup_pending (409: the environment was removed from the
+        app before and Argo CD has not finished deleting it there),
+        environment_cleanup_unknown (502: the management or workload cluster
+        could not be read for that; 503: this server cannot read them),
+        app_changed (409: the app's environments changed meanwhile; read the
+        app and try again), deployment_not_queued (500: the environment was
+        added to the app but its deployment could not be stored; send the
+        same request again to queue it). Role operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppEnvironmentAddRequest" }
+      responses:
+        "202":
+          description: Added; the deployment to the app's environments is queued.
+          headers:
+            Location: { schema: { type: string }, description: "/v1/apps/{name}" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppEnvironmentAdded" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/apps/{name}/environments/{env}:
+    parameters:
+      - $ref: "#/components/parameters/AppName"
+      - name: env
+        in: path
+        required: true
+        description: An environment of the app.
+        schema: { type: string }
+    delete:
+      tags: [apps]
+      operationId: removeAppEnvironment
+      description: |
+        Take an environment back out of a registered app (ADR 0043), for an
+        environment added by mistake or whose deployment cannot get healthy.
+        The platform takes the environment's backend out of every instance's
+        traffic gateway app (first, so no request goes to workloads that are
+        going), commits the removal of `apps/<instance>/<env>.yaml` of every
+        instance from the gitops repository, removes the environment from the
+        app and deletes the management cluster's database routes of the pair
+        (they stand only while both environments of the pair are the app's). Argo CD then deletes the Applications `<instance>-<env>`
+        with their namespaces, as when the app is deleted, so the instances'
+        data in that environment goes with them; their buckets and keys there
+        are deleted by the storage cleanup. The database pair stays, so the
+        environment can be added again. Then a deployment of the default
+        instance (trigger `environment`) to the remaining environments is
+        queued when it has a healthy deployment to repeat, so the primary's
+        gitops file gets `dbTopology.peerPresent: false` again.
+
+        Refused for the app's first environment, where its database was born
+        primary, and for an environment that is or ever was the write backend:
+        the traffic gateway sends an instance's writes there, or a migration
+        run of the app that was not failed or aborted had it as source or
+        target. Also refused when an instance with an s3 resource and no
+        public service went healthy to the environment: it may have written
+        files to its bucket there without any request from the gateway, and
+        the removal deletes that bucket.
+
+        Once the environment is removed the answer is 202 even when what it
+        reads for the answer fails: `app` then has only what the app's record
+        says, and `deployment` is left out when it could not be queued (the
+        next deployment rewrites the primary's file).
+
+        Checked in this order. Error codes: app_not_found (404),
+        app_not_registered (409), env_not_found (404: not an environment of
+        the app), primary_environment
+        (409: the app's first environment; the app keeps at least one),
+        write_backend (409), deployment_in_progress (409: a deployment of any
+        instance of the app is not finished), environment_has_files (409: an
+        instance with an s3 resource and no public service went healthy
+        there; delete the app instead), migration_in_progress (409: a
+        migration run of the app is active, as for the POST; a run that ended
+        halted or was interrupted is not; or the gateway holds an instance's
+        writes),
+        github_not_configured (503: no deployer), app_changed (409: the app's
+        branches changed while the removal waited; nothing changed, read the
+        app and try again. An environment added meanwhile does not stop the
+        removal, which keeps it), gateway_unreachable (502:
+        nothing changed), github_unreachable (502: the gitops repository; the
+        gateway backend is already out, so send the request again). Role
+        operator.
+      responses:
+        "202":
+          description: Removed; Argo CD is removing the workloads of the environment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppEnvironmentRemoved" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -2026,6 +2364,323 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
 
+  /v1/onboardings:
+    post:
+      tags: [onboarding]
+      operationId: startOnboarding
+      description: |
+        Start onboarding an app that runs outside the platform, with docker
+        compose on one VM (ADR 0042). The platform reads GitHub, DNS, the
+        cloud, the VM and its database (`discovering`), has hopai write a
+        contract branch and opens a PR (`patching`), deploys the PR branch
+        as a temporary app (`checking`) and waits for an operator's approval
+        (`awaiting_approval`). Only after the approval does it change the
+        source VM and database (`connecting`), then registers the app with
+        its database a replica of the source (`registering`, `syncing`)
+        until `ready`, when `POST /v1/onboardings/{id}/cutover` moves it.
+        The steps are in `GET /v1/onboardings/{id}/events`.
+
+        The app's name is the service address's label, so the address must
+        be `https://<label>.<app domain>`. Without `targetEnv` the target is
+        the environment of the VM's cloud (`eks` for AWS, `gke` for GCP).
+
+        The feature is off unless the server runs with
+        PLATFORM_ONBOARDING=1; the routes are not there then (404). While
+        it is being built every onboarding endpoint answers 501
+        not_implemented.
+
+        Error codes: invalid_request (400: `repo` is not owner/name, or
+        `serviceUrl` is not `https://<label>.<app domain>`), env_not_found
+        (404: `targetEnv`), app_exists (409: an app of that name is
+        registered), onboarding_exists (409: the app has an onboarding that
+        is not done), github_not_configured (503), secrets_not_configured
+        (503), not_implemented (501). Role operator.
+
+        While an app name has an onboarding that is not done, these answer
+        409 onboarding_exists for that name: `POST /v1/apps`, `DELETE
+        /v1/apps/{name}`, `POST /v1/apps/{name}/environments`, `DELETE
+        /v1/apps/{name}/environments/{env}`, and plans (`POST /v1/plans`,
+        `POST /v1/plans/draft`, `POST /v1/migrations`) of the app's database
+        pair; the onboarding's own cutover plan is the exception. `POST
+        /v1/apps` also refuses names starting with `onb-`, the test apps'.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingRequest" }
+      responses:
+        "202":
+          description: Started; discovery runs in the background.
+          headers:
+            Location: { schema: { type: string }, description: "/v1/onboardings/{id}" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+    get:
+      tags: [onboarding]
+      operationId: listOnboardings
+      description: |
+        Every onboarding, newest first, done ones included.
+
+        Roles: viewer, agent, operator.
+      responses:
+        "200":
+          description: The onboardings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    get:
+      tags: [onboarding]
+      operationId: getOnboarding
+      description: |
+        One onboarding: its state, the facts summary, the report, the PR,
+        the test deployment, what was added to the source and what a person
+        has to do. Error codes: onboarding_not_found (404).
+
+        Roles: viewer, agent, operator.
+      responses:
+        "200":
+          description: The onboarding.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [onboarding]
+      operationId: deleteOnboarding
+      description: |
+        Stop and remove an onboarding. The hopai Job and the temporary app
+        are always stopped and deleted first. Then, by state:
+
+        - Up to `awaiting_approval` (or `failed` in one of them): the PR is
+          closed and the onboarding deleted.
+        - From `connecting` to `ready` (or `failed` in one of them): every
+          `legacyChanges` entry is undone in reverse order, the gateway app
+          and the registered app are deleted, then the onboarding. A merged
+          PR stays merged.
+        - From `cutting_over` on, and `failed` in `cutting_over` or
+          `decommissioning`: refused.
+
+        The answer comes at once with `deleting` true; the onboarding is
+        gone when `GET /v1/onboardings/{id}` answers 404. A step that fails
+        sets `failure` and leaves the onboarding with `deleting` true, and
+        only DELETE is accepted then: it tries again. Error codes:
+        onboarding_not_found (404), onboarding_state_conflict (409:
+        `cutting_over` or later, or `failed` in them), onboarding_deleting
+        (409: a deletion is running; one that failed is retried),
+        not_implemented (501). Role operator.
+      responses:
+        "202":
+          description: Being deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    get:
+      tags: [onboarding]
+      operationId: streamOnboardingEvents
+      description: |
+        Server-Sent Events, with the same contract as a deployment's events.
+
+        - The first message is `snapshot` (data: `Onboarding`). Snapshots
+          carry no SSE id.
+        - Then every `OnboardingEvent`, with its `kind` as the SSE event
+          name and its `seq` as the SSE id. Every change of the onboarding
+          (state, report, human actions, legacy changes) also sends a new
+          `snapshot`.
+        - When the onboarding is `done`, or deleted: a final `snapshot` (for
+          a deletion, the last one before it), then the stream closes.
+          Otherwise it stays open, `failed` included, with `: keep-alive`
+          comments.
+
+        Reconnect with `Last-Event-ID` (or `?after=`) to replay the events
+        missed. Error codes: onboarding_not_found (404).
+
+        Roles: viewer, agent, operator.
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: string }
+        - name: after
+          in: query
+          required: false
+          description: Replay events with seq greater than this. Same as Last-Event-ID.
+          schema: { type: integer, format: int64, minimum: 0 }
+      responses:
+        "200":
+          description: An event stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    post:
+      tags: [onboarding]
+      operationId: approveOnboarding
+      description: |
+        Approve the PR and what will be added to the source, in
+        `awaiting_approval` only. `headSha` is the PR head the operator
+        reviewed (`pr.headSha`). When the PR's head is another commit, or
+        the PR is not up to date with the default branch, the answer is 409
+        pr_head_mismatch and the platform makes the branch again and tests
+        it again (`patching`). Once approved the onboarding goes to
+        `connecting`, which disables the source's deploy workflows: the
+        source is not deployed again until it is decommissioned.
+
+        Error codes: invalid_request (400: no `headSha`),
+        onboarding_not_found (404), onboarding_state_conflict (409: not
+        `awaiting_approval`), pr_head_mismatch (409), github_unreachable
+        (502), not_implemented (501). Role operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingApproveRequest" }
+      responses:
+        "202":
+          description: Approved; connecting runs in the background.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/cutover:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    post:
+      tags: [onboarding]
+      operationId: cutOverOnboarding
+      description: |
+        Move the app to the platform, in `ready` only: the platform submits
+        and starts the onboarding's own migration plan (external source,
+        cold target app) and keeps its run id in `runId`; the run is in
+        `GET /v1/migrations/{runId}`, without a rollback. The plan is
+        reserved by the platform itself, not through `POST /v1/plans`, and
+        shows in `GET /v1/plans` with the id `<onboarding id>-<attempt>`.
+
+        How the run ends moves the onboarding:
+
+        - succeeded: `decommissioning`.
+        - rolled back or cancelled before the promotion (the source took the
+          writes back): `ready` again, so the operator can cut over again
+          with the next attempt.
+        - halted after the promotion: it stays `cutting_over`; the run goes
+          on with `POST /v1/migrations/{runId}/resume`.
+        - refused before a run started (the plan's gates): `failed` with
+          `failedState` `cutting_over`; resume goes back to `ready`.
+
+        Error codes: onboarding_not_found (404), onboarding_state_conflict
+        (409: not `ready`), onboarding_deleting (409), cluster_busy (409),
+        not_implemented (501). Role operator.
+      responses:
+        "202":
+          description: The run started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/decommission:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    post:
+      tags: [onboarding]
+      operationId: decommissionOnboarding
+      description: |
+        Confirm stopping the source VM, in `decommissioning` only, after the
+        legacy backend left the gateway and the tailnet device and route
+        were removed. The platform stops (never terminates) the tagged
+        instance and the onboarding is `done`. The disk and the source
+        bucket stay for the operator to delete in the cloud.
+
+        Error codes: onboarding_not_found (404), onboarding_state_conflict
+        (409: not `decommissioning`, or the earlier steps of it are not
+        finished), not_implemented (501). Role operator.
+      responses:
+        "202":
+          description: Stopping the instance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    post:
+      tags: [onboarding]
+      operationId: resumeOnboarding
+      description: |
+        Check again and carry on: from `failed` it goes back to
+        `failedState`; in a state waiting for a person (a `humanActions`
+        entry not done, such as installing the GitHub App or deleting the
+        DNS record) it checks again now instead of at the next poll. A
+        failed cutover run is resumed through the run (`POST
+        /v1/migrations/{runId}/resume`), not here. `failed` in `cutting_over`
+        (the run never started) goes back to `ready`, not to `cutting_over`.
+
+        Error codes: onboarding_not_found (404), onboarding_state_conflict
+        (409: neither failed nor waiting for a person), onboarding_deleting
+        (409: `deleting` is true), not_implemented (501). Role operator.
+      responses:
+        "202":
+          description: Resumed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2063,6 +2718,11 @@ components:
       in: path
       required: true
       schema: { type: string }
+    OnboardingId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: onb-3f9a1c2b7d4e }
     UserCode:
       name: userCode
       in: path
@@ -2087,12 +2747,12 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
-      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found, bucket_not_registered, prefix_not_listed, repo_not_found"
+      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found, bucket_not_registered, prefix_not_listed, repo_not_found, onboarding_not_found"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, db_unreachable, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress, ai_run_active"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, db_unreachable, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress, ai_run_active, onboarding_exists, onboarding_state_conflict, pr_head_mismatch, onboarding_deleting"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2118,6 +2778,11 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     Unavailable:
       description: "gateway_not_configured, github_not_configured, login_not_configured, secrets_not_configured, storage_not_configured, audit_unavailable, ai_runner_not_configured"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotImplemented:
+      description: "not_implemented: the endpoint is in the contract and not built yet"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2238,6 +2903,10 @@ components:
       additionalProperties: false
       required: [id, source, target]
       properties:
+        allowSourceRewire:
+          type: boolean
+          default: false
+          description: Opt-in for approved three-environment registered database groups. Before holding writes, prepare may CAS-update only the current primary's future replica source to the directly following target. It never reparents the target or changes a primary role.
         id: { type: string }
         source: { $ref: "#/components/schemas/EnginePlanEndpoint" }
         target: { $ref: "#/components/schemas/EnginePlanEndpoint" }
@@ -2332,6 +3001,9 @@ components:
         gatewayMode: { type: string }
         fenceGate: { type: boolean }
         maxDowntime: { type: string }
+        writtenRecordsConfigured:
+          type: boolean
+          description: "Whether this submitted plan configures verify.writtenRecords. Does not prove collection or verification succeeded. Absent for historical summaries and older servers; absence means unknown, not false."
 
     PlanRecord:
       type: object
@@ -2381,6 +3053,43 @@ components:
         requestedBy: { type: string }
         createdAt: { type: string, format: date-time }
         finishedAt: { type: string, format: date-time }
+
+    AIActivityEvent:
+      type: object
+      required: [time, kind]
+      properties:
+        time: { type: string, format: date-time }
+        kind: { type: string, enum: [model, tool_call, tool_result, blocked, rehearsal] }
+        tool: { type: string, description: "tool_call, tool_result, blocked: the tool's name" }
+        outcome: { type: string, description: "tool_result: ok or error; rehearsal: the engine's result" }
+        model: { type: string }
+        stopReason: { type: string, description: "model: tool_use or end_turn" }
+        toolCalls: { type: array, items: { type: string }, description: "model: the tools it asked for" }
+        tokensIn: { type: integer }
+        tokensOut: { type: integer }
+        passed: { type: boolean, description: "rehearsal: whether it passed" }
+        seconds: { type: integer, description: "rehearsal: how long it took" }
+
+    AIActivitySummary:
+      type: object
+      required: [modelCalls, tokensIn, tokensOut, tools, blocked, rehearsals]
+      properties:
+        modelCalls: { type: integer }
+        model: { type: string }
+        tokensIn: { type: integer }
+        tokensOut: { type: integer }
+        tools: { type: object, additionalProperties: { type: integer } }
+        blocked: { type: integer }
+        rehearsals: { type: integer }
+        lastEvent: { type: string, format: date-time }
+
+    AIActivity:
+      type: object
+      required: [since, events, summary]
+      properties:
+        since: { type: string, format: date-time }
+        events: { type: array, items: { $ref: "#/components/schemas/AIActivityEvent" } }
+        summary: { $ref: "#/components/schemas/AIActivitySummary" }
 
     AIRunList:
       type: object
@@ -2496,7 +3205,12 @@ components:
         reads back on the source and ends the run as `rolled_back`. A step with
         fewer than `gate.minRequests` requests and no other breach is
         `inconclusive` and the canary moves on, except at the last step, which
-        must pass with enough requests. Gradual steps such as
+        must pass with enough requests. When the platform sends synthetic
+        probe reads, a step whose target got fewer than `gate.minRequests` is
+        extended once by another `stepDuration` with more probe reads and then
+        judged over the whole step (at most the last 300s). It is not extended
+        when the errors are already over the limit or when one more batch could
+        not bring enough requests (as at 1%). Gradual steps such as
         1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
       type: object
       additionalProperties: false
@@ -2589,18 +3303,56 @@ components:
         engine: { $ref: "#/components/schemas/EngineState" }
         rollbackOf: { type: string, description: "the run this run rolls back (POST /v1/migrations/{runId}/rollback)" }
 
+    SourceRetentionResponse:
+      type: object
+      properties:
+        job:
+          type: object
+          required: [runId, sourceUID, pods, keepForNanos, status]
+          properties:
+            runId: { type: string }
+            sourceUID: { type: string }
+            targetUID: { type: string }
+            pods:
+              type: array
+              items:
+                type: object
+                required: [name, uid]
+                properties:
+                  name: { type: string }
+                  uid: { type: string }
+            keepForNanos: { type: integer, format: int64, description: "Server policy at enrollment, in nanoseconds." }
+            dueAt: { type: string, format: date-time }
+            status: { type: string, enum: [captured, scheduled, blocked, deleting, deleted, cancelled] }
+            reason: { type: string }
     RunResult:
       description: The numbers the console shows. Absent values were not measured (yet).
       type: object
       properties:
+        writeVerification: { $ref: "#/components/schemas/WriteVerification" }
         downtimeMillis: { type: integer, format: int64, description: writes held at the gateway }
         durationMillis: { type: integer, format: int64, description: start to end }
         requests: { type: integer, format: int64, description: requests the gateway served during the run }
         failedRequests: { type: integer, format: int64, description: 5xx and proxy errors during the run }
         missingRows: { type: integer, format: int64, description: source rows missing on the target }
-        missingWrites: { type: integer, format: int64, description: k6-confirmed writes missing on the target }
+        missingWrites: { type: integer, format: int64, description: Missing rows in a nonempty reported-write snapshot that was actually checked; absent when unmeasured. }
         missingFiles: { type: integer, format: int64, description: objects missing on the target }
         verified: { type: boolean, description: the verify report found no problems }
+
+    WriteVerification:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [not_configured, no_records, not_reached, measured, failed] }
+        stream: { type: string }
+        collectedRecords: { type: integer, format: int64, description: "Input records frozen for this run, never the current live stream count." }
+        latestAt: { type: string, format: date-time }
+        cutoffSeq: { type: integer, format: int64, description: Maximum observed sequence included in the verification input. Late reports are not included. }
+        checked: { type: integer, format: int64 }
+        missing: { type: integer, format: int64 }
+        scope: { type: string, enum: [application_commits, client_acknowledged, unspecified] }
+        coverage: { type: string, enum: [reservation_inserts, reported_records] }
+        reason: { type: string, description: Stable reason code; no raw provider errors. }
 
     CanaryResult:
       type: object
@@ -3006,6 +3758,7 @@ components:
             Security Hub) and for audit denials, which no catalog control
             evaluates.
         severityBasis: { $ref: "#/components/schemas/SecuritySeverityBasis" }
+        exception: { $ref: "#/components/schemas/SecurityException" }
 
     SecurityFindingKind:
       description: |
@@ -3258,6 +4011,43 @@ components:
           additionalProperties: true
           description: "Grype's JSON report (`grype -o json`), required when status is succeeded"
 
+    SecurityException:
+      description: |
+        An operator's time-limited exception for one finding or vulnerability
+        (SEC-08, ADR 0034). It never changes severity. Active while not revoked
+        and before expiresAt; a severity change does not end it.
+      type: object
+      required: [id, targetType, targetId, reason, expiresAt, createdBy, createdAt]
+      properties:
+        id: { type: string, example: sx_3f2a9c1b }
+        targetType: { $ref: "#/components/schemas/SecurityExceptionTarget" }
+        targetId: { type: string, description: "a SecurityFinding id or a SecurityVulnerability id" }
+        reason: { type: string }
+        expiresAt: { type: string, format: date-time }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        revokedAt: { type: string, format: date-time }
+        revokedBy: { type: string }
+
+    SecurityExceptionTarget:
+      type: string
+      enum: [finding, vulnerability]
+
+    SecurityExceptionRequest:
+      type: object
+      required: [targetType, targetId, reason, expiresAt]
+      properties:
+        targetType: { $ref: "#/components/schemas/SecurityExceptionTarget" }
+        targetId: { type: string }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        expiresAt: { type: string, format: date-time, description: "after now and at most 30 days later; at most 7 days for a KEV-listed vulnerability" }
+
+    SecurityExceptionList:
+      type: object
+      required: [exceptions]
+      properties:
+        exceptions: { type: array, items: { $ref: "#/components/schemas/SecurityException" } }
+
     SecurityVulnerability:
       description: One advisory matched to one package of one scanned image digest.
       type: object
@@ -3277,6 +4067,73 @@ components:
         severityBasis: { $ref: "#/components/schemas/SecuritySeverityBasis" }
         cvss: { type: array, items: { $ref: "#/components/schemas/SecurityCVSS" } }
         urls: { type: array, items: { type: string } }
+        exploitation: { $ref: "#/components/schemas/SecurityExploitation" }
+        exception: { $ref: "#/components/schemas/SecurityException" }
+
+    SecurityExploitation:
+      description: |
+        Exploitation evidence for the vulnerability's CVE (SEC-07, ADR 0034),
+        read when the report is built. It is a separate basis for priority and
+        never changes `severity`; scores are not combined. VEX is not applied.
+      type: object
+      required: [kev, epss]
+      properties:
+        cve: { type: string, example: CVE-2024-6387, description: "the CVE looked up: the advisory, or its first CVE alias; absent when there is none" }
+        kev: { $ref: "#/components/schemas/SecurityKEV" }
+        epss: { $ref: "#/components/schemas/SecurityEPSS" }
+
+    SecurityKEV:
+      description: The CISA Known Exploited Vulnerabilities catalog.
+      type: object
+      required: [state]
+      properties:
+        state:
+          description: |
+            - listed: the CVE is in the catalog.
+            - not_listed: a catalog read in the last 3 days does not have the CVE.
+            - unknown: no catalog read in the last 3 days; this is not "not listed".
+            - no_cve: the vulnerability has no CVE id, so the catalog does not apply.
+          type: string
+          enum: [listed, not_listed, unknown, no_cve]
+        catalogVersion: { type: string, example: "2026.11.04" }
+        dateAdded: { type: string, example: "2026-11-04", description: "YYYY-MM-DD; listed only" }
+        dueDate: { type: string, example: "2026-11-18", description: "the catalog's remediation due date for US federal agencies (YYYY-MM-DD); listed only" }
+        ransomware: { type: boolean, description: "the catalog's knownRansomwareCampaignUse is Known; listed only" }
+
+    SecurityEPSS:
+      description: The FIRST Exploit Prediction Scoring System score of the CVE.
+      type: object
+      required: [state]
+      properties:
+        state:
+          description: |
+            - scored: FIRST has a score for the CVE.
+            - not_scored: FIRST answered and has no score for the CVE.
+            - unknown: no answer in the last 3 days; this is not "not scored".
+            - no_cve: the vulnerability has no CVE id.
+          type: string
+          enum: [scored, not_scored, unknown, no_cve]
+        probability: { type: number, format: double, example: 0.042, description: "0..1: estimated probability of exploitation activity in the next 30 days" }
+        percentile: { type: number, format: double, example: 0.92, description: "0..1: the share of scored CVEs with a lower or equal score" }
+        date: { type: string, example: "2026-11-06", description: "the score date (YYYY-MM-DD)" }
+
+    SecurityExploitSource:
+      description: The state of one exploitation evidence source for this report (SEC-07).
+      type: object
+      required: [name, state, message]
+      properties:
+        name: { type: string, example: cisa-kev, description: "cisa-kev or first-epss" }
+        state:
+          description: |
+            - ok: read and current.
+            - stale: the last refresh failed; values read earlier (at most 3 days old) are used.
+            - unavailable: nothing current was read; values are unknown.
+            - idle: nothing to look up (no CVE in the report).
+          type: string
+          enum: [ok, stale, unavailable, idle]
+        version: { type: string, description: "KEV catalogVersion, or the EPSS score date" }
+        collectedAt: { type: string, format: date-time, description: the last successful read }
+        message: { type: string }
 
     SecurityRunningImage:
       description: |
@@ -3374,6 +4231,10 @@ components:
           type: array
           items: { $ref: "#/components/schemas/SecurityRunningImage" }
         summary: { $ref: "#/components/schemas/SecurityVulnerabilitySummary" }
+        exploitSources:
+          description: KEV and EPSS read state for this report (SEC-07); absent when the server does not look them up.
+          type: array
+          items: { $ref: "#/components/schemas/SecurityExploitSource" }
 
     SecuritySource:
       type: object
@@ -3410,7 +4271,7 @@ components:
 
     SecurityOCSFExport:
       type: object
-      required: [ocsfVersion, generatedAt, findings]
+      required: [ocsfVersion, generatedAt, findings, vulnerabilities, controls]
       properties:
         ocsfVersion:
           type: string
@@ -3427,6 +4288,26 @@ components:
             as the OCSF schema defines them (snake_case keys, `time` in epoch
             milliseconds). Their shape is the OCSF standard's, not this API's,
             so it is not repeated here.
+          items:
+            type: object
+            additionalProperties: true
+        vulnerabilities:
+          type: array
+          description: |
+            OCSF Vulnerability Finding (2002) events, one per vulnerability,
+            as the OCSF schema defines them (snake_case keys, `time` in epoch
+            milliseconds). Their shape is the OCSF standard's, not this API's,
+            so it is not repeated here.
+          items:
+            type: object
+            additionalProperties: true
+        controls:
+          type: array
+          description: |
+            OCSF Compliance Finding (2003) events, one per control evaluation
+            (not_applicable left out), as the OCSF schema defines them
+            (snake_case keys, `time` in epoch milliseconds). Their shape is
+            the OCSF standard's, not this API's, so it is not repeated here.
           items:
             type: object
             additionalProperties: true
@@ -3630,20 +4511,24 @@ components:
     # ---------- plan tools: written records, attachments, apps, drafts, rollback ----------
 
     WrittenRecord:
-      description: One write a load generator saw succeed, in the engine's written-records format.
+      description: One producer-reported table/PK receipt; scope identifies application commits or client acknowledgements.
       type: object
       additionalProperties: false
       required: [table, pk]
       properties:
+        eventId: { type: string, maxLength: 100, description: Optional stable producer event identifier; retries of identical events are deduplicated within the stream. }
         table: { type: string, example: orders.orders, description: "schema.table or table" }
         pk: { type: string, maxLength: 200, example: "42", description: 'the primary key as text; composite keys as "(a,b)"' }
-        at: { type: string, format: date-time, description: when the write succeeded; defaults to when the server received it }
+        at: { type: string, format: date-time, description: "Producer event recording time; app outbox INSERT time is before commit completion. Defaults to server receipt time." }
 
     WrittenRecordsRequest:
       type: object
       additionalProperties: false
       required: [records]
       properties:
+        generation: { type: string, maxLength: 64, description: Source database generation; required for application commit receipts. }
+        scope: { type: string, enum: [application_commits, client_acknowledged, unspecified] }
+        coverage: { type: string, enum: [reservation_inserts, reported_records] }
         records:
           type: array
           minItems: 1
@@ -3654,12 +4539,16 @@ components:
       type: object
       required: [accepted]
       properties:
-        accepted: { type: integer, description: records stored }
+        accepted: { type: integer, description: Input records accepted atomically; identical eventId retries count as accepted without increasing stored count. }
 
     WrittenRecordStats:
       type: object
       required: [stream, count]
       properties:
+        generation: { type: string }
+        lastSeq: { type: integer, format: int64 }
+        scope: { type: string, enum: [application_commits, client_acknowledged, unspecified] }
+        coverage: { type: string, enum: [reservation_inserts, reported_records] }
         stream: { type: string }
         count: { type: integer, format: int64 }
         latestAt: { type: string, format: date-time, description: the newest record's time; absent when the stream is empty }
@@ -3881,7 +4770,7 @@ components:
         repo: { type: string, example: 2026-Softbank-Hackathon-Charlie/moimroom }
         branch: { type: string, example: main }
         environments:
-          description: The environments the app is deployed to, in PLATFORM_ENVS_FILE order.
+          description: The environments the app is deployed to. Those it was registered with come first, in PLATFORM_ENVS_FILE order, then the ones added with POST /v1/apps/{name}/environments, in the order they were added; the first is never removed.
           type: array
           items: { type: string }
           example: [gke, eks]
@@ -3907,19 +4796,111 @@ components:
 
     AppDBTopology:
       description: |
-        The database pair of the app's default instance (ADR 0030), present
-        only for an app registered in exactly two environments while the
-        server sets PLATFORM_APP_DB_TOPOLOGY. Its postgres database is born
-        primary in `primary` and a streaming replica of it in `replica`, so
-        a migration can move it between the two. These are the roles the
-        databases were created with; a migration swaps them in the clusters
-        and does not change these fields. Branch instances keep their own
-        database in each environment.
+        The database pair of the app's default instance (ADR 0030, ADR 0043),
+        present only while the server sets PLATFORM_APP_DB_TOPOLOGY for an app
+        with a postgres resource registered in exactly two environments, or in
+        one environment while exactly one other environment has a database
+        host template. Its postgres database is born primary in `primary` and
+        a streaming replica of it in `replica`, so a migration can move it
+        between the two. These are the roles the databases were created with;
+        a migration swaps them in the clusters and does not change these
+        fields. `replicaPresent` is false while `replica` is not one of the
+        app's environments (`POST /v1/apps/{name}/environments` adds it).
+        Branch instances keep their own database in each environment.
       type: object
-      required: [primary, replica]
+      required: [primary, replica, replicaPresent]
       properties:
         primary: { type: string, example: gke, description: the environment where the database is born primary (the app's first environment) }
         replica: { type: string, example: eks, description: the environment where the database is born a replica of primary }
+        replicaPresent: { type: boolean, description: "`replica` is one of the app's environments" }
+        readiness: { $ref: "#/components/schemas/AppDBReadiness" }
+
+    AppDBReadiness:
+      description: |
+        Whether `POST /v1/migrations` can move the app between the two
+        environments of its pair now (ADR 0043). Only `GET /v1/apps/{name}`
+        has it; it reads the traffic gateway and both environments' CNPG
+        Clusters in parallel, each within 3 seconds, and reuses what it read
+        for the app for 10 seconds (the deployments and migration runs are
+        read every time, and a run that ended since is a reason to read
+        again). `ready` is true only when both environments are the
+        app's, no migration of the app is in progress, the default instance's
+        newest deployment that got to each of them is healthy there, the
+        traffic gateway has a backend for both (when the app has a public
+        service), both Clusters are healthy, their `spec.replica` fit the
+        migration engine's topology check (one is primary, the other follows
+        it) and the gateway writes to the environment whose Cluster is the
+        primary. WAL lag is not looked at; the migration's prepare and
+        presync check it again.
+
+        `reason` is the first check that failed, or `ready`:
+        replica_missing (an environment of the pair is not the app's),
+        migration_in_progress (a migration run of the app is active, by the
+        rule `POST /v1/migrations` uses: not ended and running or awaiting its
+        switch; or the gateway holds its writes), deploy_pending (a deployment to an environment is not
+        finished, or none got there healthy and none is going: the message
+        says to send `POST /v1/apps/{name}/environments` again),
+        app_degraded (that deployment left the environment Degraded: the app
+        probably writes to the database when it starts, which a replica
+        refuses; migrate it with the engine's cold mode), deploy_failed (that
+        deployment failed there otherwise), gateway_unreachable,
+        gateway_backend_missing, cluster_unreadable, cluster_not_healthy,
+        topology_mismatch, write_backend_mismatch (the gateway's write
+        backend is not the environment whose Cluster is primary). A
+        deployment that stopped before it got to an environment, such as a
+        failed build, is passed over. `message` says the same in a sentence.
+      type: object
+      required: [ready, reason, message, environments]
+      properties:
+        ready: { type: boolean }
+        reason: { type: string, example: ready }
+        message: { type: string, example: both databases are healthy and the replica follows the primary }
+        environments:
+          description: The pair's two environments, primary first.
+          type: array
+          items: { $ref: "#/components/schemas/AppDBReadinessEnvironment" }
+
+    AppDBReadinessEnvironment:
+      type: object
+      required: [env, inApp, deployed, gatewayBackend, role, healthy]
+      properties:
+        env: { type: string, example: gke }
+        inApp: { type: boolean, description: the environment is one of the app's }
+        deployed: { type: boolean, description: "the default instance's newest deployment that got to the environment is healthy there" }
+        gatewayBackend: { type: boolean, description: "the traffic gateway has a backend for it (true when the app has no public service)" }
+        role:
+          type: string
+          enum: [primary, replica, unknown]
+          description: "from the Cluster's spec.replica: primary when replica.primary is the Cluster itself or absent; unknown when it could not be read"
+        healthy: { type: boolean, description: the Cluster is in healthy state with every instance ready }
+        phase: { type: string, example: Cluster in healthy state, description: "the Cluster's status.phase, when it was read" }
+
+    AppEnvironmentAddRequest:
+      type: object
+      additionalProperties: false
+      required: [environment]
+      properties:
+        environment:
+          type: string
+          minLength: 1
+          example: gke
+          description: An environment of this server (GET /v1/envs) that the app is not in yet.
+
+    AppEnvironmentAdded:
+      description: The app with the new environment, and the deployment that takes it there (trigger environment), queued.
+      type: object
+      required: [app, deployment]
+      properties:
+        app: { $ref: "#/components/schemas/App" }
+        deployment: { $ref: "#/components/schemas/Deployment" }
+
+    AppEnvironmentRemoved:
+      description: The app without the environment, and the deployment to its remaining environments (trigger environment) when one was queued.
+      type: object
+      required: [app]
+      properties:
+        app: { $ref: "#/components/schemas/App" }
+        deployment: { $ref: "#/components/schemas/Deployment" }
 
     AppInstance:
       description: |
@@ -4163,7 +5144,8 @@ components:
         push: a push to a branch the app deploys (the GitHub webhook).
         manual: POST /v1/apps/{name}/deployments.
         redeploy: POST /v1/apps/{name}/deployments with `redeploy`: the last healthy deployment's commit and images again, without a build, to apply changed secrets.
-      enum: [push, manual, register, redeploy]
+        environment: POST /v1/apps/{name}/environments or DELETE /v1/apps/{name}/environments/{env}: the default instance's last healthy deployment's commit and images again, without a build, to all of the app's environments after one was added or removed.
+      enum: [push, manual, register, redeploy, environment]
 
     DeploymentStatus:
       type: string
@@ -4399,3 +5381,244 @@ components:
           type: string
           format: date-time
           description: When GitHub stops accepting the token, an hour after it was created.
+
+    OnboardingRequest:
+      type: object
+      additionalProperties: false
+      required: [repo, serviceUrl]
+      properties:
+        repo:
+          type: string
+          pattern: '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$'
+          example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy
+          description: owner/name of the app's repository, without .git.
+        serviceUrl:
+          type: string
+          example: https://moimroom-legacy.hopcharlie.dev
+          description: Where the app answers now, https://<label>.<app domain>. The label is the app's name.
+        targetEnv:
+          type: string
+          example: eks
+          description: The environment to move it to. Default the VM's cloud's (eks for AWS, gke for GCP).
+
+    OnboardingApproveRequest:
+      type: object
+      additionalProperties: false
+      required: [headSha]
+      properties:
+        headSha: { type: string, description: "The PR head commit the operator reviewed (`pr.headSha`)." }
+
+    OnboardingState:
+      description: |
+        Where an onboarding is (ADR 0042, "흐름과 상태"). `failed` keeps the
+        state it failed in in `failedState`.
+      type: string
+      enum: [discovering, patching, checking, awaiting_approval, connecting, registering, syncing, ready, cutting_over, decommissioning, done, failed]
+
+    OnboardingList:
+      type: object
+      required: [onboardings]
+      properties:
+        onboardings:
+          type: array
+          items: { $ref: "#/components/schemas/Onboarding" }
+
+    Onboarding:
+      type: object
+      required: [id, repo, serviceUrl, app, targetEnv, state, deleting, legacyDeployStopped, humanActions, report, legacyChanges, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: string, example: onb-3f9a1c2b7d4e, description: "onb- and 12 lowercase hex digits; also the name of the test app and the start of the cutover plan ids (<id>-<attempt>)" }
+        repo: { type: string, example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy }
+        serviceUrl: { type: string, example: https://moimroom-legacy.hopcharlie.dev }
+        app: { type: string, example: moimroom-legacy, description: "The app's name: serviceUrl's label." }
+        targetEnv: { type: string, example: eks, description: "The environment it moves to; empty until discovery chose it." }
+        state: { $ref: "#/components/schemas/OnboardingState" }
+        failedState:
+          allOf: [{ $ref: "#/components/schemas/OnboardingState" }]
+          description: With state failed, the state it failed in, which resume goes back to.
+        failure: { type: string, description: "Why it failed, or why a step of a deletion failed." }
+        deleting: { type: boolean, description: "DELETE was asked for and is undoing what was done." }
+        legacyDeployStopped:
+          type: boolean
+          description: |
+            The source's deploy workflows are disabled (from connecting on,
+            until it is deleted). The console says so on every screen while
+            it is true.
+        humanActions:
+          type: array
+          description: What a person has to do, which the platform cannot (ADR 0042, "한 번 하는 설정"). The platform checks it itself; resume checks again at once.
+          items: { $ref: "#/components/schemas/OnboardingHumanAction" }
+        facts: { $ref: "#/components/schemas/OnboardingFactsSummary" }
+        report: { $ref: "#/components/schemas/OnboardingReport" }
+        pr: { $ref: "#/components/schemas/OnboardingPR" }
+        check: { $ref: "#/components/schemas/OnboardingCheck" }
+        plannedLegacyChanges:
+          type: array
+          description: What connecting will do once approved, for the approval screen, in order. Set from awaiting_approval on.
+          items: { $ref: "#/components/schemas/OnboardingPlannedChange" }
+        legacyChanges:
+          type: array
+          description: What was added to or changed on the source VM, its database, GitHub and the management cluster, in the order it was done. DELETE undoes them in reverse.
+          items: { $ref: "#/components/schemas/OnboardingLegacyChange" }
+        runId: { type: string, description: "The cutover's migration run, from cutting_over on." }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        approvedBy: { type: string }
+        approvedAt: { type: string, format: date-time }
+        approvedSha: { type: string, description: "The PR head commit that was approved." }
+
+    OnboardingHumanAction:
+      type: object
+      required: [kind, done]
+      properties:
+        kind: { type: string, enum: [install_github_app, delete_dns_record] }
+        url: { type: string, description: "install_github_app: the App's installation page", example: https://github.com/apps/hopcharlie-platform/installations/new }
+        record: { $ref: "#/components/schemas/OnboardingDNSRecord" }
+        done: { type: boolean, description: "The platform saw it done (the App can read the repository; the name resolves to the gateway)." }
+
+    OnboardingDNSRecord:
+      description: "delete_dns_record: the individual record to delete, so the wildcard sends the name to the gateway."
+      type: object
+      required: [name, type, value]
+      properties:
+        name: { type: string, example: moimroom-legacy.hopcharlie.dev }
+        type: { type: string, example: A }
+        value: { type: string, example: 203.0.113.10 }
+
+    OnboardingFactsSummary:
+      description: The parts of the discovery's facts the console shows. The full facts are pkg/onboard/facts.Facts and go only to hopai.
+      type: object
+      properties:
+        cloud: { type: string, enum: [aws, gcp] }
+        region: { type: string, example: ap-northeast-2 }
+        instanceId: { type: string, example: i-0abc1234def567890 }
+        publicIp: { type: string, example: 203.0.113.10 }
+        ssmManaged: { type: boolean }
+        defaultBranch: { type: string, example: main }
+        head: { type: string, description: "The default branch's head commit." }
+        deployWorkflows: { type: array, items: { type: string }, description: "The workflows that deploy to the VM, which connecting disables." }
+        composeProject: { type: string, example: moimroom }
+        containers: { type: array, items: { type: string }, description: "compose services: container names" }
+        dbImage: { type: string, example: postgres:17.11-alpine }
+        dbServerVersionNum: { type: integer, example: 170011 }
+        dbLibc: { type: string, enum: [glibc, musl] }
+        dbDatabase: { type: string, example: moimroom }
+        dbOwner: { type: string, example: moimroom }
+        dbSizeBytes: { type: integer, format: int64 }
+        image: { type: string, description: "The CNPG image chosen, pinned by digest." }
+        storageSize: { type: string, example: 2Gi }
+        reindex: { type: array, items: { type: string }, description: "\"schema.index\" names rebuilt after the promotion" }
+        bucket: { type: string, description: "The source bucket of the app's files." }
+        objectCount: { type: integer, format: int64 }
+
+    OnboardingReport:
+      type: object
+      required: [blockers, warnings]
+      properties:
+        blockers:
+          type: array
+          description: Why it cannot go on (pkg/onboard/facts Block* codes). Any blocker stops it in failed.
+          items: { $ref: "#/components/schemas/OnboardingFinding" }
+        warnings:
+          type: array
+          description: What the operator should know before approving (pkg/onboard/facts Warn* codes).
+          items: { $ref: "#/components/schemas/OnboardingFinding" }
+        drift: { $ref: "#/components/schemas/OnboardingDrift" }
+        holdSeconds: { type: number, description: "The estimated write hold of the cutover." }
+        holdBudgetSeconds: { type: number, example: 40, description: "The gateway's MaxHold less 15 seconds." }
+
+    OnboardingFinding:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: pkg/onboard/facts BlockerCodes for blockers, WarningCodes for warnings.
+          enum: [instance_not_found, gcp_inspection_not_yet, vm_not_ssm_managed, vm_in_autoscaling_group, vm_is_eks_node, no_compose_project, db_not_postgres_container, managed_database, storage_out_of_scope, data_volume_out_of_scope, domain_out_of_scope, not_https, image_unavailable, icu_version_unavailable, collation_dependent_constraint, auto_conf_settings, role_read_only_setting, wal_keep_size_command_line, no_superuser, disk_too_small, hold_budget_exceeded, app_code_change_required, check_failed, alter_system_disabled, wal_level_minimal, max_wal_senders_zero, password_encryption_md5, name_too_long, drift_running_revision, drift_last_deploy, glibc_release_mismatch, reindex_required, app_account_superuser, legacy_deploy_stopped]
+        message: { type: string }
+        subject: { type: string, description: "What it is about, such as a container, setting or index." }
+
+    OnboardingDrift:
+      description: What runs differs from the default branch's head. Shown first; it does not block.
+      type: object
+      required: [head]
+      properties:
+        head: { type: string }
+        runningRevision: { type: string, description: "The org.opencontainers.image.revision label of the running image." }
+        lastDeployCommit: { type: string, description: "The commit of the newest successful deploy workflow run." }
+
+    OnboardingPR:
+      type: object
+      required: [number, url, headSha]
+      properties:
+        number: { type: integer, example: 12 }
+        url: { type: string, example: https://github.com/2026-Softbank-Hackathon-Charlie/moimroom-legacy/pull/12 }
+        headSha: { type: string }
+        merged: { type: boolean }
+
+    OnboardingCheck:
+      description: The test deployment of the PR branch.
+      type: object
+      required: [app, result, attempts]
+      properties:
+        app: { type: string, example: onb-3f9a1c2b7d4e, description: "The temporary app, named after the onboarding id and deleted when the test ends." }
+        deploymentId: { type: string }
+        result: { type: string, enum: [running, passed, failed] }
+        attempts: { type: integer, description: "Test deployments so far, at most 2." }
+        startSeconds: { type: number, description: "From the Deployment's creation until it was Ready." }
+        message: { type: string }
+
+    OnboardingLegacyChange:
+      description: |
+        One thing added to the source or done for it, in order:
+        workflow_disabled (`target` the workflow path), instance_tagged
+        (the instance id), postgres_role_created, replication_role_created
+        (`hopcharlie_replicator`), tailscale_volume_created,
+        tailscale_container_started, tailscale_device_joined (the tailnet
+        hostname), hba_line_added (the line), wal_keep_size_added (the
+        line), db_route_created (the management cluster's Service).
+      type: object
+      required: [kind, target, at]
+      properties:
+        kind: { $ref: "#/components/schemas/OnboardingLegacyChangeKind" }
+        target: { type: string }
+        at: { type: string, format: date-time }
+        undoneAt: { type: string, format: date-time, description: "When DELETE undid it." }
+
+    OnboardingLegacyChangeKind:
+      type: string
+      enum: [workflow_disabled, instance_tagged, postgres_role_created, replication_role_created, tailscale_volume_created, tailscale_container_started, tailscale_device_joined, hba_line_added, wal_keep_size_added, db_route_created]
+
+    OnboardingPlannedChange:
+      description: |
+        One thing connecting will do, as the approval screen shows it:
+        `target` as in OnboardingLegacyChange and `detail` the exact value,
+        such as the hba line with the compose network's subnet
+        (`host replication hopcharlie_replicator 172.18.0.0/16 scram-sha-256`),
+        the Tailscale container and its image digest, or the roles made.
+      type: object
+      required: [kind, target]
+      properties:
+        kind: { $ref: "#/components/schemas/OnboardingLegacyChangeKind" }
+        target: { type: string }
+        detail: { type: string }
+
+    OnboardingEvent:
+      description: |
+        One step of an onboarding.
+        - state: it entered `state`; `message` may say more.
+        - step: something it did or found in `state`.
+        - log: one line of output (hopai, the test deployment, an SSM command) in `message`.
+        - human: it waits for a person (`humanActions`).
+        - error: a step failed; `message` is why.
+      type: object
+      required: [seq, onboardingId, time, state, kind]
+      properties:
+        seq: { type: integer, format: int64 }
+        onboardingId: { type: string }
+        time: { type: string, format: date-time }
+        state: { $ref: "#/components/schemas/OnboardingState" }
+        kind: { type: string, enum: [state, step, log, human, error] }
+        message: { type: string }
+        data: { type: object, additionalProperties: true }

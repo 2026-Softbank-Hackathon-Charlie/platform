@@ -22,10 +22,10 @@ type GitOps interface {
 	// branch head. A push that is not a fast-forward is retried on the new
 	// head.
 	Write(ctx context.Context, files map[string][]byte, message string) (commit string, changed bool, err error)
-	// Delete removes every file under each of dirs in one commit, like
-	// Write. It refuses no dirs, the repository's root and apps/ itself
-	// (AppDir of an empty name) with an error, as none of them is one
-	// instance's directory.
+	// Delete removes every file under each of dirs, or the file a dir names
+	// (FilePath), in one commit, like Write. It refuses no dirs, the
+	// repository's root and apps/ itself (AppDir of an empty name) with an
+	// error, as none of them is one instance's directory or file.
 	Delete(ctx context.Context, dirs []string, message string) (commit string, changed bool, err error)
 	// Contains reports whether revision includes commit: it is commit or a
 	// descendant of it. An unknown revision does not include it.
@@ -80,13 +80,117 @@ type File struct {
 	// DBTopology is values.dbTopology (ADR 0030); nil leaves the key out.
 	// With it, Sealed must have PGApp and PGCA and Spec a postgres resource.
 	DBTopology *DBTopology
+	// Postgres is values.postgres (ADR 0042); nil leaves the key out, and
+	// the chart draws the database as before.
+	Postgres *PostgresValues
+	// OnboardingCold is values.onboardingCold (ADR 0042): the app is being
+	// onboarded and stays down until the cutover starts it.
+	OnboardingCold bool
 }
+
+// The gitops values of an onboarded app (ADR 0042), the contract with the
+// app chart's infra side. Render refuses them until the implementation
+// renders them (errOnboardingValues); every key below is left out when
+// unset, so the files of every other app stay byte for byte as they are.
+// The shape, in Render's key order (values elided are as before):
+//
+//	values:
+//	  app: "moimroom-legacy"
+//	  services:
+//	    - name: "web"
+//	      ...
+//	      replicas: 0            # every service while onboardingCold; else as before
+//	      ...
+//	  resources:
+//	    - name: "db"
+//	      type: "postgres"
+//	  postgres:                  # File.Postgres; each key only when not empty
+//	    image: "ghcr.io/cloudnative-pg/postgresql:17.11-standard-bookworm@sha256:<digest>"
+//	    database: "moimroom"     # bootstrap database; the chart's default stays app
+//	    owner: "moimroom"        # its owner and the app account; default app
+//	    storageSize: "2Gi"       # the PVC; before topologyStorageSize and storageSize
+//	  dbTopology:
+//	    primary: "eks"           # the onboarding's target environment
+//	    peer: "gke"
+//	    peerPresent: false
+//	    external:                # DBTopology.External, only in primary's file
+//	      name: "legacy"
+//	      host: "hop-db-legacy-moimroom-legacy"   # tailnet hostname; the chart appends profile.dbNetwork.tailnetDomain
+//	      user: "hopcharlie_replicator"
+//	      passwordSecret: "moimroom-legacy-db-legacy"   # <cluster>-legacy, from sealedSecrets.pgLegacy
+//	      sslmode: "prefer"
+//	  onboardingCold: true       # File.OnboardingCold; the key only when true
+//	  sealedSecrets:
+//	    ...
+//	    pgApp: {...}             # as before: the app account, here the source's password
+//	    pgCA: {...}
+//	    pgLegacy:                # Sealed.PGLegacy: SealedSecret <cluster>-legacy,
+//	      password: "<ciphertext>"   # kubernetes.io/basic-auth with username too
+//	      username: "<ciphertext>"
+//	    pgBackup: {...}
+//	  backup: {...}
+//
+// The renderer takes them from the app's database row (source_kind
+// external) and its onboarding on every deployment, not from the
+// deployment that asked, so a push while syncing still renders cold.
+//
+// What the chart draws from them (ADR 0042 "4."), <cluster> being
+// <app>-<postgres resource>:
+//
+//   - postgres.image is the Cluster's imageName in every file of the app,
+//     postgres.storageSize its storage size, database and owner its
+//     bootstrap's.
+//   - With dbTopology.external, the Cluster is born from the source:
+//     bootstrap.pg_basebackup {source: legacy, database, owner, secret:
+//     <cluster>-app}; replica {primary: legacy, self: <cluster>-<primary>,
+//     source: legacy}; externalClusters legacy (host <cluster>-to-legacy,
+//     an egress Service to <host>.<tailnetDomain>, user, password from
+//     passwordSecret, sslmode), itself, and the peer as for any pair; the
+//     platform CA certificates; the egress Service and a replication
+//     NetworkPolicy to the source. Without external (after the cutover)
+//     the chart draws initdb again, which the ApplicationSet ignores with
+//     /spec/bootstrap, and no Service or policy to the source.
+//   - sealedSecrets.pgLegacy is drawn whenever it is there, with or
+//     without external, as externalClusters legacy still names it.
+//   - onboardingCold puts the label hopcharlie.dev/onboarding-cold: "true"
+//     on every Deployment, whose /spec/replicas the ApplicationSet then
+//     ignores, and replicas 0 is drawn as 0 (not default 1).
+type PostgresValues struct {
+	Image, Database, Owner, StorageSize string
+}
+
+// ExternalSource is values.dbTopology.external (ADR 0042): the database
+// outside the platform the primary's Cluster is born a replica of.
+type ExternalSource struct {
+	Name           string // "legacy"
+	Host           string // the source's tailnet hostname, hop-db-legacy-<app>
+	User           string // hopcharlie_replicator
+	PasswordSecret string // <cluster>-legacy, key password
+	SSLMode        string // "prefer"
+}
+
+// errOnboardingValues is Render's refusal of the values of ADR 0042 until
+// it renders them.
+var errOnboardingValues = errors.New("the gitops values of an onboarding (ADR 0042) are not rendered yet")
 
 // DBTopology is where an app's database pair is born (ADR 0030): Primary
 // is the environment where it is born primary, Peer the other one, where it
 // is born a replica. Both environments' files have the same values; the
 // chart takes the side that is not the file's env as the one to follow.
-type DBTopology struct{ Primary, Peer string }
+// PeerAbsent says Peer is not one of the app's environments yet (ADR 0043):
+// only Primary's file is rendered then, with values.dbTopology.peerPresent
+// false, and the chart draws the same Cluster without the tailnet objects.
+// With the peer present the key is left out, which the chart reads as true,
+// so the files of a pair registered in two environments stay as they were.
+type DBTopology struct {
+	Primary, Peer string
+	PeerAbsent    bool
+	// Members extends the original pair; nil preserves the legacy values.
+	Members []string
+	// External is the source outside the platform of an onboarded app's
+	// database (ADR 0042, see PostgresValues); nil for every other pair.
+	External *ExternalSource
+}
 
 // fileHeader starts every gitops file.
 const fileHeader = "# Generated by the HopCharlie platform. Do not edit.\n"
@@ -110,6 +214,10 @@ func Render(f File) ([]byte, error) {
 	}
 	if f.Instance == "" {
 		return nil, fmt.Errorf("render the gitops file of %s in %s: no instance", f.App, f.Env)
+	}
+	if f.Postgres != nil || f.OnboardingCold || (f.DBTopology != nil && f.DBTopology.External != nil) ||
+		(f.Sealed != nil && len(f.Sealed.PGLegacy) > 0) {
+		return nil, fmt.Errorf("render %s: %w", FilePath(f.Instance, f.Env), errOnboardingValues)
 	}
 	b.WriteString(fileHeader)
 	fmt.Fprintf(&b, "app: %s\n", q(f.App))
@@ -168,18 +276,35 @@ func Render(f File) ([]byte, error) {
 		}
 	}
 	if t := f.DBTopology; t != nil {
+		members := t.Members
+		if len(members) == 0 {
+			members = []string{t.Primary, t.Peer}
+		}
 		hasPG := slices.ContainsFunc(f.Spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres })
 		switch {
 		case !hasPG:
 			return nil, fmt.Errorf("render %s: a database topology needs a postgres resource", FilePath(f.Instance, f.Env))
 		case f.Sealed == nil || len(f.Sealed.PGApp) == 0 || len(f.Sealed.PGCA) == 0:
 			return nil, fmt.Errorf("render %s: a database topology needs the sealed app account and CA", FilePath(f.Instance, f.Env))
-		case t.Primary == t.Peer || (f.Env != t.Primary && f.Env != t.Peer):
+		case t.Primary == t.Peer || !slices.Contains(members, f.Env):
 			return nil, fmt.Errorf("render %s: database topology %s/%s does not fit environment %s", FilePath(f.Instance, f.Env), t.Primary, t.Peer, f.Env)
+		case len(t.Members) > 0 && (len(members) < 2 || len(members) > 3 || t.PeerAbsent || !slices.Contains(members, t.Primary) || !slices.Contains(members, t.Peer) || slices.Contains(members, "") || len(slices.Compact(slices.Sorted(slices.Values(members)))) != len(members)):
+			return nil, fmt.Errorf("render %s: invalid database group membership", FilePath(f.Instance, f.Env))
+		case t.PeerAbsent && f.Env != t.Primary:
+			return nil, fmt.Errorf("render %s: the peer %s of the database topology is not one of the app's environments, so only the primary's file is rendered", FilePath(f.Instance, f.Env), t.Peer)
 		}
 		b.WriteString("  dbTopology:\n")
 		fmt.Fprintf(&b, "    primary: %s\n", q(t.Primary))
 		fmt.Fprintf(&b, "    peer: %s\n", q(t.Peer))
+		if len(t.Members) > 0 {
+			b.WriteString("    members:\n")
+			for _, member := range t.Members {
+				fmt.Fprintf(&b, "      - %s\n", q(member))
+			}
+		}
+		if t.PeerAbsent {
+			b.WriteString("    peerPresent: false\n")
+		}
 	}
 	if !f.Sealed.empty() {
 		b.WriteString("  sealedSecrets:\n")

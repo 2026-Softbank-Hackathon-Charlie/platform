@@ -70,6 +70,24 @@ func TestDeployOperations(t *testing.T) {
 		{name: "DeleteAppInstance escapes", call: func(c *Client) (any, error) { return nil, c.DeleteAppInstance(ctx, "moimroom", "moimroom--dev/x") },
 			method: "DELETE", path: "/v1/apps/moimroom/instances/moimroom--dev%2Fx", status: 202,
 			got: func(any) string { return "" }, want: ""},
+		{name: "AddAppEnvironment", call: func(c *Client) (any, error) {
+			return c.AddAppEnvironment(ctx, "moimroom", apiv1.AppEnvironmentAddRequest{Environment: "gke"})
+		},
+			method: "POST", path: "/v1/apps/moimroom/environments", body: `{"environment":"gke"}`, status: 202,
+			resp: `{"app":` + appJSON + `,"deployment":` + deploymentJSON + `}`,
+			got: func(v any) string {
+				r := v.(*apiv1.AppEnvironmentAdded)
+				return r.App.Name + " " + r.Deployment.Id
+			},
+			want: "moimroom dep_1"},
+		{name: "RemoveAppEnvironment escapes", call: func(c *Client) (any, error) { return c.RemoveAppEnvironment(ctx, "moimroom", "on prem") },
+			method: "DELETE", path: "/v1/apps/moimroom/environments/on%20prem", status: 202,
+			resp: `{"app":` + appJSON + `,"deployment":` + deploymentJSON + `}`,
+			got:  func(v any) string { return v.(*apiv1.AppEnvironmentRemoved).Deployment.Id }, want: "dep_1"},
+		{name: "RemoveAppEnvironment without deployment", call: func(c *Client) (any, error) { return c.RemoveAppEnvironment(ctx, "moimroom", "gke") },
+			method: "DELETE", path: "/v1/apps/moimroom/environments/gke", status: 202,
+			resp: `{"app":` + appJSON + `}`,
+			got:  func(v any) string { return fmt.Sprint(v.(*apiv1.AppEnvironmentRemoved).Deployment == nil) }, want: "true"},
 		{name: "ValidateAppSpec repo", call: func(c *Client) (any, error) {
 			return c.ValidateAppSpec(ctx, apiv1.AppSpecValidateRequest{Repo: ptr("o/moimroom"), Branch: ptr("dev")})
 		},

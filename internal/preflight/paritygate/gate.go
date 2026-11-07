@@ -44,12 +44,25 @@ type ResourceFactory func(env string) (metadata.Interface, dynamic.Interface, er
 
 // Gate builds the probes for a plan's target and evaluates them.
 type Gate struct {
-	digest    string
-	cfg       Config
-	sar       SARFactory
-	http      *http.Client
-	resources ResourceFactory
+	digest            string
+	cfg               Config
+	sar               SARFactory
+	http              *http.Client
+	resources         ResourceFactory
+	usageFetch        probes.UsageFetch
+	cloudFetch        probes.CloudFetch
+	cloudEnvironments map[string]bool
 }
+
+func (g *Gate) SetCloudPolicyFetcher(fetch probes.CloudFetch, environments ...string) {
+	g.cloudFetch = fetch
+	g.cloudEnvironments = map[string]bool{}
+	for _, env := range environments {
+		g.cloudEnvironments[env] = true
+	}
+}
+
+func (g *Gate) SetUsageFetcher(fetch probes.UsageFetch) { g.usageFetch = fetch }
 
 // New returns a gate. sar may be nil (no identity probe); httpClient nil
 // uses a client with a 10 second timeout.
@@ -131,6 +144,11 @@ func (g *Gate) probes(target parity.Target, app App, targetCluster string) map[p
 		}
 	}
 	resources := app.Environments[target.Environment]
+	if resources.CloudIAM != nil {
+		out[parity.Identity] = probes.WithCloudIAM(target, out[parity.Identity], *resources.CloudIAM, g.cloudFetch)
+	} else if g.cloudEnvironments[target.Environment] {
+		out[parity.Identity] = probes.MissingCloudIAM(target, out[parity.Identity])
+	}
 	collector := g.cfg.Environments[target.Environment].AuditCollector
 	if len(resources.Secrets) == 0 && resources.Backup == nil && collector == nil {
 		return out
@@ -147,6 +165,11 @@ func (g *Gate) probes(target parity.Target, app App, targetCluster string) map[p
 	if len(resources.Secrets) > 0 {
 		out[parity.Secret] = failing{}
 		if p, err := probes.NewSecrets(target, meta, resources.Secrets); err == nil {
+			if resources.SecretUsage != nil {
+				if err := p.WithUsage(*resources.SecretUsage, g.usageFetch); err != nil {
+					return out
+				}
+			}
 			out[parity.Secret] = p
 		}
 	}

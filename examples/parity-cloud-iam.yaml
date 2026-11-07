@@ -1,0 +1,28 @@
+# Illustrative server policy only. Review actual workload principals/resources
+# before use. Do not infer them from AI output or copy production credentials.
+version: 1
+mode: audit
+apps:
+  - name: shop
+    namespace: shop
+    serviceAccount: default
+    rbac:
+      - {id: self-review, group: authorization.k8s.io, verb: create, resource: selfsubjectaccessreviews, allowed: true}
+      - {id: no-secret-list, verb: list, resource: secrets, allowed: false}
+    environments:
+      eks:
+        cloudIAM:
+          provider: aws
+          principal: arn:aws:iam::123456789012:role/replace-me-app-role
+          checks:
+            - {id: read-object, permission: 's3:GetObject', resource: 'arn:aws:s3:::replace-me-bucket/probe', allowed: true}
+            - {id: no-admin, permission: 'iam:CreateUser', resource: '*', allowed: false}
+      gke:
+        cloudIAM:
+          provider: gcp
+          principal: replace-me-app@replace-me-project.iam.gserviceaccount.com
+          checks:
+            - {id: read-object, permission: storage.objects.get, resource: '//storage.googleapis.com/projects/_/buckets/replace-me-bucket', allowed: true}
+            - {id: no-policy-write, permission: storage.buckets.setIamPolicy, resource: '//storage.googleapis.com/projects/_/buckets/replace-me-bucket', allowed: false}
+# No implicit AWS/GCP equivalent is assumed for on-prem. Its Kubernetes and
+# service-specific identities need explicit requirements of their own.

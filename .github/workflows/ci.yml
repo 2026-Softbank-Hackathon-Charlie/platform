@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   go:
-    runs-on: [self-hosted, hopcharlie]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
@@ -125,12 +125,13 @@ jobs:
 
       # The minio storage driver links madmin-go (AGPL-3.0), so it is only in
       # binaries built with -tags minio (kind E2E, on-prem); the published
-      # image is built without it (publish-image.yml). Keep it compiling and
+      # default image is built without it; the manual minio flavor opts in
+      # (publish-image.yml). Keep both paths compiling and
       # tested.
       - name: Test the minio driver (-tags minio)
         run: |
-          go vet -race -tags minio ./internal/storage/... ./internal/envs/... ./cmd/api/...
-          go test -race -tags minio ./internal/storage/... ./internal/envs/...
+          go vet -race -tags minio ./internal/storage/... ./internal/envs/... ./internal/apps/... ./cmd/api/...
+          go test -race -tags minio ./internal/storage/... ./internal/envs/... ./internal/apps/...
 
       # Only main saves, so a PR spends no time uploading and always starts
       # from main's latest state.
@@ -148,7 +149,7 @@ jobs:
         run: docker rm -f -v "$PG_CONTAINER" >/dev/null 2>&1 || true
 
   shell:
-    runs-on: [self-hosted, hopcharlie]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5

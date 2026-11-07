@@ -22,6 +22,10 @@ type metrics struct {
 type families struct {
 	requests    *prometheus.CounterVec
 	duration    *prometheus.HistogramVec
+	endToEnd    *prometheus.HistogramVec
+	holdWait    *prometheus.HistogramVec
+	writeQueue  *prometheus.HistogramVec
+	writePause  *prometheus.HistogramVec
 	holdExpired *prometheus.CounterVec
 	heldDropped *prometheus.CounterVec
 	readRetries *prometheus.CounterVec
@@ -32,6 +36,10 @@ type families struct {
 type routerMetrics struct {
 	requests    *prometheus.CounterVec // backend, class, code
 	duration    prometheus.ObserverVec // backend, class
+	endToEnd    prometheus.ObserverVec // class, code
+	holdWait    prometheus.ObserverVec // outcome
+	writeQueue  prometheus.ObserverVec // outcome
+	writePause  prometheus.ObserverVec // outcome
 	holdExpired prometheus.Counter
 	heldDropped prometheus.Counter
 	readRetries *prometheus.CounterVec // backend
@@ -44,9 +52,21 @@ func newMetrics(g *Gateway) *metrics {
 		apps: newFamilies("charlie_gateway_app_", []string{"app"}),
 	}
 	for _, f := range []*families{m.def, m.apps} {
-		m.reg.MustRegister(f.requests, f.duration, f.holdExpired, f.heldDropped, f.readRetries)
+		m.reg.MustRegister(f.requests, f.duration, f.endToEnd, f.holdWait, f.writeQueue, f.writePause, f.holdExpired, f.heldDropped, f.readRetries)
 	}
+	m.reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "charlie_gateway_persistence_healthy", Help: "1 when the last state save succeeded; see persistence_enabled for durable mode."}, func() float64 {
+		if g.persistenceFailed.Load() {
+			return 0
+		}
+		return 1
+	}), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "charlie_gateway_persistence_enabled", Help: "1 when a state file is configured."}, func() float64 {
+		if g.cfg.StateFile != "" {
+			return 1
+		}
+		return 0
+	}))
 	m.reg.MustRegister(stateCollector{g, m})
+	m.reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "charlie_gateway_buffered_bytes", Help: "Conservative held-body memory reservations across all apps."}, func() float64 { return float64(g.bufferedBytes.Load()) }), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "charlie_gateway_buffer_budget_bytes", Help: "Global held-body reservation limit."}, func() float64 { return float64(g.cfg.MaxBufferedBytes) }))
 	return m
 }
 
@@ -71,6 +91,10 @@ func newFamilies(prefix string, app []string) *families {
 			Help:    help + "Time from dispatch to the backend until the response finished. Excludes time spent held.",
 			Buckets: buckets,
 		}, labels("backend", "class")),
+		endToEnd:   prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: prefix + "end_to_end_duration_seconds", Help: help + "Request arrival through final response, including body reads, hold and dispatch queue; one observation per client request.", Buckets: buckets}, labels("class", "code")),
+		holdWait:   prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: prefix + "hold_wait_duration_seconds", Help: help + "Time from arrival to leaving a write hold, including initial body read.", Buckets: buckets}, labels("outcome")),
+		writeQueue: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: prefix + "write_queue_duration_seconds", Help: help + "Wait for a write dispatch slot; excludes backend execution.", Buckets: buckets}, labels("outcome")),
+		writePause: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: prefix + "write_pause_duration_seconds", Help: help + "Entire write hold from admission through release, including draining; recorded when the hold ends.", Buckets: buckets}, labels("outcome")),
 		holdExpired: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: prefix + "hold_expired_total",
 			Help: help + "Held writes answered 503 hold_timeout, never forwarded, because they waited max-hold.",
@@ -100,6 +124,10 @@ func (f *families) view(l prometheus.Labels) *routerMetrics {
 	return &routerMetrics{
 		requests:    f.requests.MustCurryWith(l),
 		duration:    f.duration.MustCurryWith(l),
+		endToEnd:    f.endToEnd.MustCurryWith(l),
+		holdWait:    f.holdWait.MustCurryWith(l),
+		writeQueue:  f.writeQueue.MustCurryWith(l),
+		writePause:  f.writePause.MustCurryWith(l),
 		holdExpired: f.holdExpired.With(l),
 		heldDropped: f.heldDropped.With(l),
 		readRetries: f.readRetries.MustCurryWith(l),
@@ -110,6 +138,10 @@ func (f *families) view(l prometheus.Labels) *routerMetrics {
 func (f *families) forget(l prometheus.Labels) {
 	f.requests.DeletePartialMatch(l)
 	f.duration.DeletePartialMatch(l)
+	f.endToEnd.DeletePartialMatch(l)
+	f.holdWait.DeletePartialMatch(l)
+	f.writeQueue.DeletePartialMatch(l)
+	f.writePause.DeletePartialMatch(l)
 	f.holdExpired.DeletePartialMatch(l)
 	f.heldDropped.DeletePartialMatch(l)
 	f.readRetries.DeletePartialMatch(l)

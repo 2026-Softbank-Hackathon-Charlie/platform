@@ -2,7 +2,7 @@
 
 - 상태: 제안
 - 날짜: 2026-11-05
-- 관련 ADR: [0011](0011-github-app-deploy.md), [0015](0015-branch-instances.md), [0016](0016-app-object-storage.md), [0019](0019-app-secrets-and-redeploy.md), infra ADR 0050, 0057, migration-engine ADR 0001, 0008
+- 관련 ADR: [0011](0011-github-app-deploy.md), [0015](0015-branch-instances.md), [0016](0016-app-object-storage.md), [0019](0019-app-secrets-and-redeploy.md), infra ADR 0006(다른 인증 방식, 아래 참고), 0050, 0057, migration-engine ADR 0001, 0008
 - 관련 PR: 이 PR(버킷과 키), platform #75(환경 화면의 백업 상태), infra #75(차트), #76(ObjectStore 읽기 권한), #77(eks DB 디스크 4Gi), #80(GKE moimroom DB 백업, ADR 0057, 이전 runbook), frontend #36(콘솔)
 
 ## 상황
@@ -35,10 +35,18 @@
 - 버킷이나 키를 만들지 못해도 s3 리소스와 같이 배포를 실패시킨다. 같은 이유다.
 - GKE(`gcs` 드라이버)에는 만들지 않는다. HMAC 경로를 검증하지 않았기 때문이다. 지금 GKE의 moimroom DB는 플랫폼 배포가 아니라 손으로 만든 Cluster이므로, infra ADR 0057(infra #80)이 Workload Identity로 따로 백업한다.
 
+### 인증 방식: infra ADR 0006과 달리 장기 키를 쓴다
+
+- infra ADR 0006(채택)은 `charlie-db/postgres-poc` 백업에 전용 버킷과 Pod Identity를 쓰고 장기 access key를 만들지 않기로 했다. 그 ADR은 범위를 PoC Cluster로 한정했지만, 같은 클러스터에서 같은 plugin으로 하는 백업이므로 그 원칙과 다르게 가는 이유를 여기 적는다.
+- 이 결정에서는 플랫폼이 배포할 때 앱마다 백업 저장소를 만든다. Pod Identity를 쓰려면 플랫폼이 앱마다 IAM 역할을 만들고 그 앱 DB의 ServiceAccount에 EKS Pod Identity association을 걸어야 한다. 지금 플랫폼 역할에는 IAM 사용자를 만드는 권한(`iam:CreateUser`)만 있고 역할과 association을 만드는 권한이 없다(infra `terraform/platform/aws/app-storage.tf`). 앱을 지울 때 역할과 association을 정리하는 경로도 새로 필요하다. 제출 전까지 이 경로를 만들고 검증할 수 없어서, 이미 운영 중인 ADR 0016의 드라이버를 그대로 썼다.
+- ADR 0016이 앱 저장소에 정적 키를 고른 이유는 세 환경에서 앱 설정을 같게 하는 것이다. 백업 키는 앱이 쓰지 않으므로 이 이유는 해당하지 않는다. GKE 백업(infra ADR 0057)도 키 없는 Workload Identity를 쓴다. 따라서 장기 키는 원칙으로 정한 것이 아니라 일정 때문에 고른 임시 방식이다.
+- 키의 범위는 ADR 0016과 같다. 버킷 하나만 허용하는 인라인 정책, permissions boundary `hopcharlie-app-boundary`, 앱 네임스페이스의 봉인된 Secret으로 제한하고, 인증서가 바뀌면 새 키를 만들고 옛 키를 지운다.
+
 ### 행은 따로 두고 지우지 않는다
 
 - 백업 버킷과 키의 행은 `instance_storage`가 아니라 새 테이블 `backup_storage`(앱, 환경)에 둔다. 지운 인스턴스의 버킷을 지우는 정리(ADR 0016)는 `instance_storage`만 본다. 이 결정 이전의 플랫폼 이미지로 되돌려도 그 이미지는 이 테이블을 모르므로 백업 버킷을 지우지 않는다.
 - 앱을 지워도 백업 버킷, 사용자, 키, 행은 남는다. 백업은 앱 데이터를 잃었을 때 쓰는 것이라 앱과 같이 사라지면 안 된다. 필요 없어진 백업은 운영자가 지운다(아래 절차).
+- **[ADR 0037](0037-app-delete-removes-backup-bucket.md)이 이 항목을 바꿨다.** 이제 앱을 지우면 정리가 `backup_storage`의 행도 보고 백업 버킷, 사용자, 키, 행을 지운다.
 
 ### 등록마다 새 경로
 
@@ -66,10 +74,11 @@
 
 - 이전 직전 원본의 수동 백업(Backup)과 그 이름을 이전 기록의 원복 지점으로 남기는 일은 이전 엔진 담당과 따로 정한다.
 - GKE의 `gcs` 드라이버로 같은 백업을 하려면 Barman과 GCS HMAC 조합을 먼저 검증한다.
+- EKS 백업을 infra ADR 0006처럼 Pod Identity로 바꾼다. 플랫폼 역할에 앱 백업용 IAM 역할 생성(경계 적용)과 `eks:CreatePodIdentityAssociation`, `eks:DeletePodIdentityAssociation`을 주고, 배포 실행기가 앱 DB의 ServiceAccount에 association을 걸며, 앱을 지우면 함께 지운다. 바꾼 뒤에는 장기 키와 `app-pgbackup` Secret을 지운다.
 
 ## 운영자 정리 절차
 
-앱을 지운 뒤 백업이 필요 없으면 다음 순서로 지운다.
+ADR 0037 이후에는 플랫폼이 지운다. 이 절차는 플랫폼이 지우지 못한 행(환경이 없어졌거나 드라이버가 바뀜)과 ADR 0037 이전에 지운 앱의 백업에 쓴다. 다음 순서로 지운다.
 
 1. IAM 사용자 `hopcharlie-app-<app>---pg`의 액세스 키, 인라인 정책 `hopcharlie-bucket`, 사용자를 지운다.
 2. 버킷 `<bucketPrefix><app>---pg`의 모든 객체 버전을 지우고 버킷을 지운다.

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	enginegw "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/gateway"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
 
 const testDomain = "hopcharlie.dev"
@@ -321,6 +322,8 @@ func TestAppAdmin(t *testing.T) {
 		{AppSpec{Backends: spec.Backends, WriteBackend: "aks"}, "unknown_backend"},
 		{AppSpec{Backends: spec.Backends, WriteBackend: "gke", ReadWeights: map[string]int{"gke": 90}}, "invalid_weights"},
 		{AppSpec{Backends: spec.Backends, WriteBackend: "gke", ReadWeights: map[string]int{"gke": 50, "aks": 50}}, "invalid_weights"},
+		// The contract of ADR 0042, not done yet.
+		{AppSpec{Backends: spec.Backends, WriteBackend: "gke", Dial: map[string]string{"gke": "203.0.113.10:443"}}, "dial_not_supported"},
 	} {
 		wantAPIError(t, c.PutApp(ctx, "shop", bad.spec), http.StatusBadRequest, bad.code)
 	}
@@ -593,6 +596,13 @@ func TestAppMetrics(t *testing.T) {
 	tg.hostDo(ctx, http.MethodGet, "app.hopcharlie.dev", "/items", "")
 	tg.hostDo(ctx, http.MethodPost, "shop.hopcharlie.dev", "/orders", "w")
 
+	// Response EOF can precede forward's metrics and the outer in-flight defer.
+	shop := tg.g.lookup("shop")
+	waitFor(t, "completed app requests", func() bool {
+		shop.mu.Lock()
+		defer shop.mu.Unlock()
+		return tg.g.inflightReads.Load() == 0 && shop.inflightReads.Load() == 0 && shop.inflightWrites == 0
+	})
 	m := tg.metrics(t)
 	for _, want := range []string{
 		`charlie_gateway_requests_total{backend="gke",class="read",code="200"} 1`,
@@ -660,8 +670,15 @@ func TestSecondAppWithEngineClient(t *testing.T) {
 	if r := recv(t, pending); r.status != http.StatusOK || r.backend != "eks" || shop["eks"].got("during-fence") != 1 {
 		t.Fatalf("held write: %+v", r)
 	}
-	st, err := tg.client.App("shop").State(ctx, 0)
-	if err != nil || st.WriteBackend != "eks" || st.Totals["eks"].Requests != 1 || st.Totals["gke"].Requests != 1 {
+	// The client can get the held write's response before the gateway counts
+	// it, so wait for the count instead of reading it once.
+	var st apiv1.TrafficState
+	var err error
+	waitFor(t, "held write counted", func() bool {
+		st, err = tg.client.App("shop").State(ctx, 0)
+		return err == nil && st.InFlight.Writes == 0 && st.Totals["eks"].Requests == 1
+	})
+	if st.WriteBackend != "eks" || st.Totals["gke"].Requests != 1 {
 		t.Fatalf("shop state: %+v %v", st, err)
 	}
 	if st := tg.g.state(defaultWindow); st.WriteBackend != "gke" || st.Totals["gke"].Requests != 0 {

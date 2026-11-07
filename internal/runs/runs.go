@@ -27,6 +27,7 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -88,12 +89,18 @@ var phaseRank = map[apiv1.RunPhase]int{
 }
 
 var syncSteps = []string{engine.StepPrecheck, engine.StepPrepare, engine.StepPresync, engine.StepDelta}
+var errClusterLeaseLost = errors.New("cluster lease lost; operator reconciliation required")
 
 // Config configures a Runner.
 type Config struct {
-	StateDir string
-	Store    store.Store
-	Factory  Factory
+	ClusterLease func(context.Context, []string) (store.ClusterLease, error)
+	// Retention is explicitly enabled by the operator, never by a submitted plan.
+	Retention       retention.Backend
+	RetentionPeriod time.Duration
+	RetentionPlan   func(context.Context, string) (*plan.Plan, error)
+	StateDir        string
+	Store           store.Store
+	Factory         Factory
 	// FileSyncer installs the server-owned content guard on every normal launch,
 	// including resumes. Reverse rollback runs preserve their recovery exemption.
 	FileSyncer func(*plan.Plan) engine.FileSyncer
@@ -113,17 +120,29 @@ type Config struct {
 	TrafficAt func(gatewayURL string) Traffic
 	// Probe sends one synthetic read (GET /) through the gateway's public proxy
 	// to the app whose admin scope is gatewayURL. During every canary step the
-	// runner sends probeFactor x the gate's minimum requests, spread over the
-	// step, so that an app without users still gets the target judged on real
-	// requests through the real route. The gate counts them like any request.
+	// runner sends enough reads, spread over the step, that about probeFactor x
+	// the gate's minimum requests reach the target at the step's weight (at
+	// most maxProbes), so that an app without users still gets the target
+	// judged on real requests through the real route. If the target still got
+	// fewer than the minimum, the step is extended once with another batch.
+	// The gate counts them like any request.
 	// Nil sends none: a quiet app then fails the canary for too few requests.
 	Probe func(ctx context.Context, gatewayURL string) error
 }
 
-// probeFactor is how many synthetic reads per canary step the runner sends,
-// in multiples of the gate's minimum requests: at a 50% step about half reach
-// the target, which then still clears the minimum.
+// probeFactor is how many synthetic reads per canary step the runner expects
+// to reach the target, in multiples of the gate's minimum requests. The
+// gateway picks the backend of each read at random by weight, so the margin
+// keeps an unlucky step above the minimum.
 const probeFactor = 3
+
+// probeCount is how many synthetic reads a canary step at weight (percent of
+// reads to the target) sends: enough that probeFactor x minRequests are
+// expected on the target, at most maxProbes.
+func probeCount(minRequests, weight int) int {
+	want := probeFactor * minRequests * 100
+	return min((want+weight-1)/weight, maxProbes)
+}
 
 // StartOptions describe a new run.
 type StartOptions struct {
@@ -142,9 +161,10 @@ type StartOptions struct {
 
 // Runner starts runs and tracks the active ones.
 type Runner struct {
-	cfg Config
-	ctx context.Context // parent of every run; runs outlive the HTTP request that started them
-	now func() time.Time
+	retiring map[string][]string // cluster reservations shared with launch; guarded by mu
+	cfg      Config
+	ctx      context.Context // parent of every run; runs outlive the HTTP request that started them
+	now      func() time.Time
 
 	mu   sync.Mutex
 	live map[string]*live
@@ -171,11 +191,12 @@ func New(ctx context.Context, cfg Config) *Runner {
 	if cfg.MinCanaryStep <= 0 {
 		cfg.MinCanaryStep = 5 * time.Second
 	}
-	return &Runner{cfg: cfg, ctx: ctx, now: func() time.Time { return time.Now().UTC() }, live: map[string]*live{}, stopCh: make(chan struct{})}
+	return &Runner{cfg: cfg, ctx: ctx, now: func() time.Time { return time.Now().UTC() }, live: map[string]*live{}, retiring: map[string][]string{}, stopCh: make(chan struct{})}
 }
 
 // live is an active run.
 type live struct {
+	lease    store.ClusterLease
 	id       string
 	plan     *plan.Plan
 	eng      Engine
@@ -266,6 +287,49 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 			return apiv1.Run{}, fmt.Errorf("%w (run %s)", ErrBusy, id)
 		}
 	}
+	var lease store.ClusterLease
+	if r.cfg.ClusterLease != nil {
+		var err error
+		lease, err = r.cfg.ClusterLease(ctx, keys)
+		if errors.Is(err, store.ErrConflict) {
+			return apiv1.Run{}, ErrBusy
+		}
+		if err != nil {
+			return apiv1.Run{}, err
+		}
+	}
+	leased := false
+	defer func() {
+		if lease != nil && !leased {
+			lease.Release()
+		}
+	}()
+	if err := r.retirementGuard(ctx, p, runID); err != nil {
+		return apiv1.Run{}, err
+	}
+	if doc.RollbackOf != nil && *doc.RollbackOf != "" {
+		job, err := r.retirementJob(ctx, *doc.RollbackOf)
+		if err != nil {
+			return apiv1.Run{}, err
+		}
+		if job != nil && (job.Status == "deleting" || job.Status == "deleted") {
+			return apiv1.Run{}, fmt.Errorf("%w: immediate rollback is unavailable after source retirement starts", ErrWrongStatus)
+		}
+	}
+	var retirement *retention.Job
+	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil {
+		if r.cfg.RetentionPeriod < time.Minute || r.cfg.RetentionPeriod > 30*24*time.Hour || r.cfg.RetentionPlan == nil {
+			return apiv1.Run{}, fmt.Errorf("%w: invalid source retention configuration", ErrInvalid)
+		}
+		captureCtx, cancelCapture := context.WithTimeout(ctx, 10*time.Second)
+		j, err := r.cfg.Retention.Capture(captureCtx, p)
+		cancelCapture()
+		if err != nil {
+			return apiv1.Run{}, fmt.Errorf("%w: source retention identity unavailable", ErrEngineInit)
+		}
+		j.KeepFor, j.Status = r.cfg.RetentionPeriod, "captured"
+		retirement = &j
+	}
 	opts := engine.Options{StateDir: r.cfg.StateDir, RunID: runID, Emit: l.emitEngine}
 	if p.Files != nil && r.cfg.FileSyncer != nil && (doc.RollbackOf == nil || *doc.RollbackOf == "") {
 		opts.Files = r.cfg.FileSyncer(p)
@@ -279,6 +343,8 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 	}
 	l.eng, l.id = eng, eng.RunID()
 	r.useWrittenStream(l)
+	doc.Result.WriteVerification = l.doc.Result.WriteVerification
+	doc.Result.MissingWrites = nil
 	doc.RunId = l.id
 	if doc.Result.Requests != nil {
 		l.prevReq = *doc.Result.Requests
@@ -302,12 +368,22 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		return apiv1.Run{}, err
 	}
 	r.live[l.id] = l
+	l.lease = lease
+	if retirement != nil {
+		retirement.RunID = l.id
+		if err := r.saveRetirement(ctx, *retirement); err != nil {
+			delete(r.live, l.id)
+			eng.Close()
+			return apiv1.Run{}, err
+		}
+	}
 
 	runCtx, cancel := context.WithCancel(r.ctx)
 	l.cancel = cancel
 	r.wg.Add(2)
 	go func() { defer r.wg.Done(); r.writer(l) }()
 	go func() { defer r.wg.Done(); r.drive(runCtx, l) }()
+	leased = true
 	return l.snapshot(), nil
 }
 
@@ -440,6 +516,11 @@ func (r *Runner) drive(ctx context.Context, l *live) {
 // This goroutine is the only one that touches the engine.
 func (r *Runner) runSteps(ctx context.Context, l *live, steps []string) error {
 	for _, step := range steps {
+		if l.lease != nil {
+			if err := l.lease.Check(ctx); err != nil {
+				return errClusterLeaseLost
+			}
+		}
 		if stepSucceeded(l.eng, step) {
 			continue
 		}
@@ -516,6 +597,12 @@ func (r *Runner) ended(l *live, err error) {
 	case engine.OutcomeHalted:
 		status = apiv1.RunStatusHalted
 	default: // failed, or still running: nothing irreversible happened
+		if errors.Is(err, errClusterLeaseLost) && st.PromoteRequested {
+			// Do not label a post-promotion coordination failure as a safe
+			// retry. The engine file remains untouched for operator reconciliation.
+			status = apiv1.RunStatusHalted
+			break
+		}
 		switch {
 		case aborted:
 			status = apiv1.RunStatusAborted
@@ -573,7 +660,22 @@ func (r *Runner) finish(l *live) {
 
 	l.q.close()
 	<-l.q.drained
+	// Bind the target UID after a cold target has been created, while this run
+	// still owns both cluster reservations. Failure leaves retirement blocked.
+	if status == apiv1.RunStatusSucceeded && r.cfg.Retention != nil {
+		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if j, err := r.retirementJob(c, l.id); err == nil && j != nil {
+			if captured, err := r.cfg.Retention.Capture(c, l.plan); err == nil && captured.SourceUID == j.SourceUID && captured.TargetUID != "" && (j.TargetUID == "" || j.TargetUID == captured.TargetUID) {
+				j.TargetUID, j.Pods = captured.TargetUID, captured.Pods
+				_ = r.saveRetirement(c, *j)
+			}
+		}
+		cancel()
+	}
 	l.eng.Close()
+	if l.lease != nil {
+		l.lease.Release()
+	}
 	l.cancel()
 
 	r.mu.Lock()
@@ -628,30 +730,40 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 		}
 		l.emitPlatform(EventCanaryStep, "", fmt.Sprintf("%d%% of reads to %s", w, dst), map[string]any{"weight": w, "readWeights": weights})
 
+		minRequests := int(*opts.Gate.MinRequests)
+		timeout := probeTimeout(*opts.Gate.MaxP95Millis)
 		stepStart := time.Now()
-		probe := r.probe(ctx, l, probeFactor*int(*opts.Gate.MinRequests), stepDur, probeTimeout(*opts.Gate.MaxP95Millis))
-		select {
-		case <-ctx.Done():
-			probe.stop()
-			return false, "aborted during the canary"
-		case <-r.stopCh:
-			probe.stop()
-			l.markInterrupted()
-			return false, "the platform is shutting down"
-		case <-time.After(stepDur):
+		probe := r.probe(ctx, l, probeCount(minRequests, w), stepDur, timeout)
+		if done, reason := r.waitStep(ctx, l, probe, stepDur); done {
+			return false, reason
 		}
-		// Let the reads in flight finish, so a slow target counts with its real
-		// latency instead of as a cut request, then judge everything the step sent.
-		probe.wait()
-		// whole seconds rounded up, so the step's first reads stay in; the gateway keeps 300s
-		window := min(max(time.Since(stepStart).Truncate(time.Second)+time.Second, stepDur), 300*time.Second)
+		ts, err := r.stepState(l, stepStart, stepDur)
+		// Probe reads go to the target at random by weight, so a step can come
+		// up short by chance. Extend it once with another batch over another
+		// stepDuration, then judge the step again over everything since its
+		// start (at most the last 300s). Without probes more time would not
+		// bring more requests. Errors already over the limit fail at once, and
+		// a step too small for one more batch to fill the gap (1%) moves on.
+		s := ts.Stats[dst]
+		if n := s.Requests; err == nil && probe.cancel != nil && n < int64(minRequests) &&
+			s.ErrorRate <= *opts.Gate.MaxErrorRate && n+int64(probeCount(minRequests, w)*w/100) >= int64(minRequests) {
+			select {
+			case <-ctx.Done():
+				return false, "aborted during the canary"
+			case <-r.stopCh:
+				l.markInterrupted()
+				return false, "the platform is shutting down"
+			default:
+			}
+			l.emitPlatform(engine.EventLog, "", fmt.Sprintf("only %d requests reached %s at %d%%; extending the step by %s with more probe reads", n, dst, w, stepDur),
+				map[string]any{"weight": w, "requests": n, "minRequests": minRequests, "extension": stepDur.String()})
+			probe = r.probe(ctx, l, probeCount(minRequests, w), stepDur, timeout)
+			if done, reason := r.waitStep(ctx, l, probe, stepDur); done {
+				return false, reason
+			}
+			ts, err = r.stepState(l, stepStart, stepDur)
+		}
 
-		var ts apiv1.TrafficState
-		err := r.withTimeout(func(c context.Context) error {
-			var err error
-			ts, err = l.traffic.State(c, window)
-			return err
-		})
 		var gate apiv1.GateResult
 		verdict := apiv1.CanaryStepVerdictFailed
 		if err != nil {
@@ -695,7 +807,40 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 	return true, ""
 }
 
-// maxProbes caps the synthetic reads of one canary step.
+// waitStep waits out d of a canary step while its probe reads run. It returns
+// true with the run's reason if the run was aborted or the platform is
+// shutting down. Otherwise it lets the reads in flight finish, so a slow
+// target counts with its real latency instead of as a cut request.
+func (r *Runner) waitStep(ctx context.Context, l *live, probe probing, d time.Duration) (bool, string) {
+	select {
+	case <-ctx.Done():
+		probe.stop()
+		return true, "aborted during the canary"
+	case <-r.stopCh:
+		probe.stop()
+		l.markInterrupted()
+		return true, "the platform is shutting down"
+	case <-time.After(d):
+	}
+	probe.wait()
+	return false, ""
+}
+
+// stepState reads the gateway's request stats over everything the step sent
+// since start, at most the last 300s.
+func (r *Runner) stepState(l *live, start time.Time, stepDur time.Duration) (apiv1.TrafficState, error) {
+	// whole seconds rounded up, so the step's first reads stay in; the gateway keeps 300s
+	window := min(max(time.Since(start).Truncate(time.Second)+time.Second, stepDur), 300*time.Second)
+	var ts apiv1.TrafficState
+	err := r.withTimeout(func(c context.Context) error {
+		var err error
+		ts, err = l.traffic.State(c, window)
+		return err
+	})
+	return ts, err
+}
+
+// maxProbes caps the synthetic reads of one batch of a canary step.
 const maxProbes = 300
 
 // probeTimeout is how long one synthetic read may take: twice the gate's p95
@@ -1188,6 +1333,31 @@ func (r *Runner) Active() int {
 	return len(r.live)
 }
 
+// IsActive reports whether run is active, the rule POST /v1/migrations
+// applies before it starts another run on the same clusters: this runner
+// drives it now, or (StoredActive) its stored document says another server
+// does. A run that ended (phase done, endedAt set) is not active, whatever
+// its status: a halted or interrupted one holds no cluster until it is
+// resumed.
+func (r *Runner) IsActive(run apiv1.Run) bool {
+	r.mu.Lock()
+	_, ok := r.live[run.RunId]
+	r.mu.Unlock()
+	return ok || StoredActive(run)
+}
+
+// StoredActive reports whether a stored run document is of a run that has
+// not ended: running or awaiting its switch, with no endedAt and not in
+// phase done. Such a run holds its clusters' lease, so POST /v1/migrations
+// refuses another run there (ErrBusy). Recover marks the ones a restart cut
+// short interrupted, which are not active.
+func StoredActive(run apiv1.Run) bool {
+	if run.EndedAt != nil || run.Phase == apiv1.RunPhaseDone {
+		return false
+	}
+	return run.Status == apiv1.RunStatusRunning || run.Status == apiv1.RunStatusAwaitingSwitch
+}
+
 // snapshot returns a deep copy: the document holds slices and pointers that
 // the run goroutines keep changing while callers encode the copy.
 func (l *live) snapshot() apiv1.Run {
@@ -1426,7 +1596,9 @@ type verifyReport struct {
 	OK          bool  `json:"ok"`
 	MissingRows int64 `json:"missingRows"`
 	Written     *struct {
-		Missing int64 `json:"missing"`
+		Missing int64    `json:"missing"`
+		Checked int64    `json:"checked"`
+		Errors  []string `json:"errors"`
 	} `json:"written"`
 	Files *struct {
 		Missing int64 `json:"missingOnTarget"`
@@ -1440,6 +1612,12 @@ func fillResult(res *apiv1.RunResult, st apiv1.EngineState, started, ended time.
 		res.DowntimeMillis = st.DowntimeMillis
 	}
 	rec, ok := st.Steps[engine.StepVerify]
+	if ok && res.WriteVerification != nil && res.WriteVerification.Status == apiv1.WriteVerificationStatusNotReached && rec.Status == apiv1.StepStatusFailed {
+		reason := "written_verification_incomplete"
+		res.WriteVerification.Status = apiv1.WriteVerificationStatusFailed
+		res.WriteVerification.Reason = &reason
+		res.MissingWrites = nil
+	}
 	if !ok || rec.Evidence == nil {
 		return
 	}
@@ -1458,7 +1636,28 @@ func fillResult(res *apiv1.RunResult, st apiv1.EngineState, started, ended time.
 	res.Verified = &rep.OK
 	res.MissingRows = &rep.MissingRows
 	if rep.Written != nil {
-		res.MissingWrites = &rep.Written.Missing
+		if res.WriteVerification == nil {
+			res.WriteVerification = &apiv1.WriteVerification{Status: apiv1.WriteVerificationStatusNotReached}
+		}
+		v := res.WriteVerification
+		v.Checked = &rep.Written.Checked
+		reason := "written_verification_incomplete"
+		v.Status = apiv1.WriteVerificationStatusFailed
+		res.MissingWrites = nil
+		complete := rep.Written.Checked > 0 && rep.Written.Missing >= 0 && rep.Written.Missing <= rep.Written.Checked && len(rep.Written.Errors) == 0
+		if v.CollectedRecords != nil && rep.Written.Checked != *v.CollectedRecords {
+			complete = false
+		}
+		if complete {
+			v.Status = apiv1.WriteVerificationStatusMeasured
+			v.Missing = &rep.Written.Missing
+			res.MissingWrites = &rep.Written.Missing
+			reason = "written_records_verified"
+		} else if rep.Written.Checked == 0 && len(rep.Written.Errors) == 0 {
+			v.Status = apiv1.WriteVerificationStatusNoRecords
+			reason = "no_records_collected"
+		}
+		v.Reason = &reason
 	}
 	if rep.Files != nil {
 		res.MissingFiles = &rep.Files.Missing

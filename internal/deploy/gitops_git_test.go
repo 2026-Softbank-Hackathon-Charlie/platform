@@ -135,6 +135,21 @@ func TestGitCLIGitOps(t *testing.T) {
 		t.Fatalf("second delete: %q %v %v", again, changed, err)
 	}
 
+	// A file is deleted on its own (an environment taken out, ADR 0043).
+	if _, _, err := g.Write(ctx, map[string][]byte{"apps/shop--dev/eks.yaml": []byte("e")}, "deploy shop--dev to eks"); err != nil {
+		t.Fatal(err)
+	}
+	sha5, changed, err = g.Delete(ctx, []string{FilePath("shop--dev", "eks")}, "remove eks")
+	if err != nil || !changed {
+		t.Fatalf("delete a file: %v %v", changed, err)
+	}
+	if _, ok := show(sha5, "apps/shop--dev/eks.yaml"); ok {
+		t.Fatal("apps/shop--dev/eks.yaml is still there")
+	}
+	if _, ok := show(sha5, "apps/shop--dev/gke.yaml"); !ok {
+		t.Fatal("deleting one file removed the other environment's")
+	}
+
 	// Nothing that is not one instance's directory, such as AppDir of an
 	// empty name, is deleted.
 	for _, dirs := range refusedDeletes {

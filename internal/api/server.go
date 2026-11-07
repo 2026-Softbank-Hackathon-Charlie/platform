@@ -17,10 +17,12 @@ import (
 	"time"
 
 	specdoc "github.com/2026-Softbank-Hackathon-Charlie/platform/api"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
@@ -81,6 +83,7 @@ type GitHub interface {
 
 // Config configures the API.
 type Config struct {
+	WrittenTokens *auth.WrittenTokens
 	// Tokens authenticates programs with static tokens. When Insecure is set
 	// and Tokens and Admins are both empty, every request acts as the
 	// operator "dev" (local development only).
@@ -112,6 +115,10 @@ type Config struct {
 	// (PLATFORM_APP_DB_HOST_TEMPLATES), the only ones a pair can be
 	// migrated between.
 	AppDBEnvs []string
+	// Onboarding registers the /v1/onboardings routes (ADR 0042,
+	// PLATFORM_ONBOARDING=1). They answer 501 until they are built; off,
+	// they are not there.
+	Onboarding bool
 }
 
 // DefaultAppDomain is Config.AppDomain's default.
@@ -144,6 +151,9 @@ type Deps struct {
 	// ImageScans reads stored image scans for /v1/security/controls and
 	// /v1/security/vulnerabilities; nil reports the scanner as not configured.
 	ImageScans security.ScanResults
+	// Exploits adds KEV and EPSS evidence to /v1/security/vulnerabilities
+	// (SEC-07); nil leaves it out.
+	Exploits *security.ExploitIntel
 	// Agents is the AI agent's activity log; nil turns /v1/agent off.
 	Agents AgentLog
 	// Deployer runs deployments; nil leaves them queued.
@@ -164,6 +174,10 @@ type Deps struct {
 	// Buckets inspects the residency policy's buckets (gate.Gate); nil
 	// answers POST /v1/residency/buckets/inspect 503 residency_not_configured.
 	Buckets BucketInspector
+	// AIActivity reads what the AI runner did from the observability
+	// stack's ClickHouse (aiobs.Client); nil answers GET /v1/ai-activity 503
+	// observability_not_configured.
+	AIActivity AIActivityReader
 	// AIRuns starts the AI runner as a Job (airun.Runner); nil answers the
 	// /v1/ai-runs endpoints 503 ai_runner_not_configured.
 	AIRuns AIRunner
@@ -171,14 +185,49 @@ type Deps struct {
 	// databases of registered apps (dbroute.Manager, ADR 0030); nil when
 	// they are made by hand.
 	DBRoutes AppDBRoutes
+	// SealingConfigured reports whether an environment has a usable
+	// sealed-secrets certificate; nil means none has. Adding an
+	// environment whose deployment seals values to one without answers
+	// 503 sealing_not_configured (ADR 0043).
+	SealingConfigured func(env string) bool
+	// Gateway reads the traffic gateway's apps, for whether it holds an
+	// app's writes and has its backends (ADR 0043); nil when there is no
+	// gateway.
+	Gateway GatewayApps
+	// DBCluster reads an app database's CNPG Cluster in a workload cluster,
+	// for the readiness of a database pair (ADR 0043); nil leaves the
+	// readiness at cluster_unreadable.
+	DBCluster DBClusterReader
+	// WorkloadResidue says what is left in a namespace of an environment's
+	// workload cluster, for whether an environment removed from an app is
+	// gone before it is added again (ADR 0043); nil means it cannot tell.
+	WorkloadResidue WorkloadResidue
 }
 
-// AppDBRoutes starts making the routes of a database pair just registered
-// and removing those of an app just deleted. Both return at once; failures
+// WorkloadResidue returns one object still in namespace in env's workload
+// cluster (a Service or a Pod, as "Service name"), or "" when there is
+// none.
+type WorkloadResidue func(ctx context.Context, env, namespace string) (string, error)
+
+// GatewayApps lists the traffic gateway's apps (gateway.Client).
+type GatewayApps interface {
+	Apps(ctx context.Context) (gateway.AppList, error)
+}
+
+// AppDBRoutes starts making the routes of a database pair just registered,
+// following the environments of an app whose environments just changed
+// and removing those of an app just deleted. All return at once; failures
 // are logged and retried by the manager.
 type AppDBRoutes interface {
 	Added(d store.AppDatabase)
+	Changed(app string)
 	Removed(app string)
+}
+
+// AIActivityReader returns the AI runner's parsed log events since a time,
+// oldest first (aiobs.Client).
+type AIActivityReader interface {
+	Events(ctx context.Context, since time.Time, limit int) ([]aiobs.Event, error)
 }
 
 // AIRunner starts and lists AI runner Jobs (airun.Runner).
@@ -210,6 +259,8 @@ type Server struct {
 	now        func() time.Time   // the clock for sessions, device logins and the login limiter
 	logins     *auth.LoginLimiter // failed logins per username
 	loginSlots chan struct{}      // one token per bcrypt comparison in progress
+
+	ready readinessCache // what the readiness of database pairs read (ADR 0043)
 }
 
 // New wires the routes.
@@ -267,6 +318,8 @@ func New(cfg Config, d Deps) *Server {
 	s.route("POST /v1/migrations", operator, s.startMigration)
 	s.route("GET /v1/migrations", viewer, s.listMigrations)
 	s.route("GET /v1/migrations/{runId}", viewer, s.getMigration)
+	s.route("GET /v1/migrations/{runId}/retention", viewer, s.sourceRetention)
+	s.route("POST /v1/migrations/{runId}/retention", operator, s.preserveSource)
 	s.route("GET /v1/migrations/{runId}/events", viewer, s.migrationEvents)
 	s.route("POST /v1/migrations/{runId}/switch", operator, s.switchMigration)
 	s.route("POST /v1/migrations/{runId}/abort", operator, s.abortMigration)
@@ -282,6 +335,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/plans/{ref}/attachments/{name}", viewer, s.getPlanAttachment)
 	s.route("GET /v1/apps", viewer, s.listApps)
 	s.route("POST /v1/plans/draft", agent, s.draftPlan)
+	s.route("GET /v1/ai-activity", viewer, s.getAIActivity)
 	s.route("GET /v1/ai-runs", viewer, s.listAIRuns)
 	s.route("POST /v1/ai-runs", operator, s.startAIRun)
 	s.route("POST /v1/residency/buckets/inspect", agent, s.inspectBucket)
@@ -293,6 +347,10 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/security/vulnerabilities", viewer, s.securityVulnerabilities)
 	// The image scan workflow posts what Grype found; the API only stores it (SEC-04).
 	s.route("POST /v1/security/scans", agent, s.submitSecurityScan)
+	// Time-limited exceptions for findings and vulnerabilities (SEC-08).
+	s.route("GET /v1/security/exceptions", viewer, s.listSecurityExceptions)
+	s.route("POST /v1/security/exceptions", operator, s.createSecurityException)
+	s.route("DELETE /v1/security/exceptions/{id}", operator, s.revokeSecurityException)
 	s.route("POST /v1/agent/sessions", agent, s.createAgentSession)
 	s.route("GET /v1/agent/sessions", viewer, s.listAgentSessions)
 	s.route("GET /v1/agent/sessions/{id}", viewer, s.getAgentSession)
@@ -308,6 +366,8 @@ func New(cfg Config, d Deps) *Server {
 	// checks the signature and writes its own audit entries.
 	s.route("POST /v1/webhooks/github", "", s.githubWebhook)
 	s.route("DELETE /v1/apps/{name}", operator, s.deleteApp)
+	s.route("POST /v1/apps/{name}/environments", operator, s.addAppEnvironment)
+	s.route("DELETE /v1/apps/{name}/environments/{env}", operator, s.removeAppEnvironment)
 	s.route("POST /v1/apps/{name}/instances", operator, s.createAppInstance)
 	s.route("DELETE /v1/apps/{name}/instances/{instance}", operator, s.deleteAppInstance)
 	s.route("POST /v1/apps/{name}/deployments", operator, s.createDeployment)
@@ -317,6 +377,9 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/apps/{name}/secrets", viewer, s.listAppSecrets)
 	s.route("PUT /v1/apps/{name}/secrets", operator, s.updateAppSecrets)
 	s.route(revealSecretRoute, operator, s.getAppSecret)
+	if cfg.Onboarding {
+		s.onboardingRoutes(viewer, operator)
+	}
 	return s
 }
 
@@ -348,6 +411,9 @@ func (s *Server) route(pattern string, need apiv1.Role, h http.HandlerFunc) {
 			var ok bool
 			var err error
 			p, ok, err = s.authenticate(r)
+			if pattern == "POST /v1/written-records/{stream}" && s.cfg.WrittenTokens.Allows(r, r.PathValue("stream")) {
+				p, ok, err = auth.Principal{Name: "written-records-" + r.PathValue("stream"), Role: apiv1.RoleAgent, Kind: auth.KindToken}, true, nil
+			}
 			switch {
 			case err != nil:
 				s.internal(rec, r.WithContext(ctx), err)

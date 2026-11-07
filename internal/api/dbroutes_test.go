@@ -9,11 +9,19 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 )
 
-// fakeDBRoutes records the pairs added and the apps removed.
+// fakeDBRoutes records the pairs added, the apps changed and the apps
+// removed.
 type fakeDBRoutes struct {
 	mu      sync.Mutex
 	added   []string
+	changed []string
 	removed []string
+}
+
+func (f *fakeDBRoutes) Changed(app string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.changed = append(f.changed, app)
 }
 
 func (f *fakeDBRoutes) Added(d store.AppDatabase) {

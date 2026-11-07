@@ -1,0 +1,5 @@
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention	1.116s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs	1.268s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api	115.528s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store	37.147s
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/api	7.384s

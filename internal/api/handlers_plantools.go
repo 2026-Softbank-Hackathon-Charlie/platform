@@ -29,6 +29,9 @@ const maxPKChars = 200
 
 // writtenTable is "schema.table" or "table" with unquoted PostgreSQL identifiers.
 var writtenTable = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]{0,62}(\.[A-Za-z_][A-Za-z0-9_$]{0,62})?$`)
+var writtenEventID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var writtenGeneration = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+var reservationPK = regexp.MustCompile(`^[1-9][0-9]{0,18}$`)
 
 // POST /v1/written-records/{stream}: writes a load generator saw succeed.
 func (s *Server) appendWrittenRecords(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +51,48 @@ func (s *Server) appendWrittenRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
+	scope, coverage := "unspecified", "reported_records"
+	generation := ""
+	if req.Generation != nil {
+		generation = *req.Generation
+		if !writtenGeneration.MatchString(generation) {
+			s.fail(w, r, 400, "invalid_request", "invalid written record generation")
+			return
+		}
+	}
+	if req.Scope != nil {
+		if !req.Scope.Valid() {
+			s.fail(w, r, 400, "invalid_request", "invalid written record scope")
+			return
+		}
+		scope = string(*req.Scope)
+	}
+	if req.Coverage != nil {
+		if !req.Coverage.Valid() {
+			s.fail(w, r, 400, "invalid_request", "invalid written record coverage")
+			return
+		}
+		coverage = string(*req.Coverage)
+	}
+	if scope == "application_commits" && generation == "" {
+		s.fail(w, r, 400, "invalid_request", "application commit receipts require a database generation")
+		return
+	}
+	appCollector := s.cfg.WrittenTokens.Allows(r, stream)
+	if appCollector && (scope != "application_commits" || coverage != "reservation_inserts") {
+		s.fail(w, r, 403, "collector_scope_denied", "application collector tokens require application_commits and reservation_inserts")
+		return
+	}
 	recs := make([]store.WrittenRecord, n)
 	for i, rec := range req.Records {
+		eventID := ""
+		if rec.EventId != nil {
+			eventID = *rec.EventId
+			if len(eventID) > 100 || !writtenEventID.MatchString(eventID) {
+				s.fail(w, r, 400, "invalid_request", "invalid written record eventId")
+				return
+			}
+		}
 		switch {
 		case !writtenTable.MatchString(rec.Table): // no control characters either
 			s.fail(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("records[%d].table %q must be schema.table or table", i, rec.Table))
@@ -62,13 +105,25 @@ func (s *Server) appendWrittenRecords(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		at := now
+		if appCollector && (rec.Table != "app.reservations" || !reservationPK.MatchString(rec.Pk) || eventID != "reservation-"+rec.Pk || rec.At == nil) {
+			s.fail(w, r, 403, "collector_scope_denied", "application collector tokens may report timestamped reservation insert primary keys only")
+			return
+		}
 		if rec.At != nil {
 			at = rec.At.UTC()
 		}
 		// Unquoted identifiers are lower case in PostgreSQL, which is what verify looks up.
-		recs[i] = store.WrittenRecord{Table: strings.ToLower(rec.Table), PK: rec.Pk, At: at, ReceivedAt: now}
+		recs[i] = store.WrittenRecord{Table: strings.ToLower(rec.Table), PK: rec.Pk, At: at, ReceivedAt: now, EventID: eventID, Scope: scope, Coverage: coverage, Generation: generation}
 	}
-	if err := s.d.Store.AppendWrittenRecords(context.WithoutCancel(r.Context()), stream, recs); err != nil {
+	// A cancelled request may have committed already; stable event IDs make
+	// retry safe. Never retain a cancelled caller while waiting on the stream lock.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.d.Store.AppendWrittenRecords(ctx, stream, recs); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			s.fail(w, r, 409, "written_record_conflict", "written record event identifier was reused or database generation changed; use a new stream for a new dataset")
+			return
+		}
 		s.internal(w, r, err)
 		return
 	}
@@ -87,7 +142,9 @@ func (s *Server) writtenRecordStats(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, apiv1.WrittenRecordStats{Stream: stream, Count: st.Count, LatestAt: st.LatestAt})
+	scope := apiv1.WrittenRecordStatsScope(st.Scope)
+	coverage := apiv1.WrittenRecordStatsCoverage(st.Coverage)
+	writeJSON(w, http.StatusOK, apiv1.WrittenRecordStats{Stream: stream, Count: st.Count, LatestAt: st.LatestAt, LastSeq: &st.LastSeq, Scope: &scope, Coverage: &coverage, Generation: &st.Generation})
 }
 
 // --- plan attachments ---
@@ -153,6 +210,29 @@ func (s *Server) draftPlan(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
+	}
+	// Automatically bind only recent receipts from this source database. A
+	// retained stream from an old installation must not certify a fresh dataset.
+	if req.WrittenRecordsStream == nil {
+		stream := "app-" + req.App
+		if plans.StreamName.MatchString(stream) {
+			st, err := s.d.Store.WrittenRecordStats(r.Context(), stream)
+			if err != nil {
+				s.internal(w, r, err)
+				return
+			}
+			if st.Count > 0 && st.Scope == "application_commits" && st.Generation != "" && st.LatestAt != nil && st.LatestAt.After(time.Now().Add(-10*time.Minute)) {
+				generation, err := plans.WrittenGeneration(r.Context(), p.Source.Dsn)
+				if err == nil && generation == st.Generation {
+					req.WrittenRecordsStream = &stream
+					p, err = s.d.Apps.Draft(r.Context(), req)
+					if err != nil {
+						s.fail(w, r, 400, "invalid_request", err.Error())
+						return
+					}
+				}
+			}
+		}
 	}
 	if req.SourceStats == nil || !*req.SourceStats {
 		writeJSON(w, http.StatusOK, p)

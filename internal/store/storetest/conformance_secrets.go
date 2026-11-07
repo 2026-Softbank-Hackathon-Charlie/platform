@@ -458,7 +458,7 @@ func testInstanceStorage(t *testing.T, s store.Store) {
 
 // testBackupStorage checks the backup bucket rows (ADR 0025): by app and
 // environment, apart from the instance storage rows, and kept when the app
-// is deleted.
+// is deleted until DeleteBackupStorage removes them (ADR 0037).
 func testBackupStorage(t *testing.T, s store.Store) {
 	ctx := t.Context()
 	_, err := s.GetBackupStorage(ctx, "moimroom", "eks")
@@ -495,9 +495,29 @@ func testBackupStorage(t *testing.T, s store.Store) {
 	_, err = s.GetBackupStorage(ctx, "moimroom", "eks")
 	must(t, err)
 
+	// List returns every row, by app and then environment.
+	must(t, s.PutBackupStorage(ctx, newInstanceStorage("blog---pg", "gke", "blog", 3)))
+	must(t, s.PutBackupStorage(ctx, newInstanceStorage("blog---pg", "eks", "blog", 4)))
+	all, err := s.ListBackupStorage(ctx)
+	must(t, err)
+	keys := make([]string, len(all))
+	for i, r := range all {
+		keys[i] = r.App + "@" + r.Env
+	}
+	eqList(t, "backup storage", keys, []string{"blog@eks", "blog@gke", "moimroom@eks"})
+
+	// Delete removes one row.
+	must(t, s.DeleteBackupStorage(ctx, "moimroom", "eks"))
+	wantErr(t, s.DeleteBackupStorage(ctx, "moimroom", "eks"), store.ErrNotFound)
+	_, err = s.GetBackupStorage(ctx, "moimroom", "eks")
+	wantErr(t, err, store.ErrNotFound)
+	_, err = s.GetBackupStorage(ctx, "blog", "eks")
+	must(t, err)
+
 	// Unclean keys find nothing.
 	_, err = s.GetBackupStorage(ctx, "moim\x00room", "eks")
 	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteBackupStorage(ctx, "b\x00log", "eks"), store.ErrNotFound)
 }
 
 func newAppDatabase(primary, peer string, createdAt int) store.AppDatabase {
@@ -529,7 +549,8 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	}
 	got, err := s.GetAppDatabase(ctx, "moimroom-mig")
 	must(t, err)
-	want.App, want.CreatedAt = "moimroom-mig", pg(want.CreatedAt)
+	// An empty source kind is a pair born on the platform (ADR 0042).
+	want.App, want.CreatedAt, want.SourceKind = "moimroom-mig", pg(want.CreatedAt), store.DBSourcePeer
 	eqFields(t, "app database", got, want)
 	got.PasswordCiphertext[0] = 'X'
 	again, err := s.GetAppDatabase(ctx, "moimroom-mig")
@@ -557,6 +578,24 @@ func testAppDatabase(t *testing.T, s store.Store) {
 		t.Fatalf("database pair of an app registered before: %v, want ErrNotFound", err)
 	}
 
+	// An onboarded app's database keeps its external source (ADR 0042).
+	ext := newAppDatabase("eks", "gke", 1)
+	ext.SourceKind, ext.Image, ext.Database, ext.Owner = store.DBSourceExternal, "ghcr.io/cloudnative-pg/postgresql:17.11-standard-bookworm@sha256:0f", "moimroom", "moimroom"
+	ext.StorageSize = "2Gi"
+	ext.ExternalHost, ext.Reindex = "hop-db-legacy-legacy-app", []string{"public.users_email_idx", "public.posts_title_idx"}
+	ext.ReplicationPasswordNonce, ext.ReplicationPasswordCiphertext = []byte("nonce-repl"), []byte("sealed:repl")
+	must(t, s.CreateAppWithDatabase(ctx, newApp("legacy-app", 0), ext))
+	got, err = s.GetAppDatabase(ctx, "legacy-app")
+	must(t, err)
+	ext.App, ext.CreatedAt = "legacy-app", pg(ext.CreatedAt)
+	eqFields(t, "external app database", got, ext)
+	bad := newAppDatabase("eks", "gke", 1)
+	bad.SourceKind = "vm"
+	if err := s.CreateAppWithDatabase(ctx, newApp("bad-kind", 0), bad); err == nil {
+		t.Fatal("CreateAppWithDatabase with source kind vm succeeded")
+	}
+	must(t, s.DeleteApp(ctx, "legacy-app"))
+
 	must(t, s.CreateAppWithDatabase(ctx, newApp("blog", 0), newAppDatabase("eks", "gke", 2)))
 	list, err = s.ListAppDatabases(ctx)
 	must(t, err)
@@ -565,6 +604,24 @@ func testAppDatabase(t *testing.T, s store.Store) {
 		apps = append(apps, d.App)
 	}
 	eqList(t, "app databases", apps, []string{"blog", "moimroom-mig"})
+
+	// NextPeerGeneration counts up one pair's peer removals (ADR 0043).
+	if _, err := s.NextPeerGeneration(ctx, "nothing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("NextPeerGeneration of no pair = %v, want ErrNotFound", err)
+	}
+	for want := 1; want <= 2; want++ {
+		gen, err := s.NextPeerGeneration(ctx, "blog")
+		must(t, err)
+		if gen != want {
+			t.Fatalf("NextPeerGeneration #%d = %d", want, gen)
+		}
+	}
+	if d, err := s.GetAppDatabase(ctx, "blog"); err != nil || d.PeerGeneration != 2 {
+		t.Fatalf("blog after two NextPeerGeneration: %d, %v; want 2", d.PeerGeneration, err)
+	}
+	if d, err := s.GetAppDatabase(ctx, "moimroom-mig"); err != nil || d.PeerGeneration != 0 {
+		t.Fatalf("the other pair's PeerGeneration: %d, %v; want 0", d.PeerGeneration, err)
+	}
 
 	// DeleteApp removes the pair; registering the name again has none.
 	must(t, s.DeleteApp(ctx, "moimroom-mig"))
