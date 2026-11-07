@@ -31,6 +31,21 @@ func TestAICommandStartup(t *testing.T) {
 		case "no-admin-token":
 			os.Unsetenv("GATEWAY_ADMIN_TOKEN")
 			os.Args = append(os.Args, "-insecure-no-auth", "-write-timeout", "12s")
+		case "follow-bad-url":
+			os.Args = append(os.Args, "-write-timeout", "12s", "-ai-follow-app", "moimroom-mig", "-ai-follow-url", "ftp://gateway:9901", "-ai-follow-map", "onprem=laptop,gke=gcp")
+		case "follow-bad-map":
+			os.Args = append(os.Args, "-write-timeout", "12s", "-ai-follow-app", "moimroom-mig", "-ai-follow-url", "http://gateway:9901", "-ai-follow-map", "onprem")
+		case "follow-bad-interval":
+			os.Setenv("AI_FOLLOW_INTERVAL", "soon")
+			os.Args = append(os.Args, "-write-timeout", "12s", "-ai-follow-app", "moimroom-mig", "-ai-follow-url", "http://gateway:9901", "-ai-follow-map", "onprem=laptop")
+		case "follow-short-interval":
+			os.Setenv("AI_FOLLOW_INTERVAL", "100ms")
+			os.Setenv("AI_FOLLOW_APP", "moimroom-mig")
+			os.Setenv("AI_FOLLOW_URL", "http://gateway:9901")
+			os.Setenv("AI_FOLLOW_MAP", "onprem=laptop")
+			os.Args = append(os.Args, "-write-timeout", "12s")
+		case "follow-without-ai":
+			os.Args = []string{"gateway", "-backends", "gke=http://127.0.0.1:1", "-state-file", "", "-ai-follow-app", "moimroom-mig", "-ai-follow-url", "http://gateway:9901", "-ai-follow-map", "onprem=laptop"}
 		case "default-timeout":
 		case "quality-policy-missing":
 			os.Args = append(os.Args, "-write-timeout", "12s", "-ai-quality-policy", filepath.Join(t.TempDir(), "missing.json"))
@@ -51,13 +66,19 @@ func TestAICommandStartup(t *testing.T) {
 		{"no-ai-token", "both tokens", 1},
 		{"no-admin-token", "both tokens", 1},
 		{"default-timeout", "write timeout must be 12s", 1},
+		{"follow-bad-url", "AI follow URL must be", 1},
+		{"follow-bad-map", "AI_FOLLOW_MAP", 2},
+		{"follow-bad-interval", "AI_FOLLOW_INTERVAL", 2},
+		{"follow-short-interval", "at least 500ms", 1},
+		{"follow-without-ai", "AI follow requires the AI demo", 1},
+		{"help", "-ai-follow-app", 0},
 		{"help", "-ai-app", 0},
 		{"quality-policy-missing", "AI quality policy cannot be read", 2},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			cmd := exec.Command(exe, "-test.run=^TestAICommandStartup$")
 			for _, v := range os.Environ() {
-				if !strings.HasPrefix(v, "AI_GATEWAY_TOKEN=") && !strings.HasPrefix(v, "GATEWAY_ADMIN_TOKEN=") && !strings.HasPrefix(v, "HOP_AI_COMMAND_TEST=") && !strings.HasPrefix(v, "AI_QUALITY_POLICY_FILE=") && !strings.HasPrefix(v, "AI_QUALITY_LANGFUSE_CONFIG_FILE=") {
+				if !strings.HasPrefix(v, "AI_GATEWAY_TOKEN=") && !strings.HasPrefix(v, "GATEWAY_ADMIN_TOKEN=") && !strings.HasPrefix(v, "HOP_AI_COMMAND_TEST=") && !strings.HasPrefix(v, "AI_FOLLOW_") && !strings.HasPrefix(v, "AI_QUALITY_POLICY_FILE=") && !strings.HasPrefix(v, "AI_QUALITY_LANGFUSE_CONFIG_FILE=") {
 					cmd.Env = append(cmd.Env, v)
 				}
 			}

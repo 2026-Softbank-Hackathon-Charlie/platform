@@ -98,6 +98,7 @@ type holdGen struct {
 type router struct {
 	ai                *aiState       // guarded by mu
 	canary            *AICanaryState // guarded by mu; dedicated AI route only
+	follow            *aiFollower    // the AI demo app with AIFollow; nil otherwise
 	qualityGeneration uint64         // newer evidence revocations, even when stage is 0%
 	g                 *Gateway
 	name              string
@@ -175,6 +176,9 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, err
 	}
 	g.router = def
+	if cfg.AIFollow != nil {
+		def.follow = newAIFollower(def, *cfg.AIFollow)
+	}
 	g.admin = g.adminMux()
 	if err := g.restore(); err != nil {
 		return nil, err
@@ -1081,6 +1085,12 @@ func (w *statusWriter) status() int {
 // the time of each round, and closes idle proxy connections every
 // ConnRecycle, until ctx ends.
 func (g *Gateway) Run(ctx context.Context) {
+	if f := g.router.follow; f != nil {
+		go func() {
+			f.run(ctx)
+			f.stopOnce.Do(func() { close(f.stopped) })
+		}()
+	}
 	go g.runAIQuality(ctx)
 	go func() {
 		t := time.NewTicker(g.cfg.ConnRecycle)
