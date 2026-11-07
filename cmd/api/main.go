@@ -34,6 +34,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
@@ -492,6 +493,16 @@ func main() {
 		deps.AIRuns = aiRuns
 	} else {
 		log.Info("PLATFORM_AIRUN_JOB_TEMPLATE is not set: the console cannot start the AI runner; run hopai by hand")
+	}
+	// Read-only Langfuse access is opt-in. Mounted key files never reach the browser.
+	if path := os.Getenv("PLATFORM_LANGFUSE_CONFIG"); path != "" {
+		reader, err := llmobs.Load(path)
+		if err != nil {
+			log.Error("Langfuse observation configuration is unavailable", "err", err)
+			deps.LLMObservability = llmobs.InvalidConfiguration()
+		} else {
+			deps.LLMObservability = reader
+		}
 	}
 	// Optional: read what the AI runner did from the observability stack's
 	// ClickHouse (the HyperDX store) so the console's migration map can show the
