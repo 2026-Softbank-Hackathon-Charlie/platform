@@ -14,15 +14,16 @@ import (
 )
 
 func (s *Server) decodeEnrollment(w http.ResponseWriter, r *http.Request, v any) bool {
-	if r.ContentLength > 4096 {
-		s.fail(w, r, 413, "too_large", "enrollment body exceeds 4096 bytes")
-		return false
-	}
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(time.Now().Add(5 * time.Second))
 	defer controller.SetReadDeadline(time.Time{})
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	defer r.Body.Close()
+	// Even early rejection must bound net/http's body draining on a slow sender.
+	if r.ContentLength > 4096 {
+		s.fail(w, r, 413, "too_large", "enrollment body exceeds 4096 bytes")
+		return false
+	}
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	err := d.Decode(v)
