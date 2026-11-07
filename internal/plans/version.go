@@ -24,6 +24,9 @@ const (
 	VersionNotConfigured  = "not_configured"
 	VersionRollbackExempt = "rollback_exempt"
 	VersionError          = "error" // the check itself did not finish; the run starts
+	// VersionNoDatabase: the plan moves an app without a database (ADR
+	// 0049); there is no version to compare ("DB 없음").
+	VersionNoDatabase = "no_database"
 )
 
 // VersionCheck is what the gate decided for a reservation, for the audit log.
@@ -54,6 +57,8 @@ func (s *Service) checkVersion(ctx context.Context, rollbackOf string, p *plan.P
 	switch {
 	case s.version == nil:
 		return VersionCheck{Outcome: VersionNotConfigured}, nil
+	case NoDatabase(p):
+		return VersionCheck{Outcome: VersionNoDatabase}, nil
 	case rollbackOf != "":
 		return VersionCheck{Outcome: VersionRollbackExempt}, nil
 	}

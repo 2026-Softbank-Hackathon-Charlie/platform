@@ -27,14 +27,14 @@ func (c *Catalog) OnboardTarget(ctx context.Context, app, env string) (OnboardTa
 	if err != nil {
 		return OnboardTarget{}, err
 	}
-	if !ok {
+	if !ok || d == nil {
 		return OnboardTarget{}, fmt.Errorf("%w: app %s has no database pair", ErrInvalid, app)
 	}
 	ep, e, err := c.endpoint(a, env, "target")
 	if err != nil {
 		return OnboardTarget{}, err
 	}
-	if err := c.setPassword(d, e.PasswordEnv); err != nil {
+	if err := c.setPassword(*d, e.PasswordEnv); err != nil {
 		return OnboardTarget{}, err
 	}
 	out := OnboardTarget{Endpoint: ep, Bucket: e.Bucket}

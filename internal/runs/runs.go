@@ -21,12 +21,14 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
@@ -156,11 +158,14 @@ type StartOptions struct {
 	// (plans.Reserved): built from the plan as submitted, never from Plan,
 	// whose DSNs hold expanded secrets.
 	Source, Target apiv1.PlanEndpoint
-	Actor          string
-	AutoSwitch     bool
-	Canary         *apiv1.CanaryOptions
-	Observe        *apiv1.ObserveOptions
-	RollbackOf     string // the run this run rolls back, if any
+	// App is the app a plan without a database moves (PlanSummary.app, ADR
+	// 0049), recorded on the run; nil for a plan with databases.
+	App        *string
+	Actor      string
+	AutoSwitch bool
+	Canary     *apiv1.CanaryOptions
+	Observe    *apiv1.ObserveOptions
+	RollbackOf string // the run this run rolls back, if any
 }
 
 // Runner starts runs and tracks the active ones.
@@ -245,6 +250,7 @@ func (r *Runner) Start(ctx context.Context, o StartOptions) (apiv1.Run, error) {
 	doc := apiv1.Run{
 		PlanRef:    o.PlanRef,
 		PlanId:     o.Plan.ID,
+		App:        o.App,
 		Source:     o.Source,
 		Target:     o.Target,
 		Status:     apiv1.RunStatusRunning,
@@ -321,9 +327,10 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		}
 	}
 	var retirement *retention.Job
-	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil && !p.Source.External() {
-		// An external source is no CNPG Cluster to retain; the onboarding
-		// decommissions it (ADR 0042).
+	// An app without a database (ADR 0049) leaves no source database to
+	// retire, and an external source is no CNPG Cluster; the onboarding
+	// decommissions it (ADR 0042).
+	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil && !plans.NoDatabase(p) && !p.Source.External() {
 		if r.cfg.RetentionPeriod < time.Minute || r.cfg.RetentionPeriod > 30*24*time.Hour || r.cfg.RetentionPlan == nil {
 			return apiv1.Run{}, fmt.Errorf("%w: invalid source retention configuration", ErrInvalid)
 		}
@@ -1678,7 +1685,13 @@ func stepSucceeded(e Engine, step string) bool {
 	return rec != nil && rec.Status == engine.StatusSucceeded
 }
 
+// clusterKeys are what two runs at once must not share: both endpoints'
+// clusters, or for an app without a database (ADR 0049), which has none,
+// its gateway scope, the only thing that names the app.
 func clusterKeys(p *plan.Plan) []string {
+	if plans.NoDatabase(p) {
+		return []string{"gateway:" + strings.TrimRight(p.Gateway.URL, "/")}
+	}
 	k := func(e plan.Endpoint) string { return e.Context + "/" + e.Namespace + "/" + e.Cluster }
 	if p.Source.External() {
 		// An external source (ADR 0042) has no Cluster: it is the target

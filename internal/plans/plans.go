@@ -38,6 +38,7 @@ type Service struct {
 	capacity  CapacityGate  // nil: no capacity measurement (capacity.go)
 	parity    ParityGate    // nil: no parity record (parity.go)
 	version   VersionGate   // nil: no PostgreSQL major version check (version.go)
+	reach     ReachGate     // nil: no reachability check of the source database at approval (reach.go)
 
 	appDBs AppDatabases // nil: only the policy's own hosts and passwords
 
@@ -55,6 +56,9 @@ type AppDatabases interface {
 	// RegistryBuckets returns the buckets their plans' files may move
 	// between (as Policy.Buckets), added to the policy's own.
 	RegistryBuckets(ctx context.Context) ([]string, error)
+	// RegistryStateless returns each registered app without a database
+	// with its environments (as Policy.StatelessApps, ADR 0049).
+	RegistryStateless(ctx context.Context) (map[string]map[string]StatelessEnv, error)
 	// SetRegistryPasswords puts the passwords that refs names into the
 	// server's environment, where plan.Parse expands them from.
 	SetRegistryPasswords(ctx context.Context, refs []string) error
@@ -102,7 +106,11 @@ func (s *Service) registeredPolicy(ctx context.Context) (Policy, error) {
 		if err != nil {
 			return Policy{}, fmt.Errorf("read the registered apps' buckets: %w", err)
 		}
-		policy = policy.withRegistered(pw, ah, buckets)
+		stateless, err := s.appDBs.RegistryStateless(ctx)
+		if err != nil {
+			return Policy{}, fmt.Errorf("read the registered apps without a database: %w", err)
+		}
+		policy = policy.withRegistered(pw, ah, stateless, buckets)
 	}
 	return policy, nil
 }
@@ -140,6 +148,9 @@ func (s *Service) parseWith(ctx context.Context, policy Policy, raw []byte) (*pl
 		if !allowed {
 			return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: source rewiring does not match a registered three-environment database group", ErrInvalid)
 		}
+	}
+	if hosts.noDatabase {
+		hosts.app, _ = policy.checkStatelessScope(p) // checkParsed allowed it
 	}
 	return p, summarize(p, hosts), nil
 }
@@ -228,6 +239,9 @@ func (s *Service) Approve(ctx context.Context, ref, actor, comment string, revis
 		return apiv1.PlanRecord{}, err
 	}
 	if err := s.requireRehearsal(ctx, row, attached); err != nil {
+		return apiv1.PlanRecord{}, err
+	}
+	if err := s.requireReach(ctx, row); err != nil {
 		return apiv1.PlanRecord{}, err
 	}
 	want := row.Revision
@@ -420,21 +434,31 @@ func (s *Service) transition(ctx context.Context, ref string, from []string, to 
 // be sent and nothing expanded from the environment.
 func summarize(p *plan.Plan, hosts dbHosts) apiv1.PlanSummary {
 	writtenConfigured := p.Verify.WrittenRecords != ""
-	return apiv1.PlanSummary{
+	sum := apiv1.PlanSummary{
 		PlanId:                   p.ID,
-		Source:                   endpoint(p.Source, hosts.source),
-		Target:                   endpoint(p.Target, hosts.target),
+		Source:                   endpoint(p.Source, hosts.source, hosts.noDatabase),
+		Target:                   endpoint(p.Target, hosts.target, hosts.noDatabase),
 		Files:                    p.Files != nil,
 		GatewayMode:              p.Gateway.Mode,
 		FenceGate:                *p.Verify.FenceGate,
 		MaxDowntime:              p.Thresholds.MaxDowntime.String(),
 		WrittenRecordsConfigured: &writtenConfigured,
 	}
+	if hosts.app != "" {
+		app := hosts.app
+		sum.App = &app
+	}
+	return sum
 }
 
-// endpoint drops the DSN and manifest from a plan endpoint.
-func endpoint(e plan.Endpoint, dbHost string) apiv1.PlanEndpoint {
+// endpoint drops the DSN and manifest from a plan endpoint. noDatabase
+// marks it kind none (ADR 0049); other endpoints show no kind, as before.
+func endpoint(e plan.Endpoint, dbHost string, noDatabase bool) apiv1.PlanEndpoint {
 	ep := apiv1.PlanEndpoint{Env: e.Env, Namespace: e.Namespace, Cluster: e.Cluster}
+	if noDatabase {
+		k := apiv1.PlanEndpointKindNone
+		ep.Kind = &k
+	}
 	if e.Context != "" {
 		ep.Context = &e.Context
 	}

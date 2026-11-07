@@ -53,6 +53,12 @@ type Policy struct {
 	// belong to an app must use that app's gateway scope, and an app's scope
 	// only fits a plan whose source and target databases are both the app's.
 	AppDBHosts map[string][]string
+	// StatelessApps maps each registered app without a database to the
+	// environments it is registered in (apps.Catalog.RegistryStateless, ADR
+	// 0049). A plan without a database (source.kind and target.kind none)
+	// must use the gateway scope of one of these apps, between two of its
+	// environments: the scope is the only thing that names its app.
+	StatelessApps map[string]map[string]StatelessEnv
 	// DSNHostSuffixes, when set, restricts database hosts (e.g. ".ts.net").
 	DSNHostSuffixes []string
 	// RcloneFlags lists allowed rclone flag names (without values).
@@ -71,6 +77,14 @@ type Policy struct {
 	onboarding *OnboardingScope
 }
 
+// StatelessEnv is a registered app without a database in one environment
+// (ADR 0049): the gateway backend its traffic goes to there, and its bucket
+// when it has an s3 resource whose files the server moves ("" otherwise).
+type StatelessEnv struct {
+	Backend string
+	Bucket  string
+}
+
 // DefaultPolicy matches the variable names used in the engine's example plan.
 func DefaultPolicy() Policy {
 	return Policy{
@@ -85,7 +99,7 @@ func DefaultPolicy() Policy {
 // AppDBHosts, and their buckets (AppDatabases.RegistryBuckets) to Buckets.
 // A variable or app p already has keeps p's entry; a bucket that is not a
 // plain remote:bucket is left out.
-func (p Policy) withRegistered(passwordHosts, appHosts map[string][]string, buckets []string) Policy {
+func (p Policy) withRegistered(passwordHosts, appHosts map[string][]string, stateless map[string]map[string]StatelessEnv, buckets []string) Policy {
 	merge := func(own, more map[string][]string) map[string][]string {
 		out := maps.Clone(own)
 		if out == nil {
@@ -100,6 +114,16 @@ func (p Policy) withRegistered(passwordHosts, appHosts map[string][]string, buck
 	}
 	p.HostPasswordEnvs = merge(p.HostPasswordEnvs, passwordHosts)
 	p.AppDBHosts = merge(p.AppDBHosts, appHosts)
+	own := maps.Clone(p.StatelessApps)
+	if own == nil {
+		own = map[string]map[string]StatelessEnv{}
+	}
+	for k, v := range stateless {
+		if _, ok := own[k]; !ok {
+			own[k] = v
+		}
+	}
+	p.StatelessApps = own
 	p.Buckets = slices.Clone(p.Buckets)
 	for _, b := range buckets {
 		if CheckBucket(b) == nil && !slices.Contains(p.Buckets, b) {
@@ -164,10 +188,12 @@ var planID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // checked; a check of the raw bytes would miss them.
 type expandedFields struct {
 	Source struct {
-		DSN string `json:"dsn"`
+		Kind string `json:"kind"`
+		DSN  string `json:"dsn"`
 	} `json:"source"`
 	Target struct {
-		DSN string `json:"dsn"`
+		Kind string `json:"kind"`
+		DSN  string `json:"dsn"`
 	} `json:"target"`
 	Gateway struct {
 		URL   string `json:"url"`
@@ -179,11 +205,24 @@ type expandedFields struct {
 // submitted. Empty when a DSN is missing.
 // all holds every host of both DSNs, fallback hosts included.
 // refs are the password variables the DSNs reference.
+// noDatabase: source.kind and target.kind are both none (ADR 0049).
 type dbHosts struct {
 	source, target string
 	all            []string
 	refs           []string
+	noDatabase     bool
+	// app is the app of a plan without a database, from its gateway scope
+	// (checkStatelessScope); "" otherwise.
+	app string
 }
+
+// KindNone is the endpoint kind of an app without a database (ADR 0049).
+const KindNone = plan.KindNone
+
+// NoDatabase reports whether p moves an app without a database: source.kind
+// and target.kind none, whose endpoints are only an environment (ADR 0049,
+// engine ADR 0018).
+func NoDatabase(p *plan.Plan) bool { return p != nil && p.Stateless() }
 
 // checkRefs runs before plan.Parse, which expands the environment.
 func (p Policy) checkRefs(raw []byte) (dbHosts, error) {
@@ -192,6 +231,14 @@ func (p Policy) checkRefs(raw []byte) (dbHosts, error) {
 		return dbHosts{}, fmt.Errorf("decode plan: %w", err)
 	}
 	var h dbHosts
+	switch src, dst := f.Source.Kind == KindNone, f.Target.Kind == KindNone; {
+	case src != dst:
+		return dbHosts{}, fmt.Errorf("source.kind and target.kind must both be none or neither: a database cannot move to or from an app without one")
+	case src && (f.Source.DSN != "" || f.Target.DSN != ""):
+		return dbHosts{}, fmt.Errorf("a plan without a database (kind none) has no dsn")
+	case src:
+		h.noDatabase = true
+	}
 	for _, d := range []struct {
 		role, dsn string
 		first     *string
@@ -336,11 +383,24 @@ func (p Policy) checkParsed(pl *plan.Plan, hosts dbHosts) error {
 			return fmt.Errorf("files.source and files.target must be different buckets")
 		}
 	}
+	if hosts.noDatabase {
+		// Moving the traffic is the whole migration of such an app.
+		if pl.Gateway.Mode != "http" {
+			return fmt.Errorf("a plan without a database (kind none) needs the platform gateway (gateway.mode http)")
+		}
+		if pl.Verify.WrittenRecords != "" {
+			return fmt.Errorf("a plan without a database (kind none) has no written records to verify (verify.writtenRecords)")
+		}
+	}
 	if pl.Gateway.Mode == "http" {
 		if p.GatewayURL == "" {
 			return fmt.Errorf("gateway.mode http is disabled on this server")
 		}
-		if err := p.checkGatewayScope(pl.Gateway.URL, hosts); err != nil {
+		if hosts.noDatabase {
+			if _, err := p.checkStatelessScope(pl); err != nil {
+				return err
+			}
+		} else if err := p.checkGatewayScope(pl.Gateway.URL, hosts); err != nil {
 			return err
 		}
 	}
@@ -401,6 +461,38 @@ func (p Policy) checkGatewayScope(raw string, hosts dbHosts) error {
 		return fmt.Errorf("gateway.url must be the platform gateway's scope of app %s (%s), not the gateway root or another scope", app, GatewayAppURL(p.GatewayURL, app))
 	}
 	return nil
+}
+
+// checkStatelessScope decides the app of a plan without a database from
+// its gateway scope alone, as there are no database hosts (ADR 0049), and
+// returns it: gateway.url must be exactly GatewayAppURL of a registered app
+// without a database, never the root; source.env and target.env must both
+// be environments of that app; the backends must be those environments'
+// gateway backends; and files, if any, must move between the app's own
+// buckets of those environments. An app with a database is never such an
+// app, so its traffic cannot be switched without moving its database.
+func (p Policy) checkStatelessScope(pl *plan.Plan) (string, error) {
+	u := strings.TrimRight(pl.Gateway.URL, "/")
+	for app, envs := range p.StatelessApps {
+		if u != GatewayAppURL(p.GatewayURL, app) {
+			continue
+		}
+		if _, ok := p.AppDBHosts[app]; ok {
+			break
+		}
+		src, okSrc := envs[pl.Source.Env]
+		dst, okDst := envs[pl.Target.Env]
+		switch {
+		case !okSrc || !okDst:
+			return "", fmt.Errorf("app %s is not registered in both %s and %s", app, pl.Source.Env, pl.Target.Env)
+		case pl.Gateway.SourceBackend != src.Backend || pl.Gateway.TargetBackend != dst.Backend:
+			return "", fmt.Errorf("gateway.sourceBackend and targetBackend of app %s must be %q and %q, the backends of %s and %s", app, src.Backend, dst.Backend, pl.Source.Env, pl.Target.Env)
+		case pl.Files != nil && (src.Bucket == "" || dst.Bucket == "" || pl.Files.Source != src.Bucket || pl.Files.Target != dst.Bucket):
+			return "", fmt.Errorf("files of app %s must move from its bucket in %s to its bucket in %s", app, pl.Source.Env, pl.Target.Env)
+		}
+		return app, nil
+	}
+	return "", fmt.Errorf("gateway.url of a plan without a database (kind none) must be the platform gateway's scope of a registered app without a database (%s/apps/<app>)", strings.TrimRight(p.GatewayURL, "/"))
 }
 
 func hasHost(hosts []string, h string) bool {

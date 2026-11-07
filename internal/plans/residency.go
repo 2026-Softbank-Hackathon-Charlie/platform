@@ -25,6 +25,9 @@ const (
 	ResidencyNotConfigured  = "not_configured"
 	ResidencyAllowed        = "allowed"
 	ResidencyRollbackExempt = "rollback_exempt"
+	// ResidencyNoData: the plan moves an app without a database and without
+	// files (ADR 0049); only traffic moves, no data ("DB 없음").
+	ResidencyNoData = "no_database"
 )
 
 // ResidencyCheck is what the gate decided for a reservation, for the audit log.
@@ -85,7 +88,10 @@ func (s *Service) checkResidency(ctx context.Context, rollbackOf string, p *plan
 		return ResidencyCheck{Outcome: ResidencyNotConfigured}, nil
 	case rollbackOf != "":
 		return ResidencyCheck{Outcome: ResidencyRollbackExempt}, nil
+	case NoDatabase(p) && p.Files == nil:
+		return ResidencyCheck{Outcome: ResidencyNoData}, nil
 	}
+	// Without a database the gate checks the files alone (ADR 0049).
 	v, err := s.residency.Check(ctx, p)
 	if err != nil || !v.Allowed {
 		v.Allowed = false

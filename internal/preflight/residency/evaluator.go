@@ -121,9 +121,21 @@ func validRequest(r preflight.Request) bool {
 	}
 	ids := map[string]bool{}
 	for _, m := range r.Movements {
-		if !resourceID.MatchString(m.ID) || ids[m.ID] || m.Kind != preflight.PhysicalReplication ||
-			!validScope(m.Source) || !resourceID.MatchString(m.Destination) || m.Source.Environment == m.Destination ||
-			!m.Inventory.Complete || m.Inventory.Scope != m.Source || len(m.Inventory.Datasets) == 0 {
+		if !resourceID.MatchString(m.ID) || ids[m.ID] || !resourceID.MatchString(m.Destination) || m.Source.Environment == m.Destination {
+			return false
+		}
+		switch m.Kind {
+		case preflight.PhysicalReplication:
+			if !validScope(m.Source) || !m.Inventory.Complete || m.Inventory.Scope != m.Source || len(m.Inventory.Datasets) == 0 {
+				return false
+			}
+		case preflight.ObjectCopy:
+			// Files alone: nothing of a database may be claimed or checked.
+			if !resourceID.MatchString(m.Source.Environment) || m.Source.Namespace != "" || m.Source.Cluster != "" ||
+				m.Files == nil || m.Inventory.Complete || m.Inventory.Scope != (preflight.ClusterScope{}) || len(m.Inventory.Datasets) != 0 {
+				return false
+			}
+		default:
 			return false
 		}
 		ids[m.ID] = true

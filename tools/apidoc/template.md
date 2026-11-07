@@ -270,7 +270,7 @@ data에는 표에 없는 키가 더 있을 수 있다.
 | `401` | unauthorized, invalid_credentials, invalid_signature | 토큰이 없거나 틀렸다. 로그인의 아이디나 비밀번호, GitHub 웹훅 서명이 틀렸다 |
 | `403` | forbidden, console_session_required, repo_not_imported | 토큰 역할로 할 수 없는 작업이거나, 콘솔 세션만 할 수 있는 작업이거나, push 토큰을 받을 수 없는 저장소다 |
 | `404` | plan_not_found, run_not_found, env_not_found, attachment_not_found, agent_session_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found, bucket_not_registered, prefix_not_listed, repo_not_found | 대상이 없다 |
-| `409` | plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, agent_session_finished, session_full, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress | 대상의 현재 상태나 정책 때문에 할 수 없다 |
+| `409` | plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, agent_session_finished, session_full, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, db_unreachable, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress | 대상의 현재 상태나 정책 때문에 할 수 없다 |
 | `413` | too_large | 본문이 너무 크다 |
 | `422` | invalid_app_spec | platform.yaml을 읽지 못했거나 규칙에 맞지 않는다. 본문은 AppSpecInvalid이고 validation에 위치가 나온다 |
 | `429` | too_many_attempts | 로그인 시도나 승인 대기 중인 기기 로그인이 너무 많다. Retry-After의 초만큼 기다린 뒤 다시 시도한다 |

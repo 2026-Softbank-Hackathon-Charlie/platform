@@ -49,6 +49,11 @@ func (s *Server) startAIRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", "app "+req.App+" is not configured for "+req.Source+" -> "+req.Target+" (GET /v1/apps)")
 		return
 	}
+	if !a.Resources.Postgres {
+		// The runner plans and rehearses a database move (ADR 0049).
+		s.fail(w, r, http.StatusConflict, "no_database", "app "+req.App+" has no database, so there is nothing for the AI runner to plan; draft its plan with POST /v1/plans/draft and submit it")
+		return
+	}
 	run, err := s.d.AIRuns.Start(r.Context(), airun.Request{App: req.App, Source: req.Source, Target: req.Target}, actor(r))
 	switch {
 	case errors.Is(err, airun.ErrBusy):

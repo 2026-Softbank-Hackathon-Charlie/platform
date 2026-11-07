@@ -175,6 +175,19 @@ func (f *envFixture) run(id string, status apiv1.RunStatus, source, target strin
 	}
 }
 
+// statelessRun stores a run of shop without a database (ADR 0049): no
+// namespace or cluster, the app named by Run.app.
+func (f *envFixture) statelessRun(id string, status apiv1.RunStatus, source, target string) {
+	f.t.Helper()
+	app, none := "shop", apiv1.PlanEndpointKindNone
+	doc, _ := json.Marshal(apiv1.Run{RunId: id, Status: status, App: &app,
+		Source: apiv1.PlanEndpoint{Kind: &none, Env: source}, Target: apiv1.PlanEndpoint{Kind: &none, Env: target}})
+	now := time.Now().UTC()
+	if err := f.store.CreateRun(context.Background(), store.Run{RunID: id, PlanRef: "pln_" + id, SourceEnv: source, TargetEnv: target, Status: string(status), Doc: doc, CreatedAt: now, UpdatedAt: now}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 // endedRun stores a run that ended with status, shaped like the halted run
 // of moimroom-mig on the live server: phase done and endedAt set.
 func (f *envFixture) endedRun(id string, status apiv1.RunStatus, source, target string) {
@@ -309,6 +322,8 @@ func TestAddAppEnvironmentErrors(t *testing.T) {
 		"already there":   {body: map[string]any{"environment": "gke"}, status: 409, code: "environment_exists"},
 		"deploying":       {prep: func(f *envFixture) { f.redeployQueued() }, status: 409, code: "deployment_in_progress"},
 		"run in progress": {prep: func(f *envFixture) { f.run("run_1", apiv1.RunStatusAwaitingSwitch, "gke", "onprem") }, status: 409, code: "migration_in_progress"},
+		"run without a database in progress": {prep: func(f *envFixture) { f.statelessRun("run_1", apiv1.RunStatusRunning, "gke", "onprem") },
+			status: 409, code: "migration_in_progress"},
 		"writes held": {prep: func(f *envFixture) {
 			f.gw.set(gateway.AppInfo{Name: "shop", Backends: map[string]string{"gke": "http://g"}, WriteBackend: "gke", WritesHeld: true})
 		}, status: 409, code: "migration_in_progress"},
@@ -488,6 +503,10 @@ func TestRemoveAppEnvironmentErrors(t *testing.T) {
 			status: 409, code: "write_backend"},
 		"rolled back from there": {prep: func(f *envFixture) { f.run("run_1", apiv1.RunStatusRolledBack, "eks", "gke") },
 			status: 409, code: "write_backend"},
+		"migrated there without a database": {prep: func(f *envFixture) { f.statelessRun("run_1", apiv1.RunStatusSucceeded, "gke", "eks") },
+			status: 409, code: "write_backend"},
+		"run without a database in progress": {prep: func(f *envFixture) { f.statelessRun("run_1", apiv1.RunStatusRunning, "gke", "onprem") },
+			status: 409, code: "migration_in_progress"},
 		"deploying": {prep: func(f *envFixture) { f.redeployQueued() }, status: 409, code: "deployment_in_progress"},
 		"run of another environment": {prep: func(f *envFixture) { f.run("run_1", apiv1.RunStatusRunning, "gke", "onprem") },
 			status: 409, code: "migration_in_progress"},

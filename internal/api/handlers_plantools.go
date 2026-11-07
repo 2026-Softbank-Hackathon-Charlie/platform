@@ -211,9 +211,12 @@ func (s *Server) draftPlan(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if p.Source.Kind != nil && *p.Source.Kind == apiv1.EnginePlanEndpointKindNone && !s.statelessBackends(w, r, p) {
+		return
+	}
 	// Automatically bind only recent receipts from this source database. A
 	// retained stream from an old installation must not certify a fresh dataset.
-	if req.WrittenRecordsStream == nil {
+	if req.WrittenRecordsStream == nil && (p.Source.Kind == nil || *p.Source.Kind != apiv1.EnginePlanEndpointKindNone) { // kind none: no database to bind receipts to
 		stream := "app-" + req.App
 		if plans.StreamName.MatchString(stream) {
 			st, err := s.d.Store.WrittenRecordStats(r.Context(), stream)
@@ -414,6 +417,7 @@ func (s *Server) startRollback(ctx context.Context, id, who, reason string, auto
 	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
 		PlanRef:    ref,
 		Plan:       res.Plan,
+		App:        res.Summary.App,
 		Source:     res.Summary.Source,
 		Target:     res.Summary.Target,
 		Actor:      who,
@@ -476,4 +480,38 @@ func (s *Server) autoRollback(ctx context.Context, id, reason string) (string, e
 		return "", f
 	}
 	return res.run.RunId, nil
+}
+
+// statelessBackends answers 400 gateway_backend_missing unless the traffic
+// gateway already routes app p moves to both environments' backends: for
+// an app without a database (ADR 0049) switching them is the whole move,
+// so a backend that does not exist would send its users nowhere.
+func (s *Server) statelessBackends(w http.ResponseWriter, r *http.Request, p apiv1.EnginePlan) bool {
+	_, app, _ := strings.Cut(*p.Gateway.Url, "/apps/") // Draft always sets the app's scope here
+	if s.d.Gateway == nil {
+		s.fail(w, r, http.StatusServiceUnavailable, "gateway_not_configured", "this server cannot read the traffic gateway, so it cannot check the backends of "+app)
+		return false
+	}
+	list, err := s.d.Gateway.Apps(r.Context())
+	if err != nil {
+		s.internal(w, r, err)
+		return false
+	}
+	var backends map[string]string
+	for _, a := range list.Apps {
+		if !a.Default && a.Name == app {
+			backends = a.Backends
+		}
+	}
+	for _, b := range []*string{p.Gateway.SourceBackend, p.Gateway.TargetBackend} {
+		if b == nil || backends[*b] == "" {
+			name := ""
+			if b != nil {
+				name = *b
+			}
+			s.fail(w, r, http.StatusBadRequest, "gateway_backend_missing", fmt.Sprintf("the traffic gateway has no backend %q for app %s; deploy the app to both environments first", name, app))
+			return false
+		}
+	}
+	return true
 }

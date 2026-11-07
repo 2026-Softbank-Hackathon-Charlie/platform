@@ -454,6 +454,27 @@ func (e EnginePlanGatewayMode) Valid() bool {
 	}
 }
 
+// Defines values for EnginePlanEndpointKind.
+const (
+	EnginePlanEndpointKindCnpg     EnginePlanEndpointKind = "cnpg"
+	EnginePlanEndpointKindExternal EnginePlanEndpointKind = "external"
+	EnginePlanEndpointKindNone     EnginePlanEndpointKind = "none"
+)
+
+// Valid indicates whether the value is a known member of the EnginePlanEndpointKind enum.
+func (e EnginePlanEndpointKind) Valid() bool {
+	switch e {
+	case EnginePlanEndpointKindCnpg:
+		return true
+	case EnginePlanEndpointKindExternal:
+		return true
+	case EnginePlanEndpointKindNone:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ObserveStepVerdict.
 const (
 	ObserveStepVerdictInconclusive ObserveStepVerdict = "inconclusive"
@@ -805,6 +826,27 @@ const (
 func (e PlanDraftResultSourceStatsReason) Valid() bool {
 	switch e {
 	case PlanDraftResultSourceStatsReasonNotMeasured:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PlanEndpointKind.
+const (
+	PlanEndpointKindCnpg     PlanEndpointKind = "cnpg"
+	PlanEndpointKindExternal PlanEndpointKind = "external"
+	PlanEndpointKindNone     PlanEndpointKind = "none"
+)
+
+// Valid indicates whether the value is a known member of the PlanEndpointKind enum.
+func (e PlanEndpointKind) Valid() bool {
+	switch e {
+	case PlanEndpointKindCnpg:
+		return true
+	case PlanEndpointKindExternal:
+		return true
+	case PlanEndpointKindNone:
 		return true
 	default:
 		return false
@@ -1916,7 +1958,11 @@ type AgentSessionTotals struct {
 // what migrations use; `deploy` is set for registered apps. A
 // registered app that is not in the file has `namespace` = name,
 // `database` = `{name: app, user: app, schemas: []}` and no
-// `environments`.
+// `environments`, unless plans can be drafted for it: one with a
+// database pair (ADR 0030), or one without a postgres resource or pair, with a public service,
+// that is registered in two or more environments (ADR 0049). The latter has
+// `database` = `{name: "", user: "", schemas: []}` and
+// `resources.postgres` false.
 type App struct {
 	Database AppDatabase `json:"database"`
 
@@ -1931,7 +1977,7 @@ type App struct {
 	// instance's newest deployment, finished or not.
 	Deploy *AppDeploy `json:"deploy,omitempty"`
 
-	// Environments The environments the app runs in according to PLATFORM_APPS_FILE, in PLATFORM_ENVS_FILE order. Empty for an app that is only registered from GitHub (see deploy.environments).
+	// Environments The environments plans can be drafted between, in PLATFORM_ENVS_FILE order. Empty for a registered app plans cannot be drafted for (see deploy.environments).
 	Environments []AppEnvironment `json:"environments"`
 
 	// Name Example: shop
@@ -1939,6 +1985,14 @@ type App struct {
 
 	// Namespace Example: shop
 	Namespace string `json:"namespace"`
+
+	// Resources What the app keeps besides its services (ADR 0049). An app of
+	// PLATFORM_APPS_FILE always has a database, and object storage when an
+	// environment has a bucket; a registered app has what the platform.yaml
+	// of its default instance declares (a postgres or s3 resource). A
+	// migration of an app without a database moves only its traffic (and
+	// its files, with s3).
+	Resources AppResources `json:"resources"`
 }
 
 // AppCreateRequest defines model for AppCreateRequest.
@@ -1967,7 +2021,11 @@ type AppCreated struct {
 	// what migrations use; `deploy` is set for registered apps. A
 	// registered app that is not in the file has `namespace` = name,
 	// `database` = `{name: app, user: app, schemas: []}` and no
-	// `environments`.
+	// `environments`, unless plans can be drafted for it: one with a
+	// database pair (ADR 0030), or one without a postgres resource or pair, with a public service,
+	// that is registered in two or more environments (ADR 0049). The latter has
+	// `database` = `{name: "", user: "", schemas: []}` and
+	// `resources.postgres` false.
 	App App `json:"app"`
 
 	// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
@@ -2220,7 +2278,7 @@ type AppDeploy struct {
 	Url *string `json:"url,omitempty"`
 }
 
-// AppEnvironment defines model for AppEnvironment.
+// AppEnvironment The app in one environment. `cnpgCluster` and `dbHost` are absent for an app without a database (`resources.postgres` false).
 type AppEnvironment struct {
 	// Bucket the rclone remote and bucket of the app's files
 	//
@@ -2228,12 +2286,12 @@ type AppEnvironment struct {
 	Bucket *string `json:"bucket,omitempty"`
 
 	// CnpgCluster Example: shop-db-gke
-	CnpgCluster string `json:"cnpgCluster"`
+	CnpgCluster string `json:"cnpgCluster,omitempty"`
 
 	// DbHost host:port of the cluster's -rw service
 	//
 	// Example: shop-db-gke-rw.shop.gke.ts.net:5432
-	DbHost string `json:"dbHost"`
+	DbHost string `json:"dbHost,omitempty"`
 
 	// Env Example: gke
 	Env string `json:"env"`
@@ -2254,7 +2312,11 @@ type AppEnvironmentAdded struct {
 	// what migrations use; `deploy` is set for registered apps. A
 	// registered app that is not in the file has `namespace` = name,
 	// `database` = `{name: app, user: app, schemas: []}` and no
-	// `environments`.
+	// `environments`, unless plans can be drafted for it: one with a
+	// database pair (ADR 0030), or one without a postgres resource or pair, with a public service,
+	// that is registered in two or more environments (ADR 0049). The latter has
+	// `database` = `{name: "", user: "", schemas: []}` and
+	// `resources.postgres` false.
 	App App `json:"app"`
 
 	// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
@@ -2268,7 +2330,11 @@ type AppEnvironmentRemoved struct {
 	// what migrations use; `deploy` is set for registered apps. A
 	// registered app that is not in the file has `namespace` = name,
 	// `database` = `{name: app, user: app, schemas: []}` and no
-	// `environments`.
+	// `environments`, unless plans can be drafted for it: one with a
+	// database pair (ADR 0030), or one without a postgres resource or pair, with a public service,
+	// that is registered in two or more environments (ADR 0049). The latter has
+	// `database` = `{name: "", user: "", schemas: []}` and
+	// `resources.postgres` false.
 	App App `json:"app"`
 
 	// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
@@ -2467,6 +2533,17 @@ type AppObservationService struct {
 	Name     string    `json:"name"`
 	Total    int       `json:"total"`
 	Warnings int       `json:"warnings"`
+}
+
+// AppResources What the app keeps besides its services (ADR 0049). An app of
+// PLATFORM_APPS_FILE always has a database, and object storage when an
+// environment has a bucket; a registered app has what the platform.yaml
+// of its default instance declares (a postgres or s3 resource). A
+// migration of an app without a database moves only its traffic (and
+// its files, with s3).
+type AppResources struct {
+	Postgres bool `json:"postgres"`
+	S3       bool `json:"s3"`
 }
 
 // AppSecretInfo A secret without its value.
@@ -3276,8 +3353,18 @@ type EnginePlan struct {
 		// Url The platform gateway's admin URL (PLATFORM_GATEWAY_URL) for a plan whose databases belong to no registered app (the gateway's default app), otherwise exactly `<PLATFORM_GATEWAY_URL>/apps/<app>` of the app that owns both databases. Drafts use the app's scope.
 		Url *string `json:"url,omitempty"`
 	} `json:"gateway,omitempty"`
-	Id         string             `json:"id"`
-	Source     EnginePlanEndpoint `json:"source"`
+	Id string `json:"id"`
+
+	// Source One environment of the plan. With `kind` `none` (an app without a
+	// database, ADR 0049; source and target both) the endpoint is only
+	// `env` and `kind`: there is no namespace, cluster or DSN. Otherwise
+	// `namespace`, `cluster` and `dsn` are required.
+	Source EnginePlanEndpoint `json:"source"`
+
+	// Target One environment of the plan. With `kind` `none` (an app without a
+	// database, ADR 0049; source and target both) the endpoint is only
+	// `env` and `kind`: there is no namespace, cluster or DSN. Otherwise
+	// `namespace`, `cluster` and `dsn` are required.
 	Target     EnginePlanEndpoint `json:"target"`
 	Thresholds *struct {
 		// CatchupTimeout Example: 10m
@@ -3306,21 +3393,30 @@ type EnginePlan struct {
 // EnginePlanGatewayMode defines model for EnginePlan.Gateway.Mode.
 type EnginePlanGatewayMode string
 
-// EnginePlanEndpoint defines model for EnginePlanEndpoint.
+// EnginePlanEndpoint One environment of the plan. With `kind` `none` (an app without a
+// database, ADR 0049; source and target both) the endpoint is only
+// `env` and `kind`: there is no namespace, cluster or DSN. Otherwise
+// `namespace`, `cluster` and `dsn` are required.
 type EnginePlanEndpoint struct {
 	// Cluster CNPG Cluster name
-	Cluster string  `json:"cluster"`
+	Cluster string  `json:"cluster,omitempty"`
 	Context *string `json:"context,omitempty"`
-	Dsn     string  `json:"dsn"`
+	Dsn     string  `json:"dsn,omitempty"`
 
 	// Env Example: gke
-	Env        string  `json:"env"`
-	Kubeconfig *string `json:"kubeconfig,omitempty"`
+	Env string `json:"env"`
+
+	// Kind `cnpg` (absent means cnpg): a CNPG cluster. `external` (source only): a PostgreSQL primary outside CNPG (engine ADR 0017). `none` (source and target both): the app has no database (ADR 0049).
+	Kind       *EnginePlanEndpointKind `json:"kind,omitempty"`
+	Kubeconfig *string                 `json:"kubeconfig,omitempty"`
 
 	// Manifest target only
 	Manifest  *string `json:"manifest,omitempty"`
-	Namespace string  `json:"namespace"`
+	Namespace string  `json:"namespace,omitempty"`
 }
+
+// EnginePlanEndpointKind `cnpg` (absent means cnpg): a CNPG cluster. `external` (source only): a PostgreSQL primary outside CNPG (engine ADR 0017). `none` (source and target both): the app has no database (ADR 0049).
+type EnginePlanEndpointKind string
 
 // EngineState The migration engine's persisted run state (migration-engine/pkg/engine.State).
 type EngineState struct {
@@ -3997,10 +4093,16 @@ type PlanEndpoint struct {
 	Context *string `json:"context,omitempty"`
 
 	// DbHost host:port the DSN connects to, without credentials. Shown so an approver can see where the database password would be sent.
-	DbHost    *string `json:"dbHost,omitempty"`
-	Env       string  `json:"env"`
-	Namespace string  `json:"namespace"`
+	DbHost *string `json:"dbHost,omitempty"`
+	Env    string  `json:"env"`
+
+	// Kind the plan endpoint's kind; `none`: an app without a database (ADR 0049), whose namespace and cluster are empty
+	Kind      *PlanEndpointKind `json:"kind,omitempty"`
+	Namespace string            `json:"namespace"`
 }
+
+// PlanEndpointKind the plan endpoint's kind; `none`: an app without a database (ADR 0049), whose namespace and cluster are empty
+type PlanEndpointKind string
 
 // PlanList defines model for PlanList.
 type PlanList struct {
@@ -4055,7 +4157,9 @@ type PlanStatus string
 
 // PlanSummary defines model for PlanSummary.
 type PlanSummary struct {
-	FenceGate bool `json:"fenceGate"`
+	// App the app a plan without a database moves, from its gateway scope (ADR 0049); absent for a plan with databases
+	App       *string `json:"app,omitempty"`
+	FenceGate bool    `json:"fenceGate"`
 
 	// Files the plan also moves object storage
 	Files       bool   `json:"files"`
@@ -4129,11 +4233,14 @@ type RouteRequest struct {
 
 // Run defines model for Run.
 type Run struct {
-	AbortReason *string       `json:"abortReason,omitempty"`
-	AbortedBy   *string       `json:"abortedBy,omitempty"`
-	AutoSwitch  bool          `json:"autoSwitch"`
-	Canary      *CanaryResult `json:"canary,omitempty"`
-	EndedAt     *time.Time    `json:"endedAt,omitempty"`
+	AbortReason *string `json:"abortReason,omitempty"`
+	AbortedBy   *string `json:"abortedBy,omitempty"`
+
+	// App the app a run without a database moves (PlanSummary.app, ADR 0049); absent for a run with databases, whose namespaces name the app
+	App        *string       `json:"app,omitempty"`
+	AutoSwitch bool          `json:"autoSwitch"`
+	Canary     *CanaryResult `json:"canary,omitempty"`
+	EndedAt    *time.Time    `json:"endedAt,omitempty"`
 
 	// Engine The migration engine's persisted run state (migration-engine/pkg/engine.State).
 	Engine  EngineState    `json:"engine"`

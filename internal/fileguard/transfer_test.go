@@ -238,3 +238,54 @@ func TestLocalRcloneIntegration(t *testing.T) {
 		t.Fatal("denied bytes reached destination")
 	}
 }
+
+// Copy uploads the same inspected snapshot as Sync, with rclone copy so
+// nothing is deleted from the target, and checks it the same way.
+func TestCopyUploadsTheInspectedSnapshotWithoutDeleting(t *testing.T) {
+	r := cleanRemote()
+	s := makeSyncer(r, allow)
+	var uploaded []string
+	s.execute = func(ctx context.Context, w io.Writer, args ...string) error {
+		if args[0] == "copy" && args[2] == "dst:bucket" {
+			if args[1] == "src:bucket" || !slices.Contains(args, "--ignore-times") {
+				return errors.New("not a staged transfer")
+			}
+			uploaded = append(uploaded, args[1])
+			return nil
+		}
+		if args[0] == "sync" {
+			return errors.New("sync would delete from the target")
+		}
+		return r.command(ctx, w, args...)
+	}
+	if _, err := s.Copy(context.Background(), "src:bucket", "dst:bucket"); err != nil || len(uploaded) != 1 || r.checks != 1 {
+		t.Fatalf("copy: %v uploads %v checks %d", err, uploaded, r.checks)
+	}
+	if _, err := s.Copy(context.Background(), "src:bucket", "other:bucket"); !errors.Is(err, ErrDenied) {
+		t.Fatalf("copy to another bucket: %v", err)
+	}
+}
+
+func TestReadableListsOnlyTheGuardsBuckets(t *testing.T) {
+	var calls [][]string
+	s := makeSyncer(cleanRemote(), allow)
+	s.execute = func(_ context.Context, _ io.Writer, args ...string) error {
+		calls = append(calls, args)
+		if args[1] == "dst:bucket" {
+			return errors.New("TOPSECRET denied")
+		}
+		return nil
+	}
+	if err := s.Readable(context.Background(), "src:bucket"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Readable(context.Background(), "dst:bucket"); !errors.Is(err, ErrTransfer) || strings.Contains(err.Error(), "TOPSECRET") {
+		t.Fatalf("unreadable target: %v", err)
+	}
+	if err := s.Readable(context.Background(), ":local:/etc"); !errors.Is(err, ErrDenied) {
+		t.Fatalf("another remote: %v", err)
+	}
+	if len(calls) != 2 || strings.Join(calls[0], " ") != "lsf src:bucket --max-depth 1" {
+		t.Fatalf("calls %v", calls)
+	}
+}

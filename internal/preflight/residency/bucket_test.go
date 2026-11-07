@@ -318,3 +318,38 @@ func TestBucketsChangeDigestOnlyWhenPresent(t *testing.T) {
 		t.Fatal("a different network must change the digest")
 	}
 }
+
+// objectCopy is withFiles as an app without a database moves (ADR 0049):
+// files alone, from an environment, with no cluster or inventory.
+func objectCopy(source, target string) preflight.Request {
+	r := withFiles(source, target)
+	m := &r.Movements[0]
+	m.Kind, m.Source, m.Inventory = preflight.ObjectCopy, preflight.ClusterScope{Environment: m.Source.Environment}, preflight.Inventory{}
+	return r
+}
+
+func TestObjectCopyFollowsTheBucketRulesAlone(t *testing.T) {
+	// The cluster's kr-only table is not part of an object copy.
+	c := bucketConfig("global")
+	c.Catalog[0].Datasets[0].Label = "kr-only"
+	if v := evaluate(t, c, objectCopy("s3:shop-photos", "gcs:shop-photos-tokyo")); !v.Allowed {
+		t.Fatalf("global bucket: %+v", v)
+	}
+	v := evaluate(t, bucketConfig("kr-only"), objectCopy("s3:shop-photos", "gcs:shop-photos-tokyo"))
+	if v.Allowed || !hasReason(v, "bucket_country_not_allowed", "s3:shop-photos") {
+		t.Fatalf("kr-only bucket: %+v", v)
+	}
+	for name, mutate := range map[string]func(*preflight.Movement){
+		"no files":       func(m *preflight.Movement) { m.Files = nil },
+		"a cluster":      func(m *preflight.Movement) { m.Source.Cluster = "db" },
+		"an inventory":   func(m *preflight.Movement) { m.Inventory = fixtureRequest().Movements[0].Inventory },
+		"unknown kind":   func(m *preflight.Movement) { m.Kind = "logical" },
+		"same as target": func(m *preflight.Movement) { m.Destination = m.Source.Environment },
+	} {
+		r := objectCopy("s3:shop-photos", "gcs:shop-photos-tokyo")
+		mutate(&r.Movements[0])
+		if _, err := mustEvaluator(t, c).Evaluate(context.Background(), r); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s: %v, want ErrInvalidInput", name, err)
+		}
+	}
+}

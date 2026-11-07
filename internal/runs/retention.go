@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
@@ -131,6 +132,9 @@ func (r *Runner) blockRetirement(ctx context.Context, j *retention.Job, reason s
 // the runner's cluster exclusion with the worker. A new run supersedes a pending
 // retirement; it must never re-use a source whose deletion was requested.
 func (r *Runner) retirementGuard(ctx context.Context, p *plan.Plan, runID string) error {
+	if plans.NoDatabase(p) {
+		return nil // no cluster that a retirement could be deleting (ADR 0049)
+	}
 	keys := clusterKeys(p)
 	for _, active := range r.retiring {
 		if overlaps(active, keys) {

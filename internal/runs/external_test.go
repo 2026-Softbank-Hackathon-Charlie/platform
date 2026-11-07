@@ -22,12 +22,12 @@ func (fakeExternal) Status(context.Context) (engine.ExternalStatus, error) {
 func (fakeExternal) Fence(context.Context) (pg.Fence, error) { return pg.Fence{}, nil }
 func (fakeExternal) Unfence(context.Context) error           { return nil }
 
-type capturing struct {
+type countingCapture struct {
 	*retentionBackend
 	captures int
 }
 
-func (c *capturing) Capture(ctx context.Context, p *plan.Plan) (retention.Job, error) {
+func (c *countingCapture) Capture(ctx context.Context, p *plan.Plan) (retention.Job, error) {
 	c.captures++
 	return c.retentionBackend.Capture(ctx, p)
 }
@@ -40,7 +40,7 @@ func TestExternalSourceWiring(t *testing.T) {
 		Target: plan.Endpoint{Env: "eks", Context: "eks", Namespace: "shop", Cluster: "shop-db"}}
 	ext := fakeExternal{}
 	var got engine.ExternalSource
-	b := &capturing{retentionBackend: &retentionBackend{done: true}}
+	b := &countingCapture{retentionBackend: &retentionBackend{done: true}}
 	called, external := false, false
 	r := New(context.Background(), Config{Store: storetest.NewMemory(), Retention: b, RetentionPeriod: time.Hour,
 		RetentionPlan: func(context.Context, string) (*plan.Plan, error) { return p, nil },
