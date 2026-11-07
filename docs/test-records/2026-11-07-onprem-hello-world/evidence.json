@@ -1,0 +1,172 @@
+{
+  "observedAt": "2026-11-07T12:15:08.647743+00:00",
+  "result": "passed",
+  "scope": "stateless app deployment and public HTTP routing to onprem; no DB migration or failure test",
+  "http": {
+    "url": "https://hello-onprem.hopcharlie.dev/",
+    "scope": "public HTTPS -> AWS gateway -> Tailscale -> onprem k3s",
+    "requests": [
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      },
+      {
+        "status": 200,
+        "body": "Hello World!\n",
+        "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm"
+      }
+    ],
+    "successfulRequests": 20,
+    "observedAt": "2026-11-07T12:11:50.771249+00:00"
+  },
+  "postCleanupHTTP": {
+    "status": 200,
+    "body": "Hello World!\n",
+    "servedBy": "hello-onprem-web-67f9cbcf69-vzhdm",
+    "observedAt": "2026-11-07T12:15:08.647743+00:00"
+  },
+  "onpremPod": {
+    "name": "hello-onprem-web-67f9cbcf69-vzhdm",
+    "node": "desktop-c3itrvv",
+    "phase": "Running",
+    "ready": true,
+    "containers": [
+      {
+        "name": "web",
+        "imageID": "525091405886.dkr.ecr.ap-northeast-2.amazonaws.com/hopcharlie/apps/hello-onprem/web@sha256:9e3af4a5bb6745acd3ee7dabf46a17bac0acb9dbc5486e9d3bd4cc97312d11f1",
+        "ready": true,
+        "restarts": 0
+      }
+    ]
+  },
+  "argo": {
+    "name": "hello-onprem-onprem",
+    "destination": {
+      "name": "charlie-dev-onprem-workload",
+      "namespace": "hello-onprem"
+    },
+    "sync": "Synced",
+    "health": "Healthy",
+    "revisions": [
+      "12b4c85ffe96d44eb9308fa48c65620eef5d41ac",
+      "910d579883f2176a2686ec51c6e516f464eb9238"
+    ]
+  },
+  "deployment": {
+    "id": "dep_4929ba7c820e",
+    "app": "hello-onprem",
+    "branch": "demo/hello-onprem",
+    "commit": "c74dfe45885ddc6b17145205e82ec432a1bed0cc",
+    "status": "healthy",
+    "buildId": "hopcharlie-app-build:4eeeb447-61a7-4a8d-82b1-ff45126e1023",
+    "createdAt": "2026-11-07T11:57:41.580404Z",
+    "finishedAt": "2026-11-07T12:11:22.335691Z",
+    "images": [
+      {
+        "image": "525091405886.dkr.ecr.ap-northeast-2.amazonaws.com/hopcharlie/apps/hello-onprem/web@sha256:9e3af4a5bb6745acd3ee7dabf46a17bac0acb9dbc5486e9d3bd4cc97312d11f1",
+        "service": "web"
+      }
+    ],
+    "environments": [
+      {
+        "env": "onprem",
+        "healthStatus": "Healthy",
+        "status": "healthy",
+        "syncStatus": "Synced",
+        "url": "http://app-onprem-hello-onprem.hopcharlie-db-network.svc.cluster.local"
+      }
+    ]
+  },
+  "credentialValuesIncluded": false
+}
