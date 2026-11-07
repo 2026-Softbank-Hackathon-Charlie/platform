@@ -18,7 +18,7 @@ type ReachGate interface {
 
 // SetReachGate makes Approve refuse a plan whose source database name does not
 // resolve, or whose port does not accept connections, from where the API runs:
-// the engine would stop at its precheck right after the start (ADR 0048).
+// the engine would stop at its precheck right after the start (ADR 0049).
 // Without a gate nothing is checked.
 func (s *Service) SetReachGate(g ReachGate) { s.reach = g }
 
