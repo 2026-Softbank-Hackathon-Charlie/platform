@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -109,6 +110,20 @@ func TestEnrollmentInputBoundsExpiryAndInstaller(t *testing.T) {
 	}
 	if status, _ = h.do("POST", p+"/"+a.Enrollment.ID+"/claim", "", strings.Repeat("x", 4097)); status != 413 {
 		t.Fatalf("body bound HTTP %d", status)
+	}
+	chunked, _ := http.NewRequest("POST", h.srv.URL+p, strings.NewReader(body+strings.Repeat(" ", 5000)))
+	chunked.ContentLength = -1
+	chunked.Header.Set("Authorization", "Bearer "+opToken)
+	chunked.Header.Set("Content-Type", "application/json")
+	chunked.Header.Set("Idempotency-Key", "chunked-one")
+	large, err := http.DefaultClient.Do(chunked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, large.Body)
+	large.Body.Close()
+	if large.StatusCode != 413 {
+		t.Fatalf("second JSON decode ignored body cap: %d", large.StatusCode)
 	}
 	status, b = h.do("GET", "/v1/onprem/installer.sh", "", nil)
 	if status != 200 || string(b) != onprem.Installer || !strings.Contains(string(b), "sha256sum -c") || strings.Contains(string(b), "curl -k") {

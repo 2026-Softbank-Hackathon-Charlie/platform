@@ -748,7 +748,17 @@ func TestAppsConcurrent(t *testing.T) {
 		if i%3 == 2 {
 			err = tg.client.DeleteApp(context.Background(), "churn")
 		} else {
-			err = tg.client.PutApp(context.Background(), "churn", s)
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				err = tg.client.PutApp(context.Background(), "churn", s)
+				var apiErr *APIError
+				if !errors.As(err, &apiErr) || apiErr.Status != http.StatusConflict || apiErr.Code != "app_draining" || time.Now().After(deadline) {
+					break
+				}
+				// DELETE lets existing traffic finish. Reuse must wait for its
+				// tombstone instead of hiding that traffic from the new router.
+				time.Sleep(time.Millisecond)
+			}
 		}
 		if err != nil {
 			fail("churn %d: %v", i, err)

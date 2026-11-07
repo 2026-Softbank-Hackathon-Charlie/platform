@@ -91,8 +91,11 @@ func (g *Gateway) lookup(name string) *router {
 
 // routers lists the default app and the registered apps.
 func (g *Gateway) routers() []*router {
-	g.appsMu.RLock()
-	defer g.appsMu.RUnlock()
+	g.appsMu.Lock()
+	defer g.appsMu.Unlock()
+	for name := range g.retired {
+		g.reapRetiredLocked(name)
+	}
 	return append([]*router{g.router}, slices.Collect(maps.Values(g.apps))...)
 }
 
@@ -180,12 +183,23 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 	g.controlMu.Lock()
 	defer g.controlMu.Unlock()
 	g.appsMu.Lock()
+	if g.reapRetiredLocked(name) {
+		g.appsMu.Unlock()
+		writeError(w, http.StatusConflict, "app_draining", "the deleted app's previous generation still has active or reserved requests")
+		return
+	}
 	rt, exists := g.apps[name]
 	if !exists {
 		// Cannot fail: the backend names come from a map.
 		rt, _ = g.newRouter(name, bcs, g.log.With("app", name), g.prom.apps.view(prometheus.Labels{"app": name}))
 	}
 	rt.mu.Lock()
+	if len(rt.readExclusions) != 0 {
+		rt.mu.Unlock()
+		g.appsMu.Unlock()
+		readsExcluded(w)
+		return
+	}
 	if rt.held {
 		rt.mu.Unlock()
 		g.appsMu.Unlock()
@@ -237,7 +251,19 @@ func (g *Gateway) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	}
 	rt.mu.Lock()
 	held := rt.held
+	excluded := len(rt.readExclusions) != 0
+	if !held && !excluded {
+		rt.retired = true
+		if rt.drainingLocked() {
+			g.retired[name] = rt
+		}
+	}
 	rt.mu.Unlock()
+	if excluded {
+		g.appsMu.Unlock()
+		readsExcluded(w)
+		return
+	}
 	if held {
 		g.appsMu.Unlock()
 		writesHeld(w, name)

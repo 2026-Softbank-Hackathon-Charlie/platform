@@ -724,6 +724,7 @@ func TestAIDemoSelectedBackendSurvivesCutover(t *testing.T) {
 	if newReply.backend != "laptop" {
 		t.Fatalf("new provenance=%s", newReply.backend)
 	}
+	waitFor(t, "new AI request finished in ledger", func() bool { return aiObserve(t, admin.URL).Active["laptop"] == 0 })
 	if s := aiObserve(t, admin.URL); s.Active["gcp"] != 1 || s.Active["laptop"] != 0 {
 		t.Fatalf("route switch lost source active: %+v", s)
 	}
@@ -740,7 +741,9 @@ func TestAIDemoSelectedBackendSurvivesCutover(t *testing.T) {
 	if got.backend != "gcp" {
 		t.Fatalf("old provenance=%s", got.backend)
 	}
+	waitFor(t, "old AI request finished in ledger", func() bool { return aiObserve(t, admin.URL).Active["gcp"] == 0 })
 	requireAIStatus(t, aiCall(client, "POST", public.URL+"/api/chat", "ai-secret", "rollback-ready", aiTestBody), 200)
+	waitFor(t, "rollback AI request finished in ledger", func() bool { return aiObserve(t, admin.URL).Active["gcp"] == 0 })
 	s := aiObserve(t, admin.URL)
 	if s.Active["gcp"] != 0 || s.Active["laptop"] != 0 || len(s.Requests) != 3 {
 		t.Fatalf("final ledger: %+v", s)

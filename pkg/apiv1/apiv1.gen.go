@@ -5440,8 +5440,17 @@ type TrafficState struct {
 	// MaxHold a write held longer than this gets 503 hold_timeout and is never forwarded; the hold itself lasts until release
 	MaxHold string `json:"maxHold"`
 
+	// ReadExclusions Persisted backend-to-owner-lease exclusions on the current gateway instance, including exclusions still draining or whose acknowledgment failed.
+	ReadExclusions *map[string]string `json:"readExclusions,omitempty"`
+
+	// ReadInFlight Active or reserved read attempts and health probes per backend on the current gateway instance. Includes already selected retry alternatives; all configured backends are listed with zero when idle.
+	ReadInFlight *map[string]int `json:"readInFlight,omitempty"`
+
 	// ReadWeights Share of read requests per backend, summing to 100.
 	ReadWeights map[string]int `json:"readWeights"`
+
+	// SourceReadExclusionSupported Current gateway instance supports durable lease-owned source read exclusion. Absent or false is unsupported; this is not an HA-wide drain proof.
+	SourceReadExclusionSupported *bool `json:"sourceReadExclusionSupported,omitempty"`
 
 	// Stats Rolling window per backend.
 	Stats map[string]BackendStats `json:"stats"`

@@ -60,6 +60,18 @@ func (c *Client) SetReadWeights(ctx context.Context, weights map[string]int) err
 	return c.do(ctx, http.MethodPost, "/v1/weights", apiv1.WeightsRequest{ReadWeights: weights}, nil)
 }
 
+// ExcludeReads persists a run-owned exclusion and waits for that backend's
+// reserved reads and health probes to drain. Failure does not undo the lease.
+func (c *Client) ExcludeReads(ctx context.Context, backend, lease string) error {
+	return c.do(ctx, http.MethodPost, "/v1/reads/exclude", ReadExclusionRequest{Backend: backend, Lease: lease}, nil)
+}
+
+// IncludeReads reopens a backend only after the owner-matched inclusion was
+// persisted. No exclusion is idempotently successful; another owner is refused.
+func (c *Client) IncludeReads(ctx context.Context, backend, lease string) error {
+	return c.do(ctx, http.MethodPost, "/v1/reads/include", ReadExclusionRequest{Backend: backend, Lease: lease}, nil)
+}
+
 // Route sends writes and all reads to backend.
 func (c *Client) Route(ctx context.Context, backend string) error {
 	return c.do(ctx, http.MethodPost, "/v1/route", apiv1.RouteRequest{Backend: backend}, nil)

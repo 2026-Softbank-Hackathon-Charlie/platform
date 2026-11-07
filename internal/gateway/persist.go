@@ -16,10 +16,11 @@ import (
 // before there were other apps, so either version reads the other's file for
 // the default app.
 type persistedState struct {
-	WriteBackend string         `json:"writeBackend"`
-	ReadWeights  map[string]int `json:"readWeights"`
-	WritesHeld   bool           `json:"writesHeld"`
-	HeldSince    *time.Time     `json:"heldSince,omitempty"`
+	WriteBackend   string            `json:"writeBackend"`
+	ReadWeights    map[string]int    `json:"readWeights"`
+	WritesHeld     bool              `json:"writesHeld"`
+	HeldSince      *time.Time        `json:"heldSince,omitempty"`
+	ReadExclusions map[string]string `json:"readExclusions,omitempty"`
 	// Apps are the apps registered through the admin API, by name.
 	Apps map[string]persistedApp `json:"apps,omitempty"`
 }
@@ -51,9 +52,10 @@ func (rt *router) persistLocked() persistedApp {
 		HealthPath: rt.healthPath,
 		Backends:   make(map[string]string, len(rt.backends)),
 		persistedState: persistedState{
-			WriteBackend: rt.writeBackend,
-			ReadWeights:  make(map[string]int, len(rt.readWeights)),
-			WritesHeld:   rt.held,
+			WriteBackend:   rt.writeBackend,
+			ReadWeights:    make(map[string]int, len(rt.readWeights)),
+			WritesHeld:     rt.held,
+			ReadExclusions: make(map[string]string, len(rt.readExclusions)),
 		},
 	}
 	for _, b := range rt.backends {
@@ -67,6 +69,9 @@ func (rt *router) persistLocked() persistedApp {
 	}
 	for k, v := range rt.readWeights {
 		pa.ReadWeights[k] = v
+	}
+	for k, v := range rt.readExclusions {
+		pa.ReadExclusions[k] = v
 	}
 	if rt.held {
 		hs := rt.heldSince.UTC()
