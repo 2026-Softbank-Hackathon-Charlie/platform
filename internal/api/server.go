@@ -270,6 +270,8 @@ func New(cfg Config, d Deps) *Server {
 	s.route("POST /v1/migrations", operator, s.startMigration)
 	s.route("GET /v1/migrations", viewer, s.listMigrations)
 	s.route("GET /v1/migrations/{runId}", viewer, s.getMigration)
+	s.route("GET /v1/migrations/{runId}/retention", viewer, s.sourceRetention)
+	s.route("POST /v1/migrations/{runId}/retention", operator, s.preserveSource)
 	s.route("GET /v1/migrations/{runId}/events", viewer, s.migrationEvents)
 	s.route("POST /v1/migrations/{runId}/switch", operator, s.switchMigration)
 	s.route("POST /v1/migrations/{runId}/abort", operator, s.abortMigration)

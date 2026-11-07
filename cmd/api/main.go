@@ -37,6 +37,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
@@ -221,7 +222,7 @@ func main() {
 	// must not abort a migration. runCtx is only cancelled on a forced shutdown.
 	runCtx, cancelRuns := context.WithCancel(ctx)
 	defer cancelRuns()
-	rcfg := runs.Config{StateDir: *stateDir, Store: st, Log: log}
+	rcfg := runs.Config{StateDir: *stateDir, Store: st, Log: log, ClusterLease: st.TryClusterLease}
 	if gw != nil {
 		rcfg.Traffic = gw
 		// A plan's gateway.url is the root or an app's scope (plans.Policy):
@@ -344,6 +345,23 @@ func main() {
 		fatal("PLATFORM_VERSION_GATE must be on or off", "value", v)
 	}
 
+	rcfg.RetentionPlan = planSvc.Load
+	// Explicit server opt-in. Retention is never read from an AI/client plan.
+	if value := os.Getenv("PLATFORM_SOURCE_RETENTION"); value != "" && value != "off" {
+		period, err := time.ParseDuration(value)
+		if err != nil || period < time.Minute || period > 30*24*time.Hour {
+			fatal("PLATFORM_SOURCE_RETENTION must be off or a duration between 1m and 720h")
+		}
+		if gw == nil {
+			fatal("source retention requires the platform gateway")
+		}
+		backend, err := retention.NewKube(envCfg.Environments, func(u string) retention.Traffic { return &gateway.Client{BaseURL: u, Token: gw.Token, HTTP: gw.HTTP} })
+		if err != nil {
+			fatal("initialize source retention", "err", err)
+		}
+		rcfg.Retention, rcfg.RetentionPeriod, rcfg.RetentionPlan = backend, period, planSvc.Load
+		log.Warn("source retention enabled; source database deletion ends immediate rollback, PVCs retained", "period", period)
+	}
 	runner := runs.New(runCtx, rcfg)
 	if n, err := planSvc.RecoverStarting(ctx); err != nil {
 		fatal("recover plans", "err", err)
@@ -357,6 +375,11 @@ func main() {
 	}
 
 	deps := api.Deps{Plans: planSvc, Runs: runner, Store: st, Envs: envSvc, EnvNotFound: envs.ErrNotFound}
+	if rcfg.Retention != nil {
+		retentionCtx, stopRetention := context.WithCancel(runCtx)
+		defer stopRetention()
+		go runner.RunRetention(retentionCtx)
+	}
 	deps.Apps = appCat
 	deps.Buckets = bucketInspector
 	// Draft plans can carry the source's numbers (POST /v1/plans/draft with

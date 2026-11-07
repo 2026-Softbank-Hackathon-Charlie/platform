@@ -27,6 +27,7 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 )
@@ -88,12 +89,18 @@ var phaseRank = map[apiv1.RunPhase]int{
 }
 
 var syncSteps = []string{engine.StepPrecheck, engine.StepPrepare, engine.StepPresync, engine.StepDelta}
+var errClusterLeaseLost = errors.New("cluster lease lost; operator reconciliation required")
 
 // Config configures a Runner.
 type Config struct {
-	StateDir string
-	Store    store.Store
-	Factory  Factory
+	ClusterLease func(context.Context, []string) (store.ClusterLease, error)
+	// Retention is explicitly enabled by the operator, never by a submitted plan.
+	Retention       retention.Backend
+	RetentionPeriod time.Duration
+	RetentionPlan   func(context.Context, string) (*plan.Plan, error)
+	StateDir        string
+	Store           store.Store
+	Factory         Factory
 	// FileSyncer installs the server-owned content guard on every normal launch,
 	// including resumes. Reverse rollback runs preserve their recovery exemption.
 	FileSyncer func(*plan.Plan) engine.FileSyncer
@@ -154,9 +161,10 @@ type StartOptions struct {
 
 // Runner starts runs and tracks the active ones.
 type Runner struct {
-	cfg Config
-	ctx context.Context // parent of every run; runs outlive the HTTP request that started them
-	now func() time.Time
+	retiring map[string][]string // cluster reservations shared with launch; guarded by mu
+	cfg      Config
+	ctx      context.Context // parent of every run; runs outlive the HTTP request that started them
+	now      func() time.Time
 
 	mu   sync.Mutex
 	live map[string]*live
@@ -183,11 +191,12 @@ func New(ctx context.Context, cfg Config) *Runner {
 	if cfg.MinCanaryStep <= 0 {
 		cfg.MinCanaryStep = 5 * time.Second
 	}
-	return &Runner{cfg: cfg, ctx: ctx, now: func() time.Time { return time.Now().UTC() }, live: map[string]*live{}, stopCh: make(chan struct{})}
+	return &Runner{cfg: cfg, ctx: ctx, now: func() time.Time { return time.Now().UTC() }, live: map[string]*live{}, retiring: map[string][]string{}, stopCh: make(chan struct{})}
 }
 
 // live is an active run.
 type live struct {
+	lease    store.ClusterLease
 	id       string
 	plan     *plan.Plan
 	eng      Engine
@@ -278,6 +287,49 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 			return apiv1.Run{}, fmt.Errorf("%w (run %s)", ErrBusy, id)
 		}
 	}
+	var lease store.ClusterLease
+	if r.cfg.ClusterLease != nil {
+		var err error
+		lease, err = r.cfg.ClusterLease(ctx, keys)
+		if errors.Is(err, store.ErrConflict) {
+			return apiv1.Run{}, ErrBusy
+		}
+		if err != nil {
+			return apiv1.Run{}, err
+		}
+	}
+	leased := false
+	defer func() {
+		if lease != nil && !leased {
+			lease.Release()
+		}
+	}()
+	if err := r.retirementGuard(ctx, p, runID); err != nil {
+		return apiv1.Run{}, err
+	}
+	if doc.RollbackOf != nil && *doc.RollbackOf != "" {
+		job, err := r.retirementJob(ctx, *doc.RollbackOf)
+		if err != nil {
+			return apiv1.Run{}, err
+		}
+		if job != nil && (job.Status == "deleting" || job.Status == "deleted") {
+			return apiv1.Run{}, fmt.Errorf("%w: immediate rollback is unavailable after source retirement starts", ErrWrongStatus)
+		}
+	}
+	var retirement *retention.Job
+	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil {
+		if r.cfg.RetentionPeriod < time.Minute || r.cfg.RetentionPeriod > 30*24*time.Hour || r.cfg.RetentionPlan == nil {
+			return apiv1.Run{}, fmt.Errorf("%w: invalid source retention configuration", ErrInvalid)
+		}
+		captureCtx, cancelCapture := context.WithTimeout(ctx, 10*time.Second)
+		j, err := r.cfg.Retention.Capture(captureCtx, p)
+		cancelCapture()
+		if err != nil {
+			return apiv1.Run{}, fmt.Errorf("%w: source retention identity unavailable", ErrEngineInit)
+		}
+		j.KeepFor, j.Status = r.cfg.RetentionPeriod, "captured"
+		retirement = &j
+	}
 	opts := engine.Options{StateDir: r.cfg.StateDir, RunID: runID, Emit: l.emitEngine}
 	if p.Files != nil && r.cfg.FileSyncer != nil && (doc.RollbackOf == nil || *doc.RollbackOf == "") {
 		opts.Files = r.cfg.FileSyncer(p)
@@ -314,12 +366,22 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		return apiv1.Run{}, err
 	}
 	r.live[l.id] = l
+	l.lease = lease
+	if retirement != nil {
+		retirement.RunID = l.id
+		if err := r.saveRetirement(ctx, *retirement); err != nil {
+			delete(r.live, l.id)
+			eng.Close()
+			return apiv1.Run{}, err
+		}
+	}
 
 	runCtx, cancel := context.WithCancel(r.ctx)
 	l.cancel = cancel
 	r.wg.Add(2)
 	go func() { defer r.wg.Done(); r.writer(l) }()
 	go func() { defer r.wg.Done(); r.drive(runCtx, l) }()
+	leased = true
 	return l.snapshot(), nil
 }
 
@@ -452,6 +514,11 @@ func (r *Runner) drive(ctx context.Context, l *live) {
 // This goroutine is the only one that touches the engine.
 func (r *Runner) runSteps(ctx context.Context, l *live, steps []string) error {
 	for _, step := range steps {
+		if l.lease != nil {
+			if err := l.lease.Check(ctx); err != nil {
+				return errClusterLeaseLost
+			}
+		}
 		if stepSucceeded(l.eng, step) {
 			continue
 		}
@@ -528,6 +595,12 @@ func (r *Runner) ended(l *live, err error) {
 	case engine.OutcomeHalted:
 		status = apiv1.RunStatusHalted
 	default: // failed, or still running: nothing irreversible happened
+		if errors.Is(err, errClusterLeaseLost) && st.PromoteRequested {
+			// Do not label a post-promotion coordination failure as a safe
+			// retry. The engine file remains untouched for operator reconciliation.
+			status = apiv1.RunStatusHalted
+			break
+		}
 		switch {
 		case aborted:
 			status = apiv1.RunStatusAborted
@@ -585,7 +658,22 @@ func (r *Runner) finish(l *live) {
 
 	l.q.close()
 	<-l.q.drained
+	// Bind the target UID after a cold target has been created, while this run
+	// still owns both cluster reservations. Failure leaves retirement blocked.
+	if status == apiv1.RunStatusSucceeded && r.cfg.Retention != nil {
+		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if j, err := r.retirementJob(c, l.id); err == nil && j != nil {
+			if captured, err := r.cfg.Retention.Capture(c, l.plan); err == nil && captured.SourceUID == j.SourceUID && captured.TargetUID != "" && (j.TargetUID == "" || j.TargetUID == captured.TargetUID) {
+				j.TargetUID, j.Pods = captured.TargetUID, captured.Pods
+				_ = r.saveRetirement(c, *j)
+			}
+		}
+		cancel()
+	}
 	l.eng.Close()
+	if l.lease != nil {
+		l.lease.Release()
+	}
 	l.cancel()
 
 	r.mu.Lock()

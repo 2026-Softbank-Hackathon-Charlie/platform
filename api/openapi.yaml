@@ -493,6 +493,48 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/migrations/{runId}/retention:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [migrations]
+      operationId: getSourceRetention
+      description: Read the persisted source cleanup schedule. An absent job means this run was not enrolled. No historical enrollment is inferred from success.
+      responses:
+        "200":
+          description: Latest persisted cleanup status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SourceRetentionResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        default: { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [migrations]
+      operationId: preserveSource
+      description: Operator only. Extend retainUntil, or set keep=true to cancel automatic cleanup. Exactly one is required. Cannot shorten retention, enroll a run, or change a deleting/deleted/cancelled job. Serialized with migrations and the cleanup worker.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                retainUntil: { type: string, format: date-time, description: "A later deadline, in the future and no more than 30 days from now." }
+                keep: { type: boolean, description: true cancels automatic cleanup permanently for this run. }
+      responses:
+        "200":
+          description: Updated persisted schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SourceRetentionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/migrations/{runId}/events:
     parameters:
       - $ref: "#/components/parameters/RunId"
@@ -2665,6 +2707,28 @@ components:
         engine: { $ref: "#/components/schemas/EngineState" }
         rollbackOf: { type: string, description: "the run this run rolls back (POST /v1/migrations/{runId}/rollback)" }
 
+    SourceRetentionResponse:
+      type: object
+      properties:
+        job:
+          type: object
+          required: [runId, sourceUID, pods, keepForNanos, status]
+          properties:
+            runId: { type: string }
+            sourceUID: { type: string }
+            targetUID: { type: string }
+            pods:
+              type: array
+              items:
+                type: object
+                required: [name, uid]
+                properties:
+                  name: { type: string }
+                  uid: { type: string }
+            keepForNanos: { type: integer, format: int64, description: "Server policy at enrollment, in nanoseconds." }
+            dueAt: { type: string, format: date-time }
+            status: { type: string, enum: [captured, scheduled, blocked, deleting, deleted, cancelled] }
+            reason: { type: string }
     RunResult:
       description: The numbers the console shows. Absent values were not measured (yet).
       type: object
