@@ -113,3 +113,24 @@ func TestRouteCannotSkipDrain(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRepeatedHoldPersistenceFailureDoesNotReleaseExistingHold(t *testing.T) {
+	ctx := context.Background()
+	file := filepath.Join(t.TempDir(), "state.json")
+	tg := newTestGW(t, Config{StateFile: file}, "src")
+	if err := tg.client.HoldWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repair := breakStateFile(t, file)
+	if err := tg.client.HoldWrites(ctx); err == nil {
+		t.Fatal("acknowledged a failed save")
+	}
+	st, err := tg.client.State(ctx, 0)
+	if err != nil || !st.WritesHeld {
+		t.Fatalf("existing hold was released: %+v %v", st, err)
+	}
+	repair()
+	if err := tg.client.ReleaseWrites(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
