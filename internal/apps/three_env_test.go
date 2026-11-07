@@ -120,8 +120,8 @@ func TestThreeEnvironmentDraftAndAuthorizationAllowAllSixDirections(t *testing.T
 			t.Run(source+"-to-"+target, func(t *testing.T) {
 				p := enginePlanFromThreeEnvironmentDraft(t, f, "mig", source, target)
 				allowed, err := f.cat.SourceRewireAllowed(t.Context(), &p)
-				if !p.AllowSourceRewire || err != nil || !allowed {
-					t.Fatalf("direction rejected: opt-in=%v allowed=%v error=%v", p.AllowSourceRewire, allowed, err)
+				if err != nil || !allowed {
+					t.Fatalf("direction rejected: allowed=%v error=%v", allowed, err)
 				}
 			})
 		}
@@ -177,7 +177,7 @@ func enginePlanFromThreeEnvironmentDraft(t *testing.T, f *registryFixture, app, 
 }
 
 func TestSourceRewireAllowedBindsThreeMemberEndpoints(t *testing.T) {
-	if allowed, err := exampleCatalog(t, "").SourceRewireAllowed(t.Context(), &plan.Plan{AllowSourceRewire: true}); err != nil || allowed {
+	if allowed, err := exampleCatalog(t, "").SourceRewireAllowed(t.Context(), &plan.Plan{}); err != nil || allowed {
 		t.Fatalf("static-only catalog accepted source rewiring: allowed=%v err=%v", allowed, err)
 	}
 	f := newRegistryFixture(t)

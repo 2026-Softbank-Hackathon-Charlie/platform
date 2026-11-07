@@ -243,7 +243,7 @@ func fmtBool(b bool) string {
 }
 
 func TestRewirePlanCannotRetireSourceThroughBackendDirectly(t *testing.T) {
-	for _, p := range []*plan.Plan{nil, {AllowSourceRewire: true}} {
+	for _, p := range []*plan.Plan{nil} /* allowSourceRewire: engine_pin.go */ {
 		// Empty clients make any attempted Kubernetes call fail: the guard
 		// must reject before consulting or deleting live objects.
 		k := &Kube{}
