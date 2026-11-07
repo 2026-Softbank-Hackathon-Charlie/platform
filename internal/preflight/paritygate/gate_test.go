@@ -26,7 +26,7 @@ const config = `
 version: 1
 mode: audit
 environments:
-  eks: {prometheus: {url: "PROM", maxAge: 1m}}
+  eks: {prometheus: {url: PROM, maxAge: 1m}}
 apps:
   - name: shop
     namespace: shop
@@ -89,7 +89,7 @@ func shopPlan() *plan.Plan {
 
 func newGate(t *testing.T, promURL string, sar SARFactory) *Gate {
 	t.Helper()
-	cfg, err := ParseConfig([]byte(strings.Replace(config, "PROM", promURL, 1)), []string{"gke", "eks"})
+	cfg, err := ParseConfig([]byte(strings.Replace(config, "PROM", strconv.Quote(promURL), 1)), []string{"gke", "eks"})
 	if err != nil {
 		t.Fatal(err)
 	}
