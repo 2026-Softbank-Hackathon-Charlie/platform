@@ -320,7 +320,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("POST /v1/onprem/enrollments/{id}/revoke", operator, s.revokeOnpremEnrollment)
 	s.route("POST /v1/onprem/enrollments/{id}/claim", "", s.claimOnpremEnrollment)
 	s.route("GET /v1/onprem/installer.sh", "", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, _ = w.Write([]byte(onprem.Installer))

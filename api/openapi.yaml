@@ -166,7 +166,7 @@ paths:
         "200":
           description: The actual installer served by this API version.
           content:
-            text/x-shellscript:
+            text/plain:
               schema: { type: string }
   /healthz:
     get:
