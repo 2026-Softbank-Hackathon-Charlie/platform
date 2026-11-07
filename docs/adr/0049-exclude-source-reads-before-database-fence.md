@@ -1,4 +1,4 @@
-# 0048. DB 쓰기 차단 전에 source 읽기를 lease로 제외하고 drain한다
+# 0049. DB 쓰기 차단 전에 source 읽기를 lease로 제외하고 drain한다
 
 - 상태: 채택
 - 날짜: 2026-11-07

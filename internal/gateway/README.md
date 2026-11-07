@@ -105,3 +105,5 @@ lease는 한 실행이 생성한 고유한 1–128자 영숫자·`._:-` 식별�
 대체하지 않는다. restart에도 제외를 복원한다. 활성 lease가 있는 동안 이를 모르는
 구버전으로 게이트웨이를 내리면 안 된다. 이 카운터와 ACK는 현재 gateway 인스턴스만의
 증명이며 HA 전체 drain이나 HTTP 밖 쓰기 차단 자체의 증명이 아니다.
+
+설계와 호출 순서는 [ADR 0049](../../docs/adr/0049-exclude-source-reads-before-database-fence.md)에 기록한다.
