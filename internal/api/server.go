@@ -81,6 +81,7 @@ type GitHub interface {
 
 // Config configures the API.
 type Config struct {
+	WrittenTokens *auth.WrittenTokens
 	// Tokens authenticates programs with static tokens. When Insecure is set
 	// and Tokens and Admins are both empty, every request acts as the
 	// operator "dev" (local development only).
@@ -357,6 +358,9 @@ func (s *Server) route(pattern string, need apiv1.Role, h http.HandlerFunc) {
 			var ok bool
 			var err error
 			p, ok, err = s.authenticate(r)
+			if pattern == "POST /v1/written-records/{stream}" && s.cfg.WrittenTokens.Allows(r, r.PathValue("stream")) {
+				p, ok, err = auth.Principal{Name: "written-records-" + r.PathValue("stream"), Role: apiv1.RoleAgent, Kind: auth.KindToken}, true, nil
+			}
 			switch {
 			case err != nil:
 				s.internal(rec, r.WithContext(ctx), err)

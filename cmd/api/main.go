@@ -79,6 +79,10 @@ func main() {
 	if err != nil {
 		fatal("PLATFORM_TOKENS", "err", err)
 	}
+	writtenTokens, err := auth.ParseWrittenTokens(os.Getenv("PLATFORM_WRITTEN_RECORD_TOKENS"))
+	if err != nil {
+		fatal("PLATFORM_WRITTEN_RECORD_TOKENS", "err", err)
+	}
 	if t := os.Getenv("PLATFORM_API_TOKEN"); t != "" { // the first version's single operator token
 		tokens.Add("operator", apiv1.RoleOperator, t)
 	}
@@ -508,12 +512,13 @@ func main() {
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{
-			Tokens:      tokens,
-			Insecure:    *insecure,
-			Admins:      admins,
-			ConsoleURL:  os.Getenv("PLATFORM_CONSOLE_URL"),
-			CORSOrigins: splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
-			Log:         log,
+			WrittenTokens: writtenTokens,
+			Tokens:        tokens,
+			Insecure:      *insecure,
+			Admins:        admins,
+			ConsoleURL:    os.Getenv("PLATFORM_CONSOLE_URL"),
+			CORSOrigins:   splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
+			Log:           log,
 
 			GitHubWebhookSecret: webhookSecret,
 			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
