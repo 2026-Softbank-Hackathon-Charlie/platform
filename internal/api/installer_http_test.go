@@ -17,21 +17,28 @@ import (
 // The issuer and claim are real HTTP handlers over TLS. Only host commands
 // with installation side effects and the upstream download are test doubles.
 func TestInstallerAuthenticatesBeforeInstallation(t *testing.T) {
+	missingPrerequisite := func(reason string) {
+		t.Helper()
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatal(reason)
+		}
+		t.Skip(reason)
+	}
 	if runtime.GOOS == "windows" {
-		t.Skip("Linux installer shell fixture")
+		missingPrerequisite("Linux installer shell fixture")
 	}
 	for _, path := range []string{"/etc/rancher/k3s", "/etc/systemd/system/k3s.service"} {
 		if _, err := os.Stat(path); err == nil {
-			t.Skip("host has k3s configuration; never change or mask it")
+			missingPrerequisite("host has k3s configuration; fixture must run on a clean CI host")
 		}
 	}
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh is not installed")
+		missingPrerequisite("sh is not installed")
 	}
 	realCurl, err := exec.LookPath("curl")
 	if err != nil {
-		t.Skip("curl is not installed")
+		missingPrerequisite("curl is not installed")
 	}
 	for _, scenario := range []string{"wrong-code", "expired", "revoked", "accepted", "checksum-failed"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -95,7 +102,7 @@ case "$*" in
 esac
 `)
 			cmd := exec.Command(sh, installer, "--server", tlsServer.URL, "--enrollment", issued.Enrollment.ID, "--environment", "onprem", "--code", code, "--install-k3s")
-			cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "TMPDIR="+dir, "CURL_CA_BUNDLE="+ca, "REAL_CURL="+realCurl, "TRACE="+trace, "CURL_ARGS="+argsFile, "FAKE_BIN="+bin, "UPSTREAM_FIXTURE="+upstream, "SCENARIO="+scenario)
+			cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "TMPDIR="+dir, "CURL_CA_BUNDLE="+ca, "REAL_CURL="+realCurl, "TRACE="+trace, "CURL_ARGS="+argsFile, "FAKE_BIN="+bin, "UPSTREAM_FIXTURE="+upstream, "SCENARIO="+scenario, "NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost")
 			out, runErr := cmd.CombinedOutput()
 			events, _ := os.ReadFile(trace)
 			if scenario == "accepted" {
