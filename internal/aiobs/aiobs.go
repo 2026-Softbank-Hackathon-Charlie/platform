@@ -118,19 +118,9 @@ func New(rawURL, user, password, table string) (*Client, error) {
 
 const maxRows = 2000
 
-// Events returns hopai's parsed events since the given time, oldest first,
-// at most limit of the newest (capped at 2000).
-func (c *Client) Events(ctx context.Context, since time.Time, limit int) ([]Event, error) {
-	if limit < 1 || limit > maxRows {
-		limit = maxRows
-	}
-	q := "SELECT toString(toUnixTimestamp64Milli(Timestamp)) AS ts, Body FROM " + c.Table +
-		" WHERE ServiceName = {svc:String} AND Timestamp >= fromUnixTimestamp64Milli({since:Int64})" +
-		" ORDER BY Timestamp DESC LIMIT {limit:UInt32} FORMAT JSONEachRow"
-	v := url.Values{}
-	v.Set("param_svc", Service)
-	v.Set("param_since", strconv.FormatInt(since.UnixMilli(), 10))
-	v.Set("param_limit", strconv.Itoa(limit))
+// do runs one query (the parameters are bound, never spliced) and returns the
+// response body. The settings keep a query short and its answer small.
+func (c *Client) do(ctx context.Context, q string, v url.Values) ([]byte, error) {
 	v.Set("max_execution_time", "5")
 	v.Set("max_result_rows", strconv.Itoa(maxRows))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/?"+v.Encode(), strings.NewReader(q))
@@ -152,6 +142,26 @@ func (c *Client) Events(ctx context.Context, since time.Time, limit int) ([]Even
 	if resp.StatusCode != http.StatusOK {
 		// The body can echo the query; keep only the status.
 		return nil, fmt.Errorf("aiobs: ClickHouse answered %d", resp.StatusCode)
+	}
+	return body, nil
+}
+
+// Events returns hopai's parsed events since the given time, oldest first,
+// at most limit of the newest (capped at 2000).
+func (c *Client) Events(ctx context.Context, since time.Time, limit int) ([]Event, error) {
+	if limit < 1 || limit > maxRows {
+		limit = maxRows
+	}
+	q := "SELECT toString(toUnixTimestamp64Milli(Timestamp)) AS ts, Body FROM " + c.Table +
+		" WHERE ServiceName = {svc:String} AND Timestamp >= fromUnixTimestamp64Milli({since:Int64})" +
+		" ORDER BY Timestamp DESC LIMIT {limit:UInt32} FORMAT JSONEachRow"
+	v := url.Values{}
+	v.Set("param_svc", Service)
+	v.Set("param_since", strconv.FormatInt(since.UnixMilli(), 10))
+	v.Set("param_limit", strconv.Itoa(limit))
+	body, err := c.do(ctx, q, v)
+	if err != nil {
+		return nil, err
 	}
 	var out []Event
 	for _, line := range strings.Split(string(body), "\n") {

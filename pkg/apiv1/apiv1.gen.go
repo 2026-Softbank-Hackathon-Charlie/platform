@@ -157,6 +157,24 @@ func (e AppDBReadinessEnvironmentRole) Valid() bool {
 	}
 }
 
+// Defines values for AppObservationPatternSeverity.
+const (
+	AppObservationPatternSeverityError   AppObservationPatternSeverity = "error"
+	AppObservationPatternSeverityWarning AppObservationPatternSeverity = "warning"
+)
+
+// Valid indicates whether the value is a known member of the AppObservationPatternSeverity enum.
+func (e AppObservationPatternSeverity) Valid() bool {
+	switch e {
+	case AppObservationPatternSeverityError:
+		return true
+	case AppObservationPatternSeverityWarning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for BucketInspectionLabel.
 const (
 	BucketInspectionLabelApac   BucketInspectionLabel = "apac"
@@ -2387,6 +2405,53 @@ type AppInstanceCreated struct {
 // AppList defines model for AppList.
 type AppList struct {
 	Apps []App `json:"apps"`
+}
+
+// AppObservation defines model for AppObservation.
+type AppObservation struct {
+	Buckets []AppObservationBucket `json:"buckets"`
+	Errors  int                    `json:"errors"`
+
+	// Patterns the most repeated, errors first, at most 10
+	Patterns []AppObservationPattern `json:"patterns"`
+	Services []AppObservationService `json:"services"`
+	Since    time.Time               `json:"since"`
+	Total    int                     `json:"total"`
+	Warnings int                     `json:"warnings"`
+}
+
+// AppObservationBucket defines model for AppObservationBucket.
+type AppObservationBucket struct {
+	Errors int `json:"errors"`
+
+	// Time start of the five minutes
+	Time     time.Time `json:"time"`
+	Total    int       `json:"total"`
+	Warnings int       `json:"warnings"`
+}
+
+// AppObservationPattern defines model for AppObservationPattern.
+type AppObservationPattern struct {
+	// Count how many of the newest 500 error and warning lines of the window have this pattern, not a count over the whole window
+	Count    int                           `json:"count"`
+	LastSeen time.Time                     `json:"lastSeen"`
+	Service  string                        `json:"service"`
+	Severity AppObservationPatternSeverity `json:"severity"`
+
+	// Text redacted, numbers and ids folded to # and «id», at most 160 characters
+	Text string `json:"text"`
+}
+
+// AppObservationPatternSeverity defines model for AppObservationPattern.Severity.
+type AppObservationPatternSeverity string
+
+// AppObservationService defines model for AppObservationService.
+type AppObservationService struct {
+	Errors   int       `json:"errors"`
+	LastSeen time.Time `json:"lastSeen"`
+	Name     string    `json:"name"`
+	Total    int       `json:"total"`
+	Warnings int       `json:"warnings"`
 }
 
 // AppSecretInfo A secret without its value.
@@ -5414,6 +5479,12 @@ type ListDeploymentsParams struct {
 
 	// Branch Only the deployments of this branch's instance. It must be a branch the app deploys.
 	Branch *string `form:"branch,omitempty" json:"branch,omitempty"`
+}
+
+// GetAppObservabilityParams defines parameters for GetAppObservability.
+type GetAppObservabilityParams struct {
+	// Minutes how far back to read
+	Minutes *int `form:"minutes,omitempty" json:"minutes,omitempty"`
 }
 
 // GetAppSecretParams defines parameters for GetAppSecret.

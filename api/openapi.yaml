@@ -1456,6 +1456,43 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/apps/{name}/observability:
+    get:
+      tags: [apps]
+      operationId: getAppObservability
+      description: |
+        What the observability stack's logs (HyperDX's ClickHouse) show about
+        one registered app lately: line, error and warning counts in total,
+        per service and per five minutes, and the errors and warnings that
+        repeat. The repeated ones are returned as patterns only: redacted
+        (passwords, tokens, keys, emails and long token-like strings are
+        hidden) and with numbers and ids folded away. An ordinary log line is
+        never returned. Redaction cannot know every secret.
+
+        A service belongs to the app when its name is the app's or starts with
+        `<app>-`, unless it belongs to another registered app whose name starts
+        with `<app>-` (the services of `moimroom-mig` are not `moimroom`'s).
+        Without PLATFORM_AIOBS_CLICKHOUSE_URL the server answers 503
+        `observability_not_configured`; if ClickHouse cannot be read, 502
+        `observability_unavailable`.
+
+        Roles: viewer, agent, operator.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: minutes, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1440, default: 60 }, description: how far back to read }
+      responses:
+        "200":
+          description: The summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppObservation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/ai-activity:
     get:
       tags: [plans]
@@ -3045,6 +3082,47 @@ components:
         requestedBy: { type: string }
         createdAt: { type: string, format: date-time }
         finishedAt: { type: string, format: date-time }
+
+    AppObservationBucket:
+      type: object
+      required: [time, total, errors, warnings]
+      properties:
+        time: { type: string, format: date-time, description: start of the five minutes }
+        total: { type: integer }
+        errors: { type: integer }
+        warnings: { type: integer }
+
+    AppObservationService:
+      type: object
+      required: [name, total, errors, warnings, lastSeen]
+      properties:
+        name: { type: string }
+        total: { type: integer }
+        errors: { type: integer }
+        warnings: { type: integer }
+        lastSeen: { type: string, format: date-time }
+
+    AppObservationPattern:
+      type: object
+      required: [severity, service, text, count, lastSeen]
+      properties:
+        severity: { type: string, enum: [error, warning] }
+        service: { type: string }
+        text: { type: string, description: "redacted, numbers and ids folded to # and «id», at most 160 characters" }
+        count: { type: integer, description: "how many of the newest 500 error and warning lines of the window have this pattern, not a count over the whole window" }
+        lastSeen: { type: string, format: date-time }
+
+    AppObservation:
+      type: object
+      required: [since, total, errors, warnings, buckets, services, patterns]
+      properties:
+        since: { type: string, format: date-time }
+        total: { type: integer }
+        errors: { type: integer }
+        warnings: { type: integer }
+        buckets: { type: array, items: { $ref: "#/components/schemas/AppObservationBucket" } }
+        services: { type: array, items: { $ref: "#/components/schemas/AppObservationService" } }
+        patterns: { type: array, items: { $ref: "#/components/schemas/AppObservationPattern" }, description: "the most repeated, errors first, at most 10" }
 
     AIActivityEvent:
       type: object
