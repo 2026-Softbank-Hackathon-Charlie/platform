@@ -19,6 +19,8 @@ import (
 
 const OnpremTailnetTag = "tag:hop-onprem-k3s"
 
+var ErrEnvironmentExists = errors.New("onprem environment name is already registered")
+
 type ConnectionRequest struct {
 	ClusterUID     string    `json:"clusterUID"`
 	CAData         string    `json:"caData"`
@@ -92,6 +94,17 @@ func (c *Connector) CheckConfiguration(ctx context.Context, environment string) 
 	return nil
 }
 
+// A new grant cannot target an already configured or differently owned environment.
+// The service calls this only for a newly created intent, preserving idempotent replays.
+func (c *Connector) CanEnrollEnvironment(_ context.Context, environment, id string) error {
+	if runtime, ok := c.Runtime.(*KubeRuntime); ok {
+		if owner, _, exists := runtime.cfg.Envs.ConnectionIdentity(environment); exists && owner != id {
+			return ErrEnvironmentExists
+		}
+	}
+	return nil
+}
+
 func (c *Connector) Bootstrap(ctx context.Context, e store.OnpremEnrollment, token, arch string) ([]byte, error) {
 	if err := c.CheckConfiguration(ctx, e.Environment); err != nil {
 		return nil, err
@@ -102,6 +115,9 @@ func (c *Connector) Bootstrap(ctx context.Context, e store.OnpremEnrollment, tok
 	_, sum, err := AgentBinary(c.AgentDirectory, arch)
 	if err != nil {
 		return nil, ErrInvalid
+	}
+	if _, err = c.Store.ReserveOnpremBootstrap(ctx, e.ID, e.SessionHash, c.now()); err != nil {
+		return nil, err
 	}
 	key, err := c.Tailnet.AuthKey(ctx, RegistrationHostname(e.ID))
 	if err != nil {
@@ -138,7 +154,9 @@ func (c *Connector) Connect(ctx context.Context, e store.OnpremEnrollment, req C
 	state := RegistrationState{EnrollmentID: e.ID, Environment: e.Environment, Connection: req}
 	save := func(status, stage string, encrypted []byte) (store.OnpremEnrollment, error) {
 		expires := c.now().Add(30 * 24 * time.Hour)
-		return c.Store.SaveOnpremRegistration(context.WithoutCancel(ctx), e.ID, lease, row.Version, store.OnpremRegistrationUpdate{Status: status, Stage: stage, Checks: checks, RegistrationCiphertext: encrypted, ReleaseLease: true, SessionExpiresAt: &expires}, c.now())
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		return c.Store.SaveOnpremRegistration(saveCtx, e.ID, lease, row.Version, store.OnpremRegistrationUpdate{Status: status, Stage: stage, Checks: checks, RegistrationCiphertext: encrypted, ReleaseLease: true, SessionExpiresAt: &expires}, c.now())
 	}
 	_, found, err := c.Tailnet.Device(ctx, RegistrationHostname(e.ID))
 	if err != nil || !found {

@@ -48,6 +48,8 @@ func (s *Server) decodeEnrollment(w http.ResponseWriter, r *http.Request, v any)
 }
 func (s *Server) enrollmentError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, onprem.ErrEnvironmentExists):
+		s.fail(w, r, 409, "enrollment_environment_exists", "this environment is already registered; use a new environment name for a new device")
 	case errors.Is(err, onprem.ErrInvalid):
 		s.fail(w, r, 400, "invalid_request", "invalid environment, install choice or Idempotency-Key")
 	case errors.Is(err, onprem.ErrUnauthorized):

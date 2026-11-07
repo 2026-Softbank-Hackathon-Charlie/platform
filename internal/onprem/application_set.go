@@ -74,7 +74,7 @@ func environmentApplications(namespace string, state RegistrationState, profile 
 	p["podSecurity"] = "restricted"
 	name := registrationResourceName(state.EnrollmentID)
 	meta := func() map[string]any {
-		return map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{enrollmentOwnerLabel: state.EnrollmentID, "hopcharlie.dev/env": state.Environment}}
+		return map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{enrollmentOwnerLabel: state.EnrollmentID, "hopcharlie.dev/env": state.Environment, "hopcharlie.dev/onprem-cluster-uid": state.Connection.ClusterUID}}
 	}
 	cluster := name
 	destinations := []any{map[string]any{"name": cluster, "namespace": "*"}}

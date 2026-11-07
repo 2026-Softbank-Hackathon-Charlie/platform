@@ -724,22 +724,30 @@ func envOr(k, def string) string {
 // time.
 func workloadClients(envSvc *envs.Service) func(env string) (dynamic.Interface, error) {
 	var mu sync.Mutex
-	clients := map[string]dynamic.Interface{}
+	type cachedWorkload struct {
+		client dynamic.Interface
+		token  string
+	}
+	clients := map[string]cachedWorkload{}
 	return func(env string) (dynamic.Interface, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		if dyn, ok := clients[env]; ok {
-			return dyn, nil
-		}
 		c, known := envSvc.Config(env)
 		if !known {
 			return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
+		}
+		token := ""
+		if c.RESTConfig != nil {
+			token = c.RESTConfig.BearerToken
+		}
+		if cached, ok := clients[env]; ok && cached.token == token {
+			return cached.client, nil
 		}
 		_, d, err := envs.NewReadClients(c, api.DBClusterTimeout)
 		if err != nil {
 			return nil, err
 		}
-		clients[env] = d
+		clients[env] = cachedWorkload{client: d, token: token}
 		return d, nil
 	}
 }
