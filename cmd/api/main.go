@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg"
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
@@ -418,6 +419,9 @@ func main() {
 		}
 		rcfg.Retention, rcfg.RetentionPeriod, rcfg.RetentionPlan = backend, period, planSvc.Load
 		log.Warn("source retention enabled; source database deletion ends immediate rollback, PVCs retained", "period", period)
+	}
+	rcfg.MigrationSecurity = func(ctx context.Context, p *plan.Plan, doc apiv1.Run) runs.SecurityAssessor {
+		return migrationSecurityAssessor(ctx, p, doc, policy.GatewayURL, appCat.Lookup, envSvc.Config)
 	}
 	runner := runs.New(runCtx, rcfg)
 	if n, err := planSvc.RecoverStarting(ctx); err != nil {

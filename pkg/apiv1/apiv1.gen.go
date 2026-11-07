@@ -1129,6 +1129,33 @@ func (e RunPhase) Valid() bool {
 	}
 }
 
+// Defines values for RunSecurityAssessmentReason.
+const (
+	RunSecurityAssessmentReasonClear            RunSecurityAssessmentReason = "clear"
+	RunSecurityAssessmentReasonForbidden        RunSecurityAssessmentReason = "forbidden"
+	RunSecurityAssessmentReasonPrivileged       RunSecurityAssessmentReason = "privileged"
+	RunSecurityAssessmentReasonUnavailable      RunSecurityAssessmentReason = "unavailable"
+	RunSecurityAssessmentReasonWorkloadNotReady RunSecurityAssessmentReason = "workload_not_ready"
+)
+
+// Valid indicates whether the value is a known member of the RunSecurityAssessmentReason enum.
+func (e RunSecurityAssessmentReason) Valid() bool {
+	switch e {
+	case RunSecurityAssessmentReasonClear:
+		return true
+	case RunSecurityAssessmentReasonForbidden:
+		return true
+	case RunSecurityAssessmentReasonPrivileged:
+		return true
+	case RunSecurityAssessmentReasonUnavailable:
+		return true
+	case RunSecurityAssessmentReasonWorkloadNotReady:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RunStatus.
 const (
 	RunStatusAborted        RunStatus = "aborted"
@@ -4616,6 +4643,9 @@ type Run struct {
 	RollbackOf *string `json:"rollbackOf,omitempty"`
 	RunId      string  `json:"runId"`
 
+	// SecurityComparison Point-in-time policy assessments recorded by this migration. A missing side was not recorded.
+	SecurityComparison *RunSecurityComparison `json:"securityComparison,omitempty"`
+
 	// Source The non-secret view of a plan endpoint.
 	Source    PlanEndpoint `json:"source"`
 	StartedAt time.Time    `json:"startedAt"`
@@ -4708,6 +4738,38 @@ type RunResult struct {
 	// Verified the verify report found no problems
 	Verified          *bool              `json:"verified,omitempty"`
 	WriteVerification *WriteVerification `json:"writeVerification,omitempty"`
+}
+
+// RunSecurityAssessment An observation of the registered app workload immediately before a migration step.
+type RunSecurityAssessment struct {
+	AssessedAt time.Time `json:"assessedAt"`
+
+	// Evidence Bounded Kubernetes observation without a raw response or credentials.
+	Evidence      *string                     `json:"evidence,omitempty"`
+	PolicyVersion string                      `json:"policyVersion"`
+	Reason        RunSecurityAssessmentReason `json:"reason"`
+
+	// Result - pass: the check read the asset and its condition holds.
+	// - fail: the check read the asset and its condition does not hold; `findingIds` name the findings.
+	// - unknown: the asset could not be read (no answer, denied, not connected). It is never counted as pass.
+	// - not_applicable: the condition does not apply to the asset (e.g. MFA for a user with no console password). Not part of the denominator.
+	Result   SecurityControlResult `json:"result"`
+	Workload string                `json:"workload"`
+}
+
+// RunSecurityAssessmentReason defines model for RunSecurityAssessmentReason.
+type RunSecurityAssessmentReason string
+
+// RunSecurityComparison Point-in-time policy assessments recorded by this migration. A missing side was not recorded.
+type RunSecurityComparison struct {
+	// ControlId Example: HC-POL-02
+	ControlId string `json:"controlId"`
+
+	// Source An observation of the registered app workload immediately before a migration step.
+	Source *RunSecurityAssessment `json:"source,omitempty"`
+
+	// Target An observation of the registered app workload immediately before a migration step.
+	Target *RunSecurityAssessment `json:"target,omitempty"`
 }
 
 // RunStatus running: steps are executing.
