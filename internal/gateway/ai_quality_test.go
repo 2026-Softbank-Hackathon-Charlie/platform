@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmquality"
@@ -326,5 +327,68 @@ func TestAIQualityIneligibleTargetUsesSourceOnceBeforeAdmission(t *testing.T) {
 			g.mu.Unlock()
 			requireAIStatus(t, aiCall(public.Client(), "POST", public.URL+"/api/chat", "ai-secret", "no-eligible-backend", aiTestBody), 503)
 		})
+	}
+}
+
+func directCanaryAdvance(g *Gateway, body, key string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", "http://admin/v1/ai/canary/advance", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer admin-secret")
+	r.Header.Set("Idempotency-Key", key)
+	w := httptest.NewRecorder()
+	g.Admin().ServeHTTP(w, r)
+	return w
+}
+
+func TestAIQualitySlowEvaluationDoesNotCountAsNewStageObservation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		provider := qualityProviderFunc(func(c context.Context, p llmquality.Policy, n, b time.Time) llmquality.Verdict {
+			time.Sleep(45 * time.Second)
+			return passQuality(c, p, n, b)
+		})
+		g := qualityGW(t, "", provider)
+		first := directCanaryAdvance(g, `{"expectedVersion":0,"targetPercent":5}`, "slow-evaluation")
+		if first.Code != 200 {
+			t.Fatalf("first: %d %s", first.Code, first.Body)
+		}
+		g.mu.Lock()
+		at := g.canary.LastAdvanceAt
+		g.mu.Unlock()
+		if !at.Equal(time.Now().UTC()) {
+			t.Fatalf("query time reused as activation: %v; now %v", at, time.Now())
+		}
+		second := directCanaryAdvance(g, `{"expectedVersion":1,"targetPercent":25}`, "advance-too-soon")
+		if second.Code != 409 || !strings.Contains(second.Body.String(), "canary_soak_incomplete") {
+			t.Fatalf("query time counted as soak: %d %s", second.Code, second.Body)
+		}
+	})
+}
+
+func TestAIQualityExpiresWhileWaitingForControl(t *testing.T) {
+	// Mutex waiters are not durably blocked in synctest. Use a short real
+	// expiration here; no network or inference runs while control is locked.
+	evaluated := make(chan struct{})
+	provider := qualityProviderFunc(func(c context.Context, p llmquality.Policy, n, b time.Time) llmquality.Verdict {
+		v := passQuality(c, p, n, b)
+		v.ValidUntil = n.Add(200 * time.Millisecond)
+		close(evaluated)
+		return v
+	})
+	g := qualityGW(t, "", provider)
+	g.controlMu.Lock()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- directCanaryAdvance(g, `{"expectedVersion":0,"targetPercent":5}`, "expired-in-control")
+	}()
+	<-evaluated
+	time.Sleep(250 * time.Millisecond)
+	g.controlMu.Unlock()
+	w := <-done
+	if w.Code != 412 {
+		t.Fatalf("expired evidence published: %d %s", w.Code, w.Body)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.canary.TargetPercent != 0 || g.canary.Version != 0 {
+		t.Fatal("expired decision advanced stage")
 	}
 }

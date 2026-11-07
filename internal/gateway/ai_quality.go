@@ -70,6 +70,11 @@ func (g *Gateway) initializeAIQuality(st *persistedState) error {
 		state = *saved
 		// A restart cannot reuse a decision that may have regressed while down.
 		state.Verdict = llmquality.Unknown(time.Now(), "scores_not_checked_after_restart")
+		// Never count downtime or an earlier persistence-intent timestamp as
+		// observation time for a newly reactivated process.
+		if state.Version > 0 || state.TargetPercent > 0 {
+			state.LastAdvanceAt = time.Now().UTC()
+		}
 	}
 	g.canary = &state
 	return nil
@@ -214,6 +219,11 @@ func (rt *router) handleAdvanceAI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusPreconditionFailed, latest)
 		return
 	}
+	if req.TargetPercent > 0 && !verdict.ValidUntil.After(time.Now()) {
+		rt.mu.Unlock()
+		writeJSON(w, http.StatusPreconditionFailed, llmquality.Unknown(time.Now(), "scores_expired_waiting_for_control"))
+		return
+	}
 	if req.TargetPercent > 0 && rt.held || rt.g.shuttingDown() {
 		rt.mu.Unlock()
 		writeError(w, 409, "ai_routing_held", "finish the existing write hold before a canary transition")
@@ -222,19 +232,18 @@ func (rt *router) handleAdvanceAI(w http.ResponseWriter, r *http.Request) {
 	next := prev
 	next.Version++
 	next.TargetPercent = req.TargetPercent
-	next.LastAdvanceAt = now
+	next.LastAdvanceAt = time.Now().UTC() // persistence intent; activation is later
 	next.Verdict = verdict
 	next.LastCommand = id
 	next.LastExpectedVersion = *req.ExpectedVersion
 	next.LastTargetPercent = req.TargetPercent
 	// Persist before making the increased target share visible to admission.
 	// The previous source-only/stage state remains active while disk is written.
-	if err := rt.g.saveAICanaryLocked(next); err != nil {
+	if err := rt.g.saveAICanaryLocked(&next); err != nil {
 		rt.mu.Unlock()
 		persistenceUnavailable(w)
 		return
 	}
-	rt.canary = &next
 	rt.mu.Unlock()
 	rt.log.Info("admin action", "action", "ai_canary_advance", "command", id, "version", next.Version, "previousPercent", prev.TargetPercent, "targetPercent", next.TargetPercent, "quality", verdict.Status, "batchDigest", verdict.Batch)
 	writeJSON(w, 200, rt.canaryView(next))
@@ -242,25 +251,37 @@ func (rt *router) handleAdvanceAI(w http.ResponseWriter, r *http.Request) {
 
 // saveAICanaryLocked keeps lock order controlMu -> saveMu -> rt.mu safe by
 // unlocking rt.mu before snapshot. controlMu prevents another admin mutation.
-func (g *Gateway) saveAICanaryLocked(next AICanaryState) error {
+func (g *Gateway) saveAICanaryLocked(next *AICanaryState) error {
 	g.mu.Unlock()
 	if g.cfg.StateFile == "" {
 		g.mu.Lock()
+		g.activateAIStageLocked(next)
 		return nil
 	}
 	g.saveMu.Lock()
 	state := g.snapshot()
-	state.AICanary = &next
+	state.AICanary = next
 	err := writeFileAtomic(g.cfg.StateFile, state)
 	g.persistenceFailed.Store(err != nil)
 	// Update memory before releasing saveMu: a competing snapshot must never
 	// overwrite the newly durable stage with the previous in-memory stage.
 	g.mu.Lock()
 	if err == nil {
-		g.canary = &next
+		g.activateAIStageLocked(next)
 	}
 	g.saveMu.Unlock()
 	return err
+}
+
+// Publication happens only after persistence. The durable timestamp records
+// intent; restart resets its observation boundary conservatively to startup.
+func (g *Gateway) activateAIStageLocked(next *AICanaryState) {
+	now := time.Now().UTC()
+	next.LastAdvanceAt = now
+	if next.TargetPercent > 0 && !next.Verdict.ValidUntil.After(now) {
+		next.Verdict = llmquality.Unknown(now, "scores_expired_during_persistence")
+	}
+	g.canary = next
 }
 
 func (g *Gateway) refreshAIQuality(ctx context.Context) {
