@@ -1,0 +1,14 @@
+{
+  "observedAt": "2026-11-07T19:17:21Z",
+  "metadataOnly": true,
+  "complete": true,
+  "jobCount": 1,
+  "jobs": [
+    {
+      "namespace": "charlie-platform",
+      "name": "hopai-recommend-zpb98",
+      "createdAt": "2026-11-07T19:08:16Z"
+    }
+  ],
+  "collector": "client-go metadata API PartialObjectMetadataList; no spec/env/nonce/Secret requested"
+}

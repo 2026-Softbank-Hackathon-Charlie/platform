@@ -1,0 +1,8 @@
+{
+  "observedAt": "2026-11-07T19:35:51.207567+00:00",
+  "image": "525091405886.dkr.ecr.ap-northeast-2.amazonaws.com/hopcharlie/console:eb9cc64@sha256:c91920ebe96ce7e8b4ac39fb03a8eb78731c10d3f8d76f9e38639bd5eb31d70c",
+  "readyReplicas": 1,
+  "generation": 82,
+  "observedGeneration": 82,
+  "reviewedImageReady": true
+}

@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-11-07T19:14:29.400Z",
+  "evidenceKind": "production-readonly-real-browser",
+  "expectedImages": {
+    "api": "a89634a-minio@sha256:480198186c6061d261a2e99acd8f0f19f711ecaa5d66568cf8921e90b2859b2b",
+    "console": "cf9b57a@sha256:e03f2c1934dbaef3a61da0691c8ee427eebf57c3cec16e4367f8ac3a85846743",
+    "hopai": "aa8d4f4@sha256:db870c26b9564a231634bdea5f6b7ced7f860900f85b6b947239be0a9b19b87b"
+  },
+  "scenarios": [
+    {
+      "id": "B02-apps",
+      "startedAt": "2026-11-07T19:14:29.963Z",
+      "operationalCoverage": "actual registered-app GET; no mutations",
+      "pass": true,
+      "appRowCount": 4,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:14:32.911Z"
+    },
+    {
+      "id": "B05-observation-state",
+      "startedAt": "2026-11-07T19:14:32.911Z",
+      "operationalCoverage": "configuration/unknown presentation only; actual AI receiving may remain unobserved",
+      "pass": true,
+      "langfuseControlVisible": true,
+      "operationalState": "not_configured",
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:14:35.615Z"
+    },
+    {
+      "id": "B01-mobile-layout",
+      "startedAt": "2026-11-07T19:14:35.615Z",
+      "operationalCoverage": "same actual app list; 390px viewport",
+      "pass": false,
+      "viewport": 390,
+      "clientWidth": 390,
+      "bodyWidth": 375,
+      "bodyClientWidth": 375,
+      "documentWidth": 434,
+      "activeTag": "A",
+      "fonts": [
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "loaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "IBM Plex Mono",
+          "status": "unloaded"
+        },
+        {
+          "family": "SUIT Variable",
+          "status": "loaded"
+        },
+        {
+          "family": "SUIT Variable",
+          "status": "loaded"
+        }
+      ],
+      "outsideElements": [],
+      "result": "FAIL",
+      "endedAt": "2026-11-07T19:14:37.215Z"
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:14:30.341Z",
+      "durationMillis": 64.75
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig/llm-observability",
+      "status": 200,
+      "at": "2026-11-07T19:14:32.995Z",
+      "durationMillis": 22.495
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig/deployments",
+      "status": 200,
+      "at": "2026-11-07T19:14:32.998Z",
+      "durationMillis": 26.039
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig/observability",
+      "status": 200,
+      "at": "2026-11-07T19:14:33.022Z",
+      "durationMillis": 50.5
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps/moimroom-mig/ai-services",
+      "status": 200,
+      "at": "2026-11-07T19:14:33.045Z",
+      "durationMillis": 69.623
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:14:35.396Z",
+      "durationMillis": 39.183
+    }
+  ],
+  "blockedRequests": [],
+  "pageErrors": [],
+  "consoleErrorCount": 0,
+  "observationMetadata": [
+    {
+      "path": "/v1/apps/moimroom-mig/llm-observability",
+      "sourceStatus": "not_configured",
+      "sourceReason": "langfuse_not_configured"
+    },
+    {
+      "path": "/v1/apps/moimroom-mig/ai-services",
+      "serviceCount": 0
+    }
+  ],
+  "screenshots": [
+    "apps-desktop.png",
+    "observation-source-state.png",
+    "apps-mobile.png"
+  ],
+  "cleanup": {
+    "browserClosed": true,
+    "persistentProfileUsed": false,
+    "storageStateExported": false,
+    "temporaryProfileDeletion": "not_independently_verified",
+    "credentialPersistedToNativeStorage": false
+  },
+  "security": {
+    "har": false,
+    "trace": false,
+    "rawConsole": false,
+    "rawResponseBody": false,
+    "credentialTransport": "RAM stdin and isolated-context memory only",
+    "credentialHeaderToFontHost": false
+  },
+  "paidEntryRequestsAttempted": 0,
+  "preRecommendationStatus": {
+    "http": 200,
+    "status": "ready",
+    "generatedAt": "2026-11-07T19:08:15.874199Z",
+    "nextRefreshAt": "2026-11-07T19:23:15.874199Z",
+    "readOnlyCacheLookup": true,
+    "model": "claude-sonnet-5-5",
+    "sessionId": "ags_892b947e30c4"
+  },
+  "coordinatorStatusChecks": [],
+  "browserVersion": "157.0.8103.38",
+  "recommendationSessionMetadata": {
+    "http": 200,
+    "id": "ags_892b947e30c4",
+    "model": "claude-sonnet-5-5",
+    "toolCalls": 1,
+    "createdAt": "2026-11-07T19:08:25.014186Z"
+  },
+  "endedAt": "2026-11-07T19:14:37.493Z",
+  "paidEntryRequestsAllowed": 0,
+  "paidEntryRequestsObserved": 0
+}

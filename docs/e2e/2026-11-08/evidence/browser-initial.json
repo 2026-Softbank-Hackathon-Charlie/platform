@@ -1,0 +1,515 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-11-07T19:07:54.953Z",
+  "evidenceKind": "production-readonly-real-browser",
+  "expectedImages": {
+    "api": "a89634a-minio@sha256:480198186c6061d261a2e99acd8f0f19f711ecaa5d66568cf8921e90b2859b2b",
+    "console": "cf9b57a@sha256:e03f2c1934dbaef3a61da0691c8ee427eebf57c3cec16e4367f8ac3a85846743",
+    "hopai": "aa8d4f4@sha256:db870c26b9564a231634bdea5f6b7ced7f860900f85b6b947239be0a9b19b87b"
+  },
+  "scenarios": [
+    {
+      "id": "B01-public-login",
+      "startedAt": "2026-11-07T19:07:55.534Z",
+      "operationalCoverage": "authentication-screen-only; no login attempt",
+      "pass": true,
+      "authInputCount": 2,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:07:57.476Z"
+    },
+    {
+      "id": "B02-apps",
+      "startedAt": "2026-11-07T19:07:57.616Z",
+      "operationalCoverage": "actual registered-app GET; no mutations",
+      "pass": true,
+      "appRowCount": 4,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:08:00.407Z"
+    },
+    {
+      "id": "B05-observation-state",
+      "startedAt": "2026-11-07T19:08:00.407Z",
+      "operationalCoverage": "configuration/unknown presentation only; actual AI receiving may remain unobserved",
+      "result": "FAIL",
+      "failureType": "TimeoutError",
+      "endedAt": "2026-11-07T19:08:10.421Z"
+    },
+    {
+      "id": "B02-environments",
+      "startedAt": "2026-11-07T19:08:10.421Z",
+      "operationalCoverage": "actual cluster-status metadata only; collector receiving not attested",
+      "pass": true,
+      "onpremVisible": false,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:08:12.511Z"
+    },
+    {
+      "id": "B02-target-selector",
+      "startedAt": "2026-11-07T19:08:12.511Z",
+      "operationalCoverage": "selection only; no plan generation or migration",
+      "pass": true,
+      "options": [
+        {
+          "value": "eks",
+          "disabled": false
+        },
+        {
+          "value": "onprem",
+          "disabled": false
+        },
+        {
+          "value": "onprem-gce",
+          "disabled": false
+        }
+      ],
+      "onpremSelectable": true,
+      "mapShown": false,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:08:14.206Z"
+    },
+    {
+      "id": "B01-mobile-layout",
+      "startedAt": "2026-11-07T19:08:14.206Z",
+      "operationalCoverage": "same actual app list; 390px viewport",
+      "pass": false,
+      "viewport": 390,
+      "documentWidth": 420,
+      "activeTag": "A",
+      "result": "FAIL",
+      "endedAt": "2026-11-07T19:08:15.783Z"
+    },
+    {
+      "id": "B04-recommendation-entry",
+      "startedAt": "2026-11-07T19:08:15.783Z",
+      "operationalCoverage": "at most one real trigger; model completion/activation recorded separately",
+      "pass": true,
+      "refreshDisabled": true,
+      "operationalState": "ready",
+      "cheapStatusRequests": 2,
+      "coordinatorCacheReads": 1,
+      "result": "PASS",
+      "endedAt": "2026-11-07T19:08:42.181Z"
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:07:57.888Z",
+      "durationMillis": 72.151
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:02.934Z",
+      "durationMillis": 39.367
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:07.993Z",
+      "durationMillis": 42.934
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:10.469Z",
+      "durationMillis": 40.399
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:08:10.486Z",
+      "durationMillis": 13.269
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:08:10.699Z",
+      "durationMillis": 271.101
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:08:12.535Z",
+      "durationMillis": 16.129
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:08:12.541Z",
+      "durationMillis": 19.967
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agent/sessions",
+      "status": 200,
+      "at": "2026-11-07T19:08:12.542Z",
+      "durationMillis": 21.852
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:08:12.552Z",
+      "durationMillis": 43.905
+    },
+    {
+      "method": "GET",
+      "path": "/v1/plans",
+      "status": 200,
+      "at": "2026-11-07T19:08:12.557Z",
+      "durationMillis": 44.992
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:12.568Z",
+      "durationMillis": 50.464
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:08:12.604Z",
+      "durationMillis": 17.738
+    },
+    {
+      "method": "GET",
+      "path": "/v1/ai-runs",
+      "status": 200,
+      "at": "2026-11-07T19:08:12.612Z",
+      "durationMillis": 24.213
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:14.267Z",
+      "durationMillis": 48.503
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migration-recommendations",
+      "status": 200,
+      "at": "2026-11-07T19:08:15.824Z",
+      "durationMillis": 22.021
+    },
+    {
+      "method": "GET",
+      "path": "/v1/matrix",
+      "status": 200,
+      "at": "2026-11-07T19:08:15.836Z",
+      "durationMillis": 30.829
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:08:15.843Z",
+      "durationMillis": 40.463
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:15.852Z",
+      "durationMillis": 52.053
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:15.859Z",
+      "durationMillis": 56.909
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:08:16.062Z",
+      "durationMillis": 261.742
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:08:16.079Z",
+      "durationMillis": 13.489
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:08:16.079Z",
+      "durationMillis": 13.391
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:08:20.871Z",
+      "durationMillis": 25.128
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:20.904Z",
+      "durationMillis": 38.306
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:08:25.898Z",
+      "durationMillis": 23.418
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:25.909Z",
+      "durationMillis": 45.179
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:25.948Z",
+      "durationMillis": 40.77
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:08:26.075Z",
+      "durationMillis": 10.224
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:08:26.105Z",
+      "durationMillis": 14.416
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:08:26.105Z",
+      "durationMillis": 14.905
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migration-recommendations/status",
+      "status": 200,
+      "at": "2026-11-07T19:08:28.977Z",
+      "durationMillis": 10.383
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:08:30.937Z",
+      "durationMillis": 23.638
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:31.001Z",
+      "durationMillis": 38.142
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:35.960Z",
+      "durationMillis": 39.629
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:08:35.969Z",
+      "durationMillis": 22.795
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:36.051Z",
+      "durationMillis": 37.567
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:08:36.122Z",
+      "durationMillis": 14.3
+    },
+    {
+      "method": "GET",
+      "path": "/v1/traffic",
+      "status": 200,
+      "at": "2026-11-07T19:08:36.122Z",
+      "durationMillis": 15.307
+    },
+    {
+      "method": "GET",
+      "path": "/v1/envs",
+      "status": 200,
+      "at": "2026-11-07T19:08:36.495Z",
+      "durationMillis": 404.58
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migration-recommendations/status",
+      "status": 200,
+      "at": "2026-11-07T19:08:40.592Z",
+      "durationMillis": 12.493
+    },
+    {
+      "method": "GET",
+      "path": "/v1/migrations",
+      "status": 200,
+      "at": "2026-11-07T19:08:41.001Z",
+      "durationMillis": 22.183
+    },
+    {
+      "method": "GET",
+      "path": "/v1/apps",
+      "status": 200,
+      "at": "2026-11-07T19:08:41.098Z",
+      "durationMillis": 39.12
+    }
+  ],
+  "blockedRequests": [
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "external"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "external"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "external"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "external"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "external"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "external"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    },
+    {
+      "method": "GET",
+      "path": "[outside-read-allowlist]",
+      "origin": "api"
+    }
+  ],
+  "pageErrors": [],
+  "consoleErrorCount": 9,
+  "observationMetadata": [
+    {
+      "path": "/v1/migration-recommendations",
+      "status": "generating",
+      "recommendationCount": 0,
+      "aiStatus": "generating",
+      "nextRefreshAt": "2026-11-07T19:23:15.874199Z"
+    },
+    {
+      "path": "/v1/migration-recommendations/status",
+      "status": "generating",
+      "recommendationCount": 0,
+      "aiStatus": "generating",
+      "nextRefreshAt": "2026-11-07T19:23:15.874199Z"
+    },
+    {
+      "path": "/v1/migration-recommendations/status",
+      "status": "ready",
+      "recommendationCount": 4,
+      "aiStatus": "completed",
+      "nextRefreshAt": "2026-11-07T19:23:15.874199Z"
+    }
+  ],
+  "screenshots": [
+    "public-login-desktop.png",
+    "apps-desktop.png",
+    "environments-desktop.png",
+    "migration-selector-desktop.png",
+    "apps-mobile.png",
+    "recommendation-entry.png",
+    "recommendation-after-status.png"
+  ],
+  "cleanup": {
+    "browserClosed": true,
+    "persistentProfileUsed": false,
+    "storageStateExported": false,
+    "temporaryProfileDeletion": "not_independently_verified",
+    "credentialPersistedToNativeStorage": false
+  },
+  "security": {
+    "har": false,
+    "trace": false,
+    "rawConsole": false,
+    "rawResponseBody": false,
+    "credentialTransport": "RAM stdin and isolated-context memory only"
+  },
+  "paidEntryRequestsAttempted": 1,
+  "preRecommendationStatus": {
+    "http": 200,
+    "status": "not_configured",
+    "generatedAt": "2026-11-07T19:07:54.507933Z",
+    "nextRefreshAt": "2026-11-07T19:22:54.507933Z",
+    "readOnlyCacheLookup": true
+  },
+  "coordinatorStatusChecks": [
+    {
+      "at": "2026-11-07T19:08:40.554Z",
+      "path": "/v1/migration-recommendations/status",
+      "http": 200,
+      "durationMillis": 68,
+      "status": "ready",
+      "aiStatus": "completed",
+      "recommendationCount": 4
+    }
+  ],
+  "browserVersion": "157.0.8103.38",
+  "endedAt": "2026-11-07T19:08:42.546Z",
+  "paidEntryRequestsAllowed": 1,
+  "paidEntryRequestsObserved": 1
+}

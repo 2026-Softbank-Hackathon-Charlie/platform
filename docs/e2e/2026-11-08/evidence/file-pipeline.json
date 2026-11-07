@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "pipeline_passed": true,
+  "exit_code": 0,
+  "scenarios": [
+    {
+      "name": "forward_copy",
+      "passed": true
+    },
+    {
+      "name": "reverse_copy_cache_reuse",
+      "passed": true
+    },
+    {
+      "name": "same_size_source_change",
+      "passed": true
+    },
+    {
+      "name": "target_corruption_detected",
+      "passed": true
+    },
+    {
+      "name": "target_corruption_repaired",
+      "passed": true
+    },
+    {
+      "name": "object_add_delete",
+      "passed": true
+    },
+    {
+      "name": "authorization_rechecked",
+      "passed": true
+    },
+    {
+      "name": "metadata_rechecked",
+      "passed": true
+    },
+    {
+      "name": "cancelled_no_upload",
+      "passed": true
+    },
+    {
+      "name": "fixture_bucket_cleanup",
+      "passed": true
+    }
+  ],
+  "private_output_sha256": "f1deab10ee6cb9f7763dc99fd1a7abdd68575d5fa68b1200494a3e0aaeaf5500",
+  "unverified": [
+    "database and file migration in a single run",
+    "moimroom application migration",
+    "public-cloud endpoints",
+    "production rollout"
+  ],
+  "suite": "minio",
+  "rclone_version": "1.60.1-DEV",
+  "output_truncated": false,
+  "private_output_hash_scope": "complete",
+  "started_at": "2026-11-07T19:14:26.641665+00:00",
+  "completed_at": "2026-11-07T19:14:54.739009+00:00",
+  "tested_sha": "a934eb1daea3fdbc853be80e9617d4e0df889944",
+  "github_run_id": "42405180308",
+  "github_run_attempt": "1"
+}

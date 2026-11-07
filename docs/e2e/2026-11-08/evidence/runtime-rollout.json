@@ -1,0 +1,7 @@
+{
+  "image": "525091405886.dkr.ecr.ap-northeast-2.amazonaws.com/hopcharlie/platform:a89634a-minio@sha256:480198186c6061d261a2e99acd8f0f19f711ecaa5d66568cf8921e90b2859b2b",
+  "readyReplicas": 1,
+  "generation": 99,
+  "observedGeneration": 99,
+  "reviewedImageReady": true
+}
