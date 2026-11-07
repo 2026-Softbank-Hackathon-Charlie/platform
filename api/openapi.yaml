@@ -3862,7 +3862,33 @@ components:
         statusReason: { type: string, description: why the run ended the way it did }
         result: { $ref: "#/components/schemas/RunResult" }
         engine: { $ref: "#/components/schemas/EngineState" }
+        securityComparison: { $ref: "#/components/schemas/RunSecurityComparison" }
         rollbackOf: { type: string, description: "the run this run rolls back (POST /v1/migrations/{runId}/rollback)" }
+
+    RunSecurityComparison:
+      description: Point-in-time policy assessments recorded by this migration. A missing side was not recorded.
+      type: object
+      required: [controlId]
+      properties:
+        controlId: { type: string, example: HC-POL-02 }
+        source: { $ref: "#/components/schemas/RunSecurityAssessment" }
+        target: { $ref: "#/components/schemas/RunSecurityAssessment" }
+
+    RunSecurityAssessment:
+      description: An observation of the registered app workload immediately before a migration step.
+      type: object
+      required: [assessedAt, policyVersion, result, workload, reason]
+      properties:
+        assessedAt: { type: string, format: date-time }
+        policyVersion: { type: string }
+        result: { $ref: "#/components/schemas/SecurityControlResult" }
+        workload: { type: string }
+        reason: { $ref: "#/components/schemas/RunSecurityAssessmentReason" }
+        evidence: { type: string, description: Bounded Kubernetes observation without a raw response or credentials. }
+
+    RunSecurityAssessmentReason:
+      type: string
+      enum: [clear, privileged, forbidden, unavailable, workload_not_ready]
 
     SourceRetentionResponse:
       type: object

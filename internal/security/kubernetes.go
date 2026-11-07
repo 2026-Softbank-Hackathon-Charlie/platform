@@ -97,7 +97,7 @@ func (c *KubeCollector) Collect(ctx context.Context) []Report {
 			k.eval(ch, AllAssets, apiv1.SecurityControlResultUnknown, msg)
 		}
 	}
-	pods, err := listPods(ctx, kube)
+	pods, err := listPods(ctx, kube, "", "")
 	if err != nil {
 		unread("list pods", err, slices.Concat(podChecks, []string{"k8s.no-network-policy"})...)
 	} else {
@@ -131,12 +131,12 @@ func (c *KubeCollector) Collect(ctx context.Context) []Report {
 	return []Report{rep}
 }
 
-// listPods lists every pod, a page at a time.
-func listPods(ctx context.Context, kube kubernetes.Interface) ([]corev1.Pod, error) {
+// listPods lists the matching pods, a page at a time.
+func listPods(ctx context.Context, kube kubernetes.Interface, namespace, selector string) ([]corev1.Pod, error) {
 	var out []corev1.Pod
-	opts := metav1.ListOptions{Limit: 500}
+	opts := metav1.ListOptions{Limit: 500, LabelSelector: selector}
 	for {
-		list, err := kube.CoreV1().Pods("").List(ctx, opts)
+		list, err := kube.CoreV1().Pods(namespace).List(ctx, opts)
 		if err != nil {
 			return nil, err
 		}

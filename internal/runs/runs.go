@@ -106,6 +106,8 @@ type Config struct {
 	// FileSyncer installs the server-owned content guard on every normal launch,
 	// including resumes. Reverse rollback runs preserve their recovery exemption.
 	FileSyncer func(*plan.Plan) engine.FileSyncer
+	// MigrationSecurity binds an assessor to a validated plan and its registered endpoints.
+	MigrationSecurity func(context.Context, *plan.Plan, apiv1.Run) SecurityAssessor
 	// Traffic is the gateway admin client. Nil means no gateway: canary is
 	// refused and request counts are not measured.
 	Traffic Traffic
@@ -201,15 +203,16 @@ func New(ctx context.Context, cfg Config) *Runner {
 
 // live is an active run.
 type live struct {
-	lease    store.ClusterLease
-	id       string
-	plan     *plan.Plan
-	eng      Engine
-	clusters []string
-	stream   string // the written-records stream verify reads, if any (written.go)
-	cancel   context.CancelFunc
-	done     chan struct{} // closed once everything is persisted and subscribers are closed
-	traffic  Traffic       // the gateway scope of this run (Runner.traffic); nil = no gateway
+	securityAssessor SecurityAssessor
+	lease            store.ClusterLease
+	id               string
+	plan             *plan.Plan
+	eng              Engine
+	clusters         []string
+	stream           string // the written-records stream verify reads, if any (written.go)
+	cancel           context.CancelFunc
+	done             chan struct{} // closed once everything is persisted and subscribers are closed
+	traffic          Traffic       // the gateway scope of this run (Runner.traffic); nil = no gateway
 	// resumeHalted: the run halted after promotion and an operator resumed
 	// it; drive asks the engine to confirm the promotion first.
 	resumeHalted bool
@@ -285,6 +288,11 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 	}
 	l.q.init()
 	l.resumeHalted = resumeHalted
+	if r.cfg.MigrationSecurity != nil {
+		bindCtx, cancel := context.WithTimeout(ctx, migrationSecurityBudget)
+		l.securityAssessor = r.cfg.MigrationSecurity(bindCtx, p, doc)
+		cancel()
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -530,6 +538,11 @@ func (r *Runner) runSteps(ctx context.Context, l *live, steps []string) error {
 		}
 		if stepSucceeded(l.eng, step) {
 			continue
+		}
+		if r.recordMigrationSecurity(ctx, l, step) && l.lease != nil && ctx.Err() == nil {
+			if err := l.lease.Check(ctx); err != nil && ctx.Err() == nil {
+				return errClusterLeaseLost
+			}
 		}
 		if step == engine.StepVerify {
 			r.writeWritten(ctx, l)
@@ -1384,8 +1397,9 @@ func (l *live) snapshot() apiv1.Run {
 // --- events: engine goroutine -> queue -> writer -> store + subscribers ---
 
 type item struct {
-	ev  store.Event
-	doc bool // only persist the run document
+	ev            store.Event
+	doc           bool       // only persist the run document
+	persistResult chan error // buffered so a timed-out checkpoint cannot block the writer
 }
 
 // queue is an unbounded FIFO. The engine calls Emit synchronously, sometimes
@@ -1473,8 +1487,14 @@ func (r *Runner) writer(l *live) {
 			}
 			r.apply(l, apiEvent(ev))
 		}
+		var persistErr error
 		if len(its) > 0 || closed {
-			r.persist(l)
+			persistErr = r.persist(l)
+		}
+		for _, it := range its {
+			if it.persistResult != nil {
+				it.persistResult <- persistErr
+			}
 		}
 		if closed { // take returns the last items together with closed
 			return
@@ -1532,7 +1552,7 @@ func (r *Runner) apply(l *live, ev apiv1.RunEvent) {
 }
 
 // persist saves the run document. It never touches the engine (see Engine).
-func (r *Runner) persist(l *live) {
+func (r *Runner) persist(l *live) error {
 	l.mu.Lock()
 	l.doc.UpdatedAt = r.now()
 	row, err := runRow(l.doc) // marshal under the lock; the document is shared
@@ -1543,6 +1563,7 @@ func (r *Runner) persist(l *live) {
 	if err != nil {
 		r.cfg.Log.Error("store run", "run", l.id, "err", err)
 	}
+	return err
 }
 
 // --- conversions ---
