@@ -266,6 +266,7 @@ type harness struct {
 	admins        *auth.Admins     // Config.Admins
 	appDBTopology bool             // Config.AppDBTopology, with gke and eks as Config.AppDBEnvs
 	appDBEnvs     []string         // Config.AppDBEnvs instead of gke and eks
+	onboarding    bool             // Config.Onboarding
 	now           func() time.Time // Server.now; nil keeps the real clock
 	api           *Server          // the server behind srv
 }
@@ -321,7 +322,7 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	tokens.Add("op", apiv1.RoleOperator, opToken)
 	tokens.Add("ai", apiv1.RoleAgent, agentToken)
 	tokens.Add("view", apiv1.RoleViewer, viewerToken)
-	api := New(Config{Tokens: tokens, Admins: h.admins, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret, GitOpsRepo: h.gitOpsRepo, AppDBTopology: h.appDBTopology, AppDBEnvs: h.dbEnvs()}, d)
+	api := New(Config{Tokens: tokens, Admins: h.admins, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret, GitOpsRepo: h.gitOpsRepo, AppDBTopology: h.appDBTopology, AppDBEnvs: h.dbEnvs(), Onboarding: h.onboarding}, d)
 	if h.now != nil {
 		api.now = h.now
 	}

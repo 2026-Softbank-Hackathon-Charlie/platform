@@ -115,6 +115,10 @@ type Config struct {
 	// (PLATFORM_APP_DB_HOST_TEMPLATES), the only ones a pair can be
 	// migrated between.
 	AppDBEnvs []string
+	// Onboarding registers the /v1/onboardings routes (ADR 0042,
+	// PLATFORM_ONBOARDING=1). They answer 501 until they are built; off,
+	// they are not there.
+	Onboarding bool
 }
 
 // DefaultAppDomain is Config.AppDomain's default.
@@ -373,6 +377,9 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/apps/{name}/secrets", viewer, s.listAppSecrets)
 	s.route("PUT /v1/apps/{name}/secrets", operator, s.updateAppSecrets)
 	s.route(revealSecretRoute, operator, s.getAppSecret)
+	if cfg.Onboarding {
+		s.onboardingRoutes(viewer, operator)
+	}
 	return s
 }
 

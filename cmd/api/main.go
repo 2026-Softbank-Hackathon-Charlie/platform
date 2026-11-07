@@ -34,6 +34,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy"
@@ -265,6 +266,16 @@ func main() {
 		}
 	default:
 		fatal("PLATFORM_APP_DB_TOPOLOGY must be 1 or 0", "value", v)
+	}
+	// Optional (ADR 0042): the onboarding API, which answers 501 until it
+	// is built. Off, its routes are not there.
+	onboarding := false
+	switch v := os.Getenv(onboard.FeatureEnv); v {
+	case "", "0":
+	case "1":
+		onboarding = true
+	default:
+		fatal(onboard.FeatureEnv+" must be 1 or 0", "value", v)
 	}
 	// Optional (ADR 0032): registered apps' files move between their
 	// buckets through rclone remotes named after the environments, which
@@ -567,6 +578,7 @@ func main() {
 			GitOpsRepo:          os.Getenv("PLATFORM_GITOPS_REPO"),
 			AppDBTopology:       appDBTopology,
 			AppDBEnvs:           appDBEnvs,
+			Onboarding:          onboarding,
 		}, deps),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

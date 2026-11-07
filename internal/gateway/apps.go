@@ -22,6 +22,16 @@ type AppSpec struct {
 	// ReadWeights split reads over the backends, summing to 100. Empty sends
 	// every read to WriteBackend.
 	ReadWeights map[string]int `json:"readWeights,omitempty"`
+	// Dial maps a backend to the address ("host:port") the gateway
+	// connects to instead of its URL's host, keeping the URL's host as the
+	// TLS server name and the Host header (ADR 0042): the legacy backend of
+	// an onboarding is https://<app>.<domain> dialled at the VM's public
+	// IP, so the gateway does not reach itself once the name points at it.
+	// Backends without an entry dial their URL. The proxy and the health
+	// checks both use it, and it is part of the saved state and of whether
+	// a replace keeps a backend. This gateway does not do it yet and
+	// refuses a non-empty Dial (dial_not_supported).
+	Dial map[string]string `json:"dial,omitempty"`
 }
 
 // AppInfo is one app in GET /apps and the answer to PUT /apps/{app}.
@@ -37,6 +47,8 @@ type AppInfo struct {
 	WriteBackend string            `json:"writeBackend"`
 	ReadWeights  map[string]int    `json:"readWeights"`
 	WritesHeld   bool              `json:"writesHeld"`
+	// Dial is AppSpec.Dial; empty without any.
+	Dial map[string]string `json:"dial,omitempty"`
 }
 
 // AppList is the answer to GET /apps.
@@ -128,6 +140,10 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 	}
 	var spec AppSpec
 	if !decodeJSON(w, r, &spec) {
+		return
+	}
+	if len(spec.Dial) > 0 {
+		writeError(w, http.StatusBadRequest, "dial_not_supported", "dial is not supported by this gateway yet (ADR 0042)")
 		return
 	}
 	if spec.HealthPath != "" && !validHealthPath(spec.HealthPath) {

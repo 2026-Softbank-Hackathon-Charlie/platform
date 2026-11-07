@@ -457,6 +457,312 @@ func (e ObserveStepVerdict) Valid() bool {
 	}
 }
 
+// Defines values for OnboardingCheckResult.
+const (
+	OnboardingCheckResultFailed  OnboardingCheckResult = "failed"
+	OnboardingCheckResultPassed  OnboardingCheckResult = "passed"
+	OnboardingCheckResultRunning OnboardingCheckResult = "running"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingCheckResult enum.
+func (e OnboardingCheckResult) Valid() bool {
+	switch e {
+	case OnboardingCheckResultFailed:
+		return true
+	case OnboardingCheckResultPassed:
+		return true
+	case OnboardingCheckResultRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingEventKind.
+const (
+	OnboardingEventKindError OnboardingEventKind = "error"
+	OnboardingEventKindHuman OnboardingEventKind = "human"
+	OnboardingEventKindLog   OnboardingEventKind = "log"
+	OnboardingEventKindState OnboardingEventKind = "state"
+	OnboardingEventKindStep  OnboardingEventKind = "step"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingEventKind enum.
+func (e OnboardingEventKind) Valid() bool {
+	switch e {
+	case OnboardingEventKindError:
+		return true
+	case OnboardingEventKindHuman:
+		return true
+	case OnboardingEventKindLog:
+		return true
+	case OnboardingEventKindState:
+		return true
+	case OnboardingEventKindStep:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingFactsSummaryCloud.
+const (
+	OnboardingFactsSummaryCloudAws OnboardingFactsSummaryCloud = "aws"
+	OnboardingFactsSummaryCloudGcp OnboardingFactsSummaryCloud = "gcp"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingFactsSummaryCloud enum.
+func (e OnboardingFactsSummaryCloud) Valid() bool {
+	switch e {
+	case OnboardingFactsSummaryCloudAws:
+		return true
+	case OnboardingFactsSummaryCloudGcp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingFactsSummaryDbLibc.
+const (
+	OnboardingFactsSummaryDbLibcGlibc OnboardingFactsSummaryDbLibc = "glibc"
+	OnboardingFactsSummaryDbLibcMusl  OnboardingFactsSummaryDbLibc = "musl"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingFactsSummaryDbLibc enum.
+func (e OnboardingFactsSummaryDbLibc) Valid() bool {
+	switch e {
+	case OnboardingFactsSummaryDbLibcGlibc:
+		return true
+	case OnboardingFactsSummaryDbLibcMusl:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingFindingCode.
+const (
+	OnboardingFindingCodeAlterSystemDisabled          OnboardingFindingCode = "alter_system_disabled"
+	OnboardingFindingCodeAppAccountSuperuser          OnboardingFindingCode = "app_account_superuser"
+	OnboardingFindingCodeAppCodeChangeRequired        OnboardingFindingCode = "app_code_change_required"
+	OnboardingFindingCodeAutoConfSettings             OnboardingFindingCode = "auto_conf_settings"
+	OnboardingFindingCodeCheckFailed                  OnboardingFindingCode = "check_failed"
+	OnboardingFindingCodeCollationDependentConstraint OnboardingFindingCode = "collation_dependent_constraint"
+	OnboardingFindingCodeDataVolumeOutOfScope         OnboardingFindingCode = "data_volume_out_of_scope"
+	OnboardingFindingCodeDbNotPostgresContainer       OnboardingFindingCode = "db_not_postgres_container"
+	OnboardingFindingCodeDiskTooSmall                 OnboardingFindingCode = "disk_too_small"
+	OnboardingFindingCodeDomainOutOfScope             OnboardingFindingCode = "domain_out_of_scope"
+	OnboardingFindingCodeDriftLastDeploy              OnboardingFindingCode = "drift_last_deploy"
+	OnboardingFindingCodeDriftRunningRevision         OnboardingFindingCode = "drift_running_revision"
+	OnboardingFindingCodeGcpInspectionNotYet          OnboardingFindingCode = "gcp_inspection_not_yet"
+	OnboardingFindingCodeGlibcReleaseMismatch         OnboardingFindingCode = "glibc_release_mismatch"
+	OnboardingFindingCodeHoldBudgetExceeded           OnboardingFindingCode = "hold_budget_exceeded"
+	OnboardingFindingCodeIcuVersionUnavailable        OnboardingFindingCode = "icu_version_unavailable"
+	OnboardingFindingCodeImageUnavailable             OnboardingFindingCode = "image_unavailable"
+	OnboardingFindingCodeInstanceNotFound             OnboardingFindingCode = "instance_not_found"
+	OnboardingFindingCodeLegacyDeployStopped          OnboardingFindingCode = "legacy_deploy_stopped"
+	OnboardingFindingCodeManagedDatabase              OnboardingFindingCode = "managed_database"
+	OnboardingFindingCodeMaxWalSendersZero            OnboardingFindingCode = "max_wal_senders_zero"
+	OnboardingFindingCodeNameTooLong                  OnboardingFindingCode = "name_too_long"
+	OnboardingFindingCodeNoComposeProject             OnboardingFindingCode = "no_compose_project"
+	OnboardingFindingCodeNoSuperuser                  OnboardingFindingCode = "no_superuser"
+	OnboardingFindingCodeNotHttps                     OnboardingFindingCode = "not_https"
+	OnboardingFindingCodePasswordEncryptionMd5        OnboardingFindingCode = "password_encryption_md5"
+	OnboardingFindingCodeReindexRequired              OnboardingFindingCode = "reindex_required"
+	OnboardingFindingCodeRoleReadOnlySetting          OnboardingFindingCode = "role_read_only_setting"
+	OnboardingFindingCodeStorageOutOfScope            OnboardingFindingCode = "storage_out_of_scope"
+	OnboardingFindingCodeVmInAutoscalingGroup         OnboardingFindingCode = "vm_in_autoscaling_group"
+	OnboardingFindingCodeVmIsEksNode                  OnboardingFindingCode = "vm_is_eks_node"
+	OnboardingFindingCodeVmNotSsmManaged              OnboardingFindingCode = "vm_not_ssm_managed"
+	OnboardingFindingCodeWalKeepSizeCommandLine       OnboardingFindingCode = "wal_keep_size_command_line"
+	OnboardingFindingCodeWalLevelMinimal              OnboardingFindingCode = "wal_level_minimal"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingFindingCode enum.
+func (e OnboardingFindingCode) Valid() bool {
+	switch e {
+	case OnboardingFindingCodeAlterSystemDisabled:
+		return true
+	case OnboardingFindingCodeAppAccountSuperuser:
+		return true
+	case OnboardingFindingCodeAppCodeChangeRequired:
+		return true
+	case OnboardingFindingCodeAutoConfSettings:
+		return true
+	case OnboardingFindingCodeCheckFailed:
+		return true
+	case OnboardingFindingCodeCollationDependentConstraint:
+		return true
+	case OnboardingFindingCodeDataVolumeOutOfScope:
+		return true
+	case OnboardingFindingCodeDbNotPostgresContainer:
+		return true
+	case OnboardingFindingCodeDiskTooSmall:
+		return true
+	case OnboardingFindingCodeDomainOutOfScope:
+		return true
+	case OnboardingFindingCodeDriftLastDeploy:
+		return true
+	case OnboardingFindingCodeDriftRunningRevision:
+		return true
+	case OnboardingFindingCodeGcpInspectionNotYet:
+		return true
+	case OnboardingFindingCodeGlibcReleaseMismatch:
+		return true
+	case OnboardingFindingCodeHoldBudgetExceeded:
+		return true
+	case OnboardingFindingCodeIcuVersionUnavailable:
+		return true
+	case OnboardingFindingCodeImageUnavailable:
+		return true
+	case OnboardingFindingCodeInstanceNotFound:
+		return true
+	case OnboardingFindingCodeLegacyDeployStopped:
+		return true
+	case OnboardingFindingCodeManagedDatabase:
+		return true
+	case OnboardingFindingCodeMaxWalSendersZero:
+		return true
+	case OnboardingFindingCodeNameTooLong:
+		return true
+	case OnboardingFindingCodeNoComposeProject:
+		return true
+	case OnboardingFindingCodeNoSuperuser:
+		return true
+	case OnboardingFindingCodeNotHttps:
+		return true
+	case OnboardingFindingCodePasswordEncryptionMd5:
+		return true
+	case OnboardingFindingCodeReindexRequired:
+		return true
+	case OnboardingFindingCodeRoleReadOnlySetting:
+		return true
+	case OnboardingFindingCodeStorageOutOfScope:
+		return true
+	case OnboardingFindingCodeVmInAutoscalingGroup:
+		return true
+	case OnboardingFindingCodeVmIsEksNode:
+		return true
+	case OnboardingFindingCodeVmNotSsmManaged:
+		return true
+	case OnboardingFindingCodeWalKeepSizeCommandLine:
+		return true
+	case OnboardingFindingCodeWalLevelMinimal:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingHumanActionKind.
+const (
+	OnboardingHumanActionKindDeleteDnsRecord  OnboardingHumanActionKind = "delete_dns_record"
+	OnboardingHumanActionKindInstallGithubApp OnboardingHumanActionKind = "install_github_app"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingHumanActionKind enum.
+func (e OnboardingHumanActionKind) Valid() bool {
+	switch e {
+	case OnboardingHumanActionKindDeleteDnsRecord:
+		return true
+	case OnboardingHumanActionKindInstallGithubApp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingLegacyChangeKind.
+const (
+	OnboardingLegacyChangeKindDbRouteCreated            OnboardingLegacyChangeKind = "db_route_created"
+	OnboardingLegacyChangeKindHbaLineAdded              OnboardingLegacyChangeKind = "hba_line_added"
+	OnboardingLegacyChangeKindInstanceTagged            OnboardingLegacyChangeKind = "instance_tagged"
+	OnboardingLegacyChangeKindPostgresRoleCreated       OnboardingLegacyChangeKind = "postgres_role_created"
+	OnboardingLegacyChangeKindReplicationRoleCreated    OnboardingLegacyChangeKind = "replication_role_created"
+	OnboardingLegacyChangeKindTailscaleContainerStarted OnboardingLegacyChangeKind = "tailscale_container_started"
+	OnboardingLegacyChangeKindTailscaleDeviceJoined     OnboardingLegacyChangeKind = "tailscale_device_joined"
+	OnboardingLegacyChangeKindTailscaleVolumeCreated    OnboardingLegacyChangeKind = "tailscale_volume_created"
+	OnboardingLegacyChangeKindWalKeepSizeAdded          OnboardingLegacyChangeKind = "wal_keep_size_added"
+	OnboardingLegacyChangeKindWorkflowDisabled          OnboardingLegacyChangeKind = "workflow_disabled"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingLegacyChangeKind enum.
+func (e OnboardingLegacyChangeKind) Valid() bool {
+	switch e {
+	case OnboardingLegacyChangeKindDbRouteCreated:
+		return true
+	case OnboardingLegacyChangeKindHbaLineAdded:
+		return true
+	case OnboardingLegacyChangeKindInstanceTagged:
+		return true
+	case OnboardingLegacyChangeKindPostgresRoleCreated:
+		return true
+	case OnboardingLegacyChangeKindReplicationRoleCreated:
+		return true
+	case OnboardingLegacyChangeKindTailscaleContainerStarted:
+		return true
+	case OnboardingLegacyChangeKindTailscaleDeviceJoined:
+		return true
+	case OnboardingLegacyChangeKindTailscaleVolumeCreated:
+		return true
+	case OnboardingLegacyChangeKindWalKeepSizeAdded:
+		return true
+	case OnboardingLegacyChangeKindWorkflowDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OnboardingState.
+const (
+	OnboardingStateAwaitingApproval OnboardingState = "awaiting_approval"
+	OnboardingStateChecking         OnboardingState = "checking"
+	OnboardingStateConnecting       OnboardingState = "connecting"
+	OnboardingStateCuttingOver      OnboardingState = "cutting_over"
+	OnboardingStateDecommissioning  OnboardingState = "decommissioning"
+	OnboardingStateDiscovering      OnboardingState = "discovering"
+	OnboardingStateDone             OnboardingState = "done"
+	OnboardingStateFailed           OnboardingState = "failed"
+	OnboardingStatePatching         OnboardingState = "patching"
+	OnboardingStateReady            OnboardingState = "ready"
+	OnboardingStateRegistering      OnboardingState = "registering"
+	OnboardingStateSyncing          OnboardingState = "syncing"
+)
+
+// Valid indicates whether the value is a known member of the OnboardingState enum.
+func (e OnboardingState) Valid() bool {
+	switch e {
+	case OnboardingStateAwaitingApproval:
+		return true
+	case OnboardingStateChecking:
+		return true
+	case OnboardingStateConnecting:
+		return true
+	case OnboardingStateCuttingOver:
+		return true
+	case OnboardingStateDecommissioning:
+		return true
+	case OnboardingStateDiscovering:
+		return true
+	case OnboardingStateDone:
+		return true
+	case OnboardingStateFailed:
+		return true
+	case OnboardingStatePatching:
+		return true
+	case OnboardingStateReady:
+		return true
+	case OnboardingStateRegistering:
+		return true
+	case OnboardingStateSyncing:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PlanDraftResultSourceStatsReason.
 const (
 	PlanDraftResultSourceStatsReasonNotMeasured PlanDraftResultSourceStatsReason = "not_measured"
@@ -3187,6 +3493,329 @@ type ObserveStep struct {
 // ObserveStepVerdict defines model for ObserveStep.Verdict.
 type ObserveStepVerdict string
 
+// Onboarding defines model for Onboarding.
+type Onboarding struct {
+	// App The app's name: serviceUrl's label.
+	//
+	// Example: moimroom-legacy
+	App        string     `json:"app"`
+	ApprovedAt *time.Time `json:"approvedAt,omitempty"`
+	ApprovedBy *string    `json:"approvedBy,omitempty"`
+
+	// ApprovedSha The PR head commit that was approved.
+	ApprovedSha *string `json:"approvedSha,omitempty"`
+
+	// Check The test deployment of the PR branch.
+	Check     *OnboardingCheck `json:"check,omitempty"`
+	CreatedAt time.Time        `json:"createdAt"`
+	CreatedBy string           `json:"createdBy"`
+
+	// Deleting DELETE was asked for and is undoing what was done.
+	Deleting bool `json:"deleting"`
+
+	// Facts The parts of the discovery's facts the console shows. The full facts are pkg/onboard/facts.Facts and go only to hopai.
+	Facts *OnboardingFactsSummary `json:"facts,omitempty"`
+
+	// FailedState With state failed, the state it failed in, which resume goes back to.
+	FailedState *OnboardingState `json:"failedState,omitempty"`
+
+	// Failure Why it failed, or why a step of a deletion failed.
+	Failure *string `json:"failure,omitempty"`
+
+	// HumanActions What a person has to do, which the platform cannot (ADR 0042, "한 번 하는 설정"). The platform checks it itself; resume checks again at once.
+	HumanActions []OnboardingHumanAction `json:"humanActions"`
+
+	// Id onb- and 12 lowercase hex digits; also the name of the test app and the start of the cutover plan ids (<id>-<attempt>)
+	//
+	// Example: onb-3f9a1c2b7d4e
+	Id string `json:"id"`
+
+	// LegacyChanges What was added to or changed on the source VM, its database, GitHub and the management cluster, in the order it was done. DELETE undoes them in reverse.
+	LegacyChanges []OnboardingLegacyChange `json:"legacyChanges"`
+
+	// LegacyDeployStopped The source's deploy workflows are disabled (from connecting on,
+	// until it is deleted). The console says so on every screen while
+	// it is true.
+	LegacyDeployStopped bool `json:"legacyDeployStopped"`
+
+	// PlannedLegacyChanges What connecting will do once approved, for the approval screen, in order. Set from awaiting_approval on.
+	PlannedLegacyChanges *[]OnboardingPlannedChange `json:"plannedLegacyChanges,omitempty"`
+	Pr                   *OnboardingPR              `json:"pr,omitempty"`
+
+	// Repo Example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy
+	Repo   string           `json:"repo"`
+	Report OnboardingReport `json:"report"`
+
+	// RunId The cutover's migration run, from cutting_over on.
+	RunId *string `json:"runId,omitempty"`
+
+	// ServiceUrl Example: https://moimroom-legacy.hopcharlie.dev
+	ServiceUrl string `json:"serviceUrl"`
+
+	// State Where an onboarding is (ADR 0042, "흐름과 상태"). `failed` keeps the
+	// state it failed in in `failedState`.
+	State OnboardingState `json:"state"`
+
+	// TargetEnv The environment it moves to; empty until discovery chose it.
+	//
+	// Example: eks
+	TargetEnv string    `json:"targetEnv"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// OnboardingApproveRequest defines model for OnboardingApproveRequest.
+type OnboardingApproveRequest struct {
+	// HeadSha The PR head commit the operator reviewed (`pr.headSha`).
+	HeadSha string `json:"headSha"`
+}
+
+// OnboardingCheck The test deployment of the PR branch.
+type OnboardingCheck struct {
+	// App The temporary app, named after the onboarding id and deleted when the test ends.
+	//
+	// Example: onb-3f9a1c2b7d4e
+	App string `json:"app"`
+
+	// Attempts Test deployments so far, at most 2.
+	Attempts     int                   `json:"attempts"`
+	DeploymentId *string               `json:"deploymentId,omitempty"`
+	Message      *string               `json:"message,omitempty"`
+	Result       OnboardingCheckResult `json:"result"`
+
+	// StartSeconds From the Deployment's creation until it was Ready.
+	StartSeconds *float32 `json:"startSeconds,omitempty"`
+}
+
+// OnboardingCheckResult defines model for OnboardingCheck.Result.
+type OnboardingCheckResult string
+
+// OnboardingDNSRecord delete_dns_record: the individual record to delete, so the wildcard sends the name to the gateway.
+type OnboardingDNSRecord struct {
+	// Name Example: moimroom-legacy.hopcharlie.dev
+	Name string `json:"name"`
+
+	// Type Example: A
+	Type string `json:"type"`
+
+	// Value Example: 203.0.113.10
+	Value string `json:"value"`
+}
+
+// OnboardingDrift What runs differs from the default branch's head. Shown first; it does not block.
+type OnboardingDrift struct {
+	Head string `json:"head"`
+
+	// LastDeployCommit The commit of the newest successful deploy workflow run.
+	LastDeployCommit *string `json:"lastDeployCommit,omitempty"`
+
+	// RunningRevision The org.opencontainers.image.revision label of the running image.
+	RunningRevision *string `json:"runningRevision,omitempty"`
+}
+
+// OnboardingEvent One step of an onboarding.
+// - state: it entered `state`; `message` may say more.
+// - step: something it did or found in `state`.
+// - log: one line of output (hopai, the test deployment, an SSM command) in `message`.
+// - human: it waits for a person (`humanActions`).
+// - error: a step failed; `message` is why.
+type OnboardingEvent struct {
+	Data         *map[string]interface{} `json:"data,omitempty"`
+	Kind         OnboardingEventKind     `json:"kind"`
+	Message      *string                 `json:"message,omitempty"`
+	OnboardingId string                  `json:"onboardingId"`
+	Seq          int64                   `json:"seq"`
+
+	// State Where an onboarding is (ADR 0042, "흐름과 상태"). `failed` keeps the
+	// state it failed in in `failedState`.
+	State OnboardingState `json:"state"`
+	Time  time.Time       `json:"time"`
+}
+
+// OnboardingEventKind defines model for OnboardingEvent.Kind.
+type OnboardingEventKind string
+
+// OnboardingFactsSummary The parts of the discovery's facts the console shows. The full facts are pkg/onboard/facts.Facts and go only to hopai.
+type OnboardingFactsSummary struct {
+	// Bucket The source bucket of the app's files.
+	Bucket *string                      `json:"bucket,omitempty"`
+	Cloud  *OnboardingFactsSummaryCloud `json:"cloud,omitempty"`
+
+	// ComposeProject Example: moimroom
+	ComposeProject *string `json:"composeProject,omitempty"`
+
+	// Containers compose services: container names
+	Containers *[]string `json:"containers,omitempty"`
+
+	// DbDatabase Example: moimroom
+	DbDatabase *string `json:"dbDatabase,omitempty"`
+
+	// DbImage Example: postgres:17.11-alpine
+	DbImage *string                       `json:"dbImage,omitempty"`
+	DbLibc  *OnboardingFactsSummaryDbLibc `json:"dbLibc,omitempty"`
+
+	// DbOwner Example: moimroom
+	DbOwner *string `json:"dbOwner,omitempty"`
+
+	// DbServerVersionNum Example: 170011
+	DbServerVersionNum *int   `json:"dbServerVersionNum,omitempty"`
+	DbSizeBytes        *int64 `json:"dbSizeBytes,omitempty"`
+
+	// DefaultBranch Example: main
+	DefaultBranch *string `json:"defaultBranch,omitempty"`
+
+	// DeployWorkflows The workflows that deploy to the VM, which connecting disables.
+	DeployWorkflows *[]string `json:"deployWorkflows,omitempty"`
+
+	// Head The default branch's head commit.
+	Head *string `json:"head,omitempty"`
+
+	// Image The CNPG image chosen, pinned by digest.
+	Image *string `json:"image,omitempty"`
+
+	// InstanceId Example: i-0abc1234def567890
+	InstanceId  *string `json:"instanceId,omitempty"`
+	ObjectCount *int64  `json:"objectCount,omitempty"`
+
+	// PublicIp Example: 203.0.113.10
+	PublicIp *string `json:"publicIp,omitempty"`
+
+	// Region Example: ap-northeast-2
+	Region *string `json:"region,omitempty"`
+
+	// Reindex "schema.index" names rebuilt after the promotion
+	Reindex    *[]string `json:"reindex,omitempty"`
+	SsmManaged *bool     `json:"ssmManaged,omitempty"`
+
+	// StorageSize Example: 2Gi
+	StorageSize *string `json:"storageSize,omitempty"`
+}
+
+// OnboardingFactsSummaryCloud defines model for OnboardingFactsSummary.Cloud.
+type OnboardingFactsSummaryCloud string
+
+// OnboardingFactsSummaryDbLibc defines model for OnboardingFactsSummary.DbLibc.
+type OnboardingFactsSummaryDbLibc string
+
+// OnboardingFinding defines model for OnboardingFinding.
+type OnboardingFinding struct {
+	// Code pkg/onboard/facts BlockerCodes for blockers, WarningCodes for warnings.
+	Code    OnboardingFindingCode `json:"code"`
+	Message string                `json:"message"`
+
+	// Subject What it is about, such as a container, setting or index.
+	Subject *string `json:"subject,omitempty"`
+}
+
+// OnboardingFindingCode pkg/onboard/facts BlockerCodes for blockers, WarningCodes for warnings.
+type OnboardingFindingCode string
+
+// OnboardingHumanAction defines model for OnboardingHumanAction.
+type OnboardingHumanAction struct {
+	// Done The platform saw it done (the App can read the repository; the name resolves to the gateway).
+	Done bool                      `json:"done"`
+	Kind OnboardingHumanActionKind `json:"kind"`
+
+	// Record delete_dns_record: the individual record to delete, so the wildcard sends the name to the gateway.
+	Record *OnboardingDNSRecord `json:"record,omitempty"`
+
+	// Url install_github_app: the App's installation page
+	//
+	// Example: https://github.com/apps/hopcharlie-platform/installations/new
+	Url *string `json:"url,omitempty"`
+}
+
+// OnboardingHumanActionKind defines model for OnboardingHumanAction.Kind.
+type OnboardingHumanActionKind string
+
+// OnboardingLegacyChange One thing added to the source or done for it, in order:
+// workflow_disabled (`target` the workflow path), instance_tagged
+// (the instance id), postgres_role_created, replication_role_created
+// (`hopcharlie_replicator`), tailscale_volume_created,
+// tailscale_container_started, tailscale_device_joined (the tailnet
+// hostname), hba_line_added (the line), wal_keep_size_added (the
+// line), db_route_created (the management cluster's Service).
+type OnboardingLegacyChange struct {
+	At     time.Time                  `json:"at"`
+	Kind   OnboardingLegacyChangeKind `json:"kind"`
+	Target string                     `json:"target"`
+
+	// UndoneAt When DELETE undid it.
+	UndoneAt *time.Time `json:"undoneAt,omitempty"`
+}
+
+// OnboardingLegacyChangeKind defines model for OnboardingLegacyChangeKind.
+type OnboardingLegacyChangeKind string
+
+// OnboardingList defines model for OnboardingList.
+type OnboardingList struct {
+	Onboardings []Onboarding `json:"onboardings"`
+}
+
+// OnboardingPR defines model for OnboardingPR.
+type OnboardingPR struct {
+	HeadSha string `json:"headSha"`
+	Merged  *bool  `json:"merged,omitempty"`
+
+	// Number Example: 12
+	Number int `json:"number"`
+
+	// Url Example: https://github.com/2026-Softbank-Hackathon-Charlie/moimroom-legacy/pull/12
+	Url string `json:"url"`
+}
+
+// OnboardingPlannedChange One thing connecting will do, as the approval screen shows it:
+// `target` as in OnboardingLegacyChange and `detail` the exact value,
+// such as the hba line with the compose network's subnet
+// (`host replication hopcharlie_replicator 172.18.0.0/16 scram-sha-256`),
+// the Tailscale container and its image digest, or the roles made.
+type OnboardingPlannedChange struct {
+	Detail *string                    `json:"detail,omitempty"`
+	Kind   OnboardingLegacyChangeKind `json:"kind"`
+	Target string                     `json:"target"`
+}
+
+// OnboardingReport defines model for OnboardingReport.
+type OnboardingReport struct {
+	// Blockers Why it cannot go on (pkg/onboard/facts Block* codes). Any blocker stops it in failed.
+	Blockers []OnboardingFinding `json:"blockers"`
+
+	// Drift What runs differs from the default branch's head. Shown first; it does not block.
+	Drift *OnboardingDrift `json:"drift,omitempty"`
+
+	// HoldBudgetSeconds The gateway's MaxHold less 15 seconds.
+	//
+	// Example: 40
+	HoldBudgetSeconds *float32 `json:"holdBudgetSeconds,omitempty"`
+
+	// HoldSeconds The estimated write hold of the cutover.
+	HoldSeconds *float32 `json:"holdSeconds,omitempty"`
+
+	// Warnings What the operator should know before approving (pkg/onboard/facts Warn* codes).
+	Warnings []OnboardingFinding `json:"warnings"`
+}
+
+// OnboardingRequest defines model for OnboardingRequest.
+type OnboardingRequest struct {
+	// Repo owner/name of the app's repository, without .git.
+	//
+	// Example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy
+	Repo string `json:"repo"`
+
+	// ServiceUrl Where the app answers now, https://<label>.<app domain>. The label is the app's name.
+	//
+	// Example: https://moimroom-legacy.hopcharlie.dev
+	ServiceUrl string `json:"serviceUrl"`
+
+	// TargetEnv The environment to move it to. Default the VM's cloud's (eks for AWS, gke for GCP).
+	//
+	// Example: eks
+	TargetEnv *string `json:"targetEnv,omitempty"`
+}
+
+// OnboardingState Where an onboarding is (ADR 0042, "흐름과 상태"). `failed` keeps the
+// state it failed in in `failedState`.
+type OnboardingState string
+
 // PlanAttachment defines model for PlanAttachment.
 type PlanAttachment struct {
 	// Name Example: target.yaml
@@ -4698,6 +5327,9 @@ type EnvName = string
 // InstanceName Example: moimroom--dev
 type InstanceName = string
 
+// OnboardingId Example: onb-3f9a1c2b7d4e
+type OnboardingId = string
+
 // PlanRef defines model for PlanRef.
 type PlanRef = string
 
@@ -4724,6 +5356,9 @@ type Internal = Error
 
 // NotFound defines model for NotFound.
 type NotFound = Error
+
+// NotImplemented defines model for NotImplemented.
+type NotImplemented = Error
 
 // TooLarge defines model for TooLarge.
 type TooLarge = Error
@@ -4818,6 +5453,13 @@ type PreserveSourceJSONBody struct {
 
 	// RetainUntil A later deadline, in the future and no more than 30 days from now.
 	RetainUntil *time.Time `json:"retainUntil,omitempty"`
+}
+
+// StreamOnboardingEventsParams defines parameters for StreamOnboardingEvents.
+type StreamOnboardingEventsParams struct {
+	// After Replay events with seq greater than this. Same as Last-Event-ID.
+	After       *int64  `form:"after,omitempty" json:"after,omitempty"`
+	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
 // GetSecurityParams defines parameters for GetSecurity.
@@ -4926,6 +5568,12 @@ type PreserveSourceJSONRequestBody PreserveSourceJSONBody
 
 // RollbackMigrationJSONRequestBody defines body for RollbackMigration for application/json ContentType.
 type RollbackMigrationJSONRequestBody = RollbackRequest
+
+// StartOnboardingJSONRequestBody defines body for StartOnboarding for application/json ContentType.
+type StartOnboardingJSONRequestBody = OnboardingRequest
+
+// ApproveOnboardingJSONRequestBody defines body for ApproveOnboarding for application/json ContentType.
+type ApproveOnboardingJSONRequestBody = OnboardingApproveRequest
 
 // SubmitPlanJSONRequestBody defines body for SubmitPlan for application/json ContentType.
 type SubmitPlanJSONRequestBody = EnginePlan

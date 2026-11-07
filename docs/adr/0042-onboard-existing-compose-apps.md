@@ -155,7 +155,7 @@ DB에서 읽는 것과 판정은 다음과 같다.
 - PR은 플랫폼이 App 토큰으로 연다. PR 본문에는 리포트 요약을 넣는다. hopai에는 PR 권한을 주지 않는다.
 - PR은 원본 배포에 영향을 주지 않는 새 파일만 더한다(`platform.yaml`, `hopcharlie.Dockerfile` 등). compose 파일, compose가 쓰는 Dockerfile, `.github/` 아래, 그 밖의 기존 파일은 고치지 않는다. 앱 코드를 고쳐야만 계약을 맞출 수 있으면 PR을 만들지 않고 차단 사유로 남긴다.
 - `platform.yaml`은 compose에서 옮긴다. 공개 서비스와 포트, 헬스 체크, `postgres`와 `s3` 리소스, 비밀값 이름(`secrets`), 일반 값(`env`), 메모리(ADR 0024)를 쓴다. DB와 저장소 연결 값은 플랫폼 이름(`DATABASE_URL`, `PG*`, `S3_*`)을 쓰고, 앱이 다른 이름을 읽으면 `env`에서 `$(...)`로 넘긴다.
-- 시험은 PR 브랜치를 임시 앱 `<app>-onb-<짧은 id>`로 대상 환경 하나에 등록해서 배포한다. 이 앱은 DB 짝 행을 만들지 않고(독립 primary), 게이트웨이에 등록하지 않으며(배포 옵션 `gateway: false`), 비밀값에는 시험용 값을 넣는다. healthy는 Argo의 sync와 health로 본다. Deployment를 만든 때부터 Ready가 될 때까지의 시간을 앱 시작 시간으로 잰다. 끝나면 앱을 지운다. 실패하면 배포 로그를 hopai에 넘겨 다시 고치게 하고, 두 번 실패하면 `failed`로 멈춘다.
+- 시험은 PR 브랜치를 임시 앱(이름은 온보딩 id `onb-<hex 12자>`, 아래 "추가" 절)으로 대상 환경 하나에 등록해서 배포한다. 이 앱은 DB 짝 행을 만들지 않고(독립 primary), 게이트웨이에 등록하지 않으며(배포 옵션 `gateway: false`), 비밀값에는 시험용 값을 넣는다. healthy는 Argo의 sync와 health로 본다. Deployment를 만든 때부터 Ready가 될 때까지의 시간을 앱 시작 시간으로 잰다. 끝나면 앱을 지운다. 실패하면 배포 로그를 hopai에 넘겨 다시 고치게 하고, 두 번 실패하면 `failed`로 멈춘다.
 
 ### 3. 승인과 원본 연결 (`awaiting_approval`, `connecting`)
 
@@ -319,3 +319,37 @@ VM이 SSM 관리 대상(SSM agent와 인스턴스 프로필)이어야 한다는 
 - 원본 배포는 `connecting`부터 정리까지 멈춘다. 그동안 원본 레포에 들어온 변경은 대상 앱의 배포로만 나간다.
 - REINDEX와 앱 시작 시간 추정이 틀리면 보류가 `MaxHold`를 넘어 일부 쓰기가 503을 받는다. 데이터는 잃지 않는다.
 - fence 뒤에 새로 연결한 세션이 스스로 `SET default_transaction_read_only = off`를 하면 원본에 쓸 수 있다. 앱이 이렇게 하지 않는다고 본다.
+
+## 추가: 계약 산출물 (2026-11-07)
+
+다른 작업(플랫폼 구현, infra 차트, migration-engine, hopai, 콘솔, CLI)이 함께 기준으로 삼는 계약을 먼저 머지한다. 이 커밋은 런타임 동작을 바꾸지 않는다. API는 `PLATFORM_ONBOARDING=1`일 때만 경로가 생기고 모두 501 `not_implemented`로 답한다.
+
+| 계약 | 파일 | 내용 |
+| --- | --- | --- |
+| API | `api/openapi.yaml`, `pkg/apiv1` | `/v1/onboardings` 아래 9개 경로(`startOnboarding`, `listOnboardings`, `getOnboarding`, `deleteOnboarding`, `streamOnboardingEvents`, `approveOnboarding`, `cutOverOnboarding`, `decommissionOnboarding`, `resumeOnboarding`). 스키마 `Onboarding`, `OnboardingState`(위 표의 상태와 `failed`), `OnboardingHumanAction`, `OnboardingFactsSummary`, `OnboardingReport`, `OnboardingFinding`(code는 Facts 코드의 enum), `OnboardingPR`, `OnboardingCheck`, `OnboardingPlannedChange`(승인 화면의 원본에 더할 목록), `OnboardingLegacyChange`, `OnboardingEvent`. 오류 코드 `onboarding_not_found`, `onboarding_exists`, `onboarding_state_conflict`, `onboarding_deleting`, `pr_head_mismatch`, `not_implemented` |
+| Facts | `pkg/onboard/facts` | 조사 결과의 Go 타입. ai-sandbox가 이미 platform 모듈을 import하므로 JSON Schema 대신 `pkg/` 아래 표준 라이브러리만 쓰는 패키지로 둔다. 차단 사유 `BlockerCodes`, 경고 `WarningCodes`, 보류 예산 `HoldBudgetSeconds = 40`. 비밀값은 없다. 환경 변수는 `{name, secret, excluded}`이고, `postgresql.auto.conf` 설정은 이름만 둔다. 저장소 주소는 `Endpoint`로 `scheme://host[:port]`만 남긴다. 값을 담을 수 있는 이름의 문자열 필드를 새로 더하면 테스트가 실패한다 |
+| 이름과 hopai 입력 | `internal/onboard` | 온보딩 id `onb-<소문자 hex 12자>`. 임시 앱 이름은 이 id이고, 전환 Plan id는 `<id>-<시도 번호>`다. `legacy`, `hopcharlie_replicator`, `LEGACY_PGPASSWORD`, 브랜치 `hopcharlie/onboard`, 태그 `hopcharlie-onboarding`, 라벨 `hopcharlie.dev/onboarding-cold`, `db-legacy-<app>`, `hop-db-legacy-<app>`, `<cluster>-to-legacy`. hopai Job 입력과 엔진 Plan 모양을 패키지 주석에 적는다 |
+| store | `internal/store/migrations/0016_onboardings.sql`, `internal/store/onboarding.go` | 테이블 `onboardings`(상태, `revision`, `doc`은 `apiv1.Onboarding` JSON, `facts`, 암호문 `secrets_*`, `superuser_password_*`, `replication_password_*`)와 `onboarding_events`. 앱마다 done이 아닌 온보딩은 하나다. `app_databases`에 `source_kind`(`peer` 기본, `external`), `image`, `database`, `owner`, `storage_size`, `external_host`, `replication_password_nonce`, `replication_password_ciphertext`, `reindex text[]`를 더한다. 암호문의 additional data는 `("onboardings", id, field, "")`이고 field는 `secrets`, `superuser.password`, `replication.password`다. `app_databases`의 복제 비밀번호는 `("app_databases", app, "replication.password", "")`다(`internal/secrets` 상수) |
+| gitops 값 | `internal/deploy/gitops.go` | `values.postgres {image, database, owner, storageSize}`, `values.dbTopology.external {name, host, user, passwordSecret, sslmode}`, `values.onboardingCold`(서비스 replicas 0과 cold 라벨), `values.sealedSecrets.pgLegacy`(SealedSecret `<cluster>-legacy`). 정확한 YAML 모양과 차트가 그릴 것은 `PostgresValues` 주석에 있다. `Render`는 구현 전까지 이 값들을 거부하므로 기존 앱의 파일은 바이트 단위로 그대로다 |
+| 게이트웨이 | `internal/gateway/apps.go` | `AppSpec.Dial`, `AppInfo.Dial`(`dial`, 백엔드 이름에서 `host:port`). 구현 전까지 비어 있지 않은 `dial`은 400 `dial_not_supported`다. 게이트웨이 API는 OpenAPI 밖이라 `pkg/apiv1`에는 없다 |
+| 엔진 Plan | `internal/onboard` 주석 | `source {kind: external, name: legacy, env: legacy, dsn}`(namespace, cluster, kubeconfig, context 없음), `target.reindex`, `target.app {mode: cold, kind: Deployment, name, replicas}`, `gateway.sourceBackend: legacy`, `verify.fenceGate: true`, decommission 없음. migration-engine `feat/external-source`의 `pkg/plan` 이름과 같다 |
+
+### 계약을 정하면서 정한 것
+
+- 전환 Plan은 `POST /v1/plans`를 거치지 않는다. 온보딩 job이 plan 서비스의 예약(`plans.Reserve`)을 온보딩 전용 정책으로 직접 부른다. 그래서 API의 `EnginePlanEndpoint`(namespace와 cluster가 필수이고 모르는 필드를 거부한다)는 바꾸지 않는다. 예약한 Plan은 다른 Plan처럼 `GET /v1/plans`에 보이고, 원본의 namespace와 cluster는 비어 있다. 온보딩 정책은 서버 정책에 다음을 더한다. `target.app`(cold)과 `source.kind: external`을 받는다. `LEGACY_PGPASSWORD`를 `db-legacy-<app>.<경로 namespace>.svc.cluster.local:5432` 한 호스트에만 묶인 비밀번호 변수로 허용하고, 그 호스트를 앱의 DB 호스트에 더한다. 온보딩 행의 원본 버킷을 등록된 버킷으로 본다. 다른 브랜치(`feat/stateless-migration`)가 `kind: none`을 더하면 Plan의 `kind`는 `cnpg`, `external`, `none`이 된다.
+- 배포 renderer는 `File.Postgres`, `DBTopology.External`, `OnboardingCold`를 그 배포가 아니라 `app_databases`(`source_kind = 'external'`)와 앱의 온보딩 상태로 배포마다 정한다. 그래서 `syncing` 중에 들어온 push도 cold로 그린다.
+- 상태 바꾸기는 `onboardings.revision`으로 조건부로 쓴다. 읽은 revision이 아니면 `ErrConflict`다. 열(id, app, repo, state)이 기준이고, store가 쓸 때마다 doc의 같은 필드를 열 값으로 덮는다. 목록은 facts와 암호문 없이 요약만 돌려준다. 이벤트는 온보딩마다 최근 2000개만 남기고, 같은 온보딩의 이벤트는 행 잠금(FOR UPDATE)으로 seq 순서대로 커밋된다.
+- hopai Job의 입력은 환경 변수가 아니라 파일이다. 플랫폼이 Job 옆에 ConfigMap을 만들어 `/onboarding`에 붙이고, `FACTS_FILE=/onboarding/facts.json`, 재시도 때 `CHECK_LOG_FILE=/onboarding/check.log`(배포 로그의 마지막 32KiB)를 준다. 환경 변수는 128KiB를 넘을 수 없기 때문이다. Facts에는 비밀값이 없으므로 ConfigMap으로 충분하다. 그 밖에 `KIND=onboard`, `ONBOARDING`, `REPO`, `BRANCH`를 준다.
+- 실패한 온보딩도 그 앱을 잡고 있다. 같은 앱을 다시 온보딩하려면 `resume`하거나 `DELETE`한다. done이 아닌 온보딩이 있는 앱 이름에는 `POST /v1/apps`, `DELETE /v1/apps/{name}`, 환경 더하기와 빼기, 그 앱 DB 짝의 Plan(`POST /v1/plans`, `POST /v1/plans/draft`, `POST /v1/migrations`)이 409 `onboarding_exists`다. 온보딩 자신의 전환 Plan만 예외다. `POST /v1/apps`는 임시 앱 이름인 `onb-`로 시작하는 이름도 거절한다. 이 검사는 구현 PR이 넣는다.
+- `DELETE`는 202로 바로 답하고 `deleting`을 true로 둔다. 되돌리기가 끝나면 행이 없어진다. 되돌리기가 실패하면 `failure`를 남기고 `deleting`은 true로 남으며, 그때는 `DELETE`만 받아 다시 시도한다. `deleting`이 true인 동안 `resume`과 `cutover`는 409 `onboarding_deleting`이다. `cutting_over`부터와 그 상태들에서 `failed`가 된 온보딩은 지울 수 없다.
+- 전환 run의 끝에 따라 상태가 바뀐다. 성공하면 `decommissioning`이다. 승격 전에 rollback이나 취소로 끝나 원본이 쓰기를 다시 받으면 `ready`로 돌아가고, 다음 전환은 다음 시도 번호의 Plan을 쓴다. 승격 뒤 halt로 멈추면 `cutting_over`에 남고 run의 resume(`POST /v1/migrations/{runId}/resume`)으로 이어 간다. run을 시작하기 전에 Plan 게이트가 거절하면 `failedState: cutting_over`인 `failed`가 되고, `resume`은 `ready`로 돌아간다.
+- cold는 앱의 모든 서비스를 0으로 둔다. 엔진은 공개 서비스만 띄우고, 다른 서비스는 run이 성공한 뒤 플랫폼이 원래 replicas를 쓸 때 뜬다.
+- 승격 뒤 `legacy` 비밀번호 Secret은 `sealedSecrets.pgLegacy`가 있는 동안 `dbTopology.external`과 상관없이 그린다.
+- 조사는 다음도 차단 사유로 본다. `allow_alter_system`이 off(PostgreSQL 17부터, fence가 ALTER SYSTEM이다), `wal_level`이 minimal, `max_wal_senders`가 0, `password_encryption`이 md5(복제 계정의 해시가 scram hba 줄에 맞지 않는다), `<cluster>-to-legacy`가 63자를 넘는다. DB 컨테이너의 환경 변수(`POSTGRES_PASSWORD` 등)는 앱 비밀값으로 옮기지 않는다(`excluded: db_container`).
+
+### 구현과 infra에 넘기는 것
+
+- 온보딩한 앱은 기본 인스턴스 하나만 있고, 경로 이름과 네임스페이스는 앱 이름이다(ADR 0015). `internal/dbroute`에 환경 템플릿과 별도로 `legacy` 경로 템플릿이 필요하고, `Reconcile`은 이 경로를 환경이 없는 경로로 보고 지우면 안 된다.
+- `DELETE`가 hopai Job을 멈추려면 플랫폼에 그 네임스페이스의 Job 삭제 RBAC가 필요하다. 없으면 Job의 `activeDeadlineSeconds`가 지날 때까지 기다린다.
+- `cutting_over` 동안 그 앱의 배포를 멈춘다. ApplicationSet이 `RespectIgnoreDifferences`로 sync해도 배포가 gitops 파일을 다시 쓰면 replicas 0이 엔진이 늘린 값을 되돌릴 수 있기 때문이다.
+- migration-engine ADR 0017의 예시는 원본 비밀번호 변수로 `LEGACY_PGPASSWORD`를 쓰도록 엔진 PR에서 맞춘다.

@@ -67,9 +67,11 @@ func (s *Postgres) CreateAppWithDatabase(ctx context.Context, a App, d AppDataba
 	if err := insertApp(ctx, tx, a); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO app_databases (`+appDatabaseColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+	_, err = tx.Exec(ctx, `INSERT INTO app_databases (`+appDatabaseColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
 		d.App, d.PrimaryEnv, d.PeerEnv, d.KeyVersion, d.KeyCheck, d.PasswordNonce, d.PasswordCiphertext,
-		d.CACert, d.CAKeyNonce, d.CAKeyCiphertext, d.CreatedAt, d.PeerGeneration)
+		d.CACert, d.CAKeyNonce, d.CAKeyCiphertext, d.CreatedAt, d.PeerGeneration,
+		d.SourceKind, d.Image, d.Database, d.Owner, d.StorageSize, d.ExternalHost,
+		d.ReplicationPasswordNonce, d.ReplicationPasswordCiphertext, reindexArray(d.Reindex))
 	if isUniqueViolation(err) {
 		return fmt.Errorf("%w: app %s already has a database pair", ErrConflict, a.Name)
 	}
@@ -602,4 +604,13 @@ func (s *Postgres) RecordWebhookDelivery(ctx context.Context, id string, at time
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// reindexArray is l for a text[] NOT NULL column: pgx sends a nil slice
+// as NULL.
+func reindexArray(l []string) []string {
+	if l == nil {
+		return []string{}
+	}
+	return l
 }
