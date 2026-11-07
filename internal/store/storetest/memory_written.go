@@ -22,7 +22,55 @@ type memoryPlanTools struct {
 func (m *memory) AppendWrittenRecords(_ context.Context, stream string, recs []store.WrittenRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var added []store.WrittenRecord
+	recs = append([]store.WrittenRecord(nil), recs...)
+	for i := range recs {
+		if recs[i].Scope == "" {
+			recs[i].Scope = "unspecified"
+		}
+		if recs[i].Coverage == "" {
+			recs[i].Coverage = "reported_records"
+		}
+	}
+	seen := map[string]store.WrittenRecord{}
+	for _, old := range m.tools.written {
+		if len(recs) > 0 && old.Stream == stream && (old.Generation != recs[0].Generation || old.Scope != recs[0].Scope || old.Coverage != recs[0].Coverage) {
+			return fmt.Errorf("%w: written record stream belongs to another database generation", store.ErrConflict)
+		}
+		if old.Stream == stream && old.EventID != "" {
+			seen[old.EventID] = old
+		}
+	}
 	for _, r := range recs {
+		if r.Generation != recs[0].Generation || r.Scope != recs[0].Scope || r.Coverage != recs[0].Coverage {
+			return fmt.Errorf("%w: mixed database generations", store.ErrConflict)
+		}
+		if r.Scope == "" {
+			r.Scope = "unspecified"
+		}
+		if r.Coverage == "" {
+			r.Coverage = "reported_records"
+		}
+		duplicate := false
+		if r.EventID != "" {
+			if old, ok := seen[r.EventID]; ok {
+				if old.Table != r.Table || old.PK != r.PK || !old.At.Equal(pgTime(r.At)) || old.Scope != r.Scope || old.Coverage != r.Coverage {
+					return fmt.Errorf("%w: written record event identifier was reused", store.ErrConflict)
+				}
+				duplicate = true
+			}
+		}
+		if duplicate {
+			continue
+		}
+		r.Stream = stream
+		r.At, r.ReceivedAt = pgTime(r.At), pgTime(r.ReceivedAt)
+		added = append(added, r)
+		if r.EventID != "" {
+			seen[r.EventID] = r
+		}
+	}
+	for _, r := range added {
 		m.tools.writtenSeq++
 		r.Seq, r.Stream = m.tools.writtenSeq, stream
 		r.At, r.ReceivedAt = pgTime(r.At), pgTime(r.ReceivedAt)
@@ -49,12 +97,24 @@ func (m *memory) ListWrittenRecords(_ context.Context, stream string, afterSeq i
 func (m *memory) WrittenRecordStats(_ context.Context, stream string) (store.WrittenStats, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var st store.WrittenStats
+	st := store.WrittenStats{Scope: "unspecified", Coverage: "reported_records"}
 	for _, r := range m.tools.written {
 		if r.Stream != stream {
 			continue
 		}
 		st.Count++
+		st.LastSeq = max(st.LastSeq, r.Seq)
+		st.Generation = r.Generation
+		if st.Count == 1 {
+			st.Scope, st.Coverage = r.Scope, r.Coverage
+		} else {
+			if st.Scope != r.Scope {
+				st.Scope = "unspecified"
+			}
+			if st.Coverage != r.Coverage {
+				st.Coverage = "reported_records"
+			}
+		}
 		if st.LatestAt == nil || r.At.After(*st.LatestAt) {
 			at := r.At
 			st.LatestAt = &at

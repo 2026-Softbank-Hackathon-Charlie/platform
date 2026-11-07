@@ -9,6 +9,10 @@ import (
 // verify.writtenRecords to "stream:<name>", verification checks that every
 // record of the stream exists on the target database.
 type WrittenRecord struct {
+	EventID    string
+	Generation string
+	Scope      string
+	Coverage   string
 	// Seq is assigned by AppendWrittenRecords and increases within a stream.
 	Seq    int64
 	Stream string
@@ -21,8 +25,12 @@ type WrittenRecord struct {
 
 // WrittenStats summarizes one stream.
 type WrittenStats struct {
-	Count    int64
-	LatestAt *time.Time // the largest At; nil when the stream is empty
+	LastSeq    int64
+	Generation string
+	Scope      string
+	Coverage   string
+	Count      int64
+	LatestAt   *time.Time // the largest At; nil when the stream is empty
 }
 
 // PlanAttachment is a file a plan refers to as "attachment:<name>", such as

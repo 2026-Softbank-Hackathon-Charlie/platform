@@ -1177,6 +1177,150 @@ func (e StorageKeyUse) Valid() bool {
 	}
 }
 
+// Defines values for WriteVerificationCoverage.
+const (
+	WriteVerificationCoverageReportedRecords    WriteVerificationCoverage = "reported_records"
+	WriteVerificationCoverageReservationInserts WriteVerificationCoverage = "reservation_inserts"
+)
+
+// Valid indicates whether the value is a known member of the WriteVerificationCoverage enum.
+func (e WriteVerificationCoverage) Valid() bool {
+	switch e {
+	case WriteVerificationCoverageReportedRecords:
+		return true
+	case WriteVerificationCoverageReservationInserts:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WriteVerificationScope.
+const (
+	WriteVerificationScopeApplicationCommits WriteVerificationScope = "application_commits"
+	WriteVerificationScopeClientAcknowledged WriteVerificationScope = "client_acknowledged"
+	WriteVerificationScopeUnspecified        WriteVerificationScope = "unspecified"
+)
+
+// Valid indicates whether the value is a known member of the WriteVerificationScope enum.
+func (e WriteVerificationScope) Valid() bool {
+	switch e {
+	case WriteVerificationScopeApplicationCommits:
+		return true
+	case WriteVerificationScopeClientAcknowledged:
+		return true
+	case WriteVerificationScopeUnspecified:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WriteVerificationStatus.
+const (
+	WriteVerificationStatusFailed        WriteVerificationStatus = "failed"
+	WriteVerificationStatusMeasured      WriteVerificationStatus = "measured"
+	WriteVerificationStatusNoRecords     WriteVerificationStatus = "no_records"
+	WriteVerificationStatusNotConfigured WriteVerificationStatus = "not_configured"
+	WriteVerificationStatusNotReached    WriteVerificationStatus = "not_reached"
+)
+
+// Valid indicates whether the value is a known member of the WriteVerificationStatus enum.
+func (e WriteVerificationStatus) Valid() bool {
+	switch e {
+	case WriteVerificationStatusFailed:
+		return true
+	case WriteVerificationStatusMeasured:
+		return true
+	case WriteVerificationStatusNoRecords:
+		return true
+	case WriteVerificationStatusNotConfigured:
+		return true
+	case WriteVerificationStatusNotReached:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WrittenRecordStatsCoverage.
+const (
+	WrittenRecordStatsCoverageReportedRecords    WrittenRecordStatsCoverage = "reported_records"
+	WrittenRecordStatsCoverageReservationInserts WrittenRecordStatsCoverage = "reservation_inserts"
+)
+
+// Valid indicates whether the value is a known member of the WrittenRecordStatsCoverage enum.
+func (e WrittenRecordStatsCoverage) Valid() bool {
+	switch e {
+	case WrittenRecordStatsCoverageReportedRecords:
+		return true
+	case WrittenRecordStatsCoverageReservationInserts:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WrittenRecordStatsScope.
+const (
+	WrittenRecordStatsScopeApplicationCommits WrittenRecordStatsScope = "application_commits"
+	WrittenRecordStatsScopeClientAcknowledged WrittenRecordStatsScope = "client_acknowledged"
+	WrittenRecordStatsScopeUnspecified        WrittenRecordStatsScope = "unspecified"
+)
+
+// Valid indicates whether the value is a known member of the WrittenRecordStatsScope enum.
+func (e WrittenRecordStatsScope) Valid() bool {
+	switch e {
+	case WrittenRecordStatsScopeApplicationCommits:
+		return true
+	case WrittenRecordStatsScopeClientAcknowledged:
+		return true
+	case WrittenRecordStatsScopeUnspecified:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WrittenRecordsRequestCoverage.
+const (
+	WrittenRecordsRequestCoverageReportedRecords    WrittenRecordsRequestCoverage = "reported_records"
+	WrittenRecordsRequestCoverageReservationInserts WrittenRecordsRequestCoverage = "reservation_inserts"
+)
+
+// Valid indicates whether the value is a known member of the WrittenRecordsRequestCoverage enum.
+func (e WrittenRecordsRequestCoverage) Valid() bool {
+	switch e {
+	case WrittenRecordsRequestCoverageReportedRecords:
+		return true
+	case WrittenRecordsRequestCoverageReservationInserts:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WrittenRecordsRequestScope.
+const (
+	WrittenRecordsRequestScopeApplicationCommits WrittenRecordsRequestScope = "application_commits"
+	WrittenRecordsRequestScopeClientAcknowledged WrittenRecordsRequestScope = "client_acknowledged"
+	WrittenRecordsRequestScopeUnspecified        WrittenRecordsRequestScope = "unspecified"
+)
+
+// Valid indicates whether the value is a known member of the WrittenRecordsRequestScope enum.
+func (e WrittenRecordsRequestScope) Valid() bool {
+	switch e {
+	case WrittenRecordsRequestScopeApplicationCommits:
+		return true
+	case WrittenRecordsRequestScopeClientAcknowledged:
+		return true
+	case WrittenRecordsRequestScopeUnspecified:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StreamAgentEventsParamsFormat.
 const (
 	StreamAgentEventsParamsFormatJson StreamAgentEventsParamsFormat = "json"
@@ -3084,14 +3228,15 @@ type RunResult struct {
 	// MissingRows source rows missing on the target
 	MissingRows *int64 `json:"missingRows,omitempty"`
 
-	// MissingWrites k6-confirmed writes missing on the target
+	// MissingWrites Missing rows in a nonempty reported-write snapshot that was actually checked; absent when unmeasured.
 	MissingWrites *int64 `json:"missingWrites,omitempty"`
 
 	// Requests requests the gateway served during the run
 	Requests *int64 `json:"requests,omitempty"`
 
 	// Verified the verify report found no problems
-	Verified *bool `json:"verified,omitempty"`
+	Verified          *bool              `json:"verified,omitempty"`
+	WriteVerification *WriteVerification `json:"writeVerification,omitempty"`
 }
 
 // RunStatus running: steps are executing.
@@ -4195,10 +4340,42 @@ type WeightsRequest struct {
 	ReadWeights map[string]int `json:"readWeights"`
 }
 
-// WrittenRecord One write a load generator saw succeed, in the engine's written-records format.
+// WriteVerification defines model for WriteVerification.
+type WriteVerification struct {
+	Checked *int64 `json:"checked,omitempty"`
+
+	// CollectedRecords Input records frozen for this run, never the current live stream count.
+	CollectedRecords *int64                     `json:"collectedRecords,omitempty"`
+	Coverage         *WriteVerificationCoverage `json:"coverage,omitempty"`
+
+	// CutoffSeq Maximum observed sequence included in the verification input. Late reports are not included.
+	CutoffSeq *int64     `json:"cutoffSeq,omitempty"`
+	LatestAt  *time.Time `json:"latestAt,omitempty"`
+	Missing   *int64     `json:"missing,omitempty"`
+
+	// Reason Stable reason code; no raw provider errors.
+	Reason *string                 `json:"reason,omitempty"`
+	Scope  *WriteVerificationScope `json:"scope,omitempty"`
+	Status WriteVerificationStatus `json:"status"`
+	Stream *string                 `json:"stream,omitempty"`
+}
+
+// WriteVerificationCoverage defines model for WriteVerification.Coverage.
+type WriteVerificationCoverage string
+
+// WriteVerificationScope defines model for WriteVerification.Scope.
+type WriteVerificationScope string
+
+// WriteVerificationStatus defines model for WriteVerification.Status.
+type WriteVerificationStatus string
+
+// WrittenRecord One producer-reported table/PK receipt; scope identifies application commits or client acknowledgements.
 type WrittenRecord struct {
-	// At when the write succeeded; defaults to when the server received it
+	// At Producer event recording time; app outbox INSERT time is before commit completion. Defaults to server receipt time.
 	At *time.Time `json:"at,omitempty"`
+
+	// EventId Optional stable producer event identifier; retries of identical events are deduplicated within the stream.
+	EventId *string `json:"eventId,omitempty"`
 
 	// Pk the primary key as text; composite keys as "(a,b)"
 	//
@@ -4213,23 +4390,44 @@ type WrittenRecord struct {
 
 // WrittenRecordStats defines model for WrittenRecordStats.
 type WrittenRecordStats struct {
-	Count int64 `json:"count"`
+	Count      int64                       `json:"count"`
+	Coverage   *WrittenRecordStatsCoverage `json:"coverage,omitempty"`
+	Generation *string                     `json:"generation,omitempty"`
+	LastSeq    *int64                      `json:"lastSeq,omitempty"`
 
 	// LatestAt the newest record's time; absent when the stream is empty
-	LatestAt *time.Time `json:"latestAt,omitempty"`
-	Stream   string     `json:"stream"`
+	LatestAt *time.Time               `json:"latestAt,omitempty"`
+	Scope    *WrittenRecordStatsScope `json:"scope,omitempty"`
+	Stream   string                   `json:"stream"`
 }
+
+// WrittenRecordStatsCoverage defines model for WrittenRecordStats.Coverage.
+type WrittenRecordStatsCoverage string
+
+// WrittenRecordStatsScope defines model for WrittenRecordStats.Scope.
+type WrittenRecordStatsScope string
 
 // WrittenRecordsAccepted defines model for WrittenRecordsAccepted.
 type WrittenRecordsAccepted struct {
-	// Accepted records stored
+	// Accepted Input records accepted atomically; identical eventId retries count as accepted without increasing stored count.
 	Accepted int `json:"accepted"`
 }
 
 // WrittenRecordsRequest defines model for WrittenRecordsRequest.
 type WrittenRecordsRequest struct {
-	Records []WrittenRecord `json:"records"`
+	Coverage *WrittenRecordsRequestCoverage `json:"coverage,omitempty"`
+
+	// Generation Source database generation; required for application commit receipts.
+	Generation *string                     `json:"generation,omitempty"`
+	Records    []WrittenRecord             `json:"records"`
+	Scope      *WrittenRecordsRequestScope `json:"scope,omitempty"`
 }
+
+// WrittenRecordsRequestCoverage defines model for WrittenRecordsRequest.Coverage.
+type WrittenRecordsRequestCoverage string
+
+// WrittenRecordsRequestScope defines model for WrittenRecordsRequest.Scope.
+type WrittenRecordsRequestScope string
 
 // AppName defines model for AppName.
 type AppName = string

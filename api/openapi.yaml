@@ -1237,12 +1237,18 @@ paths:
       tags: [migrations]
       operationId: appendWrittenRecords
       description: |
-        Record writes that a load generator saw succeed. When a run's plan sets
-        `verify.writtenRecords: "stream:<name>"`, the server writes every record
-        of the stream to a file right before the verify step, and the engine
-        checks that each one exists on the target database. Table names are
-        stored in lower case (unquoted PostgreSQL identifiers); control
-        characters in `table` or `pk` are refused. Roles: agent, operator.
+        Record real table/PK write receipts with declared scope/coverage. Application
+        commits do not prove client response delivery. Before verify, the server
+        freezes the central stream count/maximum sequence and exports that cohort;
+        late reports are excluded and complete collection is not guaranteed.
+        Table names use unquoted PostgreSQL identifiers; control characters in
+        table/PK are refused. General roles are agent and operator. Dedicated
+        application stream tokens can only POST their exact stream with
+        application_commits/reservation_inserts, app.reservations, a positive
+        integer PK, matching reservation-<pk> eventId, timestamp and generation.
+        These tokens cannot read streams or access other APIs. Stable eventId
+        retries deduplicate identical payloads; changed payload or stream
+        generation/scope/coverage returns 409 written_record_conflict atomically.
       requestBody:
         required: true
         content:
@@ -1254,6 +1260,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WrittenRecordsAccepted" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -2740,14 +2747,30 @@ components:
       description: The numbers the console shows. Absent values were not measured (yet).
       type: object
       properties:
+        writeVerification: { $ref: "#/components/schemas/WriteVerification" }
         downtimeMillis: { type: integer, format: int64, description: writes held at the gateway }
         durationMillis: { type: integer, format: int64, description: start to end }
         requests: { type: integer, format: int64, description: requests the gateway served during the run }
         failedRequests: { type: integer, format: int64, description: 5xx and proxy errors during the run }
         missingRows: { type: integer, format: int64, description: source rows missing on the target }
-        missingWrites: { type: integer, format: int64, description: k6-confirmed writes missing on the target }
+        missingWrites: { type: integer, format: int64, description: Missing rows in a nonempty reported-write snapshot that was actually checked; absent when unmeasured. }
         missingFiles: { type: integer, format: int64, description: objects missing on the target }
         verified: { type: boolean, description: the verify report found no problems }
+
+    WriteVerification:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [not_configured, no_records, not_reached, measured, failed] }
+        stream: { type: string }
+        collectedRecords: { type: integer, format: int64, description: "Input records frozen for this run, never the current live stream count." }
+        latestAt: { type: string, format: date-time }
+        cutoffSeq: { type: integer, format: int64, description: Maximum observed sequence included in the verification input. Late reports are not included. }
+        checked: { type: integer, format: int64 }
+        missing: { type: integer, format: int64 }
+        scope: { type: string, enum: [application_commits, client_acknowledged, unspecified] }
+        coverage: { type: string, enum: [reservation_inserts, reported_records] }
+        reason: { type: string, description: Stable reason code; no raw provider errors. }
 
     CanaryResult:
       type: object
@@ -3906,20 +3929,24 @@ components:
     # ---------- plan tools: written records, attachments, apps, drafts, rollback ----------
 
     WrittenRecord:
-      description: One write a load generator saw succeed, in the engine's written-records format.
+      description: One producer-reported table/PK receipt; scope identifies application commits or client acknowledgements.
       type: object
       additionalProperties: false
       required: [table, pk]
       properties:
+        eventId: { type: string, maxLength: 100, description: Optional stable producer event identifier; retries of identical events are deduplicated within the stream. }
         table: { type: string, example: orders.orders, description: "schema.table or table" }
         pk: { type: string, maxLength: 200, example: "42", description: 'the primary key as text; composite keys as "(a,b)"' }
-        at: { type: string, format: date-time, description: when the write succeeded; defaults to when the server received it }
+        at: { type: string, format: date-time, description: "Producer event recording time; app outbox INSERT time is before commit completion. Defaults to server receipt time." }
 
     WrittenRecordsRequest:
       type: object
       additionalProperties: false
       required: [records]
       properties:
+        generation: { type: string, maxLength: 64, description: Source database generation; required for application commit receipts. }
+        scope: { type: string, enum: [application_commits, client_acknowledged, unspecified] }
+        coverage: { type: string, enum: [reservation_inserts, reported_records] }
         records:
           type: array
           minItems: 1
@@ -3930,12 +3957,16 @@ components:
       type: object
       required: [accepted]
       properties:
-        accepted: { type: integer, description: records stored }
+        accepted: { type: integer, description: Input records accepted atomically; identical eventId retries count as accepted without increasing stored count. }
 
     WrittenRecordStats:
       type: object
       required: [stream, count]
       properties:
+        generation: { type: string }
+        lastSeq: { type: integer, format: int64 }
+        scope: { type: string, enum: [application_commits, client_acknowledged, unspecified] }
+        coverage: { type: string, enum: [reservation_inserts, reported_records] }
         stream: { type: string }
         count: { type: integer, format: int64 }
         latestAt: { type: string, format: date-time, description: the newest record's time; absent when the stream is empty }

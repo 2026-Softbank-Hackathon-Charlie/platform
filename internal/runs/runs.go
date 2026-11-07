@@ -343,6 +343,8 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 	}
 	l.eng, l.id = eng, eng.RunID()
 	r.useWrittenStream(l)
+	doc.Result.WriteVerification = l.doc.Result.WriteVerification
+	doc.Result.MissingWrites = nil
 	doc.RunId = l.id
 	if doc.Result.Requests != nil {
 		l.prevReq = *doc.Result.Requests
@@ -1569,7 +1571,9 @@ type verifyReport struct {
 	OK          bool  `json:"ok"`
 	MissingRows int64 `json:"missingRows"`
 	Written     *struct {
-		Missing int64 `json:"missing"`
+		Missing int64    `json:"missing"`
+		Checked int64    `json:"checked"`
+		Errors  []string `json:"errors"`
 	} `json:"written"`
 	Files *struct {
 		Missing int64 `json:"missingOnTarget"`
@@ -1583,6 +1587,12 @@ func fillResult(res *apiv1.RunResult, st apiv1.EngineState, started, ended time.
 		res.DowntimeMillis = st.DowntimeMillis
 	}
 	rec, ok := st.Steps[engine.StepVerify]
+	if ok && res.WriteVerification != nil && res.WriteVerification.Status == apiv1.WriteVerificationStatusNotReached && rec.Status == apiv1.StepStatusFailed {
+		reason := "written_verification_incomplete"
+		res.WriteVerification.Status = apiv1.WriteVerificationStatusFailed
+		res.WriteVerification.Reason = &reason
+		res.MissingWrites = nil
+	}
 	if !ok || rec.Evidence == nil {
 		return
 	}
@@ -1601,7 +1611,28 @@ func fillResult(res *apiv1.RunResult, st apiv1.EngineState, started, ended time.
 	res.Verified = &rep.OK
 	res.MissingRows = &rep.MissingRows
 	if rep.Written != nil {
-		res.MissingWrites = &rep.Written.Missing
+		if res.WriteVerification == nil {
+			res.WriteVerification = &apiv1.WriteVerification{Status: apiv1.WriteVerificationStatusNotReached}
+		}
+		v := res.WriteVerification
+		v.Checked = &rep.Written.Checked
+		reason := "written_verification_incomplete"
+		v.Status = apiv1.WriteVerificationStatusFailed
+		res.MissingWrites = nil
+		complete := rep.Written.Checked > 0 && rep.Written.Missing >= 0 && rep.Written.Missing <= rep.Written.Checked && len(rep.Written.Errors) == 0
+		if v.CollectedRecords != nil && rep.Written.Checked != *v.CollectedRecords {
+			complete = false
+		}
+		if complete {
+			v.Status = apiv1.WriteVerificationStatusMeasured
+			v.Missing = &rep.Written.Missing
+			res.MissingWrites = &rep.Written.Missing
+			reason = "written_records_verified"
+		} else if rep.Written.Checked == 0 && len(rep.Written.Errors) == 0 {
+			v.Status = apiv1.WriteVerificationStatusNoRecords
+			reason = "no_records_collected"
+		}
+		v.Reason = &reason
 	}
 	if rep.Files != nil {
 		res.MissingFiles = &rep.Files.Missing
