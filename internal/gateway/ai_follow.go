@@ -73,6 +73,12 @@ func (c *Config) checkAIFollow() error {
 	if f == nil {
 		return nil
 	}
+	if c.AIQuality != nil {
+		// The canary splits AI requests between its fixed source and target
+		// and needs writeBackend to stay on the source; the follower would
+		// move it without effect and break the canary's restart check.
+		return errors.New("AI follow cannot be combined with the AI quality canary, which owns the AI route")
+	}
 	if !appName.MatchString(f.App) {
 		return fmt.Errorf("AI follow app %q must match %s", f.App, appName)
 	}
@@ -210,9 +216,11 @@ func (f *aiFollower) sync(ctx context.Context) {
 		f.fail(reason, err)
 		return
 	}
-	if st.WritesHeld {
+	if st.WritesHeld || f.rt.qualityEnabled() {
 		// A cutover is in progress; its route may still change. Record what
-		// was read, but switch only once the app is released.
+		// was read, but switch only once the app is released. A quality
+		// canary owns the AI route outright (rejected at startup; guarded
+		// here too), so it is treated the same way.
 		f.mu.Lock()
 		f.appBack, f.lastSync, f.lastError = st.WriteBackend, time.Now().UTC(), ""
 		f.mu.Unlock()

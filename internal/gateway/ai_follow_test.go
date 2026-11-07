@@ -626,3 +626,44 @@ func TestAIFollowReadsRealTrafficGateway(t *testing.T) {
 		t.Fatalf("unregistered app: route=%s follow=%+v", route, f)
 	}
 }
+
+// The quality canary (#147) owns the AI route: it splits requests between its
+// fixed source and target and requires writeBackend to stay on the source, so
+// the follower may never move writeBackend while it is configured.
+func TestAIFollowRejectedWithQualityCanary(t *testing.T) {
+	gu, _ := url.Parse("http://gcp")
+	lu, _ := url.Parse("http://laptop")
+	_, err := New(Config{Backends: []BackendConfig{{Name: "gcp", URL: gu}, {Name: "laptop", URL: lu}}, AdminToken: "admin", AIDemo: &AIDemoConfig{App: "app", Token: "ai"},
+		WriteTimeout: 12 * time.Second, AIFollow: followConfig("http://gateway:9901"), AIQuality: &AIQualityConfig{}})
+	if err == nil || !strings.Contains(err.Error(), "AI quality canary") {
+		t.Fatalf("follow combined with the quality canary: %v", err)
+	}
+}
+
+func TestAIFollowSkipsWhileCanaryOwnsRoute(t *testing.T) {
+	fg := newFollowGW(t, "gke", "http://gcp", "http://laptop", nil)
+	fg.sync()
+	// Defense in depth behind the startup check: a canary at any stage owns
+	// the route, like a write hold.
+	fg.g.cfg.AIQuality = &AIQualityConfig{}
+	fg.g.router.canary = &AICanaryState{Version: 3, TargetPercent: 25}
+	fg.ft.fail(http.StatusInternalServerError, "")
+	fg.sync() // leaves a lastError behind
+	fg.ft.set("onprem", false)
+	fg.sync()
+	route, f := fg.state(t)
+	if route != "gcp" || f.AppBackend != "onprem" || f.Target != "gcp" || f.LastError != "" || f.LastSync == nil {
+		t.Fatalf("follower moved a canary-owned route: route=%s follow=%+v", route, f)
+	}
+	if len(fg.logs.records("AI route follows app")) != 0 {
+		t.Fatal("switch logged while canary owns the route")
+	}
+	// Re-enabling following does not override the canary either.
+	requireAIStatus(t, aiCall(fg.admin.Client(), "POST", fg.admin.URL+"/v1/follow", "admin-secret", "", `{"enabled":true}`), 200)
+	if fg.route() != "gcp" {
+		t.Fatalf("follow enable moved a canary-owned route: %s", fg.route())
+	}
+	if m := fg.metrics(t); !strings.Contains(m, `charlie_gateway_ai_follow_errors_total{reason="route"} 0`) {
+		t.Fatalf("canary skip counted as an error:\n%s", m)
+	}
+}

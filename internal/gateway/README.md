@@ -135,3 +135,6 @@ lease는 한 실행이 생성한 고유한 1–128자 영숫자·`._:-` 식별�
 - 수동 `POST /v1/route`는 따라가기를 멈춘다. `POST /v1/follow {"enabled":true}`(또는
   `/apps/{app}/v1/follow`)로 다시 켜면 바로 한 번 맞추고, `false`로 끌 수 있다. 멈춤은 저장하지 않으므로 재시작하면 다시 따라간다.
 - `GET /v1/state`에 `follow: {enabled, app, appBackend, target, fallback, lastSync, lastError}`가 붙는다.
+- 품질 카나리(`-ai-quality-policy`)와 함께 켤 수 없다(시작 오류). 카나리는 AI 경로를 정해진 source/target 비율로
+  나누고 `writeBackend`가 source에 머물러야 재시작할 수 있으므로, 경로를 카나리가 맡는다. 코드에서도 카나리가
+  설정돼 있으면 held와 같이 상태만 갱신하고 바꾸지 않는다.
