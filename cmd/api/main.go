@@ -362,8 +362,8 @@ func main() {
 	}
 
 	// Optional: record a parity report (target RBAC for the app's service
-	// account, Prometheus scrape health) on every new run's start. Audit mode
-	// only: the report goes to the audit log and never stops a run.
+	// account, Prometheus scrape health) on every new run's start. The overall
+	// report is audit-only; an explicit app signal requirement may enforce.
 	var configuredParity *paritygate.Gate
 	if path := os.Getenv("PLATFORM_PARITY_FILE"); path != "" {
 		g, err := parityGate(path, envSvc)
