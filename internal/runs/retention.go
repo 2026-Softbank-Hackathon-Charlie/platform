@@ -72,7 +72,7 @@ func (r *Runner) retirementDatabaseGroupBlock(ctx context.Context, p *plan.Plan)
 	if p == nil {
 		return "database_group_identity_unavailable"
 	}
-	if allowSourceRewire(p) {
+	if p.AllowSourceRewire {
 		return "three_environment_group_requires_reconciliation"
 	}
 	a, err := r.cfg.Store.GetApp(ctx, p.Source.Namespace)

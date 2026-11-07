@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/enginecompat"
 )
 
 // Policy is the server-side trust boundary for submitted plans.
@@ -347,7 +348,7 @@ func (p Policy) checkParsed(pl *plan.Plan, hosts dbHosts) error {
 	if p.onboarding != nil {
 		return p.onboarding.check(pl, hosts)
 	}
-	if pl.Source.External() {
+	if enginecompat.SourceExternal(pl) {
 		return fmt.Errorf("source.kind external is only an onboarding's own plan (ADR 0042)")
 	}
 	if pl.Target.App != nil {

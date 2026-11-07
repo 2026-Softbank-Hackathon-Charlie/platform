@@ -129,7 +129,7 @@ func primary(obj *unstructured.Unstructured) string {
 // Check reads live topology, gateway, SQL and backup/recovery evidence. Missing
 // or stale evidence is a block, never inferred from a succeeded run alone.
 func (k *Kube) Check(ctx context.Context, p *plan.Plan, j Job, ended time.Time) error {
-	if p == nil || allowSourceRewire(p) {
+	if p == nil || p.AllowSourceRewire {
 		return errors.New("source retention requires database group reconciliation")
 	}
 	src, err := k.client(p.Source)
@@ -259,7 +259,7 @@ func (k *Kube) recoveryProof(ctx context.Context, dst dynamic.Interface, p *plan
 }
 
 func (k *Kube) Remove(ctx context.Context, p *plan.Plan, j Job) (bool, error) {
-	if p == nil || allowSourceRewire(p) {
+	if p == nil || p.AllowSourceRewire {
 		return false, errors.New("source retention requires database group reconciliation")
 	}
 	if j.Status != "deleting" {

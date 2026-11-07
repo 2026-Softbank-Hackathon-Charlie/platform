@@ -278,6 +278,7 @@ func TestThreeMemberDatabaseSourceIsRetainedWithoutPlanOptIn(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			r, b, p, _ := retentionFixture(t)
 			registerRetentionDatabase(t, r, p, []string{"a", "b", "c"})
+			p.AllowSourceRewire = false
 			j := latestJob(t, r)
 			j.Status = status
 			if err := r.saveRetirement(t.Context(), *j); err != nil {

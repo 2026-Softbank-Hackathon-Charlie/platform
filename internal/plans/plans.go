@@ -126,7 +126,7 @@ func (s *Service) parseWith(ctx context.Context, policy Policy, raw []byte) (*pl
 	if err := policy.checkParsed(p, hosts); err != nil {
 		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	if allowSourceRewire(p) {
+	if p.AllowSourceRewire {
 		guard, ok := s.appDBs.(interface {
 			SourceRewireAllowed(context.Context, *plan.Plan) (bool, error)
 		})

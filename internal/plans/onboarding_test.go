@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/enginecompat"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest"
 )
@@ -43,6 +44,9 @@ func onbPolicy() Policy {
 var onbScope = OnboardingScope{App: "shop", SourceHost: onbHost, SourceBucket: "legacy:moim-files", SmokeURL: "https://shop.eks.example"}
 
 func TestReserveOnboarding(t *testing.T) {
+	if !enginecompat.External {
+		t.Skip("the pinned engine has no external source (internal/enginecompat)")
+	}
 	t.Setenv(LegacyPasswordEnv, "fence-pw")
 	t.Setenv("DST_PGPASSWORD", "app-pw")
 	st := storetest.NewMemory()
@@ -51,7 +55,7 @@ func TestReserveOnboarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Plan.Source.External() || !res.Plan.Target.App.Cold() || !strings.Contains(res.Plan.Source.DSN, "fence-pw") {
+	if !enginecompat.SourceExternal(res.Plan) || !res.Plan.Target.App.Cold() || !strings.Contains(res.Plan.Source.DSN, "fence-pw") {
 		t.Fatalf("plan %+v", res.Plan.Source)
 	}
 	if res.Version.Outcome != OutcomeExternalSource || res.Capacity.Outcome != OutcomeExternalSource || res.Parity.Outcome != OutcomeExternalSource {
@@ -128,7 +132,7 @@ func TestServerPolicyRefusesOnboardingPlan(t *testing.T) {
 	p.Buckets = append(p.Buckets, "legacy:moim-files")
 	s = New(p, storetest.NewMemory())
 	_, err := s.Submit(context.Background(), onbPlan(nil), "op")
-	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "external") {
+	if !errors.Is(err, ErrInvalid) || (enginecompat.External && !strings.Contains(err.Error(), "external")) {
 		t.Fatalf("submit external: %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package apps
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -136,7 +137,7 @@ func (r *Registry) app(ctx context.Context, name string) (App, store.AppDatabase
 	// An s3 resource is the instance's bucket, <bucketPrefix><instance>
 	// (ADR 0016), named through the environment's remote (ADR 0032).
 	hasBucket := slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypeS3 })
-	out := App{Name: name, Namespace: name, Database: Database{Name: "app", User: "app"}, Environments: map[string]Environment{}}
+	out := App{Name: name, Namespace: name, Database: Database{Name: cmp.Or(d.Database, "app"), User: cmp.Or(d.Owner, "app")}, Environments: map[string]Environment{}}
 	out.filesRequired = hasBucket && len(r.BucketPrefixes) > 0
 	for _, e := range r.endpoints(d, a.Environments) {
 		env := Environment{CnpgCluster: name + "-" + spec.Resources[i].Name, DBHost: e.host, DBPort: 5432, PasswordEnv: e.passwordEnv}
