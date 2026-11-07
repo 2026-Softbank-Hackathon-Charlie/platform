@@ -49,6 +49,9 @@ catalog:
 # binary objects (including normal photos without OCR support) fail closed unless
 # an operator has reviewed their EXACT SHA-256 and classification. A source bucket
 # may have reviewedFiles entries with fields sha256 and label (kr-only/apac/global).
+# Instead, binaryLabel (kr-only/apac/global) on a source bucket classifies every
+# object the scanner cannot read with that label (docs/adr/0048-bucket-binary-label.md).
+# Text objects are still scanned; the label is checked against the target country.
 # Do not add placeholder hashes or label real photos without an actual review.
 # Hash approval never removes declared labels or supported-text PII findings.
 # Guarded plans must omit files.flags; large objects/archives also deny at limits.

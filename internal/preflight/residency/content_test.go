@@ -77,6 +77,16 @@ func TestReviewedFilesValidationAndPolicyDigest(t *testing.T) {
 		t.Fatal("conflicting duplicate review accepted")
 	}
 	c.Buckets[0].ReviewedFiles = nil
+	base := mustEvaluator(t, c).PolicyDigest()
+	c.Buckets[0].BinaryLabel = "global"
+	if b := mustEvaluator(t, c).PolicyDigest(); base == b {
+		t.Fatal("binary label not bound to policy digest")
+	}
+	c.Buckets[0].BinaryLabel = "unknown"
+	if _, err := c.normalized(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatal("unsupported binary label accepted")
+	}
+	c.Buckets[0].BinaryLabel = ""
 	for _, env := range []string{"tokyo", "missing"} {
 		c.InspectionEnvironment = env
 		if _, err := c.normalized(); !errors.Is(err, ErrInvalidConfig) {

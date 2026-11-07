@@ -94,7 +94,10 @@ func safePath(s string) bool {
 }
 
 type scanner struct {
-	reviews  map[string]string
+	reviews map[string]string
+	// binary is the operator's label for objects the scanner cannot read
+	// (images, other binary formats). Empty denies them, as before.
+	binary   string
 	expanded int64
 	members  int
 	findings map[string]int
@@ -183,7 +186,10 @@ func (s *scanner) inspectDigest(ctx context.Context, data []byte, depth int, dig
 	} else if !knownBinary(data) && plainText(data) {
 		labels = append(labels, s.textLabels(data)...)
 	} else if review == "" {
-		return nil, ErrUnsupported
+		if s.binary == "" {
+			return nil, ErrUnsupported
+		}
+		labels = append(labels, s.binary)
 	}
 	slices.Sort(labels)
 	return slices.Compact(labels), nil
@@ -224,7 +230,7 @@ func plainText(b []byte) bool {
 	return true
 }
 
-func scan(ctx context.Context, dir string, objects []object, reviews []Review) (Report, error) {
+func scan(ctx context.Context, dir string, objects []object, reviews []Review, binary string) (Report, error) {
 	return scanEach(ctx, dir, func(visit func(object) error) error {
 		for _, o := range objects {
 			if err := visit(o); err != nil {
@@ -232,11 +238,14 @@ func scan(ctx context.Context, dir string, objects []object, reviews []Review) (
 			}
 		}
 		return nil
-	}, reviews)
+	}, reviews, binary)
 }
 
-func scanEach(ctx context.Context, dir string, walk objectWalk, reviews []Review, outputs ...io.Writer) (Report, error) {
-	s := scanner{reviews: map[string]string{}, findings: map[string]int{}}
+func scanEach(ctx context.Context, dir string, walk objectWalk, reviews []Review, binary string, outputs ...io.Writer) (Report, error) {
+	if binary != "" && !preflight.ValidContentReview(Review{SHA256: strings.Repeat("0", 64), Label: binary}) {
+		return Report{}, ErrOptions
+	}
+	s := scanner{reviews: map[string]string{}, binary: binary, findings: map[string]int{}}
 	for _, r := range reviews {
 		if !ValidReview(r) || s.reviews[r.SHA256] != "" {
 			return Report{}, ErrOptions

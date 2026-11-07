@@ -16,7 +16,7 @@ func TestFileGuardWiredOnStartAndResumeButRollbackExempt(t *testing.T) {
 	for _, name := range []string{"start", "resume", "resume-halted", "rollback", "resume-rollback"} {
 		t.Run(name, func(t *testing.T) {
 			p := &plan.Plan{ID: "content", Source: plan.Endpoint{Env: "a", Namespace: "n", Cluster: "a"}, Target: plan.Endpoint{Env: "b", Namespace: "n", Cluster: "b"}, Files: &plan.FilesSpec{Source: "src:bucket", Target: "dst:bucket"}}
-			guard := fileguard.New(p.Files.Source, p.Files.Target, nil, nil, nil)
+			guard := fileguard.New(p.Files.Source, p.Files.Target, nil, "", nil, nil)
 			rollback := name == "rollback" || name == "resume-rollback"
 			id := ""
 			if name == "resume" || name == "resume-halted" || name == "resume-rollback" {

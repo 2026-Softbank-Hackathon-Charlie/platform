@@ -16,7 +16,7 @@ import (
 // fileguard.Inspector, whose byte/ZIP/snapshot tests are in internal/fileguard.
 type cleanInspector struct{}
 
-func (cleanInspector) Inspect(context.Context, string, []fileguard.Review) (fileguard.Report, error) {
+func (cleanInspector) Inspect(context.Context, string, []fileguard.Review, string) (fileguard.Report, error) {
 	return fileguard.Report{Rules: fileguard.RulesVersion, Objects: 1, Bytes: 5, ManifestDigest: strings.Repeat("a", 64), Labels: []string{"global"}}, nil
 }
 
@@ -27,7 +27,7 @@ type controlledInspector struct {
 	reviews []fileguard.Review
 }
 
-func (i *controlledInspector) Inspect(_ context.Context, _ string, reviews []fileguard.Review) (fileguard.Report, error) {
+func (i *controlledInspector) Inspect(_ context.Context, _ string, reviews []fileguard.Review, _ string) (fileguard.Report, error) {
 	i.calls++
 	i.reviews = reviews
 	return fileguard.Report{Rules: fileguard.RulesVersion, Objects: 1, ManifestDigest: strings.Repeat("b", 64), Labels: i.labels, Findings: map[string]int{"email": 1}}, i.err
