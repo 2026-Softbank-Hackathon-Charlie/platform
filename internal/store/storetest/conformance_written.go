@@ -18,10 +18,54 @@ var planToolsCases = []struct {
 	{"WrittenAppendList", testWrittenAppendList},
 	{"WrittenStats", testWrittenStats},
 	{"WrittenReceiptRetry", testWrittenReceiptRetry},
+	{"WrittenCollectorActivity", testWrittenCollectorActivity},
 	{"AttachmentPutGet", testAttachmentPutGet},
 	{"AttachmentOnlyWhilePending", testAttachmentOnlyWhilePending},
 	{"AttachmentCopies", testAttachmentCopies},
 	{"AttachmentRaisesRevision", testAttachmentRaisesRevision},
+}
+
+func testWrittenCollectorActivity(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	r := written("app.reservations", "7", 1)
+	r.EventID = "reservation-7"
+	r.Scope = "application_commits"
+	r.Coverage = "reservation_inserts"
+	r.Generation = "db-1"
+	r.AuthenticatedCollector = true
+	must(t, s.AppendWrittenRecords(ctx, "app-quiet", []store.WrittenRecord{r}))
+	first, err := s.WrittenRecordStats(ctx, "app-quiet")
+	must(t, err)
+	if first.LastReceivedAt == nil || !first.LastReceivedAt.Equal(pgTime(r.ReceivedAt)) {
+		t.Fatal("authenticated collector activity absent")
+	}
+	r.ReceivedAt = at(50)
+	must(t, s.AppendWrittenRecords(ctx, "app-quiet", []store.WrittenRecord{r}))
+	second, err := s.WrittenRecordStats(ctx, "app-quiet")
+	must(t, err)
+	if second.Count != 1 || second.LatestAt == nil || !second.LatestAt.Equal(pgTime(r.At)) || second.LastReceivedAt == nil || !second.LastReceivedAt.Equal(pgTime(at(50))) {
+		t.Fatalf("duplicate receipt changed event count/time or lost collector liveness: %+v", second)
+	}
+	r.ReceivedAt = at(90)
+	r.AuthenticatedCollector = false
+	must(t, s.AppendWrittenRecords(ctx, "app-quiet", []store.WrittenRecord{r}))
+	must(t, s.AppendWrittenRecords(ctx, "app-quiet", nil))
+	bad := r
+	bad.AuthenticatedCollector = true
+	bad.PK = "8"
+	if err = s.AppendWrittenRecords(ctx, "app-quiet", []store.WrittenRecord{bad}); !errors.Is(err, store.ErrConflict) {
+		t.Fatal("conflicting receipt accepted", err)
+	}
+	final, err := s.WrittenRecordStats(ctx, "app-quiet")
+	must(t, err)
+	if final.LastReceivedAt == nil || !final.LastReceivedAt.Equal(pgTime(at(50))) {
+		t.Fatal("empty, unauthenticated or rejected receipt forged collector activity")
+	}
+	rows, err := s.ListWrittenRecords(ctx, "app-quiet", 0, 0)
+	must(t, err)
+	if len(rows) != 1 || !rows[0].ReceivedAt.Equal(pgTime(at(2))) {
+		t.Fatal("retry rewrote immutable receipt arrival time")
+	}
 }
 
 func testWrittenReceiptRetry(t *testing.T, s store.Store) {

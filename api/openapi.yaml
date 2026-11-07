@@ -4933,6 +4933,7 @@ components:
       type: object
       required: [stream, count]
       properties:
+        lastReceivedAt: { type: string, format: date-time, description: "Server receipt time of the latest valid authenticated application collector batch, including identical retries. Independent of the committed-write timestamp; absent when collector activity has not been observed." }
         generation: { type: string }
         lastSeq: { type: integer, format: int64 }
         scope: { type: string, enum: [application_commits, client_acknowledged, unspecified] }

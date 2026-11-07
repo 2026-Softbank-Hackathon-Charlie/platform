@@ -23,6 +23,9 @@ func TestCollectorTokenCannotReadOrOperate(t *testing.T) {
 	if stats.Count != 1 || stats.Generation == nil || *stats.Generation != "db-1" {
 		t.Fatalf("duplicate inflated stats: %s", b)
 	}
+	if stats.LastReceivedAt == nil || stats.LatestAt == nil || !stats.LastReceivedAt.After(*stats.LatestAt) {
+		t.Fatal("authenticated collector activity was confused with old commit time")
+	}
 	for _, req := range []struct{ method, path string }{{"GET", "/v1/written-records/app-shop"}, {"POST", "/v1/written-records/app-other"}, {"POST", "/v1/plans"}, {"POST", "/v1/migrations"}} {
 		if code, _ := h.do(req.method, req.path, token, body); code != 401 {
 			t.Fatalf("collector token accessed %s %s: %d", req.method, req.path, code)
@@ -37,5 +40,17 @@ func TestCollectorTokenCannotReadOrOperate(t *testing.T) {
 		if code, b := h.do("POST", "/v1/written-records/app-shop", token, bad); code != 403 {
 			t.Fatalf("collector escaped evidence scope: %d %s", code, b)
 		}
+	}
+}
+
+func TestGeneralAgentCannotForgeCollectorActivity(t *testing.T) {
+	h := newHarness(t)
+	body := `{"scope":"application_commits","coverage":"reservation_inserts","generation":"db-1","records":[{"table":"app.reservations","pk":"7","eventId":"reservation-7","at":"2026-11-07T01:00:00Z"}]}`
+	if code, b := h.do("POST", "/v1/written-records/app-untrusted", agentToken, body); code != 202 {
+		t.Fatalf("legacy agent receipts rejected: %d %s", code, b)
+	}
+	_, b := h.do("GET", "/v1/written-records/app-untrusted", viewerToken, nil)
+	if stats := decode[apiv1.WrittenRecordStats](t, b); stats.Count != 1 || stats.LastReceivedAt != nil {
+		t.Fatal("general agent forged authenticated collector freshness")
 	}
 }
