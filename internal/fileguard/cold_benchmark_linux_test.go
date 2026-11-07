@@ -161,7 +161,7 @@ func BenchmarkColdTransfer(b *testing.B) {
 						}
 					}
 				}()
-				syncer := New(source, destination, nil, func(context.Context) error { return nil }, func(_ context.Context, r Report) error {
+				syncer := New(source, destination, nil, "", func(context.Context) error { return nil }, func(_ context.Context, r Report) error {
 					if slices.Contains(r.Labels, "kr-only") {
 						return ErrDenied
 					}

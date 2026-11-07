@@ -105,7 +105,7 @@ func TestEnumerationChangesAndDownloadFailurePreventUpload(t *testing.T) {
 
 func TestStreamingManifestKeepsLegacyDigest(t *testing.T) {
 	remote := cleanRemote()
-	shot, err := take(context.Background(), "src:bucket", nil, remote.command)
+	shot, err := take(context.Background(), "src:bucket", nil, "", remote.command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestStreamingManifestKeepsLegacyDigest(t *testing.T) {
 
 func TestInventoryMutationCannotChangeUploadedSet(t *testing.T) {
 	remote := cleanRemote()
-	shot, err := take(context.Background(), "src:bucket", nil, remote.command)
+	shot, err := take(context.Background(), "src:bucket", nil, "", remote.command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestStreamingObjectCapAndCancelledCleanup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	remote := cleanRemote()
-	if _, err := take(ctx, "src:bucket", nil, remote.command); err == nil {
+	if _, err := take(ctx, "src:bucket", nil, "", remote.command); err == nil {
 		t.Fatal("cancelled inspection accepted")
 	}
 	files, err := os.ReadDir(root)

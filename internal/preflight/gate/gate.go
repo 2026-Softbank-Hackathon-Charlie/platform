@@ -49,7 +49,7 @@ type Collector interface {
 
 // ContentInspector reads all source bytes into private staging, without an upload.
 type ContentInspector interface {
-	Inspect(context.Context, string, []fileguard.Review) (fileguard.Report, error)
+	Inspect(context.Context, string, []fileguard.Review, string) (fileguard.Report, error)
 }
 
 // Gate checks plans against one immutable residency policy.
@@ -117,7 +117,7 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (preflight.ResidencyVerd
 		v.Reasons = []preflight.Reason{{Code: "file_inspection_failed"}}
 		return v, nil
 	}
-	r, err := g.inspector.Inspect(ctx, p.Files.Source, g.buckets[p.Files.Source].ReviewedFiles)
+	r, err := g.inspector.Inspect(ctx, p.Files.Source, g.buckets[p.Files.Source].ReviewedFiles, g.buckets[p.Files.Source].BinaryLabel)
 	if err != nil {
 		v.Allowed = false
 		v.Reasons = []preflight.Reason{{Code: "file_inspection_failed", MovementID: movementID(p)}}
@@ -151,7 +151,7 @@ func (g *Gate) FileSyncer(p *plan.Plan) engine.FileSyncer {
 		}
 		return nil
 	}
-	return fileguard.New(p.Files.Source, p.Files.Target, g.buckets[p.Files.Source].ReviewedFiles, before, authorize)
+	return fileguard.New(p.Files.Source, p.Files.Target, g.buckets[p.Files.Source].ReviewedFiles, g.buckets[p.Files.Source].BinaryLabel, before, authorize)
 }
 
 func (g *Gate) check(ctx context.Context, p *plan.Plan, labels []string) (preflight.ResidencyVerdict, error) {

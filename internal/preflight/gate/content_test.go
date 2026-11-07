@@ -16,7 +16,7 @@ import (
 // fileguard.Inspector, whose byte/ZIP/snapshot tests are in internal/fileguard.
 type cleanInspector struct{}
 
-func (cleanInspector) Inspect(context.Context, string, []fileguard.Review) (fileguard.Report, error) {
+func (cleanInspector) Inspect(context.Context, string, []fileguard.Review, string) (fileguard.Report, error) {
 	return fileguard.Report{Rules: fileguard.RulesVersion, Objects: 1, Bytes: 5, ManifestDigest: strings.Repeat("a", 64), Labels: []string{"global"}}, nil
 }
 
@@ -25,11 +25,13 @@ type controlledInspector struct {
 	err     error
 	calls   int
 	reviews []fileguard.Review
+	binary  string
 }
 
-func (i *controlledInspector) Inspect(_ context.Context, _ string, reviews []fileguard.Review) (fileguard.Report, error) {
+func (i *controlledInspector) Inspect(_ context.Context, _ string, reviews []fileguard.Review, binary string) (fileguard.Report, error) {
 	i.calls++
 	i.reviews = reviews
+	i.binary = binary
 	return fileguard.Report{Rules: fileguard.RulesVersion, Objects: 1, ManifestDigest: strings.Repeat("b", 64), Labels: i.labels, Findings: map[string]int{"email": 1}}, i.err
 }
 
@@ -131,5 +133,17 @@ func TestReviewCatalogIsImmutableAndPassedToInspector(t *testing.T) {
 	}
 	if len(i.reviews) != 1 || i.reviews[0] != rv {
 		t.Fatalf("review catalog omitted: %v", i.reviews)
+	}
+}
+
+func TestBinaryLabelReachesInspector(t *testing.T) {
+	g := contentGate(t, func(c *residency.Config) { sourceBucket(c).BinaryLabel = "kr-only" })
+	// Only the plumbing is checked here: the fake's labels stand in for the
+	// scanner's (internal/fileguard tests the labelling itself).
+	i := &controlledInspector{labels: []string{"global", "kr-only"}}
+	g.WithContentInspector(i)
+	v, err := g.Check(context.Background(), contentPlan())
+	if err != nil || i.binary != "kr-only" || v.Allowed || !slices.Contains(codes(v), "bucket_country_not_allowed") {
+		t.Fatalf("binary label lost or not enforced: binary=%q %+v %v", i.binary, v, err)
 	}
 }
