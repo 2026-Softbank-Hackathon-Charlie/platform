@@ -32,6 +32,8 @@ func TestAICommandStartup(t *testing.T) {
 			os.Unsetenv("GATEWAY_ADMIN_TOKEN")
 			os.Args = append(os.Args, "-insecure-no-auth", "-write-timeout", "12s")
 		case "default-timeout":
+		case "quality-policy-missing":
+			os.Args = append(os.Args, "-write-timeout", "12s", "-ai-quality-policy", filepath.Join(t.TempDir(), "missing.json"))
 		case "help":
 			os.Args = []string{"gateway", "-h"}
 		}
@@ -50,11 +52,12 @@ func TestAICommandStartup(t *testing.T) {
 		{"no-admin-token", "both tokens", 1},
 		{"default-timeout", "write timeout must be 12s", 1},
 		{"help", "-ai-app", 0},
+		{"quality-policy-missing", "AI quality policy cannot be read", 2},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			cmd := exec.Command(exe, "-test.run=^TestAICommandStartup$")
 			for _, v := range os.Environ() {
-				if !strings.HasPrefix(v, "AI_GATEWAY_TOKEN=") && !strings.HasPrefix(v, "GATEWAY_ADMIN_TOKEN=") && !strings.HasPrefix(v, "HOP_AI_COMMAND_TEST=") {
+				if !strings.HasPrefix(v, "AI_GATEWAY_TOKEN=") && !strings.HasPrefix(v, "GATEWAY_ADMIN_TOKEN=") && !strings.HasPrefix(v, "HOP_AI_COMMAND_TEST=") && !strings.HasPrefix(v, "AI_QUALITY_POLICY_FILE=") && !strings.HasPrefix(v, "AI_QUALITY_LANGFUSE_CONFIG_FILE=") {
 					cmd.Env = append(cmd.Env, v)
 				}
 			}

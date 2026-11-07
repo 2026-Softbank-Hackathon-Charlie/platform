@@ -40,6 +40,8 @@ func (g *Gateway) adminMux() http.Handler {
 	}{
 		{"GET /v1/state", (*router).handleState},
 		{"GET /v1/ai/requests", (*router).handleAIRequests},
+		{"GET /v1/ai/canary", (*router).handleAICanary},
+		{"POST /v1/ai/canary/advance", (*router).handleAdvanceAI},
 		{"POST /v1/writes/hold", (*router).handleHold},
 		{"POST /v1/writes/release", (*router).handleRelease},
 		{"POST /v1/route", (*router).handleRoute},
@@ -203,6 +205,10 @@ func (rt *router) handleRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
+	if rt.qualityEnabled() {
+		writeError(w, 409, "ai_quality_control_required", "use the AI quality-gated canary API")
+		return
+	}
 	var req apiv1.RouteRequest
 	if !rt.g.decodeJSON(w, r, &req) {
 		return
@@ -238,6 +244,10 @@ func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *router) handleWeights(w http.ResponseWriter, r *http.Request) {
+	if rt.qualityEnabled() {
+		writeError(w, 409, "ai_quality_control_required", "use the AI quality-gated canary API")
+		return
+	}
 	var req apiv1.WeightsRequest
 	if !rt.g.decodeJSON(w, r, &req) {
 		return
