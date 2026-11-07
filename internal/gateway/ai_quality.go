@@ -183,6 +183,9 @@ func (rt *router) handleAdvanceAI(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		verdict = rt.g.cfg.AIQuality.Provider.Quality(ctx, rt.g.cfg.AIQuality.Policy, now, prev.LastAdvanceAt)
 		cancel()
+		if r.Context().Err() != nil {
+			return
+		}
 		if verdict.Status != "pass" || !verdict.ValidUntil.After(time.Now()) {
 			writeJSON(w, http.StatusPreconditionFailed, verdict)
 			return
@@ -192,6 +195,10 @@ func (rt *router) handleAdvanceAI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rt.g.controlMu.Unlock()
+	if r.Context().Err() != nil {
+		rt.mu.Unlock()
+		return
+	}
 	if rt.canary.Version != prev.Version {
 		rt.mu.Unlock()
 		writeError(w, 409, "canary_version_conflict", "another transition changed the canary")
@@ -257,10 +264,13 @@ func (g *Gateway) refreshAIQuality(ctx context.Context) {
 	bounded, cancel := context.WithTimeout(ctx, 8*time.Second)
 	v := g.cfg.AIQuality.Provider.Quality(bounded, g.cfg.AIQuality.Policy, now, time.Time{})
 	cancel()
+	if ctx.Err() != nil {
+		return
+	}
 	g.controlMu.Lock()
 	defer g.controlMu.Unlock()
 	g.mu.Lock()
-	if g.canary.Version != version {
+	if ctx.Err() != nil || g.canary.Version != version {
 		g.mu.Unlock()
 		return
 	}

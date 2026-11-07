@@ -174,6 +174,11 @@ func TestAIQualityCancellationPersistenceAndConfigurationFailures(t *testing.T) 
 		return llmquality.Unknown(n, "cancelled")
 	})
 	g := qualityGW(t, "", provider)
+	g.mu.Lock()
+	g.canary.TargetPercent = 5
+	g.canary.Version = 1
+	g.canary.Verdict = passQuality(nil, llmquality.Policy{}, time.Now(), time.Time{})
+	g.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan struct{})
@@ -183,6 +188,11 @@ func TestAIQualityCancellationPersistenceAndConfigurationFailures(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("cancelled quality worker did not terminate")
 	}
+	g.mu.Lock()
+	if g.canary.Version != 1 || g.canary.TargetPercent != 5 || g.canary.Verdict.Status != "pass" {
+		t.Fatal("cancelled evaluation changed canary state")
+	}
+	g.mu.Unlock()
 	file := filepath.Join(t.TempDir(), "state.json")
 	g = qualityGW(t, file, qualityProviderFunc(passQuality))
 	// Replace the state file with a directory to make atomic rename fail.
