@@ -73,10 +73,14 @@ func (t *operationTiming) output(s *snapshot) string {
 	t.phases["total"] = time.Since(t.started)
 	evidence := struct {
 		*Report
-		TimingMillis map[string]int64 `json:"timingMillis"`
+		TimingMillis    map[string]int64 `json:"timingMillis"`
+		InspectionCache map[string]int   `json:"inspectionCache,omitempty"`
 	}{TimingMillis: make(map[string]int64, len(t.phases))}
 	if s != nil {
 		evidence.Report = &s.report
+		if s.memo != nil {
+			evidence.InspectionCache = map[string]int{"hits": s.memo.hits, "misses": s.memo.misses}
+		}
 	}
 	for phase, elapsed := range t.phases {
 		evidence.TimingMillis[phase] = elapsed.Milliseconds()

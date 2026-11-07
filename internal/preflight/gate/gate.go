@@ -6,8 +6,11 @@ package gate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
@@ -64,6 +67,7 @@ type Gate struct {
 	digest                string
 	inspector             ContentInspector
 	inspectionEnvironment string
+	classificationCache   *fileguard.ClassificationCache
 }
 
 // New prepares the policy. collector nil uses inventory.Collector{}; the
@@ -89,7 +93,8 @@ func New(ctx context.Context, cfg residency.Config, collector Collector) (*Gate,
 	for _, b := range cfg.Buckets {
 		registered[b.Bucket], buckets[b.Bucket] = true, b
 	}
-	return &Gate{evaluator: e, collector: collector, prober: bucketprobe.Prober{}, registered: registered, buckets: buckets, digest: e.PolicyDigest(), inspector: fileguard.Inspector{}, inspectionEnvironment: cfg.InspectionEnvironment}, nil
+	cache := fileguard.NewClassificationCache(fileguard.MaxClassificationEntries)
+	return &Gate{evaluator: e, collector: collector, prober: bucketprobe.Prober{}, registered: registered, buckets: buckets, digest: e.PolicyDigest(), inspector: fileguard.NewInspector(cache), inspectionEnvironment: cfg.InspectionEnvironment, classificationCache: cache}, nil
 }
 
 // WithProber replaces the bucket prober (tests). It returns g.
@@ -118,7 +123,15 @@ func (g *Gate) Check(ctx context.Context, p *plan.Plan) (preflight.ResidencyVerd
 		v.Reasons = []preflight.Reason{{Code: "file_inspection_failed"}}
 		return v, nil
 	}
-	r, err := g.inspector.Inspect(ctx, p.Files.Source, g.buckets[p.Files.Source].ReviewedFiles, g.buckets[p.Files.Source].BinaryLabel)
+	inspect := g.inspector.Inspect
+	if scoped, ok := g.inspector.(interface {
+		InspectBound(context.Context, string, []fileguard.Review, string, string) (fileguard.Report, error)
+	}); ok {
+		inspect = func(ctx context.Context, source string, reviews []fileguard.Review, binary string) (fileguard.Report, error) {
+			return scoped.InspectBound(ctx, source, reviews, binary, g.inspectionBinding(p))
+		}
+	}
+	r, err := inspect(ctx, p.Files.Source, g.buckets[p.Files.Source].ReviewedFiles, g.buckets[p.Files.Source].BinaryLabel)
 	if err != nil {
 		v.Allowed = false
 		v.Reasons = []preflight.Reason{{Code: "file_inspection_failed", MovementID: movementID(p)}}
@@ -152,7 +165,26 @@ func (g *Gate) FileSyncer(p *plan.Plan) engine.FileSyncer {
 		}
 		return nil
 	}
-	return fileguard.New(p.Files.Source, p.Files.Target, g.buckets[p.Files.Source].ReviewedFiles, g.buckets[p.Files.Source].BinaryLabel, before, authorize)
+	return fileguard.New(p.Files.Source, p.Files.Target, g.buckets[p.Files.Source].ReviewedFiles, g.buckets[p.Files.Source].BinaryLabel, before, authorize).WithClassificationCache(g.classificationCache, g.inspectionBinding(p))
+}
+
+// An endpoint pair is unordered so an ordinary reverse migration can reuse
+// content classification. The policy, both concrete app scopes and the gateway
+// app route remain bound; classification policy is additionally keyed by the
+// scanner. No DSN/token or caller-chosen plan/run ID participates.
+func (g *Gate) inspectionBinding(p *plan.Plan) string {
+	if g == nil || p == nil || p.Files == nil {
+		return ""
+	}
+	endpoint := func(e plan.Endpoint, bucket string) string {
+		raw, _ := json.Marshal([]string{e.Env, e.Namespace, e.Cluster, e.Context, e.Kubeconfig, bucket})
+		return string(raw)
+	}
+	ends := []string{endpoint(p.Source, p.Files.Source), endpoint(p.Target, p.Files.Target)}
+	slices.Sort(ends)
+	raw, _ := json.Marshal([]any{g.digest, p.Gateway.URL, ends})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func (g *Gate) check(ctx context.Context, p *plan.Plan, labels []string) (preflight.ResidencyVerdict, error) {
