@@ -3881,6 +3881,50 @@ type OnboardingRequest struct {
 // state it failed in in `failedState`.
 type OnboardingState string
 
+// OnpremEnrollment defines model for OnpremEnrollment.
+type OnpremEnrollment struct {
+	Checks      []OnpremEnrollmentCheck `json:"checks"`
+	CreatedAt   time.Time               `json:"createdAt"`
+	Environment string                  `json:"environment"`
+	ExpiresAt   time.Time               `json:"expiresAt"`
+	Id          string                  `json:"id"`
+	Status      string                  `json:"status"`
+	UpdatedAt   time.Time               `json:"updatedAt"`
+}
+
+// OnpremEnrollmentCheck defines model for OnpremEnrollmentCheck.
+type OnpremEnrollmentCheck struct {
+	CheckedAt *time.Time `json:"checkedAt,omitempty"`
+	Id        string     `json:"id"`
+	Message   *string    `json:"message,omitempty"`
+	Status    string     `json:"status"`
+}
+
+// OnpremEnrollmentClaimRequest defines model for OnpremEnrollmentClaimRequest.
+type OnpremEnrollmentClaimRequest struct {
+	Code        string `json:"code"`
+	Environment string `json:"environment"`
+	InstallK3s  bool   `json:"installK3s"`
+}
+
+// OnpremEnrollmentCreateRequest defines model for OnpremEnrollmentCreateRequest.
+type OnpremEnrollmentCreateRequest struct {
+	Environment string `json:"environment"`
+	InstallK3s  bool   `json:"installK3s"`
+}
+
+// OnpremEnrollmentCreated defines model for OnpremEnrollmentCreated.
+type OnpremEnrollmentCreated struct {
+	Code           *string          `json:"code,omitempty"`
+	Enrollment     OnpremEnrollment `json:"enrollment"`
+	InstallCommand *string          `json:"installCommand,omitempty"`
+}
+
+// OnpremEnrollmentResponse defines model for OnpremEnrollmentResponse.
+type OnpremEnrollmentResponse struct {
+	Enrollment OnpremEnrollment `json:"enrollment"`
+}
+
 // PlanAttachment defines model for PlanAttachment.
 type PlanAttachment struct {
 	// Name Example: target.yaml
@@ -5545,6 +5589,11 @@ type StreamOnboardingEventsParams struct {
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
+// CreateOnpremEnrollmentParams defines parameters for CreateOnpremEnrollment.
+type CreateOnpremEnrollmentParams struct {
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
 // GetSecurityParams defines parameters for GetSecurity.
 type GetSecurityParams struct {
 	// Environment Only this environment, e.g. `gke`, `aws-account` or `platform`. Unknown names are a 400.
@@ -5657,6 +5706,12 @@ type StartOnboardingJSONRequestBody = OnboardingRequest
 
 // ApproveOnboardingJSONRequestBody defines body for ApproveOnboarding for application/json ContentType.
 type ApproveOnboardingJSONRequestBody = OnboardingApproveRequest
+
+// CreateOnpremEnrollmentJSONRequestBody defines body for CreateOnpremEnrollment for application/json ContentType.
+type CreateOnpremEnrollmentJSONRequestBody = OnpremEnrollmentCreateRequest
+
+// ClaimOnpremEnrollmentJSONRequestBody defines body for ClaimOnpremEnrollment for application/json ContentType.
+type ClaimOnpremEnrollmentJSONRequestBody = OnpremEnrollmentClaimRequest
 
 // SubmitPlanJSONRequestBody defines body for SubmitPlan for application/json ContentType.
 type SubmitPlanJSONRequestBody = EnginePlan

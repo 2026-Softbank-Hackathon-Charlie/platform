@@ -9,7 +9,8 @@ info:
 
     Every `/v1` request needs `Authorization: Bearer <token>`, except the
     GitHub App webhook (`POST /v1/webhooks/github`), which GitHub signs
-    instead, and the login endpoints under `/v1/auth` marked as public.
+    instead, the login endpoints under `/v1/auth`, and the public on-prem
+    installer/claim routes. A claim needs its one-use code in the JSON body.
     Each token has a role:
 
     | role     | may |
@@ -57,6 +58,116 @@ tags:
   - name: onboarding
 
 paths:
+  /v1/onprem/enrollments:
+    post:
+      tags: [environments]
+      operationId: createOnpremEnrollment
+      description: |
+        Operator-only issuance of a 256-bit, 15-minute, one-use bootstrap grant.
+        Only its hash is persisted. Idempotency-Key is scoped to the actor:
+        the first response includes code and installCommand; a replay returns
+        the same enrollment without either secret. This authenticates a host
+        bootstrap attempt, not registration or deployment readiness.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnpremEnrollmentCreateRequest" }
+      responses:
+        "201":
+          description: Newly issued grant, returned once. Cache-Control no-store.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnpremEnrollmentCreated" }
+        "200":
+          description: Idempotent replay; enrollment only, no code or command.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnpremEnrollmentCreated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onprem/enrollments/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      tags: [environments]
+      operationId: getOnpremEnrollment
+      description: Operator-only state lookup. Never returns the code, hash or command.
+      responses:
+        "200":
+          description: Current enrollment, with pending grants expired at their deadline.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnpremEnrollmentResponse" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onprem/enrollments/{id}/revoke:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    post:
+      tags: [environments]
+      operationId: revokeOnpremEnrollment
+      description: Operator-only, idempotent revocation; atomically fences concurrent and later claims.
+      responses:
+        "200":
+          description: Revoked enrollment, no code or command.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnpremEnrollmentResponse" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onprem/enrollments/{id}/claim:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    post:
+      tags: [environments]
+      operationId: claimOnpremEnrollment
+      security: []
+      description: |
+        Public installer handshake, authenticated by the one-use code in JSON
+        (never a URL/query parameter). Atomically consumes only the matching
+        enrollment, environment and install choice before expiry. Rate/body/
+        concurrency bounded. No platform operator credential is issued. Without
+        a registration adapter status stays claimed and all checks unknown;
+        self-report can never make it ready.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnpremEnrollmentClaimRequest" }
+      responses:
+        "200":
+          description: Bootstrap grant consumed; registration remains pending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnpremEnrollmentResponse" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onprem/installer.sh:
+    get:
+      tags: [environments]
+      operationId: getOnpremInstaller
+      security: []
+      description: Embedded Linux/WSL2 bootstrap installer. Does not upload cluster credentials or register a cluster.
+      responses:
+        "200":
+          description: The actual installer served by this API version.
+          content:
+            text/x-shellscript:
+              schema: { type: string }
   /healthz:
     get:
       tags: [system]
@@ -2826,6 +2937,56 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    OnpremEnrollmentCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [environment, installK3s]
+      properties:
+        environment: { type: string, minLength: 1, maxLength: 32 }
+        installK3s: { type: boolean }
+    OnpremEnrollmentClaimRequest:
+      type: object
+      additionalProperties: false
+      required: [code, environment, installK3s]
+      properties:
+        code: { type: string, minLength: 47, maxLength: 47 }
+        environment: { type: string, minLength: 1, maxLength: 32 }
+        installK3s: { type: boolean }
+    OnpremEnrollmentCheck:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string, pattern: '^(k3s|network|permissions|image_pull|hello_world)$' }
+        status: { type: string, pattern: '^(pending|running|passed|failed|unknown)$' }
+        message: { type: string }
+        checkedAt: { type: string, format: date-time }
+    OnpremEnrollment:
+      type: object
+      required: [id, environment, status, createdAt, updatedAt, expiresAt, checks]
+      properties:
+        id: { type: string }
+        environment: { type: string }
+        status: { type: string, pattern: '^(pending|claimed|verifying|ready|failed|expired|revoked)$' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        checks:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items: { $ref: "#/components/schemas/OnpremEnrollmentCheck" }
+    OnpremEnrollmentCreated:
+      type: object
+      required: [enrollment]
+      properties:
+        enrollment: { $ref: "#/components/schemas/OnpremEnrollment" }
+        code: { type: string }
+        installCommand: { type: string }
+    OnpremEnrollmentResponse:
+      type: object
+      required: [enrollment]
+      properties:
+        enrollment: { $ref: "#/components/schemas/OnpremEnrollment" }
     Error:
       type: object
       required: [error]
