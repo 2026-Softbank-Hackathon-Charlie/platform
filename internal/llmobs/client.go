@@ -114,9 +114,7 @@ func (c *Client) Report(ctx context.Context, app string, from, to time.Time) Rep
 		}
 		seen[w.ID] = true
 		o := Observation{ID: w.ID, TraceID: w.TraceID, StartTime: w.StartTime, Level: validLevel(w.Level), Metrics: metrics(w)}
-		if modelName.MatchString(w.Model) {
-			o.Model = w.Model
-		}
+		o.Model = safeModel(w.Model)
 		if c.config.UIBaseURL != "" {
 			o.URL = c.config.UIBaseURL + "/project/" + url.PathEscape(b.ProjectID) + "/traces/" + url.PathEscape(w.TraceID)
 		}
@@ -189,6 +187,14 @@ func validLevel(p *string) *string {
 		return p
 	}
 	return nil
+}
+
+func safeModel(value string) string {
+	lower := strings.ToLower(value)
+	if !modelName.MatchString(value) || strings.Contains(value, "://") || strings.HasPrefix(lower, "sk-") || strings.HasPrefix(lower, "pk-") || strings.HasPrefix(lower, "akia") || strings.HasPrefix(lower, "asia") || strings.HasPrefix(lower, "bearer") {
+		return ""
+	}
+	return value
 }
 func number(m map[string]json.RawMessage, k string) *float64 {
 	raw, ok := m[k]

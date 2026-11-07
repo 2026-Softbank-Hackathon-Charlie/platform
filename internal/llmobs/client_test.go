@@ -188,3 +188,16 @@ func TestLegacyUsageUnitsAndNullValues(t *testing.T) {
 		t.Fatalf("legacy/null metrics %+v", m)
 	}
 }
+
+func TestModelLabelsDoNotExposeAddressesOrCredentialLikeStrings(t *testing.T) {
+	for _, value := range []string{"https://private.example/model", "sk-secret", "SK-secret", "pk-lf-private", "AKIAEXAMPLE000000", "ASIAEXAMPLE000000", "Bearer-private"} {
+		if safeModel(value) != "" {
+			t.Errorf("sensitive model label accepted")
+		}
+	}
+	for _, value := range []string{"openai/gpt-4", "Qwen/Qwen2.5-7B-Instruct", "qwen2.5:7b"} {
+		if safeModel(value) != value {
+			t.Errorf("valid model label lost: %s", value)
+		}
+	}
+}
