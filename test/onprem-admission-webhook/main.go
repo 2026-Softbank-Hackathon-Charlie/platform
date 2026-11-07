@@ -38,7 +38,9 @@ func main() {
 		}
 		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(3 * time.Second))
 		defer r.Body.Close()
-		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		// UPDATE contains both old and new Secrets, each bounded to 64 KiB by
+		// the validator, plus the surrounding AdmissionReview metadata.
+		r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
 		decoder := json.NewDecoder(r.Body)
 		decoder.DisallowUnknownFields()
 		var review admissionv1.AdmissionReview

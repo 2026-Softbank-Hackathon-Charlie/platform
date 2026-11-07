@@ -5750,6 +5750,9 @@ type StreamOnboardingEventsParams struct {
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
+// ValidateOnpremClusterSecretJSONBody defines parameters for ValidateOnpremClusterSecret.
+type ValidateOnpremClusterSecretJSONBody map[string]interface{}
+
 // GetOnpremAgentBinaryParams defines parameters for GetOnpremAgentBinary.
 type GetOnpremAgentBinaryParams struct {
 	Arch GetOnpremAgentBinaryParamsArch `form:"arch" json:"arch"`
@@ -5894,6 +5897,9 @@ type StartOnboardingJSONRequestBody = OnboardingRequest
 
 // ApproveOnboardingJSONRequestBody defines body for ApproveOnboarding for application/json ContentType.
 type ApproveOnboardingJSONRequestBody = OnboardingApproveRequest
+
+// ValidateOnpremClusterSecretJSONRequestBody defines body for ValidateOnpremClusterSecret for application/json ContentType.
+type ValidateOnpremClusterSecretJSONRequestBody ValidateOnpremClusterSecretJSONBody
 
 // CreateOnpremEnrollmentJSONRequestBody defines body for CreateOnpremEnrollment for application/json ContentType.
 type CreateOnpremEnrollmentJSONRequestBody = OnpremEnrollmentCreateRequest

@@ -25,8 +25,10 @@ var clusterSecretAdmissionToken = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // ValidateClusterSecretAdmission performs pure validation of the registrar's
 // narrow Argo cluster Secret contract. It never contacts a cluster, reads a
 // store, mutates an object, or includes submitted credentials in its response.
-// Authentication of the calling API server remains the admission configuration's
-// job; a forged public request can obtain only this side-effect-free answer.
+// The public endpoint does not authenticate its caller: UserInfo is validated
+// request metadata, not proof of caller identity. A direct public caller obtains
+// only this side-effect-free predicate result. The API server authenticates the
+// webhook's HTTPS server and correlates its response by AdmissionReview UID.
 func ValidateClusterSecretAdmission(review admissionv1.AdmissionReview, now time.Time) admissionv1.AdmissionReview {
 	out := admissionv1.AdmissionReview{TypeMeta: metav1.TypeMeta{APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview"}, Response: &admissionv1.AdmissionResponse{Allowed: false, Result: &metav1.Status{Status: metav1.StatusFailure, Reason: metav1.StatusReasonForbidden, Code: 403, Message: "cluster registration Secret denied"}}}
 	req := review.Request
