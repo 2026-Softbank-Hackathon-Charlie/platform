@@ -8,6 +8,8 @@ github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-2026110605331
 github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261106053317-a1dc35c2261c/go.mod h1:6T6kxe10SsazZmS5ex/qZ74TWcy7XIVo0d2IGtMrvx8=
 github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107035909-0c5f74d2a42c h1:6S5Vj0Z2JL07y7BAs3vUUCMADxG1cKB1Zcm1x7y3o9E=
 github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107035909-0c5f74d2a42c/go.mod h1:6T6kxe10SsazZmS5ex/qZ74TWcy7XIVo0d2IGtMrvx8=
+github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107083216-f9f79deb6087 h1:gB/4tIkbNmkcdlUt3uLciVUfo/mw4R7KxkBTTAMsi8w=
+github.com/2026-Softbank-Hackathon-Charlie/migration-engine v0.0.0-20261107083216-f9f79deb6087/go.mod h1:6T6kxe10SsazZmS5ex/qZ74TWcy7XIVo0d2IGtMrvx8=
 github.com/Masterminds/goutils v1.1.1 h1:5nUrii3FMTL5diU80unEVvNevw1nH4+ZV4DSLVJLSYI=
 github.com/Masterminds/goutils v1.1.1/go.mod h1:8cTjp+g8YejhMuvIA5y2vz3BpJxksy863GQaJW2MFNU=
 github.com/Masterminds/semver/v3 v3.4.0 h1:Zog+i5UMtVoCU8oKka5P7i9q9HgrJeGzI9SA1Xbatp0=
