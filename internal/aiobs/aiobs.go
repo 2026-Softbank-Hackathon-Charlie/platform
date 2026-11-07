@@ -131,7 +131,6 @@ func (c *Client) Events(ctx context.Context, since time.Time, limit int) ([]Even
 	v.Set("param_svc", Service)
 	v.Set("param_since", strconv.FormatInt(since.UnixMilli(), 10))
 	v.Set("param_limit", strconv.Itoa(limit))
-	v.Set("readonly", "1")
 	v.Set("max_execution_time", "5")
 	v.Set("max_result_rows", strconv.Itoa(maxRows))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/?"+v.Encode(), strings.NewReader(q))

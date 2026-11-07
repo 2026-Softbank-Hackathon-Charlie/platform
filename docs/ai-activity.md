@@ -27,13 +27,15 @@
 | `PLATFORM_AIOBS_CLICKHOUSE_PASSWORD_FILE` | 비밀번호가 든 파일(Secret을 마운트). 환경 변수로 받지 않는다 |
 | `PLATFORM_AIOBS_CLICKHOUSE_TABLE` | 기본 `default.otel_logs` (HyperDX의 Logs 소스와 같다) |
 
-쿼리는 `readonly=1`, 5초 제한이고 서비스 이름과 시작 시각은 파라미터로 묶는다. ClickHouse 오류의 본문은 응답과 로그에 싣지 않고 상태 코드만 남긴다(본문이 쿼리나 비밀을 되풀이할 수 있다).
+쿼리는 5초 제한, 최대 2,000행이고 서비스 이름과 시작 시각은 파라미터로 묶는다. 읽기 전용은 ClickHouse 사용자의 profile이 정한다(요청에서 `readonly` 설정을 보내지 않는다. 이 클러스터의 `app`은 `readonly: 2`라 그 설정을 바꿀 수 없다). ClickHouse 오류의 본문은 응답과 로그에 싣지 않고 상태 코드만 남긴다(본문이 쿼리나 비밀을 되풀이할 수 있다).
 
-## 배포하려면 (이 저장소 밖, 사람이 할 일)
+## 배포하려면
 
-1. **ClickHouse에 `SELECT` 권한만 있는 사용자를 만든다** (`default.otel_logs`만). HyperDX가 쓰는 `app` 사용자는 쓰기 권한이 있을 수 있으니 재사용하지 않는 편이 낫다.
-2. 그 비밀번호를 platform API가 있는 네임스페이스에 Secret으로 만들고 Pod에 파일로 마운트한다.
-3. platform API Pod에서 `observability` 네임스페이스의 ClickHouse(8123)로 가는 NetworkPolicy를 연다. 지금은 다른 네임스페이스에서 ClickHouse로 가는 길이 열려 있는지 확인하지 못했다.
-4. 위 환경 변수를 Helm values에 넣는다.
+infra 저장소 PR이 하는 일(chart의 `api.aiobs`, NetworkPolicy, 관리 환경 values)과 ADR 0077을 따른다.
+
+1. ClickHouse 사용자는 이미 있는 읽기 전용 `app`(`GRANT SELECT ON default.*`, profile `hyperdx-read`)을 쓴다. 전용 사용자 분리는 후속이다.
+2. 사용자가 `scripts/put-clickhouse-read-password.sh`로 `app`의 비밀번호를 관측 Secret에서 SSM `/hopcharlie/clickhouse-read-password`로 옮긴다(값은 출력되지 않는다).
+3. API가 init container에서 그 값을 `/config/aiobs-clickhouse-password`로 받고 `PLATFORM_AIOBS_CLICKHOUSE_PASSWORD_FILE`로 읽는다.
+4. NetworkPolicy가 API Pod에서 `observability`의 ClickHouse Pod 8123으로 가는 길을 연다.
 
 `GET /v1/ai-activity`는 `viewer` 권한이면 된다.

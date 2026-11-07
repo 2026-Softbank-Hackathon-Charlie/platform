@@ -98,7 +98,7 @@ func TestEventsQueryAndOrder(t *testing.T) {
 	if len(ev) != 2 || ev[0].Kind != KindToolCall || ev[1].Kind != KindRehearsal || !ev[0].Time.Before(ev[1].Time) {
 		t.Fatalf("events: %+v", ev)
 	}
-	if gotUser != "reader" || gotParams["readonly"] != "1" || gotParams["param_svc"] != Service || gotParams["param_since"] != "1794030000000" || gotParams["param_limit"] != "50" {
+	if gotUser != "reader" || gotParams["param_svc"] != Service || gotParams["param_since"] != "1794030000000" || gotParams["param_limit"] != "50" {
 		t.Fatalf("request: user=%q params=%v", gotUser, gotParams)
 	}
 	if !strings.Contains(gotQuery, "FROM default.otel_logs WHERE ServiceName = {svc:String}") || strings.Contains(gotQuery, Service) {
