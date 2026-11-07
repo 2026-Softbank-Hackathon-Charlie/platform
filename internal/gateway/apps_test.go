@@ -261,10 +261,14 @@ func TestAppIsolation(t *testing.T) {
 	}
 
 	// Stats are per app: the default app counts only its own requests.
-	st, err := shopc.State(ctx, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The client can observe response EOF before the handler records its
+	// metrics. Drain both request classes before asserting the final totals.
+	var st apiv1.TrafficState
+	var err error
+	waitFor(t, "shop requests completed", func() bool {
+		st, err = shopc.State(ctx, 0)
+		return err == nil && st.InFlight.Reads == 0 && st.InFlight.Writes == 0
+	})
 	if st.WriteBackend != "eks" || st.Totals["eks"].Requests != 2 || st.Totals["gke"].Requests != 1 || len(st.Backends) != 2 {
 		t.Fatalf("shop state: %+v", st)
 	}
