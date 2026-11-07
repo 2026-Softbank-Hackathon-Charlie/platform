@@ -189,6 +189,8 @@ type Deps struct {
 	// ClickHouse (aiobs.Client); nil answers GET /v1/apps/{name}/observability 503
 	// observability_not_configured.
 	AppObs AppObserver
+	// AIServices reads app-scoped AI dependency spans, independently of hopai.
+	AIServices AIServicesReader
 	// AIRuns starts the AI runner as a Job (airun.Runner); nil answers the
 	// /v1/ai-runs endpoints 503 ai_runner_not_configured.
 	AIRuns AIRunner
@@ -383,6 +385,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("POST /v1/plans/draft", agent, s.draftPlan)
 	s.route("GET /v1/ai-activity", viewer, s.getAIActivity)
 	s.route("GET /v1/apps/{name}/observability", viewer, s.getAppObservability)
+	s.route("GET /v1/apps/{name}/ai-services", viewer, s.getAIServices)
 	s.route("GET /v1/ai-runs", viewer, s.listAIRuns)
 	s.route("POST /v1/ai-runs", operator, s.startAIRun)
 	s.route("POST /v1/residency/buckets/inspect", agent, s.inspectBucket)

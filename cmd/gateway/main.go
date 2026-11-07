@@ -70,6 +70,11 @@ func main() {
 	var aiCfg *gateway.AIDemoConfig
 	if *aiApp != "" {
 		aiCfg = &gateway.AIDemoConfig{App: *aiApp, Token: os.Getenv("AI_GATEWAY_TOKEN")}
+		aiCfg.Placements, err = gateway.ParseAIPlacements(os.Getenv("AI_GATEWAY_PLACEMENTS"))
+		if err != nil {
+			log.Error("invalid AI_GATEWAY_PLACEMENTS")
+			os.Exit(2)
+		}
 	}
 	followCfg, err := aiFollowConfig(*aiFollowApp, *aiFollowURL, *aiFollowMap, *aiFollowInterval)
 	if err != nil {

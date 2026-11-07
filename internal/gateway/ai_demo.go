@@ -15,7 +15,10 @@ import (
 )
 
 // AIDemoConfig enables the bounded native chat contract on the default app.
-type AIDemoConfig struct{ App, Token string }
+type AIDemoConfig struct {
+	App, Token string
+	Placements map[string]AIPlacement
+}
 
 type aiRequestKey struct{}
 type aiRequest struct {
@@ -55,6 +58,11 @@ func (c *Config) checkAI() error {
 	}
 	if !names["gcp"] || !names["laptop"] {
 		return errors.New("AI demo requires gcp and laptop")
+	}
+	for name, p := range c.AIDemo.Placements {
+		if !names[name] || !validAIPlacement(p) {
+			return errors.New("invalid AI backend placement metadata")
+		}
 	}
 	return c.checkAIFollow()
 }

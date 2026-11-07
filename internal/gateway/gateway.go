@@ -942,6 +942,7 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 			if rt.aiEnabled() {
 				pr.Out.Header.Del("Authorization")
 				pr.Out.Header.Del("X-Hop-Backend")
+				stripAIMetadata(pr.Out.Header)
 				pr.Out.Header.Del("Cookie")
 				pr.Out.Header.Set("X-Request-Id", pr.In.Header.Get("X-Request-Id"))
 				pr.Out.Trailer = nil
@@ -957,6 +958,11 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 			resp.Header.Set(headerBackend, b.name)
 			if rt.aiEnabled() {
 				resp.Header.Set("X-Hop-Backend", b.name)
+				rt.setAIMetadata(resp.Header, b.name)
+				stripAIMetadata(resp.Trailer)
+				if resp.Body != nil {
+					resp.Body = &aiMetadataBody{ReadCloser: resp.Body, response: resp}
+				}
 				resp.Header.Set("Cache-Control", "no-store")
 				resp.Trailer.Del("X-Hop-Backend")
 			}
