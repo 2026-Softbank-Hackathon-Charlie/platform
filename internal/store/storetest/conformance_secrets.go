@@ -549,7 +549,8 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	}
 	got, err := s.GetAppDatabase(ctx, "moimroom-mig")
 	must(t, err)
-	want.App, want.CreatedAt = "moimroom-mig", pg(want.CreatedAt)
+	// An empty source kind is a pair born on the platform (ADR 0042).
+	want.App, want.CreatedAt, want.SourceKind = "moimroom-mig", pg(want.CreatedAt), store.DBSourcePeer
 	eqFields(t, "app database", got, want)
 	got.PasswordCiphertext[0] = 'X'
 	again, err := s.GetAppDatabase(ctx, "moimroom-mig")
@@ -576,6 +577,23 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	if _, err := s.GetAppDatabase(ctx, "shop"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("database pair of an app registered before: %v, want ErrNotFound", err)
 	}
+
+	// An onboarded app's database keeps its external source (ADR 0042).
+	ext := newAppDatabase("eks", "gke", 1)
+	ext.SourceKind, ext.Image, ext.Database, ext.Owner = store.DBSourceExternal, "ghcr.io/cloudnative-pg/postgresql:17.11-standard-bookworm@sha256:0f", "moimroom", "moimroom"
+	ext.ExternalHost, ext.Reindex = "hop-db-legacy-legacy-app", []string{"public.users_email_idx", "public.posts_title_idx"}
+	ext.ReplicationPasswordNonce, ext.ReplicationPasswordCiphertext = []byte("nonce-repl"), []byte("sealed:repl")
+	must(t, s.CreateAppWithDatabase(ctx, newApp("legacy-app", 0), ext))
+	got, err = s.GetAppDatabase(ctx, "legacy-app")
+	must(t, err)
+	ext.App, ext.CreatedAt = "legacy-app", pg(ext.CreatedAt)
+	eqFields(t, "external app database", got, ext)
+	bad := newAppDatabase("eks", "gke", 1)
+	bad.SourceKind = "vm"
+	if err := s.CreateAppWithDatabase(ctx, newApp("bad-kind", 0), bad); err == nil {
+		t.Fatal("CreateAppWithDatabase with source kind vm succeeded")
+	}
+	must(t, s.DeleteApp(ctx, "legacy-app"))
 
 	must(t, s.CreateAppWithDatabase(ctx, newApp("blog", 0), newAppDatabase("eks", "gke", 2)))
 	list, err = s.ListAppDatabases(ctx)

@@ -55,4 +55,8 @@ histogram_quantile(0.95,
 생략 시 기존 gateway 기본 경로를 사용한다. 배포 실행기는 public service `healthCheck`를
 연결한다. 실제 DB·스토리지 readiness 여부는 이 경로를 구현한 앱의 책임이다.
 
+`dial`(백엔드 이름에서 `host:port`로 가는 맵)은 ADR 0042의 계약이다. 백엔드 URL의 호스트를
+TLS 이름과 Host로 두고 그 주소로 접속한다. 아직 구현하지 않아서 비어 있지 않으면 400
+`dial_not_supported`다.
+
 설계 근거: [ADR 0040](../../docs/adr/0040-gateway-durability-and-write-bounds.md).

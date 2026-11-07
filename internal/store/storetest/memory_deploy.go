@@ -83,6 +83,9 @@ func (m *memory) CreateAppWithDatabase(_ context.Context, a store.App, d store.A
 	if d.PrimaryEnv == "" || d.PeerEnv == "" || d.PrimaryEnv == d.PeerEnv {
 		return fmt.Errorf("storetest: the database pair of app %s needs two different environments", a.Name)
 	}
+	if d.SourceKind != store.DBSourcePeer && d.SourceKind != store.DBSourceExternal {
+		return fmt.Errorf("storetest: the database pair of app %s has source kind %q", a.Name, d.SourceKind)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.deploy.databases[a.Name]; ok {

@@ -38,6 +38,7 @@ type memory struct {
 	secrets    secretsMemory    // app secrets and instance storage (memory_secrets.go)
 	scans      scansMemory      // the latest scan of each image digest (memory_scans.go)
 	exceptions exceptionsMemory // security exceptions (memory_exceptions.go)
+	onboard    onboardMemory    // onboardings and their events (memory_onboarding.go)
 }
 
 // NewMemory returns an empty in-memory store with the same semantics as the

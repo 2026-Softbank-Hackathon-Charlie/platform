@@ -44,6 +44,11 @@ type Sealed struct {
 	// <cluster>-app, and PGCA its CA, SealedSecret app-pg-ca; both nil
 	// without a pair.
 	PGApp, PGCA map[string]string
+	// PGLegacy is hopcharlie_replicator's account of an onboarded app's
+	// source (ADR 0042), SealedSecret <cluster>-legacy (basic-auth:
+	// username, password); nil for every other app. Render refuses it
+	// until it renders it (gitops.go).
+	PGLegacy map[string]string
 }
 
 // SealedS3 is a sealed bucket key.
@@ -57,7 +62,7 @@ type SealedBackup struct {
 }
 
 func (s *Sealed) empty() bool {
-	return s == nil || (s.S3 == nil && s.PGBackup == nil && len(s.App) == 0 && len(s.PGApp) == 0 && len(s.PGCA) == 0)
+	return s == nil || (s.S3 == nil && s.PGBackup == nil && len(s.App) == 0 && len(s.PGApp) == 0 && len(s.PGCA) == 0 && len(s.PGLegacy) == 0)
 }
 
 // backupSuffix ends the name an app's backup bucket and its user are made

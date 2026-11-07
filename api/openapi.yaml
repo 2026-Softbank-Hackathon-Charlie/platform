@@ -54,6 +54,7 @@ tags:
   - name: apps
   - name: deployments
   - name: github
+  - name: onboarding
 
 paths:
   /healthz:
@@ -2355,6 +2356,299 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
 
+  /v1/onboardings:
+    post:
+      tags: [onboarding]
+      operationId: startOnboarding
+      description: |
+        Start onboarding an app that runs outside the platform, with docker
+        compose on one VM (ADR 0042). The platform reads GitHub, DNS, the
+        cloud, the VM and its database (`discovering`), has hopai write a
+        contract branch and opens a PR (`patching`), deploys the PR branch
+        as a temporary app (`checking`) and waits for an operator's approval
+        (`awaiting_approval`). Only after the approval does it change the
+        source VM and database (`connecting`), then registers the app with
+        its database a replica of the source (`registering`, `syncing`)
+        until `ready`, when `POST /v1/onboardings/{id}/cutover` moves it.
+        The steps are in `GET /v1/onboardings/{id}/events`.
+
+        The app's name is the service address's label, so the address must
+        be `https://<label>.<app domain>`. Without `targetEnv` the target is
+        the environment of the VM's cloud (`eks` for AWS, `gke` for GCP).
+
+        The feature is off unless the server runs with
+        PLATFORM_ONBOARDING=1; the routes are not there then (404). While
+        it is being built every onboarding endpoint answers 501
+        not_implemented.
+
+        Error codes: invalid_request (400: `repo` is not owner/name, or
+        `serviceUrl` is not `https://<label>.<app domain>`), env_not_found
+        (404: `targetEnv`), app_exists (409: an app of that name is
+        registered), onboarding_exists (409: the app has an onboarding that
+        is not done), github_not_configured (503), secrets_not_configured
+        (503), not_implemented (501). Role operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingRequest" }
+      responses:
+        "202":
+          description: Started; discovery runs in the background.
+          headers:
+            Location: { schema: { type: string }, description: "/v1/onboardings/{id}" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+    get:
+      tags: [onboarding]
+      operationId: listOnboardings
+      description: |
+        Every onboarding, newest first, done ones included.
+
+        Roles: viewer, agent, operator.
+      responses:
+        "200":
+          description: The onboardings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    get:
+      tags: [onboarding]
+      operationId: getOnboarding
+      description: |
+        One onboarding: its state, the facts summary, the report, the PR,
+        the test deployment, what was added to the source and what a person
+        has to do. Error codes: onboarding_not_found (404).
+
+        Roles: viewer, agent, operator.
+      responses:
+        "200":
+          description: The onboarding.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [onboarding]
+      operationId: deleteOnboarding
+      description: |
+        Stop and remove an onboarding. The hopai Job and the temporary app
+        are always stopped and deleted first. Then, by state:
+
+        - Up to `awaiting_approval` (or `failed` in one of them): the PR is
+          closed and the onboarding deleted.
+        - From `connecting` to `ready` (or `failed` in one of them): every
+          `legacyChanges` entry is undone in reverse order, the gateway app
+          and the registered app are deleted, then the onboarding. A merged
+          PR stays merged.
+        - From `cutting_over` on: refused.
+
+        The answer comes at once with `deleting` true; the onboarding is
+        gone when `GET /v1/onboardings/{id}` answers 404. A step that fails
+        sets `failure` and leaves the onboarding, and the same request
+        tries again. Error codes: onboarding_not_found (404),
+        onboarding_state_conflict (409: `cutting_over` or later),
+        not_implemented (501). Role operator.
+      responses:
+        "202":
+          description: Being deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    get:
+      tags: [onboarding]
+      operationId: streamOnboardingEvents
+      description: |
+        Server-Sent Events, with the same contract as a deployment's events.
+
+        - The first message is `snapshot` (data: `Onboarding`). Snapshots
+          carry no SSE id.
+        - Then every `OnboardingEvent`, with its `kind` as the SSE event
+          name and its `seq` as the SSE id. Every change of the onboarding
+          (state, report, human actions, legacy changes) also sends a new
+          `snapshot`.
+        - When the onboarding is `done`, or deleted: a final `snapshot` (for
+          a deletion, the last one before it), then the stream closes.
+          Otherwise it stays open, `failed` included, with `: keep-alive`
+          comments.
+
+        Reconnect with `Last-Event-ID` (or `?after=`) to replay the events
+        missed. Error codes: onboarding_not_found (404).
+
+        Roles: viewer, agent, operator.
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: string }
+        - name: after
+          in: query
+          required: false
+          description: Replay events with seq greater than this. Same as Last-Event-ID.
+          schema: { type: integer, format: int64, minimum: 0 }
+      responses:
+        "200":
+          description: An event stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    post:
+      tags: [onboarding]
+      operationId: approveOnboarding
+      description: |
+        Approve the PR and what will be added to the source, in
+        `awaiting_approval` only. `headSha` is the PR head the operator
+        reviewed (`pr.headSha`). When the PR's head is another commit, or
+        the PR is not up to date with the default branch, the answer is 409
+        pr_head_mismatch and the platform makes the branch again and tests
+        it again (`patching`). Once approved the onboarding goes to
+        `connecting`, which disables the source's deploy workflows: the
+        source is not deployed again until it is decommissioned.
+
+        Error codes: invalid_request (400: no `headSha`),
+        onboarding_not_found (404), onboarding_state_conflict (409: not
+        `awaiting_approval`), pr_head_mismatch (409), github_unreachable
+        (502), not_implemented (501). Role operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingApproveRequest" }
+      responses:
+        "202":
+          description: Approved; connecting runs in the background.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/cutover:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    post:
+      tags: [onboarding]
+      operationId: cutOverOnboarding
+      description: |
+        Move the app to the platform, in `ready` only: the platform submits
+        and starts the onboarding's own migration plan (external source,
+        cold target app) and keeps its run id in `runId`; the run is in
+        `GET /v1/migrations/{runId}`, without a rollback. When it succeeds
+        the onboarding goes to `decommissioning`.
+
+        Error codes: onboarding_not_found (404), onboarding_state_conflict
+        (409: not `ready`), cluster_busy (409), not_implemented (501).
+        Role operator.
+      responses:
+        "202":
+          description: The run started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/decommission:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    post:
+      tags: [onboarding]
+      operationId: decommissionOnboarding
+      description: |
+        Confirm stopping the source VM, in `decommissioning` only, after the
+        legacy backend left the gateway and the tailnet device and route
+        were removed. The platform stops (never terminates) the tagged
+        instance and the onboarding is `done`. The disk and the source
+        bucket stay for the operator to delete in the cloud.
+
+        Error codes: onboarding_not_found (404), onboarding_state_conflict
+        (409: not `decommissioning`, or the earlier steps of it are not
+        finished), not_implemented (501). Role operator.
+      responses:
+        "202":
+          description: Stopping the instance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onboardings/{id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/OnboardingId"
+    post:
+      tags: [onboarding]
+      operationId: resumeOnboarding
+      description: |
+        Check again and carry on: from `failed` it goes back to
+        `failedState`; in a state waiting for a person (a `humanActions`
+        entry not done, such as installing the GitHub App or deleting the
+        DNS record) it checks again now instead of at the next poll. A
+        failed cutover run is resumed through the run (`POST
+        /v1/migrations/{runId}/resume`), not here.
+
+        Error codes: onboarding_not_found (404), onboarding_state_conflict
+        (409: neither failed nor waiting for a person), not_implemented
+        (501). Role operator.
+      responses:
+        "202":
+          description: Resumed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Onboarding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        default: { $ref: "#/components/responses/Internal" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2392,6 +2686,11 @@ components:
       in: path
       required: true
       schema: { type: string }
+    OnboardingId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: onb_3f9a1c2b7d4e }
     UserCode:
       name: userCode
       in: path
@@ -2416,12 +2715,12 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
-      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found, bucket_not_registered, prefix_not_listed, repo_not_found"
+      description: "plan_not_found, run_not_found, env_not_found, app_not_found, instance_not_found, deployment_not_found, device_login_not_found, secret_not_found, bucket_not_registered, prefix_not_listed, repo_not_found, onboarding_not_found"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress, ai_run_active"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress, ai_run_active, onboarding_exists, onboarding_state_conflict, pr_head_mismatch"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2447,6 +2746,11 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     Unavailable:
       description: "gateway_not_configured, github_not_configured, login_not_configured, secrets_not_configured, storage_not_configured, audit_unavailable, ai_runner_not_configured"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotImplemented:
+      description: "not_implemented: the endpoint is in the contract and not built yet"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -5042,3 +5346,221 @@ components:
           type: string
           format: date-time
           description: When GitHub stops accepting the token, an hour after it was created.
+
+    OnboardingRequest:
+      type: object
+      additionalProperties: false
+      required: [repo, serviceUrl]
+      properties:
+        repo:
+          type: string
+          pattern: '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$'
+          example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy
+          description: owner/name of the app's repository, without .git.
+        serviceUrl:
+          type: string
+          example: https://moimroom-legacy.hopcharlie.dev
+          description: Where the app answers now, https://<label>.<app domain>. The label is the app's name.
+        targetEnv:
+          type: string
+          example: eks
+          description: The environment to move it to. Default the VM's cloud's (eks for AWS, gke for GCP).
+
+    OnboardingApproveRequest:
+      type: object
+      additionalProperties: false
+      required: [headSha]
+      properties:
+        headSha: { type: string, description: "The PR head commit the operator reviewed (`pr.headSha`)." }
+
+    OnboardingState:
+      description: |
+        Where an onboarding is (ADR 0042, "흐름과 상태"). `failed` keeps the
+        state it failed in in `failedState`.
+      type: string
+      enum: [discovering, patching, checking, awaiting_approval, connecting, registering, syncing, ready, cutting_over, decommissioning, done, failed]
+
+    OnboardingList:
+      type: object
+      required: [onboardings]
+      properties:
+        onboardings:
+          type: array
+          items: { $ref: "#/components/schemas/Onboarding" }
+
+    Onboarding:
+      type: object
+      required: [id, repo, serviceUrl, app, targetEnv, state, deleting, legacyDeployStopped, humanActions, report, legacyChanges, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: string, example: onb_3f9a1c2b7d4e }
+        repo: { type: string, example: 2026-Softbank-Hackathon-Charlie/moimroom-legacy }
+        serviceUrl: { type: string, example: https://moimroom-legacy.hopcharlie.dev }
+        app: { type: string, example: moimroom-legacy, description: "The app's name: serviceUrl's label." }
+        targetEnv: { type: string, example: eks, description: "The environment it moves to; empty until discovery chose it." }
+        state: { $ref: "#/components/schemas/OnboardingState" }
+        failedState:
+          allOf: [{ $ref: "#/components/schemas/OnboardingState" }]
+          description: With state failed, the state it failed in, which resume goes back to.
+        failure: { type: string, description: "Why it failed, or why a step of a deletion failed." }
+        deleting: { type: boolean, description: "DELETE was asked for and is undoing what was done." }
+        legacyDeployStopped:
+          type: boolean
+          description: |
+            The source's deploy workflows are disabled (from connecting on,
+            until it is deleted). The console says so on every screen while
+            it is true.
+        humanActions:
+          type: array
+          description: What a person has to do, which the platform cannot (ADR 0042, "한 번 하는 설정"). The platform checks it itself; resume checks again at once.
+          items: { $ref: "#/components/schemas/OnboardingHumanAction" }
+        facts: { $ref: "#/components/schemas/OnboardingFactsSummary" }
+        report: { $ref: "#/components/schemas/OnboardingReport" }
+        pr: { $ref: "#/components/schemas/OnboardingPR" }
+        check: { $ref: "#/components/schemas/OnboardingCheck" }
+        legacyChanges:
+          type: array
+          description: What was added to or changed on the source VM, its database, GitHub and the management cluster, in the order it was done. DELETE undoes them in reverse.
+          items: { $ref: "#/components/schemas/OnboardingLegacyChange" }
+        runId: { type: string, description: "The cutover's migration run, from cutting_over on." }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        approvedBy: { type: string }
+        approvedAt: { type: string, format: date-time }
+        approvedSha: { type: string, description: "The PR head commit that was approved." }
+
+    OnboardingHumanAction:
+      type: object
+      required: [kind, done]
+      properties:
+        kind: { type: string, enum: [install_github_app, delete_dns_record] }
+        url: { type: string, description: "install_github_app: the App's installation page", example: https://github.com/apps/hopcharlie-platform/installations/new }
+        record: { $ref: "#/components/schemas/OnboardingDNSRecord" }
+        done: { type: boolean, description: "The platform saw it done (the App can read the repository; the name resolves to the gateway)." }
+
+    OnboardingDNSRecord:
+      description: "delete_dns_record: the individual record to delete, so the wildcard sends the name to the gateway."
+      type: object
+      required: [name, type, value]
+      properties:
+        name: { type: string, example: moimroom-legacy.hopcharlie.dev }
+        type: { type: string, example: A }
+        value: { type: string, example: 203.0.113.10 }
+
+    OnboardingFactsSummary:
+      description: The parts of the discovery's facts the console shows. The full facts are pkg/onboard/facts.Facts and go only to hopai.
+      type: object
+      properties:
+        cloud: { type: string, enum: [aws, gcp] }
+        region: { type: string, example: ap-northeast-2 }
+        instanceId: { type: string, example: i-0abc1234def567890 }
+        publicIp: { type: string, example: 203.0.113.10 }
+        ssmManaged: { type: boolean }
+        defaultBranch: { type: string, example: main }
+        head: { type: string, description: "The default branch's head commit." }
+        deployWorkflows: { type: array, items: { type: string }, description: "The workflows that deploy to the VM, which connecting disables." }
+        composeProject: { type: string, example: moimroom }
+        containers: { type: array, items: { type: string }, description: "compose services: container names" }
+        dbImage: { type: string, example: postgres:17.11-alpine }
+        dbServerVersionNum: { type: integer, example: 170011 }
+        dbLibc: { type: string, enum: [glibc, musl] }
+        dbDatabase: { type: string, example: moimroom }
+        dbOwner: { type: string, example: moimroom }
+        dbSizeBytes: { type: integer, format: int64 }
+        image: { type: string, description: "The CNPG image chosen, pinned by digest." }
+        storageSize: { type: string, example: 2Gi }
+        reindex: { type: array, items: { type: string }, description: "\"schema.index\" names rebuilt after the promotion" }
+        bucket: { type: string, description: "The source bucket of the app's files." }
+        objectCount: { type: integer, format: int64 }
+
+    OnboardingReport:
+      type: object
+      required: [blockers, warnings]
+      properties:
+        blockers:
+          type: array
+          description: Why it cannot go on (pkg/onboard/facts Block* codes). Any blocker stops it in failed.
+          items: { $ref: "#/components/schemas/OnboardingFinding" }
+        warnings:
+          type: array
+          description: What the operator should know before approving (pkg/onboard/facts Warn* codes).
+          items: { $ref: "#/components/schemas/OnboardingFinding" }
+        drift: { $ref: "#/components/schemas/OnboardingDrift" }
+        holdSeconds: { type: number, description: "The estimated write hold of the cutover." }
+        holdBudgetSeconds: { type: number, example: 40, description: "The gateway's MaxHold less 15 seconds." }
+
+    OnboardingFinding:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: auto_conf_settings }
+        message: { type: string }
+        subject: { type: string, description: "What it is about, such as a container, setting or index." }
+
+    OnboardingDrift:
+      description: What runs differs from the default branch's head. Shown first; it does not block.
+      type: object
+      required: [head]
+      properties:
+        head: { type: string }
+        runningRevision: { type: string, description: "The org.opencontainers.image.revision label of the running image." }
+        lastDeployCommit: { type: string, description: "The commit of the newest successful deploy workflow run." }
+
+    OnboardingPR:
+      type: object
+      required: [number, url, headSha]
+      properties:
+        number: { type: integer, example: 12 }
+        url: { type: string, example: https://github.com/2026-Softbank-Hackathon-Charlie/moimroom-legacy/pull/12 }
+        headSha: { type: string }
+        merged: { type: boolean }
+
+    OnboardingCheck:
+      description: The test deployment of the PR branch.
+      type: object
+      required: [app, result, attempts]
+      properties:
+        app: { type: string, example: moimroom-legacy-onb-1c2b7d, description: "The temporary app, deleted when the test ends." }
+        deploymentId: { type: string }
+        result: { type: string, enum: [running, passed, failed] }
+        attempts: { type: integer, description: "Test deployments so far, at most 2." }
+        startSeconds: { type: number, description: "From the Deployment's creation until it was Ready." }
+        message: { type: string }
+
+    OnboardingLegacyChange:
+      description: |
+        One thing added to the source or done for it, in order:
+        workflow_disabled (`target` the workflow path), instance_tagged
+        (the instance id), postgres_role_created, replication_role_created
+        (`hopcharlie_replicator`), tailscale_volume_created,
+        tailscale_container_started, tailscale_device_joined (the tailnet
+        hostname), hba_line_added (the line), wal_keep_size_added (the
+        line), db_route_created (the management cluster's Service).
+      type: object
+      required: [kind, target, at]
+      properties:
+        kind:
+          type: string
+          enum: [workflow_disabled, instance_tagged, postgres_role_created, replication_role_created, tailscale_volume_created, tailscale_container_started, tailscale_device_joined, hba_line_added, wal_keep_size_added, db_route_created]
+        target: { type: string }
+        at: { type: string, format: date-time }
+        undoneAt: { type: string, format: date-time, description: "When DELETE undid it." }
+
+    OnboardingEvent:
+      description: |
+        One step of an onboarding.
+        - state: it entered `state`; `message` may say more.
+        - step: something it did or found in `state`.
+        - log: one line of output (hopai, the test deployment, an SSM command) in `message`.
+        - human: it waits for a person (`humanActions`).
+        - error: a step failed; `message` is why.
+      type: object
+      required: [seq, onboardingId, time, state, kind]
+      properties:
+        seq: { type: integer, format: int64 }
+        onboardingId: { type: string }
+        time: { type: string, format: date-time }
+        state: { $ref: "#/components/schemas/OnboardingState" }
+        kind: { type: string, enum: [state, step, log, human, error] }
+        message: { type: string }
+        data: { type: object, additionalProperties: true }

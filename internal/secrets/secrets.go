@@ -257,6 +257,19 @@ func (c *Cipher) Checksum(app, instance string, values map[string]string) string
 const (
 	DatabasePassword = "password"
 	DatabaseCAKey    = "ca.key"
+	// DatabaseReplicationPassword is hopcharlie_replicator's password of an
+	// onboarded app's database (ADR 0042), with databaseData's additional
+	// data like the other two.
+	DatabaseReplicationPassword = "replication.password"
+)
+
+// The fields of an onboarding (ADR 0042) that are stored encrypted. Their
+// additional data is ("onboardings", id, field, ""), like databaseData's
+// with the table's name.
+const (
+	OnboardingSecrets             = "secrets" // {"<container>": {"<NAME>": "<value>"}}
+	OnboardingSuperuserPassword   = "superuser.password"
+	OnboardingReplicationPassword = "replication.password"
 )
 
 // databaseData binds a database pair's ciphertext to its app and field. The
