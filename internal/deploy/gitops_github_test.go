@@ -205,6 +205,15 @@ func TestGitHubGitOps(t *testing.T) {
 		t.Fatalf("second delete: %q %v %v", again, changed, err)
 	}
 
+	// A file is deleted on its own (an environment taken out, ADR 0037).
+	if _, _, err := g.Write(ctx, map[string][]byte{"apps/shop--dev/eks.yaml": []byte("e")}, "deploy shop--dev to eks"); err != nil {
+		t.Fatal(err)
+	}
+	sha3, changed, err = g.Delete(ctx, []string{FilePath("shop--dev", "eks")}, "remove eks")
+	if got := fake.files(sha3); err != nil || !changed || got["apps/shop--dev/eks.yaml"] != "" || got["apps/shop--dev/gke.yaml"] == "" {
+		t.Fatalf("delete a file: %v %v, files %v", changed, err, got)
+	}
+
 	// Nothing that is not one instance's directory, such as AppDir of an
 	// empty name, is deleted: the request fails before GitHub sees it.
 	patches := fake.patches

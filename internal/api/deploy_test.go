@@ -24,6 +24,8 @@ type fakeRemover struct {
 	mu      sync.Mutex
 	err     error
 	removed []string
+	// removeEnv, when set, does what RemoveEnvironment does to the store.
+	removeEnv func(app, env string) error
 }
 
 func (f *fakeRemover) RemoveApp(_ context.Context, name string) error {
@@ -43,6 +45,19 @@ func (f *fakeRemover) RemoveInstance(_ context.Context, app, branch string) erro
 		return f.err
 	}
 	f.removed = append(f.removed, app+"@"+branch)
+	return nil
+}
+
+func (f *fakeRemover) RemoveEnvironment(_ context.Context, app, env string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.removed = append(f.removed, app+"/"+env)
+	if f.removeEnv != nil {
+		return f.removeEnv(app, env)
+	}
 	return nil
 }
 

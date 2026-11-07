@@ -18,9 +18,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
@@ -470,6 +472,13 @@ func main() {
 	}
 	deps.Secrets = secretsKey
 	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }
+	deps.SealingConfigured = func(env string) bool { _, err := envSvc.Sealer(env); return err == nil }
+	// The readiness of a database pair (ADR 0037) reads the app's CNPG
+	// Clusters with the platform's own workload credentials.
+	deps.DBCluster = dbClusterReader(envSvc)
+	if gw != nil {
+		deps.Gateway = gw
+	}
 	go agents.RunSweeper(runCtx, agentIdle, log)
 	// Optional (ADR 0030): the management cluster's routes to registered apps' databases.
 	if dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log); err != nil {
@@ -654,6 +663,33 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// dbClusterReader reads a CNPG Cluster in an environment's workload cluster.
+// Each environment's dynamic client is built on first use from its
+// kubeconfig context and kept; a failed build is tried again next time.
+func dbClusterReader(envSvc *envs.Service) api.DBClusterReader {
+	var mu sync.Mutex
+	clients := map[string]dynamic.Interface{}
+	return func(ctx context.Context, env, namespace, name string) (*cnpg.Status, error) {
+		mu.Lock()
+		dyn, ok := clients[env]
+		if !ok {
+			c, known := envSvc.Config(env)
+			if !known {
+				mu.Unlock()
+				return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
+			}
+			_, d, err := envs.NewReadClients(c, api.DBClusterTimeout)
+			if err != nil {
+				mu.Unlock()
+				return nil, err
+			}
+			dyn, clients[env] = d, d
+		}
+		mu.Unlock()
+		return cnpg.New(dyn, namespace, name).Get(ctx)
+	}
 }
 
 func splitList(s string) []string {

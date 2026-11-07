@@ -36,8 +36,11 @@ func (j *job) deploy(ctx context.Context) error {
 		j.d.StartedAt = &now
 	}
 	msg := "reading platform.yaml at " + short(j.d.Commit)
-	if j.d.Trigger == TriggerRedeploy {
+	switch j.d.Trigger {
+	case TriggerRedeploy:
 		msg = "redeploying " + short(j.d.Commit) + " with its images and the current secrets; no build"
+	case TriggerEnvironment:
+		msg = "deploying " + short(j.d.Commit) + " with its images to the app's environments, now " + envNames(j.d.Environments) + "; no build"
 	}
 	if j.d.Status != store.DeployQueued {
 		msg = "resumed after a restart (was " + j.d.Status + "); " + msg
@@ -240,16 +243,17 @@ func (j *job) updateSpec(ctx context.Context, app store.App, branch *store.AppBr
 // build builds the images unless the deployment has them: a redeploy, or
 // an earlier attempt of this deployment.
 func (j *job) build(ctx context.Context, app store.App, spec appspec.Spec) error {
+	reuses := j.d.Trigger == TriggerRedeploy || j.d.Trigger == TriggerEnvironment
 	if imagesFor(j.d.Images, spec) != nil {
-		if j.d.Trigger == TriggerRedeploy {
+		if reuses {
 			j.note(ctx, "using the images of the last healthy deployment: "+imageServices(j.d.Images))
 		} else {
 			j.note(ctx, "images were built before the restart; not building again")
 		}
 		return nil
 	}
-	if j.d.Trigger == TriggerRedeploy {
-		return errors.New("a redeploy has no images for every service; deploy the branch instead")
+	if reuses {
+		return fmt.Errorf("a %s deployment has no images for every service; deploy the branch instead", j.d.Trigger)
 	}
 	token, err := j.e.cfg.GitHub.Token(ctx)
 	if err != nil {
@@ -334,7 +338,21 @@ func (j *job) commit(ctx context.Context, app store.App, spec appspec.Spec) (str
 	var sha string
 	var changed bool
 	err := j.locked(ctx, func() error {
-		var err error
+		// Environments are added and removed under this lock (ADR 0037):
+		// the files follow the app as it is now, and a deployment to an
+		// environment the app no longer has writes nothing.
+		app, err := j.e.cfg.Store.GetApp(ctx, app.Name)
+		if errors.Is(err, store.ErrNotFound) {
+			return errStopped
+		}
+		if err != nil {
+			return fmt.Errorf("read app %s: %w", j.d.App, err)
+		}
+		for _, e := range j.d.Environments {
+			if !slices.Contains(app.Environments, e.Env) {
+				return fmt.Errorf("environment %s was removed from app %s; deploy again", e.Env, app.Name)
+			}
+		}
 		if files, err = j.sealedFiles(ctx, app, spec, images); err != nil {
 			return err
 		}

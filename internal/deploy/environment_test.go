@@ -1,0 +1,391 @@
+package deploy
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
+	"sigs.k8s.io/yaml"
+)
+
+// Adding and removing an environment of an app (ADR 0037).
+
+func TestRenderPeerAbsent(t *testing.T) {
+	spec, errs := appspec.Check([]byte(pgSpec))
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	f := File{App: "shop", Instance: "shop", Env: "gke", Commit: "c", Deployment: "dep_1", Spec: *spec, Images: map[string]string{"web": "r/web@sha256:aa"},
+		Sealed:     &Sealed{PGApp: map[string]string{"password": "Ag1"}, PGCA: map[string]string{"ca.crt": "Ag2", "ca.key": "Ag3"}},
+		DBTopology: &DBTopology{Primary: "gke", Peer: "eks"}}
+	present, err := Render(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(present, []byte("peerPresent")) {
+		t.Fatalf("a present peer is left out, so a pair registered in two environments keeps its files:\n%s", present)
+	}
+
+	f.DBTopology = &DBTopology{Primary: "gke", Peer: "eks", PeerAbsent: true}
+	absent, err := Render(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "  dbTopology:\n    primary: \"gke\"\n    peer: \"eks\"\n    peerPresent: false\n  sealedSecrets:\n"
+	if !strings.Contains(string(absent), want) {
+		t.Fatalf("rendered:\n%s\nwant it to have:\n%s", absent, want)
+	}
+	// Everything else is the paired file's.
+	if got := strings.Replace(string(absent), "    peerPresent: false\n", "", 1); got != string(present) {
+		t.Fatalf("peerPresent false changed more than the key:\n%s", absent)
+	}
+	var parsed struct {
+		Values struct {
+			DBTopology map[string]any `json:"dbTopology"`
+		} `json:"values"`
+	}
+	if err := yaml.Unmarshal(absent, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := parsed.Values.DBTopology["peerPresent"].(bool); !ok || v {
+		t.Fatalf("peerPresent parses as %#v, want the boolean false", parsed.Values.DBTopology["peerPresent"])
+	}
+
+	// The peer's file is never rendered while the peer is absent.
+	f.Env = "eks"
+	if _, err := Render(f); err == nil || !strings.Contains(err.Error(), "only the primary's file") {
+		t.Fatalf("peer file with an absent peer: %v", err)
+	}
+}
+
+// registerAlone registers app in env with a database pair whose peer is
+// not one of its environments, as POST /v1/apps does for one environment
+// (ADR 0037).
+func (se *storageEnv) registerAlone(name, env, peer string) store.AppDatabase {
+	se.t.Helper()
+	spec, errs := appspec.Check([]byte(pgSpec))
+	if len(errs) > 0 {
+		se.t.Fatal(errs)
+	}
+	now := time.Now().UTC()
+	row, err := NewAppDatabase(se.cipher, name, []string{env, peer}, now)
+	if err != nil {
+		se.t.Fatal(err)
+	}
+	err = se.store.CreateAppWithDatabase(context.Background(), store.App{
+		Name: name, Repo: "org/" + name, Branch: "main", Environments: []string{env}, AutoDeploy: true,
+		Spec: specJSON(*spec), CreatedBy: "op", CreatedAt: now,
+	}, row)
+	if err != nil {
+		se.t.Fatal(err)
+	}
+	return row
+}
+
+// environmentDeployment stores a queued deployment of trigger environment
+// that repeats d to envs, as POST /v1/apps/{name}/environments makes it.
+func (te *testEnv) environmentDeployment(d store.Deployment, envs ...string) store.Deployment {
+	te.t.Helper()
+	te.n++
+	e := store.Deployment{
+		ID: fmt.Sprintf("dep_e%011d", te.n), App: d.App, Branch: d.Branch, Instance: d.Instance, Ref: d.Ref, Commit: d.Commit,
+		Trigger: TriggerEnvironment, TriggeredBy: "op", Status: store.DeployQueued, Images: d.Images, Spec: d.Spec,
+		CreatedAt: time.Date(2026, 11, 3, 0, 0, te.n, 0, time.UTC),
+	}
+	for _, env := range envs {
+		e.Environments = append(e.Environments, store.DeploymentEnvironment{Env: env, Status: EnvPending})
+	}
+	if err := te.store.CreateDeployment(context.Background(), e); err != nil {
+		te.t.Fatal(err)
+	}
+	return e
+}
+
+type topologyFile struct {
+	Values struct {
+		DBTopology *struct {
+			Primary     string `json:"primary"`
+			Peer        string `json:"peer"`
+			PeerPresent *bool  `json:"peerPresent"`
+		} `json:"dbTopology"`
+		SealedSecrets struct {
+			PGApp map[string]string `json:"pgApp"`
+			PGCA  map[string]string `json:"pgCA"`
+		} `json:"sealedSecrets"`
+	} `json:"values"`
+}
+
+func (se *storageEnv) topology(instance, env string) (topologyFile, bool) {
+	se.t.Helper()
+	files, _ := se.git.snapshot()
+	raw, ok := files[FilePath(instance, env)]
+	if !ok {
+		return topologyFile{}, false
+	}
+	var f topologyFile
+	if err := yaml.Unmarshal(raw, &f); err != nil {
+		se.t.Fatal(err)
+	}
+	return f, true
+}
+
+// TestDeployDatabaseBornAloneThenPeerAdded: an app registered in one
+// environment is born with the full topology and peerPresent false; once
+// the peer is added, a deployment of trigger environment takes it there
+// without a build, and the primary's file drops peerPresent.
+func TestDeployDatabaseBornAloneThenPeerAdded(t *testing.T) {
+	se := newStorageEnv(t)
+	se.github.push("main", sha("p1"), map[string]string{"platform.yaml": pgSpec, "Dockerfile": "FROM scratch\n"})
+	row := se.registerAlone("shop", "gke", "eks")
+	se.start()
+	ctx := context.Background()
+
+	first := se.deploy(sha("p1"), "gke")
+	if first.Status != store.DeployHealthy {
+		t.Fatalf("first: %s %q\n%s", first.Status, first.Error, se.dump(first.ID))
+	}
+	f, ok := se.topology("shop", "gke")
+	if tp := f.Values.DBTopology; !ok || tp == nil || tp.Primary != "gke" || tp.Peer != "eks" || tp.PeerPresent == nil || *tp.PeerPresent {
+		t.Fatalf("gke dbTopology %+v", f.Values.DBTopology)
+	}
+	if len(f.Values.SealedSecrets.PGApp) != 7 || len(f.Values.SealedSecrets.PGCA) != 2 {
+		t.Fatal("the primary is born without its sealed account and CA")
+	}
+	if got := se.ctrl["gke"].open(t, "shop", "app-pg-ca", f.Values.SealedSecrets.PGCA["ca.crt"]); got != row.CACert {
+		t.Fatal("the primary's CA is not the pair's")
+	}
+	if _, ok := se.topology("shop", "eks"); ok {
+		t.Fatal("a file for the peer that is not an environment of the app")
+	}
+
+	// The peer is added.
+	if err := se.store.SetAppEnvironments(ctx, "shop", []string{"gke"}, []string{"gke", "eks"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := se.store.GetDeployment(ctx, first.ID)
+	builds := se.builder.count()
+	d := se.environmentDeployment(stored, "gke", "eks")
+	se.enqueue(d.ID)
+	got := se.wait(d.ID)
+	if got.Status != store.DeployHealthy || se.builder.count() != builds {
+		t.Fatalf("environment deployment %s %q, builds %d -> %d\n%s", got.Status, got.Error, builds, se.builder.count(), se.dump(got.ID))
+	}
+	if !hasEvent(se.events(got.ID), EventLog, "using the images of the last healthy deployment") {
+		t.Fatalf("events:\n%s", se.dump(got.ID))
+	}
+	for _, env := range []string{"gke", "eks"} {
+		f, ok := se.topology("shop", env)
+		if tp := f.Values.DBTopology; !ok || tp == nil || tp.Primary != "gke" || tp.Peer != "eks" || tp.PeerPresent != nil {
+			t.Fatalf("%s dbTopology %+v", env, f.Values.DBTopology)
+		}
+		if got := se.ctrl[env].open(t, "shop", "app-pg-ca", f.Values.SealedSecrets.PGCA["ca.crt"]); got != row.CACert {
+			t.Fatalf("%s CA is not the pair's", env)
+		}
+	}
+}
+
+func TestEnvironmentDeploymentNeedsImages(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke")
+	te.start()
+	d := te.environmentDeployment(store.Deployment{App: "shop", Branch: "main", Instance: "shop", Ref: "main", Commit: sha("c1"), Images: []store.DeploymentImage{}}, "gke")
+	te.enqueue(d.ID)
+	got := te.wait(d.ID)
+	if got.Status != store.DeployFailed || !strings.Contains(got.Error, "no images for every service") || te.builder.count() != 0 {
+		t.Fatalf("%s %q, builds %d", got.Status, got.Error, te.builder.count())
+	}
+}
+
+// TestDeployToARemovedEnvironmentWritesNothing: a deployment that still
+// lists an environment the app no longer has fails before its commit.
+func TestDeployToARemovedEnvironmentWritesNothing(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke", "eks")
+	te.start()
+	ctx := context.Background()
+	if err := te.store.SetAppEnvironments(ctx, "shop", []string{"gke", "eks"}, []string{"gke"}); err != nil {
+		t.Fatal(err)
+	}
+	d := te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(d.ID)
+	got := te.wait(d.ID)
+	if got.Status != store.DeployFailed || !strings.Contains(got.Error, "environment eks was removed") {
+		t.Fatalf("%s %q", got.Status, got.Error)
+	}
+	if files, _ := te.git.snapshot(); len(files) != 0 {
+		t.Fatalf("committed %v", sortedKeys(files))
+	}
+}
+
+func TestRemoveEnvironment(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke", "eks")
+	ex := te.start()
+	ctx := context.Background()
+	branch := te.addBranch("shop", "dev")
+	te.github.push("dev", sha("dev1"), shopFiles)
+	for _, d := range []store.Deployment{te.deployment("shop", sha("c1"), "gke", "eks"), te.deploymentTo("shop", "dev", branch, sha("dev1"), "gke", "eks")} {
+		te.enqueue(d.ID)
+		if got := te.wait(d.ID); got.Status != store.DeployHealthy {
+			t.Fatalf("%s: %s %q", d.ID, got.Status, got.Error)
+		}
+	}
+	if a, _ := te.gw.app("shop"); a.WriteBackend != "gke" || a.Backends["eks"] == "" {
+		t.Fatalf("gateway before %+v", a)
+	}
+
+	for name, tc := range map[string]struct {
+		env  string
+		prep func() func()
+		want error
+		msg  string
+	}{
+		"the first environment": {env: "gke", prep: func() func() { return func() {} }, msg: "first environment"},
+		"not an environment":    {env: "onprem", prep: func() func() { return func() {} }, msg: "not in environment"},
+		"writes there": {env: "eks", want: ErrEnvironmentInUse, prep: func() func() {
+			te.gw.mu.Lock()
+			old := te.gw.apps[branch]
+			a := old
+			a.WriteBackend = "eks"
+			te.gw.apps[branch] = a
+			te.gw.mu.Unlock()
+			return func() { te.gw.mu.Lock(); te.gw.apps[branch] = old; te.gw.mu.Unlock() }
+		}},
+		"reads there": {env: "eks", want: ErrEnvironmentInUse, prep: func() func() {
+			te.gw.mu.Lock()
+			old := te.gw.apps["shop"]
+			a := old
+			a.ReadWeights = map[string]int{"gke": 90, "eks": 10}
+			te.gw.apps["shop"] = a
+			te.gw.mu.Unlock()
+			return func() { te.gw.mu.Lock(); te.gw.apps["shop"] = old; te.gw.mu.Unlock() }
+		}},
+		"writes held": {env: "eks", want: ErrWritesHeld, prep: func() func() {
+			te.gw.mu.Lock()
+			old := te.gw.apps["shop"]
+			a := old
+			a.WritesHeld = true
+			te.gw.apps["shop"] = a
+			te.gw.mu.Unlock()
+			return func() { te.gw.mu.Lock(); te.gw.apps["shop"] = old; te.gw.mu.Unlock() }
+		}},
+		"a deployment in progress": {env: "eks", want: ErrDeploymentInProgress, prep: func() func() {
+			d := te.deploymentTo("shop", "dev", branch, sha("dev1"), "gke") // stored, not taken
+			return func() {
+				now := time.Now().UTC()
+				d.Status, d.FinishedAt = store.DeploySuperseded, &now
+				if _, err := te.store.UpdateDeployment(ctx, d); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}},
+	} {
+		undo := tc.prep()
+		err := ex.RemoveEnvironment(ctx, "shop", tc.env)
+		undo()
+		if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) || (tc.msg != "" && !strings.Contains(err.Error(), tc.msg)) {
+			t.Fatalf("%s: %v, want %v", name, err, tc.want)
+		}
+		if a, _ := te.store.GetApp(ctx, "shop"); !slices.Equal(a.Environments, []string{"gke", "eks"}) {
+			t.Fatalf("%s: environments %v", name, a.Environments)
+		}
+		if files, _ := te.git.snapshot(); files[FilePath("shop", "eks")] == nil || files[FilePath(branch, "eks")] == nil {
+			t.Fatalf("%s: removed files", name)
+		}
+	}
+
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := te.git.snapshot()
+	if files[FilePath("shop", "eks")] != nil || files[FilePath(branch, "eks")] != nil || files[FilePath("shop", "gke")] == nil || files[FilePath(branch, "gke")] == nil {
+		t.Fatalf("files after %v", sortedKeys(files))
+	}
+	for _, in := range []string{"shop", branch} {
+		a, _ := te.gw.app(in)
+		if _, ok := a.Backends["eks"]; ok || a.WriteBackend != "gke" || a.Backends["gke"] == "" {
+			t.Fatalf("gateway app %s after %+v", in, a)
+		}
+	}
+	if a, _ := te.store.GetApp(ctx, "shop"); !slices.Equal(a.Environments, []string{"gke"}) {
+		t.Fatalf("environments %v", a.Environments)
+	}
+	// Again: the environment is gone, so nothing to do.
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err == nil {
+		t.Fatal("removed twice")
+	}
+}
+
+// TestCleanupStorageOfARemovedEnvironment: the instances' buckets in an
+// environment taken out of the app go like a deleted instance's, and stay
+// when the environment is added back first.
+func TestCleanupStorageOfARemovedEnvironment(t *testing.T) {
+	se := newStorageEnv(t)
+	se.register("shop", "gke", "eks")
+	ex := se.start()
+	ctx := context.Background()
+	if d := se.deploy(sha("s1"), "gke", "eks"); d.Status != store.DeployHealthy {
+		t.Fatalf("%s %q", d.Status, d.Error)
+	}
+	if n, err := ex.CleanupStorage(ctx); err != nil || n != 0 {
+		t.Fatalf("cleanup with both environments: %d, %v", n, err)
+	}
+	if err := se.store.SetAppEnvironments(ctx, "shop", []string{"gke", "eks"}, []string{"gke"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { // the loop runs on its own after start; run it once more here
+		_, _ = ex.CleanupStorage(ctx)
+		rows, _ := se.store.ListInstanceStorage(ctx, "shop", "")
+		return len(rows) == 1 && rows[0].Env == "gke"
+	})
+	if !slices.Contains(se.drvs["eks"].deleted, "shop") || slices.Contains(se.drvs["gke"].deleted, "shop") {
+		t.Fatalf("deleted eks %v, gke %v", se.drvs["eks"].deleted, se.drvs["gke"].deleted)
+	}
+}
+
+// TestRemoveEnvironmentKeepsAMigratedGatewayOrder: the write backend and
+// the other read weights stay as the gateway has them.
+func TestRemoveEnvironmentKeepsTheGatewayRouting(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke", "eks", "onprem")
+	ex := te.start()
+	ctx := context.Background()
+	te.gw.mu.Lock()
+	te.gw.apps["shop"] = gateway.AppInfo{Name: "shop", Backends: map[string]string{"gke": "http://g", "eks": "http://e", "onprem": "http://o"},
+		WriteBackend: "gke", ReadWeights: map[string]int{"gke": 80, "onprem": 20, "eks": 0}}
+	te.gw.mu.Unlock()
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := te.gw.app("shop")
+	if len(a.Backends) != 2 || a.WriteBackend != "gke" || a.ReadWeights["gke"] != 80 || a.ReadWeights["onprem"] != 20 {
+		t.Fatalf("gateway after %+v", a)
+	}
+}
+
+// TestEnvironmentDeploymentNeverReplacesANewerCommit: it is superseded like
+// a redeploy, so a push that is unfinished keeps it from running and a
+// later push replaces it (ADR 0037).
+func TestEnvironmentDeploymentNeverReplacesANewerCommit(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke", "eks")
+	ctx := context.Background()
+	push := te.deployment("shop", sha("c1"), "gke") // unfinished, not taken
+	env := te.environmentDeployment(store.Deployment{App: "shop", Branch: "main", Instance: "shop", Ref: "main", Commit: sha("old"), Images: []store.DeploymentImage{}}, "gke", "eks")
+	te.start()
+	te.enqueue(env.ID)
+	if got := te.wait(env.ID); got.Status != store.DeploySuperseded {
+		t.Fatalf("environment deployment beside a push: %s %q", got.Status, got.Error)
+	}
+	if got, _ := te.store.GetDeployment(ctx, push.ID); store.DeploymentFinished(got.Status) {
+		t.Fatalf("the push was finished: %s", got.Status)
+	}
+}

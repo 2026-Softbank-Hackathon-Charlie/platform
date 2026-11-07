@@ -249,3 +249,71 @@ func TestLookup(t *testing.T) {
 		}
 	}
 }
+
+// TestRegistryLeavesOutAPeerTheAppIsNotIn: an app registered in one
+// environment has a pair whose peer is not one of its environments (ADR
+// 0037); the catalog, the policy and the drafts know only its primary
+// until the peer is added.
+func TestRegistryLeavesOutAPeerTheAppIsNotIn(t *testing.T) {
+	f := newRegistryFixture(t)
+	t.Setenv("GKE_SHOP_PGPASSWORD", "")
+	t.Setenv("EKS_SHOP_PGPASSWORD", "")
+	os.Unsetenv("EKS_SHOP_PGPASSWORD")
+	spec, _ := json.Marshal(map[string]any{"name": "shop", "resources": []map[string]string{{"name": "db", "type": "postgres"}}})
+	a := store.App{Name: "shop", Repo: "org/shop", Branch: "main", Environments: []string{"gke"}, Spec: spec, CreatedAt: time.Now().UTC()}
+	row, err := f.cipher.DatabaseRow("shop", "gke", "eks", "pw-of-shop", "CERT", "KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.CreateAppWithDatabase(t.Context(), a, row); err != nil {
+		t.Fatal(err)
+	}
+
+	gke := "db-gke-shop.hopcharlie-db-network.svc.cluster.local:5432"
+	eks := "db-eks-shop.hopcharlie-db-network.svc.cluster.local:5432"
+	lookup := func() []string {
+		t.Helper()
+		got, ok, err := f.cat.Lookup(t.Context(), "shop")
+		if err != nil || !ok {
+			t.Fatalf("Lookup = %v, %v", ok, err)
+		}
+		var envs []string
+		for _, e := range got.Environments {
+			envs = append(envs, e.Env)
+		}
+		return envs
+	}
+	if envs := lookup(); !reflect.DeepEqual(envs, []string{"gke"}) {
+		t.Fatalf("environments %v, want only gke", envs)
+	}
+	pw, hosts, err := f.cat.RegistryHosts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(pw["GKE_SHOP_PGPASSWORD"], []string{gke}) || pw["EKS_SHOP_PGPASSWORD"] != nil || !reflect.DeepEqual(hosts["shop"], []string{gke}) {
+		t.Fatalf("RegistryHosts = %v, %v", pw, hosts)
+	}
+	if _, err := f.cat.Draft(t.Context(), apiv1.PlanDraftRequest{App: "shop", Source: "gke", Target: "eks"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("draft to the absent peer: %v, want ErrInvalid", err)
+	}
+	if err := f.cat.SetRegistryPasswords(t.Context(), []string{"EKS_SHOP_PGPASSWORD"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, set := os.LookupEnv("EKS_SHOP_PGPASSWORD"); set {
+		t.Fatal("the absent peer's password was put into the environment")
+	}
+
+	// The peer is added: both, as for a pair registered in two environments.
+	if err := f.store.SetAppEnvironments(t.Context(), "shop", []string{"gke"}, []string{"gke", "eks"}); err != nil {
+		t.Fatal(err)
+	}
+	if envs := lookup(); !reflect.DeepEqual(envs, []string{"gke", "eks"}) {
+		t.Fatalf("environments %v after the peer was added", envs)
+	}
+	if _, hosts, _ := f.cat.RegistryHosts(t.Context()); !reflect.DeepEqual(hosts["shop"], []string{eks, gke}) {
+		t.Fatalf("hosts %v after the peer was added", hosts)
+	}
+	if p, err := f.cat.Draft(t.Context(), apiv1.PlanDraftRequest{App: "shop", Source: "gke", Target: "eks"}); err != nil || p.Target.Cluster != "shop-db" {
+		t.Fatalf("draft after the peer was added: %+v, %v", p.Target, err)
+	}
+}

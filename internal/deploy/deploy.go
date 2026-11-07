@@ -47,6 +47,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -335,7 +336,9 @@ func (e *Executor) supersede(ctx context.Context, d store.Deployment) (bool, err
 		return false, fmt.Errorf("list deployments of %s: %w", d.Instance, err)
 	}
 	list = slices.DeleteFunc(list, func(o store.Deployment) bool { return o.ID == d.ID || store.DeploymentFinished(o.Status) })
-	redeploy := func(o store.Deployment) bool { return o.Trigger == TriggerRedeploy }
+	// An environment deployment repeats the last healthy one too, so it
+	// must never replace a newer commit either (ADR 0037).
+	redeploy := func(o store.Deployment) bool { return o.Trigger == TriggerRedeploy || o.Trigger == TriggerEnvironment }
 	if redeploy(d) {
 		if i := slices.IndexFunc(list, func(o store.Deployment) bool { return !redeploy(o) }); i >= 0 {
 			msg := fmt.Sprintf("superseded by deployment %s, which started meanwhile; it uses the current secrets", list[i].ID)
@@ -535,6 +538,15 @@ const (
 // TriggerRedeploy is the trigger of a redeploy (apiv1.DeploymentTriggerRedeploy).
 const TriggerRedeploy = "redeploy"
 
+// TriggerEnvironment is the trigger of the deployment that takes the
+// default instance to the app's environments after one was added or
+// removed (apiv1.DeploymentTriggerEnvironment, ADR 0037). Like a redeploy
+// it repeats the last healthy deployment's images without a build, and
+// supersedes and is superseded as a redeploy: it never replaces a newer
+// commit, and a push or manual deployment, which goes to all of the app's
+// environments, replaces it.
+const TriggerEnvironment = "environment"
+
 // Environment statuses, mirrored from apiv1.DeploymentEnvironmentStatus.
 const (
 	EnvPending  = "pending"
@@ -670,6 +682,139 @@ func (e *Executor) removeInstances(ctx context.Context, instances []string, mess
 		}
 	}
 	return forget()
+}
+
+var (
+	// ErrDeploymentInProgress means a deployment of one of the app's
+	// instances is not finished, so RemoveEnvironment changed nothing.
+	ErrDeploymentInProgress = errors.New("a deployment of the app is not finished")
+	// ErrEnvironmentInUse means the traffic gateway sends requests of one of
+	// the app's instances to the environment, so RemoveEnvironment changed
+	// nothing.
+	ErrEnvironmentInUse = errors.New("the traffic gateway sends requests to the environment")
+)
+
+// RemoveEnvironment takes env out of a registered app (ADR 0037). Under the
+// locks of every instance of the app, and only while none of them has an
+// unfinished deployment, it commits the removal of
+// apps/<instance>/<env>.yaml of every instance in one commit, takes env's
+// backend out of every instance's gateway app, and then sets the app's
+// environments to the others. The ApplicationSet deletes the Applications
+// <instance>-<env> with what they created, as for a deleted app, and
+// CleanupStorage deletes the instances' buckets and keys there. Each step
+// can be repeated, so a failed removal is retried by calling it again; the
+// environments change last. It refuses (ErrEnvironmentInUse) when the
+// gateway sends an instance's writes or reads to env, and ErrWritesHeld
+// when it holds an instance's writes. A missing app is store.ErrNotFound;
+// an app without env, or with env as its only or first environment, is an
+// error and nothing is changed. The caller checks the rest (migrations,
+// which environment was ever written).
+func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) error {
+	app, err := e.cfg.Store.GetApp(ctx, name)
+	if err != nil {
+		return err
+	}
+	switch i := slices.Index(app.Environments, env); {
+	case i < 0:
+		return fmt.Errorf("app %s is not in environment %s", name, env)
+	case i == 0:
+		return fmt.Errorf("%s is app %s's first environment, where its database was born primary", env, name)
+	}
+	instances, err := e.instances(ctx, name)
+	if err != nil {
+		return err
+	}
+	locked := slices.Compact(slices.Sorted(slices.Values(instances)))
+	for _, in := range locked {
+		l := e.lock(in)
+		l.Lock()
+		defer l.Unlock()
+	}
+	// Read again under the locks: what was checked before them may have
+	// changed, and nothing of these instances changes while they are held.
+	if app, err = e.cfg.Store.GetApp(ctx, name); err != nil {
+		return err
+	}
+	if now, err := e.instances(ctx, name); err != nil {
+		return err
+	} else if !slices.Equal(now, instances) {
+		return fmt.Errorf("the branches of %s changed meanwhile; remove the environment again", name)
+	}
+	if !slices.Contains(app.Environments, env) {
+		return fmt.Errorf("app %s is not in environment %s", name, env)
+	}
+	list, err := e.cfg.Store.ListDeployments(ctx, name, 0)
+	if err != nil {
+		return fmt.Errorf("list deployments of %s: %w", name, err)
+	}
+	for _, d := range list {
+		if !store.DeploymentFinished(d.Status) {
+			return fmt.Errorf("%w: deployment %s of %s is %s", ErrDeploymentInProgress, d.ID, d.Instance, d.Status)
+		}
+	}
+	var routes map[string]gateway.AppInfo
+	if e.cfg.Gateway != nil {
+		all, err := e.cfg.Gateway.Apps(ctx)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrGateway, err)
+		}
+		routes = map[string]gateway.AppInfo{}
+		for _, a := range all.Apps {
+			if !a.Default && slices.Contains(instances, a.Name) {
+				routes[a.Name] = a
+			}
+		}
+		for _, in := range instances {
+			cur, ok := routes[in]
+			switch {
+			case !ok:
+			case cur.WritesHeld:
+				return fmt.Errorf("%w: %s", ErrWritesHeld, writesHeld(in))
+			case cur.WriteBackend == env || cur.ReadWeights[env] > 0:
+				return fmt.Errorf("%w: the traffic gateway sends the requests of %s to %s", ErrEnvironmentInUse, in, env)
+			}
+		}
+	}
+	files := make([]string, len(instances))
+	for i, in := range instances {
+		files[i] = FilePath(in, env)
+	}
+	if _, _, err := e.cfg.GitOps.Delete(ctx, files, "remove environment "+env+" of app "+name); err != nil {
+		return fmt.Errorf("%w: remove %s: %w", ErrGitOps, strings.Join(files, ", "), err)
+	}
+	if err := e.cfg.Argo.RefreshApplicationSet(ctx); err != nil && ctx.Err() == nil {
+		e.cfg.Log.Warn("argo cd applicationset refresh after an environment removal", "app", name, "env", env, "err", err)
+	}
+	for _, in := range instances {
+		cur, ok := routes[in]
+		if !ok || cur.Backends[env] == "" {
+			continue
+		}
+		if hidden := hiddenPasswords(&cur, map[string]string{env: ""}); len(hidden) > 0 {
+			return fmt.Errorf("%w: the gateway hides the password in the URL of the %s backend of %s, and sending that URL back would replace the password; set it again without a password in its URL, then remove the environment again", ErrGateway, strings.Join(hidden, ", "), in)
+		}
+		next := gateway.AppSpec{Backends: maps.Clone(cur.Backends), WriteBackend: cur.WriteBackend}
+		delete(next.Backends, env)
+		if weights := positive(cur.ReadWeights); len(weights) > 0 {
+			delete(weights, env)
+			next.ReadWeights = weights
+		}
+		err := e.cfg.Gateway.PutApp(ctx, in, next)
+		var ae *gateway.APIError
+		switch {
+		case errors.As(err, &ae) && ae.Status == 409:
+			return fmt.Errorf("%w: %s", ErrWritesHeld, ae.Message)
+		case err != nil:
+			return fmt.Errorf("%w: take %s out of %s: %w", ErrGateway, env, in, err)
+		}
+	}
+	rest := slices.DeleteFunc(slices.Clone(app.Environments), func(e string) bool { return e == env })
+	if err := e.cfg.Store.SetAppEnvironments(ctx, name, app.Environments, rest); err != nil {
+		return fmt.Errorf("store the environments of %s: %w", name, err)
+	}
+	e.cfg.Log.Info("environment removed from app", "app", name, "env", env, "instances", instances)
+	e.wakeCleanup() // the instances' buckets and keys there
+	return nil
 }
 
 // AppURL is where an instance with a public service answers through the

@@ -22,6 +22,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
@@ -180,13 +181,33 @@ type Deps struct {
 	// databases of registered apps (dbroute.Manager, ADR 0030); nil when
 	// they are made by hand.
 	DBRoutes AppDBRoutes
+	// SealingConfigured reports whether an environment has a usable
+	// sealed-secrets certificate; nil means none has. Adding an
+	// environment whose deployment seals values to one without answers
+	// 503 sealing_not_configured (ADR 0037).
+	SealingConfigured func(env string) bool
+	// Gateway reads the traffic gateway's apps, for whether it holds an
+	// app's writes and has its backends (ADR 0037); nil when there is no
+	// gateway.
+	Gateway GatewayApps
+	// DBCluster reads an app database's CNPG Cluster in a workload cluster,
+	// for the readiness of a database pair (ADR 0037); nil leaves the
+	// readiness at cluster_unreadable.
+	DBCluster DBClusterReader
 }
 
-// AppDBRoutes starts making the routes of a database pair just registered
-// and removing those of an app just deleted. Both return at once; failures
+// GatewayApps lists the traffic gateway's apps (gateway.Client).
+type GatewayApps interface {
+	Apps(ctx context.Context) (gateway.AppList, error)
+}
+
+// AppDBRoutes starts making the routes of a database pair just registered,
+// following the environments of an app whose environments just changed
+// and removing those of an app just deleted. All return at once; failures
 // are logged and retried by the manager.
 type AppDBRoutes interface {
 	Added(d store.AppDatabase)
+	Changed(app string)
 	Removed(app string)
 }
 
@@ -330,6 +351,8 @@ func New(cfg Config, d Deps) *Server {
 	// checks the signature and writes its own audit entries.
 	s.route("POST /v1/webhooks/github", "", s.githubWebhook)
 	s.route("DELETE /v1/apps/{name}", operator, s.deleteApp)
+	s.route("POST /v1/apps/{name}/environments", operator, s.addAppEnvironment)
+	s.route("DELETE /v1/apps/{name}/environments/{env}", operator, s.removeAppEnvironment)
 	s.route("POST /v1/apps/{name}/instances", operator, s.createAppInstance)
 	s.route("DELETE /v1/apps/{name}/instances/{instance}", operator, s.deleteAppInstance)
 	s.route("POST /v1/apps/{name}/deployments", operator, s.createDeployment)
