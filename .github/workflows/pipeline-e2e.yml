@@ -7,12 +7,19 @@ on:
         description: Exact 40-character platform main commit to test
         required: true
         type: string
+      suites:
+        description: Disposable suites to run
+        required: true
+        type: choice
+        default: all
+        options: [all, migration, minio]
 
 permissions:
   contents: read
 
 jobs:
   migration:
+    if: inputs.suites == 'all' || inputs.suites == 'migration'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
@@ -99,6 +106,7 @@ jobs:
           retention-days: 14
 
   minio-files:
+    if: inputs.suites == 'all' || inputs.suites == 'minio'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
