@@ -226,3 +226,24 @@ func TestLegacyUsageRequiresExplicitTokenUnits(t *testing.T) {
 		t.Fatal("modern token usage was replaced by legacy units")
 	}
 }
+
+func TestV4TotalCostAndMissingCosts(t *testing.T) {
+	for _, value := range []float64{0, 0.0000025} {
+		var wire wireObservation
+		if err := json.Unmarshal([]byte(fmt.Sprintf(`{"totalCost":%g}`, value)), &wire); err != nil {
+			t.Fatal(err)
+		}
+		if cost := metrics(wire).CostUSD; cost == nil || *cost != value {
+			t.Fatal("v4 totalCost was lost")
+		}
+	}
+	for _, raw := range []string{`{}`, `{"totalCost":null}`, `{"totalCost":-1}`} {
+		var wire wireObservation
+		if err := json.Unmarshal([]byte(raw), &wire); err != nil {
+			t.Fatal(err)
+		}
+		if metrics(wire).CostUSD != nil {
+			t.Fatal("missing or invalid cost became measured")
+		}
+	}
+}

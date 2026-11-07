@@ -27,6 +27,7 @@ type wireObservation struct {
 	UsageDetails        map[string]json.RawMessage `json:"usageDetails"`
 	Usage               map[string]json.RawMessage `json:"usage"`
 	CostDetails         map[string]json.RawMessage `json:"costDetails"`
+	TotalCost           *float64                   `json:"totalCost"`
 	CalculatedTotalCost *float64                   `json:"calculatedTotalCost"`
 }
 
@@ -215,8 +216,10 @@ func metrics(w wireObservation) Metrics {
 		}
 	}
 	m := Metrics{InputTokens: number(usage, "input"), OutputTokens: number(usage, "output"), TotalTokens: number(usage, "total"), CostUSD: number(w.CostDetails, "total")}
-	if m.CostUSD == nil && w.CalculatedTotalCost != nil && *w.CalculatedTotalCost >= 0 && *w.CalculatedTotalCost <= 1e15 && !math.IsNaN(*w.CalculatedTotalCost) && !math.IsInf(*w.CalculatedTotalCost, 0) {
-		m.CostUSD = w.CalculatedTotalCost
+	for _, cost := range []*float64{w.TotalCost, w.CalculatedTotalCost} {
+		if m.CostUSD == nil && cost != nil && *cost >= 0 && *cost <= 1e15 && !math.IsNaN(*cost) && !math.IsInf(*cost, 0) {
+			m.CostUSD = cost
+		}
 	}
 	if w.EndTime != nil && !w.EndTime.Before(w.StartTime) {
 		v := w.EndTime.Sub(w.StartTime).Seconds() * 1000
