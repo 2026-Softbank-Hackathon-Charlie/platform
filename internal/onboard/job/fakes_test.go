@@ -249,7 +249,7 @@ func (w *world) Target(_ context.Context, app, env string) (apps.OnboardTarget, 
 func (w *world) StartSeconds(context.Context, string, string, string) (float64, error) {
 	return w.startSeconds, nil
 }
-func (w *world) Replication(context.Context, string, string, string) (bool, time.Duration, error) {
+func (w *world) Replication(context.Context, string, string, string, string) (bool, time.Duration, error) {
 	return w.streaming, w.lag, nil
 }
 func (w *world) SetReplicaSource(_ context.Context, _, _, cluster, source string) error {

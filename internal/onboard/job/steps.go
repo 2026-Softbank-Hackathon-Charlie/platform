@@ -747,12 +747,15 @@ func namesService(v string, services []string) bool {
 // --- syncing ---
 
 func (r *Runner) syncing(ctx context.Context, x *rec) (bool, error) {
-	if r.cfg.Kube == nil || r.cfg.DNS == nil {
-		return false, fmt.Errorf("%w: kube or DNS", ErrNotConfigured)
+	if r.cfg.SourceDB == nil || r.cfg.DNS == nil {
+		return false, fmt.Errorf("%w: source database or DNS", ErrNotConfigured)
 	}
 	f := x.facts
-	cluster := x.row.App + "-" + r.pgResource(x)
-	streaming, lag, err := r.cfg.Kube.Replication(ctx, x.doc.TargetEnv, x.row.App, cluster)
+	su, err := r.open(x, secrets.OnboardingSuperuserPassword, x.row.SuperuserPasswordNonce, x.row.SuperuserPasswordCiphertext)
+	if err != nil {
+		return false, err
+	}
+	streaming, lag, err := r.cfg.SourceDB.Replication(ctx, x.doc.Internal.SourceHost, f.DB.Database, f.DB.FenceUser, su)
 	if err != nil {
 		r.event(ctx, x, apiv1.OnboardingEventKindLog, "replication not read: "+err.Error(), nil)
 		return false, nil

@@ -281,6 +281,9 @@ func (e *Executor) Start(ctx context.Context) error {
 // Enqueue takes a stored deployment: it supersedes the older unfinished
 // deployments of its instance that it covers and queues it. It returns at
 // once.
+// BackendURLs is how the executor finds gateway backend URLs.
+func (e *Executor) BackendURLs() Backends { return e.cfg.Backends }
+
 func (e *Executor) Enqueue(ctx context.Context, deploymentID string) error {
 	return e.take(ctx, deploymentID)
 }

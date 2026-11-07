@@ -161,9 +161,6 @@ type Apps interface {
 type Kube interface {
 	// StartSeconds is from the Deployment's creation until it was Ready.
 	StartSeconds(ctx context.Context, env, namespace, deployment string) (float64, error)
-	// Replication says whether the Cluster streams from its source and how
-	// far behind it is.
-	Replication(ctx context.Context, env, namespace, cluster string) (streaming bool, lag time.Duration, err error)
 	// SetReplicaSource patches the Cluster's spec.replica.source.
 	SetReplicaSource(ctx context.Context, env, namespace, cluster, source string) error
 }
@@ -209,6 +206,9 @@ type SourceDB interface {
 	// Check connects to the source at host as the fence user and as
 	// hopcharlie_replicator (IDENTIFY_SYSTEM over a replication connection).
 	Check(ctx context.Context, host, database, user, password, replicationPassword string) error
+	// Replication says whether hopcharlie_replicator streams from the
+	// source (pg_stat_replication, read as the fence user) and its replay lag.
+	Replication(ctx context.Context, host, database, user, password string) (streaming bool, lag time.Duration, err error)
 	// DropRole drops role on the database dsn reaches.
 	DropRole(ctx context.Context, dsn, role string) error
 }

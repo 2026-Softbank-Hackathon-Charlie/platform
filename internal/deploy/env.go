@@ -35,6 +35,8 @@ type EnvOptions struct {
 	// secrets' cipher, each environment's sealer and storage driver, and the
 	// driver its configuration names.
 	Secrets       *secrets.Cipher
+	// CuttingOver is Config.CuttingOver (ADR 0042).
+	CuttingOver func(ctx context.Context, app string) (bool, error)
 	Sealer        func(env string) (*sealing.Sealer, error)
 	Storage       func(env string) (storage.Driver, error)
 	StorageDriver func(env string) string
@@ -91,7 +93,7 @@ func FromEnv(ctx context.Context, getenv func(string) string, o EnvOptions) (*Ex
 		}
 	}
 
-	cfg := Config{Store: o.Store, GitHub: o.GitHub, AppDomain: o.AppDomain, Log: o.Log, Secrets: o.Secrets, Sealer: o.Sealer, Storage: o.Storage, StorageDriver: o.StorageDriver, GKEImageRegistry: gkeRegistry}
+	cfg := Config{Store: o.Store, GitHub: o.GitHub, AppDomain: o.AppDomain, Log: o.Log, Secrets: o.Secrets, Sealer: o.Sealer, Storage: o.Storage, StorageDriver: o.StorageDriver, GKEImageRegistry: gkeRegistry, CuttingOver: o.CuttingOver}
 	switch builderKind {
 	case "codebuild":
 		project := getenv("PLATFORM_CODEBUILD_PROJECT")

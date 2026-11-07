@@ -1,8 +1,15 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/job"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 )
@@ -61,5 +68,62 @@ func TestOnboardingRoutesOffByDefault(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s with the feature off = %d, want no route", c.method, c.path, resp.StatusCode)
 		}
+	}
+}
+
+func withOnboardingRunner() option {
+	return func(h *harness, _ *runs.Config, d *Deps) {
+		h.onboarding = true
+		d.Onboarding = &job.Config{AppDomain: "hopcharlie.dev", Envs: []string{"eks", "gke"}, Poll: time.Hour}
+	}
+}
+
+// TestOnboardingAPI: with the runner the routes answer; an onboarding
+// holds its app name against the apps and plans APIs and gives its repo a
+// push token while patching.
+func TestOnboardingAPI(t *testing.T) {
+	h := newHarness(t, withOnboardingRunner())
+	status, body := h.do(http.MethodPost, "/v1/onboardings", opToken, map[string]any{"repo": "org/moim", "serviceUrl": "https://moim.hopcharlie.dev"})
+	if status != http.StatusAccepted {
+		t.Fatalf("start = %d %s", status, body)
+	}
+	var o apiv1.Onboarding
+	if err := json.Unmarshal(body, &o); err != nil || !onboard.ID.MatchString(o.Id) || o.App != "moim" {
+		t.Fatalf("started %s %v", body, err)
+	}
+	if status, body := h.do(http.MethodPost, "/v1/onboardings", opToken, map[string]any{"repo": "org/moim", "serviceUrl": "https://moim.hopcharlie.dev"}); status != http.StatusConflict || !strings.Contains(string(body), "onboarding_exists") {
+		t.Fatalf("second start = %d %s", status, body)
+	}
+	if status, body := h.do(http.MethodPost, "/v1/onboardings", opToken, map[string]any{"repo": "org/x", "serviceUrl": "https://x.example.com"}); status != http.StatusBadRequest {
+		t.Fatalf("foreign domain = %d %s", status, body)
+	}
+	if status, _ := h.do(http.MethodGet, "/v1/onboardings/"+o.Id, viewerToken, nil); status != http.StatusOK {
+		t.Fatalf("get = %d", status)
+	}
+	if status, body := h.do(http.MethodGet, "/v1/onboardings", viewerToken, nil); status != http.StatusOK || !strings.Contains(string(body), o.Id) {
+		t.Fatalf("list = %d %s", status, body)
+	}
+	if status, _ := h.do(http.MethodGet, "/v1/onboardings/onb-000000000000", viewerToken, nil); status != http.StatusNotFound {
+		t.Fatalf("unknown = %d", status)
+	}
+	for _, c := range []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodDelete, "/v1/apps/moim", nil},
+		{http.MethodPost, "/v1/apps/moim/environments", map[string]any{"env": "gke"}},
+		{http.MethodPost, "/v1/plans/draft", map[string]any{"app": "moim", "source": "eks", "target": "gke"}},
+	} {
+		if status, body := h.do(c.method, c.path, opToken, c.body); status != http.StatusConflict || !strings.Contains(string(body), "onboarding_exists") {
+			t.Errorf("%s %s = %d %s, want 409 onboarding_exists", c.method, c.path, status, body)
+		}
+	}
+	// Approve in the wrong state, cutover too.
+	if status, body := h.do(http.MethodPost, "/v1/onboardings/"+o.Id+"/cutover", opToken, nil); status != http.StatusConflict {
+		t.Fatalf("cutover = %d %s", status, body)
+	}
+	// DELETE answers 202 and the row goes.
+	if status, body := h.do(http.MethodDelete, "/v1/onboardings/"+o.Id, opToken, nil); status != http.StatusAccepted || !strings.Contains(string(body), `"deleting":true`) {
+		t.Fatalf("delete = %d %s", status, body)
 	}
 }
