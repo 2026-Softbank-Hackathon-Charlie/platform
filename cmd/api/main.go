@@ -42,6 +42,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/reach"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
@@ -366,6 +367,20 @@ func main() {
 		log.Info("PLATFORM_VERSION_GATE is off: migrations start without a PostgreSQL major version check")
 	default:
 		fatal("PLATFORM_VERSION_GATE must be on or off", "value", v)
+	}
+
+	// On unless turned off: refuse to approve a plan whose source database name
+	// does not resolve, or whose port does not accept connections, from here.
+	// The engine would stop at its precheck right after the start. Anything the
+	// check cannot establish never blocks.
+	switch v := os.Getenv("PLATFORM_REACH_GATE"); v {
+	case "", "on":
+		planSvc.SetReachGate(reach.Checker{})
+		log.Info("source database reachability gate enabled")
+	case "off":
+		log.Info("PLATFORM_REACH_GATE is off: plans are approved without checking that the source database is reachable")
+	default:
+		fatal("PLATFORM_REACH_GATE must be on or off", "value", v)
 	}
 
 	rcfg.RetentionPlan = planSvc.Load

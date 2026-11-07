@@ -38,6 +38,7 @@ type Service struct {
 	capacity  CapacityGate  // nil: no capacity measurement (capacity.go)
 	parity    ParityGate    // nil: no parity record (parity.go)
 	version   VersionGate   // nil: no PostgreSQL major version check (version.go)
+	reach     ReachGate     // nil: no reachability check of the source database at approval (reach.go)
 
 	appDBs AppDatabases // nil: only the policy's own hosts and passwords
 }
@@ -211,6 +212,9 @@ func (s *Service) Approve(ctx context.Context, ref, actor, comment string, revis
 		return apiv1.PlanRecord{}, err
 	}
 	if err := s.requireRehearsal(ctx, row, attached); err != nil {
+		return apiv1.PlanRecord{}, err
+	}
+	if err := s.requireReach(ctx, row); err != nil {
 		return apiv1.PlanRecord{}, err
 	}
 	want := row.Revision
