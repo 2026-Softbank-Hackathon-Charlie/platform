@@ -104,6 +104,10 @@ type Config struct {
 	// FileSyncer installs the server-owned content guard on every normal launch,
 	// including resumes. Reverse rollback runs preserve their recovery exemption.
 	FileSyncer func(*plan.Plan) engine.FileSyncer
+	// External gives the engine the adapter of a plan's external source
+	// (ADR 0042; engine ADR 0017). Nil, or nil for a plan, lets the engine
+	// connect with the plan's expanded source DSN.
+	External func(*plan.Plan) engine.ExternalSource
 	// Traffic is the gateway admin client. Nil means no gateway: canary is
 	// refused and request counts are not measured.
 	Traffic Traffic
@@ -317,7 +321,9 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		}
 	}
 	var retirement *retention.Job
-	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil {
+	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil && !p.Source.External() {
+		// An external source is no CNPG Cluster to retain; the onboarding
+		// decommissions it (ADR 0042).
 		if r.cfg.RetentionPeriod < time.Minute || r.cfg.RetentionPeriod > 30*24*time.Hour || r.cfg.RetentionPlan == nil {
 			return apiv1.Run{}, fmt.Errorf("%w: invalid source retention configuration", ErrInvalid)
 		}
@@ -331,6 +337,9 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		retirement = &j
 	}
 	opts := engine.Options{StateDir: r.cfg.StateDir, RunID: runID, Emit: l.emitEngine}
+	if p.Source.External() && r.cfg.External != nil {
+		opts.External = r.cfg.External(p)
+	}
 	if p.Files != nil && r.cfg.FileSyncer != nil && (doc.RollbackOf == nil || *doc.RollbackOf == "") {
 		opts.Files = r.cfg.FileSyncer(p)
 		if opts.Files == nil {
@@ -1671,6 +1680,11 @@ func stepSucceeded(e Engine, step string) bool {
 
 func clusterKeys(p *plan.Plan) []string {
 	k := func(e plan.Endpoint) string { return e.Context + "/" + e.Namespace + "/" + e.Cluster }
+	if p.Source.External() {
+		// An external source (ADR 0042) has no Cluster: it is the target
+		// app's own source, so the key is that app's.
+		return []string{"external/" + p.Source.Name + "/" + p.Target.Namespace, k(p.Target)}
+	}
 	return []string{k(p.Source), k(p.Target)}
 }
 
