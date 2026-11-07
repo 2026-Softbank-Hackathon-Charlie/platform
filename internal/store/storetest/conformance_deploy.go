@@ -3,6 +3,7 @@ package storetest
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ func ConformanceDeploy(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"AppCreateGet", testAppCreateGet},
 		{"AppList", testAppList},
 		{"AppUpdate", testAppUpdate},
+		{"AppSetEnvironments", testAppSetEnvironments},
 		{"AppDelete", testAppDelete},
 		{"AppDeleteBranches", testAppDeleteBranches},
 		{"AppBranchCreateList", testAppBranchCreateList},
@@ -240,8 +242,9 @@ func testAppUpdate(t *testing.T, s store.Store) {
 	u.Repo, u.CreatedBy, u.CreatedAt = "someone/else", "mallory", at(9)
 	must(t, s.UpdateApp(ctx, u))
 
+	// Environments are not updated either: only SetAppEnvironments changes them.
 	want := a
-	want.Branch, want.Environments, want.AutoDeploy, want.Spec, want.SpecCommit = u.Branch, u.Environments, u.AutoDeploy, u.Spec, u.SpecCommit
+	want.Branch, want.AutoDeploy, want.Spec, want.SpecCommit = u.Branch, u.AutoDeploy, u.Spec, u.SpecCommit
 	got, err := s.GetApp(ctx, "moimroom")
 	must(t, err)
 	eqApp(t, got, want)
@@ -263,6 +266,55 @@ func testAppUpdate(t *testing.T, s store.Store) {
 	must(t, s.UpdateApp(ctx, onto))
 
 	wantErr(t, s.UpdateApp(ctx, newApp("missing", 0)), store.ErrNotFound)
+}
+
+func testAppSetEnvironments(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	a := newApp("moimroom", 0)
+	a.Environments = []string{"eks"}
+	must(t, s.CreateApp(ctx, a))
+	must(t, s.CreateApp(ctx, newApp("shop", 0)))
+
+	must(t, s.SetAppEnvironments(ctx, "moimroom", []string{"eks"}, []string{"gke", "eks"}))
+	got, err := s.GetApp(ctx, "moimroom")
+	must(t, err)
+	want := a
+	want.Environments = []string{"gke", "eks"}
+	eqApp(t, got, want)
+	other, err := s.GetApp(ctx, "shop")
+	must(t, err)
+	eqApp(t, other, newApp("shop", 0))
+
+	// Only while the environments are from: a writer that read the old
+	// list loses, whatever order the list was in.
+	err = s.SetAppEnvironments(ctx, "moimroom", []string{"eks"}, []string{"eks", "aks"})
+	wantErr(t, err, store.ErrConflict)
+	wantErr(t, s.SetAppEnvironments(ctx, "moimroom", []string{"eks", "gke"}, []string{"eks"}), store.ErrConflict)
+	got, err = s.GetApp(ctx, "moimroom")
+	must(t, err)
+	eqApp(t, got, want)
+
+	// An app keeps at least one environment.
+	if err := s.SetAppEnvironments(ctx, "moimroom", []string{"gke", "eks"}, nil); err == nil || errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetAppEnvironments to none = %v, want a plain error", err)
+	}
+	must(t, s.SetAppEnvironments(ctx, "moimroom", []string{"gke", "eks"}, []string{"eks"}))
+	got, err = s.GetApp(ctx, "moimroom")
+	must(t, err)
+	eqApp(t, got, a)
+
+	// UpdateApp after that keeps the environments it did not read.
+	stale := want
+	stale.SpecCommit = "1111111111111111111111111111111111111111"
+	must(t, s.UpdateApp(ctx, stale))
+	got, err = s.GetApp(ctx, "moimroom")
+	must(t, err)
+	if !slices.Equal(got.Environments, []string{"eks"}) {
+		t.Fatalf("environments after a stale UpdateApp = %v, want [eks]", got.Environments)
+	}
+
+	wantErr(t, s.SetAppEnvironments(ctx, "missing", []string{"eks"}, []string{"gke"}), store.ErrNotFound)
+	wantErr(t, s.SetAppEnvironments(ctx, "moim\x00room", []string{"eks"}, []string{"gke"}), store.ErrNotFound)
 }
 
 func testAppDelete(t *testing.T, s store.Store) {

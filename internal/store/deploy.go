@@ -224,10 +224,18 @@ type DeployStore interface {
 	GetApp(ctx context.Context, name string) (App, error)
 	// ListApps returns every app, by name.
 	ListApps(ctx context.Context) ([]App, error)
-	// UpdateApp replaces Branch, Environments, AutoDeploy, Spec and
-	// SpecCommit of the app named a.Name. ErrNotFound if it does not exist;
+	// UpdateApp replaces Branch, AutoDeploy, Spec and SpecCommit of the app
+	// named a.Name. Environments are changed only by SetAppEnvironments, so
+	// a writer that read the app before an environment was added or removed
+	// does not put the old list back. ErrNotFound if it does not exist;
 	// ErrBranchExists when a.Branch is one of the app's added branches.
 	UpdateApp(ctx context.Context, a App) error
+	// SetAppEnvironments replaces the environments of the app named name
+	// with to, in one conditional write that applies only while they are
+	// from (ADR 0037). ErrNotFound if the app does not exist; ErrConflict
+	// (wrapped) when its environments are not from; an error, and nothing
+	// changed, when to is empty.
+	SetAppEnvironments(ctx context.Context, name string, from, to []string) error
 	// DeleteApp removes an app together with its added branches, its
 	// secrets, its database pair, its deployments and their events.
 	// ErrNotFound if it does not exist.
