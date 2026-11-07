@@ -475,7 +475,15 @@ paths:
         The human gate between AI planning and execution. Send the plan's
         `revision` you reviewed: approving a plan that has attachments without
         it, or with a revision that changed since (an attachment was uploaded),
-        fails with 409 `plan_state_conflict`. Approving twice is a no-op. Role operator.
+        fails with 409 `plan_state_conflict`. Approving twice is a no-op. Unless the
+        server turns the check off, the plan's source database must be reachable
+        from where the API runs, as the engine will need it at the start: its
+        name must resolve, its port accept connections and the database accept
+        the login of the plan's DSN. If not, the answer is
+        409 `db_unreachable` (a status and a code `dns`, `tcp` or `auth` in the
+        message, never an address) and the plan stays pending; it is not an approval that would
+        fail at the precheck of a started run. The target is not checked (it may
+        not exist yet), and a check that cannot tell does not block. Role operator.
       requestBody:
         required: false
         content:
@@ -2901,7 +2909,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress, ai_run_active, onboarding_exists, onboarding_state_conflict, pr_head_mismatch, onboarding_deleting"
+      description: "plan_state_conflict, run_state_conflict, cluster_busy, idempotency_key_reused, app_exists, app_not_registered, branch_exists, instance_exists, instance_limit, default_instance, residency_denied, capacity_insufficient, version_mismatch, db_unreachable, device_login_state_conflict, nothing_to_redeploy, storage_cleanup_pending, deployment_in_progress, ai_run_active, onboarding_exists, onboarding_state_conflict, pr_head_mismatch, onboarding_deleting"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
