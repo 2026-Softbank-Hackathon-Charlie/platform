@@ -127,11 +127,12 @@ func planIDOf(raw []byte) string {
 // ReserveOnboarding stores the cutover plan an onboarding wrote (raw) and
 // reserves it, as Reserve does an approved plan: the operator's approval
 // is the onboarding's cutover request, by actor. It parses raw with the
-// server's policy and scope's additions, then runs the residency gate. The
+// server's policy and scope's additions. No gate of the server runs: the
 // version and capacity gates of an external source are the onboarding's
-// (it compares the discovered facts with the chosen image and PVC); parity
-// and retention do not run, as there is no source environment. A plan a
-// gate refuses is stored rejected. The caller must call Started or Release.
+// (it compares the discovered facts with the chosen image and PVC), and
+// residency, parity and retention need a source environment and registered
+// buckets the source does not have; they are recorded as
+// OutcomeExternalSource. The caller must call Started or RejectOnboarding.
 func (s *Service) ReserveOnboarding(ctx context.Context, raw []byte, actor string, scope OnboardingScope) (Reserved, string, error) {
 	policy, err := s.registeredPolicy(ctx)
 	if err != nil {
@@ -154,10 +155,11 @@ func (s *Service) ReserveOnboarding(ctx context.Context, raw []byte, actor strin
 	if err := s.store.CreatePlan(ctx, row); err != nil {
 		return Reserved{}, "", err
 	}
-	check, err := s.checkResidency(ctx, "", p)
-	if err == nil {
-		err = s.materialize(ctx, row.Ref, p)
-	}
+	// No residency gate either: its policy reads a source CNPG cluster and
+	// registered buckets, and an external source has neither (the source
+	// bucket is the app's own; ADR 0042 addendum).
+	check := ResidencyCheck{Outcome: OutcomeExternalSource}
+	err = s.materialize(ctx, row.Ref, p)
 	if err != nil {
 		_, _ = s.transition(ctx, row.Ref, []string{store.PlanStarting}, store.PlanRejected,
 			store.PlanUpdate{ReviewedBy: actor, ReviewedAt: &now, ReviewComment: "refused at reservation: " + err.Error()})
@@ -166,6 +168,14 @@ func (s *Service) ReserveOnboarding(ctx context.Context, raw []byte, actor strin
 	return Reserved{Plan: p, Summary: sum, Residency: check,
 		Capacity: CapacityCheck{Outcome: OutcomeExternalSource}, Version: VersionCheck{Outcome: OutcomeExternalSource},
 		Parity: ParityCheck{Outcome: OutcomeExternalSource}}, row.Ref, nil
+}
+
+// RejectOnboarding ends a reserved onboarding plan whose run did not start:
+// rejected, never approved again, so no one can start it later.
+func (s *Service) RejectOnboarding(ctx context.Context, ref, reason string) {
+	now := s.now()
+	_, _ = s.transition(ctx, ref, []string{store.PlanStarting}, store.PlanRejected,
+		store.PlanUpdate{ReviewedBy: OnboardingRole, ReviewedAt: &now, ReviewComment: "the run did not start: " + reason})
 }
 
 // OutcomeExternalSource is the outcome of a gate an onboarding's plan does

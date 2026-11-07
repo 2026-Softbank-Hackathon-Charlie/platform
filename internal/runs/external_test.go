@@ -3,12 +3,14 @@ package runs
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/pg"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
@@ -75,5 +77,36 @@ func TestCNPGPlanIsNotExternal(t *testing.T) {
 	p := &plan.Plan{Source: plan.Endpoint{Context: "a", Namespace: "n", Cluster: "c"}, Target: plan.Endpoint{Context: "b", Namespace: "n", Cluster: "d"}}
 	if p.Source.External() || clusterKeys(p)[0] != "a/n/c" {
 		t.Fatal("a CNPG source was taken for an external one")
+	}
+}
+
+// TestExternalPlanFilesGetTheSourceRemote: without a residency gate (no
+// FileSyncer), the run of an external plan with files still copies through
+// the source's own remote, which only that run's rclone gets.
+func TestExternalPlanFilesGetTheSourceRemote(t *testing.T) {
+	p := &plan.Plan{ID: "onb-3f9a1c2b7d4e-1", Source: plan.Endpoint{Kind: plan.SourceExternal, Name: "legacy", Env: "legacy"},
+		Target: plan.Endpoint{Env: "eks", Context: "eks", Namespace: "shop", Cluster: "shop-db"},
+		Files:  &plan.FilesSpec{Source: "legacy:moim", Target: "eks:shop"}}
+	var got engine.FileSyncer
+	r := New(context.Background(), Config{Store: storetest.NewMemory(),
+		SourceRemote: func(q *plan.Plan) []string { return []string{"RCLONE_CONFIG_LEGACY_TYPE=s3"} },
+		Factory: func(_ *plan.Plan, opts engine.Options) (Engine, error) {
+			got = opts.Files
+			return nil, errors.New("stop")
+		}})
+	if _, err := r.launch(context.Background(), p, "", apiv1.Run{}, false); !errors.Is(err, ErrEngineInit) {
+		t.Fatalf("launch: %v", err)
+	}
+	plain, ok := got.(*fileguard.Plain)
+	if !ok || !slices.Contains(plain.Environment(), "RCLONE_CONFIG_LEGACY_TYPE=s3") {
+		t.Fatalf("files %T %+v", got, got)
+	}
+	// Without a source remote the run does not start.
+	r = New(context.Background(), Config{Store: storetest.NewMemory(), Factory: func(*plan.Plan, engine.Options) (Engine, error) {
+		t.Fatal("the engine was built without the source remote")
+		return nil, nil
+	}})
+	if _, err := r.launch(context.Background(), p, "", apiv1.Run{}, false); !errors.Is(err, ErrEngineInit) {
+		t.Fatalf("launch without a remote: %v", err)
 	}
 }

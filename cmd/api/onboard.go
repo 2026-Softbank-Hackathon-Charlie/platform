@@ -152,7 +152,9 @@ func (c cutover) ReserveOnboarding(ctx context.Context, raw []byte, actor string
 func (c cutover) Started(ctx context.Context, ref, runID string) error {
 	return c.plans.Started(ctx, ref, runID)
 }
-func (c cutover) Release(ctx context.Context, ref string) { c.plans.Release(ctx, ref) }
+func (c cutover) RejectOnboarding(ctx context.Context, ref, reason string) {
+	c.plans.RejectOnboarding(ctx, ref, reason)
+}
 func (c cutover) Start(ctx context.Context, o runs.StartOptions) (apiv1.Run, error) {
 	return c.runs.Start(ctx, o)
 }

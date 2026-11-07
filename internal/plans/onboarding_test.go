@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest"
 )
@@ -134,5 +136,24 @@ func TestServerPolicyRefusesOnboardingPlan(t *testing.T) {
 	_, err := s.Submit(context.Background(), onbPlan(nil), "op")
 	if !errors.Is(err, ErrInvalid) || (!strings.Contains(err.Error(), "external")) {
 		t.Fatalf("submit external: %v", err)
+	}
+}
+
+type refusingGate struct{ t *testing.T }
+
+func (g refusingGate) Check(context.Context, *plan.Plan) (preflight.ResidencyVerdict, error) {
+	g.t.Error("the residency gate ran for an external source")
+	return preflight.ResidencyVerdict{}, nil
+}
+
+// TestReserveOnboardingSkipsResidency: with a residency gate, an
+// onboarding's plan is not checked by it and records the outcome.
+func TestReserveOnboardingSkipsResidency(t *testing.T) {
+	t.Setenv("DST_PGPASSWORD", "app-pw")
+	s := New(onbPolicy(), storetest.NewMemory())
+	s.SetResidencyGate(refusingGate{t})
+	res, _, err := s.ReserveOnboarding(context.Background(), onbPlan(nil), "op", onbScope)
+	if err != nil || res.Residency.Outcome != OutcomeExternalSource {
+		t.Fatalf("residency %+v %v", res.Residency, err)
 	}
 }

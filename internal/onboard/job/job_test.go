@@ -515,11 +515,10 @@ func TestRemoteOfThePlan(t *testing.T) {
 	r := w.runner()
 	id := toReady(t, w, r)
 	got := r.Remote(&plan.Plan{ID: id + "-1"})
-	if !slices.Contains(got.Env, "RCLONE_CONFIG_LEGACY_ACCESS_KEY_ID=AKIA") || !slices.Contains(got.Env, "RCLONE_CONFIG_LEGACY_TYPE=s3") ||
-		!slices.Equal(got.Buckets, []string{"legacy:moim-files"}) {
+	if !slices.Contains(got, "RCLONE_CONFIG_LEGACY_ACCESS_KEY_ID=AKIA") || !slices.Contains(got, "RCLONE_CONFIG_LEGACY_TYPE=s3") {
 		t.Fatalf("remote %+v", got)
 	}
-	if other := r.Remote(&plan.Plan{ID: "shop-eks-to-gke"}); len(other.Env)+len(other.Buckets) != 0 {
+	if other := r.Remote(&plan.Plan{ID: "shop-eks-to-gke"}); len(other) != 0 {
 		t.Fatalf("another plan got %+v", other)
 	}
 }

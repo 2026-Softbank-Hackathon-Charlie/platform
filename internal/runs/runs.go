@@ -28,6 +28,7 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -110,6 +111,10 @@ type Config struct {
 	// (ADR 0042; engine ADR 0017). Nil, or nil for a plan, lets the engine
 	// connect with the plan's expanded source DSN.
 	External func(*plan.Plan) engine.ExternalSource
+	// SourceRemote is the rclone remote variables of an external source's
+	// bucket (an onboarding's legacy remote, ADR 0042), given only to that
+	// run's file copies. Nil refuses an external plan with files.
+	SourceRemote func(*plan.Plan) []string
 	// Traffic is the gateway admin client. Nil means no gateway: canary is
 	// refused and request counts are not measured.
 	Traffic Traffic
@@ -347,7 +352,17 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 	if p.Source.External() && r.cfg.External != nil {
 		opts.External = r.cfg.External(p)
 	}
-	if p.Files != nil && r.cfg.FileSyncer != nil && (doc.RollbackOf == nil || *doc.RollbackOf == "") {
+	switch {
+	case p.Files != nil && p.Source.External():
+		// An onboarding's source bucket is the app's own, outside the
+		// platform, reached through its legacy remote, which only this
+		// run's rclone gets (ADR 0042): with or without the residency
+		// gate, whose policy has no rules for it.
+		if r.cfg.SourceRemote == nil {
+			return apiv1.Run{}, fmt.Errorf("%w: the plan copies an external source's files, and this server has no source remote for it", ErrEngineInit)
+		}
+		opts.Files = fileguard.NewPlain(r.cfg.SourceRemote(p))
+	case p.Files != nil && r.cfg.FileSyncer != nil && (doc.RollbackOf == nil || *doc.RollbackOf == ""):
 		opts.Files = r.cfg.FileSyncer(p)
 		if opts.Files == nil {
 			return apiv1.Run{}, ErrEngineInit

@@ -34,7 +34,6 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
-	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
@@ -241,6 +240,14 @@ func main() {
 	runCtx, cancelRuns := context.WithCancel(ctx)
 	defer cancelRuns()
 	rcfg := runs.Config{StateDir: *stateDir, Store: st, Log: log, ClusterLease: st.TryClusterLease}
+	// An onboarding's cutover copies its source bucket through the legacy
+	// remote only its run gets (ADR 0042), once the onboarding runner exists.
+	rcfg.SourceRemote = func(p *plan.Plan) []string {
+		if f := onboardRemote.Load(); f != nil {
+			return (*f)(p)
+		}
+		return nil
+	}
 	if gw != nil {
 		rcfg.Traffic = gw
 		// A plan's gateway.url is the root or an app's scope (plans.Policy):
@@ -330,14 +337,7 @@ func main() {
 		}
 		planSvc.SetResidencyGate(g)
 		rcfg.FileSyncer = g.FileSyncer
-		// An onboarding's plan reaches its source bucket through its own
-		// legacy remote (ADR 0042), set once the onboarding runner exists.
-		g.SetRemote(func(p *plan.Plan) fileguard.Remote {
-			if f := onboardRemote.Load(); f != nil {
-				return (*f)(p)
-			}
-			return fileguard.Remote{}
-		})
+
 		bucketInspector = g
 		log.Info("residency gate enabled", "policyDigest", g.PolicyDigest())
 	} else {
@@ -621,6 +621,7 @@ func main() {
 		f := r.Remote
 		onboardRemote.Store(&f)
 		// From the rows, also after a restart; steps outlive requests.
+		// From the rows, also after a restart; steps outlive requests.
 		go r.Run(runCtx)
 	}
 	srv := &http.Server{
@@ -665,8 +666,9 @@ func main() {
 	}
 }
 
-// onboardRemote is the onboarding runner's Remote once it exists.
-var onboardRemote atomic.Pointer[func(*plan.Plan) fileguard.Remote]
+// onboardRemote is the onboarding runner's Remote once it exists: the
+// legacy rclone remote of an onboarding's cutover run (runs.Config.SourceRemote).
+var onboardRemote atomic.Pointer[func(*plan.Plan) []string]
 
 // residencyGate loads the reviewed residency policy. Every environment it
 // names must be registered, or a typo would silently deny every migration.

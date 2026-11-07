@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
-	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
@@ -89,13 +88,13 @@ func (r *Runner) startRun(ctx context.Context, x *rec, actor string) (apiv1.Run,
 		x.doc.Internal.PlanRef = ref
 		return "", nil
 	}); err != nil {
-		r.cfg.Cutover.Release(ctx, ref)
+		r.cfg.Cutover.RejectOnboarding(ctx, ref, err.Error())
 		return apiv1.Run{}, err
 	}
 	run, err := r.cfg.Cutover.Start(ctx, runs.StartOptions{PlanRef: ref, Plan: res.Plan, Source: res.Summary.Source, Target: res.Summary.Target,
 		Actor: actor, AutoSwitch: true})
 	if err != nil {
-		r.cfg.Cutover.Release(ctx, ref)
+		r.cfg.Cutover.RejectOnboarding(ctx, ref, err.Error())
 		return apiv1.Run{}, err
 	}
 	_, uerr := r.update(ctx, x.row.ID, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
@@ -108,25 +107,25 @@ func (r *Runner) startRun(ctx context.Context, x *rec, actor string) (apiv1.Run,
 	return run, uerr
 }
 
-// Remote is the rclone remote legacy of an onboarding's plan, for the gate's
-// probes and the run's file copies (fileguard.Remote); empty for any other
-// plan.
-func (r *Runner) Remote(p *plan.Plan) fileguard.Remote {
+// Remote is the rclone remote legacy of an onboarding's plan
+// (RCLONE_CONFIG_LEGACY_*), for its run's file copies
+// (runs.Config.SourceRemote); nil for any other plan.
+func (r *Runner) Remote(p *plan.Plan) []string {
 	n := len(onboard.IDPrefix) + 12
 	if p == nil || len(p.ID) <= n || !onboard.ID.MatchString(p.ID[:n]) || p.ID[n] != '-' {
-		return fileguard.Remote{}
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	x, err := r.load(ctx, p.ID[:n])
 	if err != nil || x.facts == nil || x.facts.Storage == nil {
-		return fileguard.Remote{}
+		return nil
 	}
 	env, err := r.legacyRemote(x)
 	if err != nil {
-		return fileguard.Remote{}
+		return nil
 	}
-	return fileguard.Remote{Env: env, Buckets: []string{onboard.SourceName + ":" + x.facts.Storage.Bucket}}
+	return env
 }
 
 // Scope is the plans.OnboardingScope of an onboarding's plan id, for

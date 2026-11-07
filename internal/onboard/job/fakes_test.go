@@ -342,7 +342,7 @@ func (w *world) ReserveOnboarding(_ context.Context, raw []byte, _ string, scope
 	return plans.Reserved{Plan: &plan.Plan{ID: p["id"].(string)}}, "pln_1", nil
 }
 func (w *world) Started(context.Context, string, string) error { return nil }
-func (w *world) Release(context.Context, string)               { w.did("release") }
+func (w *world) RejectOnboarding(context.Context, string, string) { w.did("reject plan") }
 func (w *world) Start(context.Context, runs.StartOptions) (apiv1.Run, error) {
 	w.did("run")
 	return apiv1.Run{RunId: "run1"}, nil

@@ -230,7 +230,8 @@ type Routes interface {
 type Cutover interface {
 	ReserveOnboarding(ctx context.Context, raw []byte, actor string, scope plans.OnboardingScope) (plans.Reserved, string, error)
 	Started(ctx context.Context, ref, runID string) error
-	Release(ctx context.Context, ref string)
+	// RejectOnboarding ends a reserved plan whose run did not start.
+	RejectOnboarding(ctx context.Context, ref, reason string)
 	Start(ctx context.Context, o runs.StartOptions) (apiv1.Run, error)
 	Get(ctx context.Context, runID string) (apiv1.Run, error)
 	// FindRun is the newest run of the plan id, if any.

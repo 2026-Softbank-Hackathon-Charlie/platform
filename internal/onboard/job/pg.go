@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strconv"
@@ -16,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 )
 
@@ -103,39 +102,30 @@ func (PG) DropRole(ctx context.Context, dsn, role string) error {
 	return err
 }
 
-// Rclone is Files with the rclone binary.
+// Rclone is Files with fileguard.Plain: the server's remotes (the target's
+// RCLONE_CONFIG_*, AWS_*, GOOGLE_* credentials) and env, the legacy remote,
+// without any *_PGPASSWORD and with no config file.
 type Rclone struct{}
 
-var differences = regexp.MustCompile(`(\d+) differences found`)
+var copied = regexp.MustCompile(`Transferred:\s+(\d+) /`)
 
 // Copy implements Files: rclone copy, then rclone check --one-way for what
 // still differs.
 func (Rclone) Copy(ctx context.Context, env []string, src, dst string) (int, int, error) {
-	// Only what rclone needs: no server secret, and no config file.
-	base := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
-	run := func(args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "rclone", append(args, "--config", os.DevNull)...)
-		cmd.Env = append(base, env...)
-		out, err := cmd.CombinedOutput()
-		return string(out), err
-	}
-	out, err := run("copy", src, dst, "--stats-one-line", "--stats-log-level", "NOTICE", "--stats", "0")
+	p := fileguard.NewPlain(env)
+	res, err := p.Copy(ctx, src, dst)
 	if err != nil {
-		return 0, 0, fmt.Errorf("rclone copy: %w: %s", err, tail(out, 300))
+		return 0, 0, err
 	}
-	copied := 0
-	if m := regexp.MustCompile(`Transferred:\s+(\d+) /`).FindStringSubmatch(out); m != nil {
-		copied, _ = strconv.Atoi(m[1])
+	n := 0
+	if m := copied.FindStringSubmatch(res.Output); m != nil {
+		n, _ = strconv.Atoi(m[1])
 	}
-	out, err = run("check", src, dst, "--one-way")
-	if m := differences.FindStringSubmatch(out); m != nil {
-		n, _ := strconv.Atoi(m[1])
-		return copied, n, nil
-	}
+	check, err := p.Check(ctx, src, dst)
 	if err != nil {
-		return copied, 0, fmt.Errorf("rclone check: %w: %s", err, tail(out, 300))
+		return n, 0, err
 	}
-	return copied, 0, nil
+	return n, check.Differences + check.Missing, nil
 }
 
 // Resolver is DNS with the system resolver: host points at the gateway
