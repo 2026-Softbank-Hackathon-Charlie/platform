@@ -566,13 +566,14 @@ func main() {
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{
-			WrittenTokens: writtenTokens,
-			Tokens:        tokens,
-			Insecure:      *insecure,
-			Admins:        admins,
-			ConsoleURL:    os.Getenv("PLATFORM_CONSOLE_URL"),
-			CORSOrigins:   splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
-			Log:           log,
+			WrittenTokens:   writtenTokens,
+			Tokens:          tokens,
+			Insecure:        *insecure,
+			Admins:          admins,
+			ConsoleURL:      os.Getenv("PLATFORM_CONSOLE_URL"),
+			OnpremPublicURL: os.Getenv("PLATFORM_ONPREM_PUBLIC_URL"),
+			CORSOrigins:     splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
+			Log:             log,
 
 			GitHubWebhookSecret: webhookSecret,
 			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
