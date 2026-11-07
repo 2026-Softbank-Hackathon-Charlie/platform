@@ -1643,12 +1643,19 @@ paths:
         instance's `apps/<instance>/` from the gitops repository, and forgets
         the app with its instances and deployments. Argo CD then deletes the
         Applications and the resources they created, so the app's data goes
-        with them; 202 means that is under way.
+        with them. The platform also removes every instance from the traffic
+        gateway and the app's database routes, and then deletes the buckets
+        and keys it made for the app: every instance's file bucket and the
+        Postgres backup bucket `<prefix><name>---pg` with its user, keys and
+        every object version (ADR 0016, 0037). A bucket that cannot be
+        deleted yet is retried every few minutes. 202 means that is under
+        way.
 
         Only registered apps can be deleted. Error codes: app_not_found (404),
         app_not_registered (409: the app is only in PLATFORM_APPS_FILE; an app
-        in both stays listed from the file), github_unreachable (502),
-        github_not_configured (503). Role operator.
+        in both stays listed from the file, without `deploy`, until the file
+        drops it), github_unreachable (502), github_not_configured (503).
+        Role operator.
       responses:
         "202":
           description: Unregistered; Argo CD is removing the workloads.

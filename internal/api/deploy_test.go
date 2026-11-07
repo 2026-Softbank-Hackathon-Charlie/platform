@@ -289,6 +289,46 @@ func TestDeleteApp(t *testing.T) {
 	}
 }
 
+// storeRemover deletes the app from the store, like the executor's
+// RemoveApp does last.
+type storeRemover struct {
+	fakeRemover
+	store store.Store
+}
+
+func (f *storeRemover) RemoveApp(ctx context.Context, name string) error {
+	if err := f.fakeRemover.RemoveApp(ctx, name); err != nil {
+		return err
+	}
+	return f.store.DeleteApp(ctx, name)
+}
+
+// TestDeleteAppKeepsTheFileEntry deletes a registered app that is also in
+// PLATFORM_APPS_FILE: the registered app goes, and the list goes on showing
+// the file's entry, without deploy, until the file drops it.
+func TestDeleteAppKeepsTheFileEntry(t *testing.T) {
+	rm := &storeRemover{}
+	h := newHarness(t, withApps(""), withGitHub(shopGitHub(), nil), func(_ *harness, _ *runs.Config, d *Deps) { d.Remover = rm })
+	rm.store = h.store
+	created := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	spec := []byte(`{"name":"x","services":[{"name":"web","path":".","dockerfile":"Dockerfile","port":8080,"public":true,"replicas":1}]}`)
+	if err := h.store.CreateApp(t.Context(), store.App{Name: "moimroom", Repo: "acme/moimroom", Branch: "main", Environments: []string{"eks"}, Spec: spec, SpecCommit: headSHA, CreatedBy: "op", CreatedAt: created}); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := h.do("DELETE", "/v1/apps/moimroom", opToken, nil); code != 202 || !slices.Equal(rm.removed, []string{"moimroom"}) {
+		t.Fatalf("delete: %d %s, removed %v", code, b, rm.removed)
+	}
+	code, b := h.do("GET", "/v1/apps", viewerToken, nil)
+	list := decode[apiv1.AppList](t, b).Apps
+	if code != 200 || len(list) != 1 || list[0].Name != "moimroom" || list[0].Deploy != nil || len(list[0].Environments) == 0 {
+		t.Fatalf("list after delete: %d %s", code, b)
+	}
+	// Only a registered app can be deleted; the file's entry is not one.
+	if code, b := h.do("DELETE", "/v1/apps/moimroom", opToken, nil); code != 409 || errorCode(t, b) != "app_not_registered" {
+		t.Fatalf("delete again: %d %s", code, b)
+	}
+}
+
 // deploymentStream reads a deployment's event stream until it closes or
 // stop is closed, checking every payload against openapi.yaml.
 func (h *harness) deploymentStream(id, lastEventID string, stop <-chan struct{}) []sseMsg {

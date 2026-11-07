@@ -166,7 +166,6 @@ func TestConfigRejects(t *testing.T) {
 		edit func(*Config)
 		want string
 	}{
-		"no apps":     {func(c *Config) { c.Apps = nil }, "no apps"},
 		"bad name":    {func(c *Config) { c.Apps[0].Name = "Moim_Room" }, "name"},
 		"duplicate":   {func(c *Config) { c.Apps = append(c.Apps, ok()) }, "duplicate"},
 		"unknown env": {func(c *Config) { c.Apps[0].Environments["aks"] = c.Apps[0].Environments["gke"] }, `environment "aks"`},
@@ -240,5 +239,37 @@ func TestConfigRejectsEnvironmentNamespace(t *testing.T) {
 	_, err := New(cfg, []envs.EnvConfig{{Name: "gke"}}, "")
 	if err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("err = %v, want a namespace error", err)
+	}
+}
+
+// TestEmptyFileLoads accepts an apps file without apps (apps: [] or an empty
+// file): the server then lists only the apps registered from GitHub.
+func TestEmptyFileLoads(t *testing.T) {
+	envCfg, err := envs.LoadConfig(filepath.Join("..", "..", "examples", "envs.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"apps: []\n", ""} {
+		path := filepath.Join(t.TempDir(), "apps.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("%q: %v", body, err)
+		}
+		c, err := New(cfg, envCfg.Environments, "")
+		if err != nil {
+			t.Fatalf("%q: %v", body, err)
+		}
+		if list := c.List(); list == nil || len(list) != 0 {
+			t.Fatalf("%q: apps = %+v", body, list)
+		}
+		if len(c.PasswordHosts()) != 0 || len(c.AppHosts()) != 0 || len(c.Buckets()) != 0 {
+			t.Fatalf("%q: hosts %v, buckets %v", body, c.AppHosts(), c.Buckets())
+		}
+		if c.Has("moimroom") {
+			t.Fatalf("%q: has moimroom", body)
+		}
 	}
 }
