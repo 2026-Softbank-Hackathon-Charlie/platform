@@ -48,6 +48,8 @@ func (s *Server) decodeEnrollment(w http.ResponseWriter, r *http.Request, v any)
 }
 func (s *Server) enrollmentError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, onprem.ErrEnvironmentExists):
+		s.fail(w, r, 409, "enrollment_environment_exists", "this environment is already registered; use a new environment name for a new device")
 	case errors.Is(err, onprem.ErrInvalid):
 		s.fail(w, r, 400, "invalid_request", "invalid environment, install choice or Idempotency-Key")
 	case errors.Is(err, onprem.ErrUnauthorized):
@@ -57,7 +59,7 @@ func (s *Server) enrollmentError(w http.ResponseWriter, r *http.Request, err err
 	case errors.Is(err, store.ErrConflict):
 		s.fail(w, r, 409, "enrollment_conflict", "grant expired, consumed, revoked, capacity reached, or idempotency key reused")
 	case errors.Is(err, onprem.ErrUnavailable):
-		s.fail(w, r, 503, "enrollment_issuer_unavailable", "issuer requires a configured HTTPS public origin")
+		s.fail(w, r, 503, "enrollment_issuer_unavailable", "onprem registration requires connector binaries, dedicated tailnet credentials and registration permissions; contact the platform operator")
 	default:
 		s.internal(w, r, errors.New("enrollment persistence failed"))
 	}
@@ -121,6 +123,12 @@ func (s *Server) revokeOnpremEnrollment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	noteAudit(r, "enrollment", e.ID)
+	if s.d.OnpremConnector != nil {
+		if err := s.d.OnpremConnector.Runtime.Remove(r.Context(), e.ID, e.Environment); err != nil {
+			s.fail(w, r, 503, "onprem_disconnect_pending", "the grant is revoked but external connection cleanup must be retried")
+			return
+		}
+	}
 	writeJSON(w, 200, map[string]any{"enrollment": e})
 }
 func (s *Server) claimOnpremEnrollment(w http.ResponseWriter, r *http.Request) {
@@ -167,5 +175,5 @@ func (s *Server) claimOnpremEnrollment(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, 503, "audit_unavailable", "bootstrap claim revoked because the audit log could not be written")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"enrollment": e})
+	writeJSON(w, 200, e)
 }

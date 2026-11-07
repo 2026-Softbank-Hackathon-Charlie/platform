@@ -138,6 +138,10 @@ jobs:
           for cmd in api gateway; do
             GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build "${build_tags[@]}" -trimpath -ldflags "-s -w" -o "deploy/docker/bin/hopcharlie-$cmd" "./cmd/$cmd"
           done
+          for arch in amd64 arm64; do
+            mkdir -p deploy/docker/bin/onprem-agent
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "deploy/docker/bin/onprem-agent/$arch" ./cmd/onprem-agent
+          done
 
       - name: AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0

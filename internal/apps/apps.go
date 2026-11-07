@@ -98,10 +98,21 @@ func LoadConfig(path string) (Config, error) {
 // Catalog is the validated apps file together with the environments it
 // refers to. It is read-only and safe for concurrent use.
 type Catalog struct {
-	apps       []App
-	envs       []envs.EnvConfig // PLATFORM_ENVS_FILE order
-	gatewayURL string
-	registry   *Registry // nil: only the apps file
+	apps              []App
+	envs              []envs.EnvConfig // PLATFORM_ENVS_FILE order
+	gatewayURL        string
+	registry          *Registry // nil: only the apps file
+	environmentSource func() []envs.EnvConfig
+}
+
+// SetEnvironmentSource connects a live registry. Configure once before serving
+// requests; the callback must return an immutable snapshot safe for concurrent use.
+func (c *Catalog) SetEnvironmentSource(source func() []envs.EnvConfig) { c.environmentSource = source }
+func (c *Catalog) environments() []envs.EnvConfig {
+	if c.environmentSource != nil {
+		return c.environmentSource()
+	}
+	return c.envs
 }
 
 // Empty is a catalog without an apps file, for a server that drafts plans
@@ -279,7 +290,7 @@ func (c *Catalog) view(a App) apiv1.App {
 	if item.Database.Schemas == nil {
 		item.Database.Schemas = []string{}
 	}
-	for _, env := range c.envs {
+	for _, env := range c.environments() {
 		e, ok := a.Environments[env.Name]
 		if !ok {
 			continue
@@ -316,7 +327,7 @@ func (c *Catalog) app(name string) (App, bool) {
 }
 
 func (c *Catalog) env(name string) (envs.EnvConfig, bool) {
-	for _, e := range c.envs {
+	for _, e := range c.environments() {
 		if e.Name == name {
 			return e, true
 		}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/url"
 	"slices"
 	"strings"
@@ -21,7 +20,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 const userAgent = "hopcharlie-platform"
@@ -30,28 +28,10 @@ const userAgent = "hopcharlie-platform"
 // Every request is bounded by timeout. It reads only the kubeconfig and never
 // contacts the cluster; errors are short and name no file paths.
 func NewKubeProber(env EnvConfig, timeout time.Duration) (Prober, error) {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if env.Kubeconfig != "" {
-		rules.ExplicitPath = env.Kubeconfig
-	}
-	raw, err := rules.Load()
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, errors.New("kubeconfig file not found")
-	}
+	rc, err := kubeRESTConfig(env, timeout)
 	if err != nil {
-		return nil, errors.New("kubeconfig could not be read")
+		return nil, err
 	}
-	// Checked here because client-go reports a missing context only as a
-	// plain error string.
-	if _, ok := raw.Contexts[env.KubeContext]; !ok {
-		return nil, fmt.Errorf("kube context %q not found in kubeconfig", env.KubeContext)
-	}
-	rc, err := clientcmd.NewNonInteractiveClientConfig(*raw, env.KubeContext, &clientcmd.ConfigOverrides{}, rules).ClientConfig()
-	if err != nil {
-		return nil, fmt.Errorf("kube context %q: invalid kubeconfig", env.KubeContext)
-	}
-	rc.UserAgent = userAgent
-	rc.Timeout = timeout
 	// One HTTP client so both clients share a connection pool.
 	hc, err := rest.HTTPClientFor(rc)
 	if err != nil {

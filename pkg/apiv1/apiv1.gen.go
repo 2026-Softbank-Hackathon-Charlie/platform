@@ -1771,6 +1771,42 @@ func (e StreamAgentEventsParamsFormat) Valid() bool {
 	}
 }
 
+// Defines values for GetOnpremAgentBinaryParamsArch.
+const (
+	GetOnpremAgentBinaryParamsArchAmd64 GetOnpremAgentBinaryParamsArch = "amd64"
+	GetOnpremAgentBinaryParamsArchArm64 GetOnpremAgentBinaryParamsArch = "arm64"
+)
+
+// Valid indicates whether the value is a known member of the GetOnpremAgentBinaryParamsArch enum.
+func (e GetOnpremAgentBinaryParamsArch) Valid() bool {
+	switch e {
+	case GetOnpremAgentBinaryParamsArchAmd64:
+		return true
+	case GetOnpremAgentBinaryParamsArchArm64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetOnpremBootstrapParamsArch.
+const (
+	GetOnpremBootstrapParamsArchAmd64 GetOnpremBootstrapParamsArch = "amd64"
+	GetOnpremBootstrapParamsArchArm64 GetOnpremBootstrapParamsArch = "arm64"
+)
+
+// Valid indicates whether the value is a known member of the GetOnpremBootstrapParamsArch enum.
+func (e GetOnpremBootstrapParamsArch) Valid() bool {
+	switch e {
+	case GetOnpremBootstrapParamsArchAmd64:
+		return true
+	case GetOnpremBootstrapParamsArchArm64:
+		return true
+	default:
+		return false
+	}
+}
+
 // AIActivity defines model for AIActivity.
 type AIActivity struct {
 	Events  []AIActivityEvent `json:"events"`
@@ -3999,8 +4035,11 @@ type OnpremEnrollment struct {
 	Environment string                  `json:"environment"`
 	ExpiresAt   time.Time               `json:"expiresAt"`
 	Id          string                  `json:"id"`
-	Status      string                  `json:"status"`
-	UpdatedAt   time.Time               `json:"updatedAt"`
+
+	// Stage Last persisted registration phase.
+	Stage     *string   `json:"stage,omitempty"`
+	Status    string    `json:"status"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // OnpremEnrollmentCheck defines model for OnpremEnrollmentCheck.
@@ -5711,9 +5750,39 @@ type StreamOnboardingEventsParams struct {
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
+// ValidateOnpremClusterSecretJSONBody defines parameters for ValidateOnpremClusterSecret.
+type ValidateOnpremClusterSecretJSONBody map[string]interface{}
+
+// GetOnpremAgentBinaryParams defines parameters for GetOnpremAgentBinary.
+type GetOnpremAgentBinaryParams struct {
+	Arch GetOnpremAgentBinaryParamsArch `form:"arch" json:"arch"`
+}
+
+// GetOnpremAgentBinaryParamsArch defines parameters for GetOnpremAgentBinary.
+type GetOnpremAgentBinaryParamsArch string
+
 // CreateOnpremEnrollmentParams defines parameters for CreateOnpremEnrollment.
 type CreateOnpremEnrollmentParams struct {
 	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// GetOnpremBootstrapParams defines parameters for GetOnpremBootstrap.
+type GetOnpremBootstrapParams struct {
+	Arch GetOnpremBootstrapParamsArch `form:"arch" json:"arch"`
+}
+
+// GetOnpremBootstrapParamsArch defines parameters for GetOnpremBootstrap.
+type GetOnpremBootstrapParamsArch string
+
+// RegisterOnpremConnectionJSONBody defines parameters for RegisterOnpremConnection.
+type RegisterOnpremConnectionJSONBody struct {
+	ArgoToken string `json:"argoToken"`
+
+	// CaData Base64 encoded PEM CA.
+	CaData         string    `json:"caData"`
+	ClusterUID     string    `json:"clusterUID"`
+	PlatformToken  string    `json:"platformToken"`
+	TokenExpiresAt time.Time `json:"tokenExpiresAt"`
 }
 
 // GetSecurityParams defines parameters for GetSecurity.
@@ -5829,11 +5898,17 @@ type StartOnboardingJSONRequestBody = OnboardingRequest
 // ApproveOnboardingJSONRequestBody defines body for ApproveOnboarding for application/json ContentType.
 type ApproveOnboardingJSONRequestBody = OnboardingApproveRequest
 
+// ValidateOnpremClusterSecretJSONRequestBody defines body for ValidateOnpremClusterSecret for application/json ContentType.
+type ValidateOnpremClusterSecretJSONRequestBody ValidateOnpremClusterSecretJSONBody
+
 // CreateOnpremEnrollmentJSONRequestBody defines body for CreateOnpremEnrollment for application/json ContentType.
 type CreateOnpremEnrollmentJSONRequestBody = OnpremEnrollmentCreateRequest
 
 // ClaimOnpremEnrollmentJSONRequestBody defines body for ClaimOnpremEnrollment for application/json ContentType.
 type ClaimOnpremEnrollmentJSONRequestBody = OnpremEnrollmentClaimRequest
+
+// RegisterOnpremConnectionJSONRequestBody defines body for RegisterOnpremConnection for application/json ContentType.
+type RegisterOnpremConnectionJSONRequestBody RegisterOnpremConnectionJSONBody
 
 // SubmitPlanJSONRequestBody defines body for SubmitPlan for application/json ContentType.
 type SubmitPlanJSONRequestBody = EnginePlan
