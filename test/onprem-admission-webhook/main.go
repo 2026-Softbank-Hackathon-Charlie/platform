@@ -23,9 +23,18 @@ func main() {
 	if *cert == "" || *key == "" {
 		os.Exit(2)
 	}
+	server := &http.Server{Addr: *addr, Handler: newAdmissionHandler(), TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 10 * time.Second, MaxHeaderBytes: 8 << 10}
+	if server.ListenAndServeTLS(*cert, *key) != nil {
+		os.Exit(1)
+	}
+}
+
+func newAdmissionHandler() http.Handler {
 	capacity := make(chan struct{}, 64)
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.RequestURI() != "/v1/onprem/admission/cluster-secret" {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The API server appends its admission timeout as a query parameter.
+		// Route by path so ?timeout=5s reaches the same bounded validator.
+		if r.Method != "POST" || r.URL.Path != "/v1/onprem/admission/cluster-secret" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -57,8 +66,4 @@ func main() {
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(out)
 	})
-	server := &http.Server{Addr: *addr, Handler: handler, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 10 * time.Second, MaxHeaderBytes: 8 << 10}
-	if server.ListenAndServeTLS(*cert, *key) != nil {
-		os.Exit(1)
-	}
 }

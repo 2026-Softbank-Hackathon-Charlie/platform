@@ -38,3 +38,13 @@ func TestOnpremAdmissionBoundsUntrustedBody(t *testing.T) {
 		}
 	}
 }
+
+func TestOnpremAdmissionAcceptsKubernetesTimeoutQuery(t *testing.T) {
+	server := New(Config{}, Deps{})
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/onprem/admission/cluster-secret?timeout=5s", strings.NewReader(`{"apiVersion":"admission.k8s.io/v1","kind":"AdmissionReview","request":{"uid":"api-timeout-query-uid"}}`)))
+	var response admissionv1.AdmissionReview
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &response) != nil || response.Response == nil || response.Response.Allowed || response.Response.UID != "api-timeout-query-uid" || response.Request != nil {
+		t.Fatal("the Kubernetes timeout query did not reach the bounded stateless admission route")
+	}
+}
