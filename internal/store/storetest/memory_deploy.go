@@ -109,6 +109,18 @@ func (m *memory) GetAppDatabase(_ context.Context, app string) (store.AppDatabas
 	return d.Clean(), nil // Clean copies the byte slices
 }
 
+func (m *memory) NextPeerGeneration(_ context.Context, app string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.deploy.databases[app]
+	if !ok {
+		return 0, fmt.Errorf("%w: database pair of app %s", store.ErrNotFound, app)
+	}
+	d.PeerGeneration++
+	m.deploy.databases[app] = d
+	return d.PeerGeneration, nil
+}
+
 func (m *memory) ListAppDatabases(_ context.Context) ([]store.AppDatabase, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

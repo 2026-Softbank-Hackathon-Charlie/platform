@@ -586,6 +586,24 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	}
 	eqList(t, "app databases", apps, []string{"blog", "moimroom-mig"})
 
+	// NextPeerGeneration counts up one pair's peer removals (ADR 0037).
+	if _, err := s.NextPeerGeneration(ctx, "nothing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("NextPeerGeneration of no pair = %v, want ErrNotFound", err)
+	}
+	for want := 1; want <= 2; want++ {
+		gen, err := s.NextPeerGeneration(ctx, "blog")
+		must(t, err)
+		if gen != want {
+			t.Fatalf("NextPeerGeneration #%d = %d", want, gen)
+		}
+	}
+	if d, err := s.GetAppDatabase(ctx, "blog"); err != nil || d.PeerGeneration != 2 {
+		t.Fatalf("blog after two NextPeerGeneration: %d, %v; want 2", d.PeerGeneration, err)
+	}
+	if d, err := s.GetAppDatabase(ctx, "moimroom-mig"); err != nil || d.PeerGeneration != 0 {
+		t.Fatalf("the other pair's PeerGeneration: %d, %v; want 0", d.PeerGeneration, err)
+	}
+
 	// DeleteApp removes the pair; registering the name again has none.
 	must(t, s.DeleteApp(ctx, "moimroom-mig"))
 	if _, err := s.GetAppDatabase(ctx, "moimroom-mig"); !errors.Is(err, store.ErrNotFound) {
