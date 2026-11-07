@@ -182,6 +182,28 @@ func (s *Postgres) GetBackupStorage(ctx context.Context, app, env string) (Insta
 	return out, err
 }
 
+func (s *Postgres) ListBackupStorage(ctx context.Context) ([]InstanceStorage, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+backupStorageColumns+` FROM backup_storage ORDER BY app COLLATE "C", env COLLATE "C"`)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, scanInstanceStorage)
+}
+
+func (s *Postgres) DeleteBackupStorage(ctx context.Context, app, env string) error {
+	if !Clean(app) || !Clean(env) {
+		return fmt.Errorf("%w: backup storage of app %q in %q", ErrNotFound, app, env)
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM backup_storage WHERE app = $1 AND env = $2`, app, env)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: backup storage of app %s in %s", ErrNotFound, app, env)
+	}
+	return nil
+}
+
 func (s *Postgres) DeleteInstanceStorage(ctx context.Context, instance, env string) error {
 	if !Clean(instance) || !Clean(env) {
 		return fmt.Errorf("%w: storage of instance %q in %q", ErrNotFound, instance, env)

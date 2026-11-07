@@ -458,7 +458,7 @@ func testInstanceStorage(t *testing.T, s store.Store) {
 
 // testBackupStorage checks the backup bucket rows (ADR 0025): by app and
 // environment, apart from the instance storage rows, and kept when the app
-// is deleted.
+// is deleted until DeleteBackupStorage removes them (ADR 0037).
 func testBackupStorage(t *testing.T, s store.Store) {
 	ctx := t.Context()
 	_, err := s.GetBackupStorage(ctx, "moimroom", "eks")
@@ -495,9 +495,29 @@ func testBackupStorage(t *testing.T, s store.Store) {
 	_, err = s.GetBackupStorage(ctx, "moimroom", "eks")
 	must(t, err)
 
+	// List returns every row, by app and then environment.
+	must(t, s.PutBackupStorage(ctx, newInstanceStorage("blog---pg", "gke", "blog", 3)))
+	must(t, s.PutBackupStorage(ctx, newInstanceStorage("blog---pg", "eks", "blog", 4)))
+	all, err := s.ListBackupStorage(ctx)
+	must(t, err)
+	keys := make([]string, len(all))
+	for i, r := range all {
+		keys[i] = r.App + "@" + r.Env
+	}
+	eqList(t, "backup storage", keys, []string{"blog@eks", "blog@gke", "moimroom@eks"})
+
+	// Delete removes one row.
+	must(t, s.DeleteBackupStorage(ctx, "moimroom", "eks"))
+	wantErr(t, s.DeleteBackupStorage(ctx, "moimroom", "eks"), store.ErrNotFound)
+	_, err = s.GetBackupStorage(ctx, "moimroom", "eks")
+	wantErr(t, err, store.ErrNotFound)
+	_, err = s.GetBackupStorage(ctx, "blog", "eks")
+	must(t, err)
+
 	// Unclean keys find nothing.
 	_, err = s.GetBackupStorage(ctx, "moim\x00room", "eks")
 	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteBackupStorage(ctx, "b\x00log", "eks"), store.ErrNotFound)
 }
 
 func newAppDatabase(primary, peer string, createdAt int) store.AppDatabase {

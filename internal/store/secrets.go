@@ -129,12 +129,19 @@ type SecretStore interface {
 	// PutBackupStorage stores the backup bucket and key of app s.App in
 	// s.Env (ADR 0025), replacing the row there is but keeping its
 	// CreatedAt. s.Instance is the name the driver made them under. These
-	// rows are apart from the instance storage rows: they outlive the app,
-	// and the platform never deletes them.
+	// rows are apart from the instance storage rows, and like them they
+	// outlive the app until the driver has deleted the bucket and key
+	// (ADR 0037).
 	PutBackupStorage(ctx context.Context, s InstanceStorage) error
 	// GetBackupStorage returns ErrNotFound when the app has no backup bucket
 	// in env.
 	GetBackupStorage(ctx context.Context, app, env string) (InstanceStorage, error)
+	// ListBackupStorage returns every backup storage row, also those of
+	// deleted apps, by App and then Env in byte order; empty, not nil, when
+	// there are none.
+	ListBackupStorage(ctx context.Context) ([]InstanceStorage, error)
+	// DeleteBackupStorage removes one row. ErrNotFound when there is none.
+	DeleteBackupStorage(ctx context.Context, app, env string) error
 
 	// GetAppDatabase returns the database pair of an app (ADR 0030),
 	// stored by CreateAppWithDatabase. ErrNotFound when it has none.

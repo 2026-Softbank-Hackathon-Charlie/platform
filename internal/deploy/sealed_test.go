@@ -848,7 +848,11 @@ func TestDeployBackupBucketKey(t *testing.T) {
 		t.Errorf("branch values %+v", b)
 	}
 
-	// Deleting the app leaves the backup bucket, its key and the row.
+	// Deleting the app deletes the backup bucket, its key and the row too
+	// (ADR 0037), through the driver of the backup bucket's environment.
+	eks.mu.Lock()
+	eks.err = errors.New("bucket not empty yet")
+	eks.mu.Unlock()
 	if err := ex.RemoveApp(ctx, "shop"); err != nil {
 		t.Fatal(err)
 	}
@@ -856,10 +860,20 @@ func TestDeployBackupBucketKey(t *testing.T) {
 	if _, err := ex.CleanupStorage(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if slices.Contains(eks.deleted, "shop---pg") || len(eks.keysOf("shop---pg")) != 1 {
+	// A failing driver keeps the row for the next run.
+	if _, err := se.store.GetBackupStorage(ctx, "shop", "eks"); err != nil {
+		t.Fatalf("backup row after a failed cleanup: %v", err)
+	}
+	eks.mu.Lock()
+	eks.err = nil
+	eks.mu.Unlock()
+	if _, err := ex.CleanupStorage(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(eks.deleted, "shop---pg") || len(eks.keysOf("shop---pg")) != 0 {
 		t.Fatalf("deleted %v, backup keys %v", eks.deleted, eks.keysOf("shop---pg"))
 	}
-	if _, err := se.store.GetBackupStorage(ctx, "shop", "eks"); err != nil {
+	if _, err := se.store.GetBackupStorage(ctx, "shop", "eks"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("backup row after the app was deleted: %v", err)
 	}
 }

@@ -306,7 +306,8 @@ func (j *job) sealer(env string) (*sealing.Sealer, error) {
 // returns the key sealed for the instance's Secret app-s3, the key's id and
 // the driver. With backup it does the same for the app's backup bucket
 // (ADR 0025): the driver's instance <app>---pg, the Secret app-pgbackup and
-// a row in the backup storage, which no cleanup ever deletes.
+// a row in the backup storage, which CleanupStorage deletes once the app is
+// gone (ADR 0037).
 //
 //   - No stored key: a new bucket key, sealed and stored.
 //   - A stored key sealed with the current certificate: the driver checks
@@ -473,10 +474,11 @@ func (j *job) deleteOldKeys(ctx context.Context) {
 const DefaultCleanupInterval = 5 * time.Minute
 
 // CleanupStorage deletes the buckets and keys of instances that no longer
-// exist (ADR 0016): for every stored row whose app or instance is gone it
+// exist (ADR 0016), and the backup buckets and keys of apps that no longer
+// exist (ADR 0037): for every stored row whose app or instance is gone it
 // calls the environment's driver to delete the user, its keys and the
-// bucket, and then deletes the row. A failure keeps the row for the next
-// run. It returns how many rows it deleted.
+// bucket with every object version, and then deletes the row. A failure
+// keeps the row for the next run. It returns how many rows it deleted.
 func (e *Executor) CleanupStorage(ctx context.Context) (int, error) {
 	if e.cfg.Storage == nil {
 		return 0, nil
@@ -494,7 +496,7 @@ func (e *Executor) CleanupStorage(ctx context.Context) (int, error) {
 		if live {
 			continue
 		}
-		if err := e.deleteStorage(ctx, row); errors.Is(err, errStuck) {
+		if err := e.deleteStorage(ctx, row, false); errors.Is(err, errStuck) {
 			e.cfg.Log.Error("cannot delete the bucket and key of a deleted instance; an operator deletes them and the instance_storage row (ADR 0016)",
 				"instance", row.Instance, "env", row.Env, "driver", row.Driver, "bucket", row.Bucket, "err", err)
 			continue
@@ -506,13 +508,40 @@ func (e *Executor) CleanupStorage(ctx context.Context) (int, error) {
 		done++
 		e.cfg.Log.Info("deleted the bucket and key of a deleted instance", "instance", row.Instance, "env", row.Env, "bucket", row.Bucket)
 	}
+	backups, err := e.cfg.Store.ListBackupStorage(ctx)
+	if err != nil {
+		return done, fmt.Errorf("list the apps' backup buckets: %w", err)
+	}
+	for _, row := range backups {
+		if _, err := e.cfg.Store.GetApp(ctx, row.App); err == nil {
+			continue
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return done, err
+		}
+		if err := e.deleteStorage(ctx, row, true); errors.Is(err, errStuck) {
+			e.cfg.Log.Error("cannot delete the backup bucket and key of a deleted app; an operator deletes them and the backup_storage row (ADR 0025, 0037)",
+				"app", row.App, "env", row.Env, "driver", row.Driver, "bucket", row.Bucket, "err", err)
+			continue
+		} else if err != nil {
+			e.cfg.Log.Warn("delete the backup bucket and key of a deleted app; trying again later",
+				"app", row.App, "env", row.Env, "bucket", row.Bucket, "err", err)
+			continue
+		}
+		done++
+		e.cfg.Log.Info("deleted the backup bucket and key of a deleted app", "app", row.App, "env", row.Env, "bucket", row.Bucket)
+	}
 	return done, nil
 }
 
 // deleteStorage deletes one row's bucket and key under the instance's
-// lock, then the row.
-func (e *Executor) deleteStorage(ctx context.Context, row store.InstanceStorage) error {
-	l := e.lock(row.Instance)
+// lock, then the row. With backup the row is an app's backup bucket (ADR
+// 0025), made under the lock of the app's default instance.
+func (e *Executor) deleteStorage(ctx context.Context, row store.InstanceStorage, backup bool) error {
+	lock := row.Instance
+	if backup {
+		lock = row.App
+	}
+	l := e.lock(lock)
 	l.Lock()
 	defer l.Unlock()
 	drv, err := e.cfg.Storage(row.Env)
@@ -525,7 +554,11 @@ func (e *Executor) deleteStorage(ctx context.Context, row store.InstanceStorage)
 	if err := drv.Delete(ctx, storage.Instance{App: row.App, Name: row.Instance}); err != nil {
 		return err
 	}
-	if err := e.cfg.Store.DeleteInstanceStorage(ctx, row.Instance, row.Env); err != nil && !errors.Is(err, store.ErrNotFound) {
+	del := func() error { return e.cfg.Store.DeleteInstanceStorage(ctx, row.Instance, row.Env) }
+	if backup {
+		del = func() error { return e.cfg.Store.DeleteBackupStorage(ctx, row.App, row.Env) }
+	}
+	if err := del(); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
 	return nil
