@@ -117,6 +117,8 @@ type router struct {
 	buffering      int      // held writes still reading their body; count towards MaxHeld
 	inflightWrites int      // includes released writes not yet dispatched
 	writesIdle     chan struct{}
+	writeSlots     chan struct{}
+	healthPath     string
 }
 
 // Gateway is the proxy plus its admin API.
@@ -132,11 +134,17 @@ type Gateway struct {
 	shutdown chan struct{} // closed by BeginShutdown
 	stopOnce sync.Once
 
-	// Lock order: saveMu, then appsMu, then a router's mu.
+	// Lock order: optional controlMu, saveMu, appsMu, router mu. Never save
+	// while holding appsMu/router mu, and never hold controlMu while draining.
 	appsMu sync.RWMutex
 	apps   map[string]*router // registered through the admin API
 
 	saveMu sync.Mutex
+	// Serializes administrative state changes and their persistence. Hold
+	// releases this lock before draining so an operator can still cancel it.
+	controlMu         sync.Mutex
+	persistenceFailed atomic.Bool
+	bufferedBytes     atomic.Int64
 }
 
 // New builds a gateway and restores routing from the state file, if any. A
@@ -164,7 +172,7 @@ func New(cfg Config) (*Gateway, error) {
 }
 
 func (g *Gateway) newRouter(name string, bcs []BackendConfig, log *slog.Logger, m *routerMetrics) (*router, error) {
-	rt := &router{g: g, name: name, log: log, metrics: m, writesIdle: make(chan struct{})}
+	rt := &router{g: g, name: name, log: log, metrics: m, writesIdle: make(chan struct{}), writeSlots: make(chan struct{}, g.cfg.MaxConcurrentWrites), healthPath: g.cfg.HealthPath}
 	var err error
 	rt.backends, rt.byName, err = rt.newBackends(bcs, nil)
 	if err != nil {
@@ -256,6 +264,12 @@ func (g *Gateway) restoreApp(name string, pa persistedApp) error {
 	}
 	if err := rt.restore(&pa.persistedState); err != nil {
 		return err
+	}
+	if pa.HealthPath != "" {
+		if !validHealthPath(pa.HealthPath) {
+			return errors.New("invalid persisted app health path")
+		}
+		rt.healthPath = pa.HealthPath
 	}
 	g.apps[name] = rt
 	return nil
@@ -354,6 +368,20 @@ func (g *Gateway) serveProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *router) serve(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	class := classWrite
+	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		class = classRead
+	}
+	sw := &statusWriter{ResponseWriter: w}
+	defer func() {
+		code := sw.status()
+		if sw.code == 0 && r.Context().Err() != nil {
+			code = statusClientClosed
+		}
+		rt.metrics.endToEnd.WithLabelValues(class, strconv.Itoa(code)).Observe(time.Since(start).Seconds())
+	}()
+	w = sw
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		rt.serveRead(w, r)
@@ -548,6 +576,7 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 		if !buffered {
 			if rt.waitingLocked() >= rt.g.cfg.MaxHeld {
 				rt.mu.Unlock()
+				rt.metrics.holdWait.WithLabelValues("rejected").Observe(time.Since(arrived).Seconds())
 				retryLater(w, "too_many_held_writes", "writes are paused for a migration; retry shortly")
 				return
 			}
@@ -555,11 +584,36 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 			// memory held writes use.
 			rt.buffering++
 			rt.mu.Unlock()
-			err := bufferBody(r)
+			if r.Body != nil && r.Body != http.NoBody {
+				if !rt.g.reserveHeldBuffer() {
+					rt.mu.Lock()
+					rt.buffering--
+					rt.mu.Unlock()
+					rt.metrics.holdWait.WithLabelValues("rejected").Observe(time.Since(arrived).Seconds())
+					retryLater(w, "buffer_budget_exhausted", "held request body memory budget is full; not forwarded")
+					return
+				}
+				defer rt.g.bufferedBytes.Add(-heldBufferReservation)
+			}
+			bodyDeadline := arrived.Add(rt.g.cfg.MaxHold)
+			if limit := time.Now().Add(rt.g.cfg.BodyReadTimeout); limit.Before(bodyDeadline) {
+				bodyDeadline = limit
+			}
+			err := bufferBodyUntil(w, r, bodyDeadline)
 			rt.mu.Lock()
 			rt.buffering--
 			if err != nil {
 				rt.mu.Unlock()
+				rt.metrics.holdWait.WithLabelValues("body_error").Observe(time.Since(arrived).Seconds())
+				if errors.Is(err, errBodyTimeout) {
+					if time.Since(arrived) >= rt.g.cfg.MaxHold {
+						rt.metrics.holdExpired.Inc()
+						retryLater(w, "hold_timeout", "write expired while receiving its body; not forwarded")
+					} else {
+						writeError(w, http.StatusRequestTimeout, "body_timeout", "request body did not arrive in time; not forwarded")
+					}
+					return
+				}
 				rt.metrics.heldDropped.Inc()
 				writeError(w, http.StatusBadRequest, "bad_request", "could not read the request body: "+err.Error())
 				return
@@ -575,13 +629,58 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer rt.writeDone()
-		rt.forward(w, r, b, classWrite, nil)
+		rt.dispatchWrite(w, r, b, arrived)
 		return
 	}
 	b := rt.byName[rt.writeBackend]
 	rt.inflightWrites++
 	rt.mu.Unlock()
 	defer rt.writeDone()
+	rt.dispatchWrite(w, r, b, arrived)
+}
+
+// Account conservatively for ReadAll growth and the retained streaming prefix.
+const heldBufferReservation int64 = 2 * (maxBufferedBody + 1)
+
+func (g *Gateway) reserveHeldBuffer() bool {
+	for {
+		used := g.bufferedBytes.Load()
+		if used > g.cfg.MaxBufferedBytes-heldBufferReservation {
+			return false
+		}
+		if g.bufferedBytes.CompareAndSwap(used, used+heldBufferReservation) {
+			return true
+		}
+	}
+}
+
+// Queued writes remain in inflightWrites: a subsequent hold must drain them
+// too. New requests share the limiter so they cannot bypass a release burst.
+func (rt *router) dispatchWrite(w http.ResponseWriter, r *http.Request, b *backend, arrived time.Time) {
+	queuedAt := time.Now()
+	observe := func(outcome string) {
+		rt.metrics.writeQueue.WithLabelValues(outcome).Observe(time.Since(queuedAt).Seconds())
+	}
+	ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(rt.g.cfg.MaxHold))
+	defer cancel()
+	select {
+	case rt.writeSlots <- struct{}{}:
+		defer func() { <-rt.writeSlots }()
+	case <-ctx.Done():
+		observe("not_forwarded")
+		if r.Context().Err() == nil {
+			retryLater(w, "write_queue_timeout", "write expired in dispatch queue; not forwarded")
+		}
+		return
+	}
+	if ctx.Err() != nil {
+		observe("not_forwarded")
+		if r.Context().Err() == nil {
+			retryLater(w, "write_queue_timeout", "write expired in dispatch queue; not forwarded")
+		}
+		return
+	}
+	observe("dispatched")
 	rt.forward(w, r, b, classWrite, nil)
 }
 
@@ -608,6 +707,30 @@ func bufferBody(r *http.Request) error {
 	return nil
 }
 
+var errBodyTimeout = errors.New("held request body timed out")
+
+func bufferBodyUntil(w http.ResponseWriter, r *http.Request, deadline time.Time) error {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+	controller := http.NewResponseController(w)
+	// A network read deadline interrupts net/http's body read and Close.
+	// Closing also supports non-network readers such as io.Pipe in tests.
+	_ = controller.SetReadDeadline(deadline)
+	body := r.Body
+	done := make(chan struct{})
+	timer := time.AfterFunc(time.Until(deadline), func() { _ = body.Close(); close(done) })
+	err := bufferBody(r)
+	if !timer.Stop() {
+		<-done
+	}
+	_ = controller.SetReadDeadline(time.Time{})
+	if !time.Now().Before(deadline) {
+		return errBodyTimeout
+	}
+	return err
+}
+
 func retryLater(w http.ResponseWriter, code, msg string) {
 	w.Header().Set("Retry-After", "1")
 	writeError(w, http.StatusServiceUnavailable, code, msg)
@@ -618,7 +741,14 @@ func retryLater(w http.ResponseWriter, code, msg string) {
 // cannot wait any longer (MaxHold since it arrived, or the gateway is shutting
 // down) is answered with 503, and one whose client left is dropped. Then
 // awaitRelease returns nil.
-func (rt *router) awaitRelease(w http.ResponseWriter, r *http.Request, gen *holdGen, arrived time.Time) *backend {
+func (rt *router) awaitRelease(w http.ResponseWriter, r *http.Request, gen *holdGen, arrived time.Time) (selected *backend) {
+	defer func() {
+		outcome := "not_forwarded"
+		if selected != nil {
+			outcome = "released"
+		}
+		rt.metrics.holdWait.WithLabelValues(outcome).Observe(time.Since(arrived).Seconds())
+	}()
 	timeout := time.NewTimer(max(rt.g.cfg.MaxHold-time.Since(arrived), 0))
 	defer timeout.Stop()
 	var gone, expired bool
@@ -860,7 +990,7 @@ func (g *Gateway) Run(ctx context.Context) {
 			}
 		}
 	}()
-	client := &http.Client{Transport: g.cfg.HealthTransport, Timeout: healthTimeout}
+	client := &http.Client{Transport: g.cfg.HealthTransport, Timeout: healthTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	t := time.NewTicker(g.cfg.HealthInterval)
 	defer t.Stop()
 	for {
@@ -883,16 +1013,29 @@ func (g *Gateway) Run(ctx context.Context) {
 }
 
 func (rt *router) checkBackend(ctx context.Context, client *http.Client, b *backend) {
-	err := probe(ctx, client, b.url.JoinPath(rt.g.cfg.HealthPath).String())
+	rt.mu.Lock()
+	path := rt.healthPath
+	rt.mu.Unlock()
+	parsed, _ := url.ParseRequestURI(path)
+	u := b.url.JoinPath(parsed.EscapedPath())
+	u.RawQuery = parsed.RawQuery
+	err := probe(ctx, client, u.String())
 	if ctx.Err() != nil {
 		return // shutting down; keep the last real result
 	}
 	now := time.Now()
 	msg := probeError(err)
+	rt.mu.Lock()
+	if rt.healthPath != path || rt.byName[b.name] != b {
+		rt.mu.Unlock()
+		return
+	}
 	b.hmu.Lock()
 	b.lastCheck, b.lastErr = now, msg
 	b.hmu.Unlock()
-	if was := b.healthy.Swap(err == nil); was != (err == nil) {
+	was := b.healthy.Swap(err == nil)
+	rt.mu.Unlock()
+	if was != (err == nil) {
 		if err != nil {
 			rt.log.Warn("backend unhealthy", "backend", b.name, "err", msg)
 		} else {
@@ -918,6 +1061,10 @@ func probeError(err error) string {
 	if err == nil {
 		return ""
 	}
+	var requestError *url.Error
+	if errors.As(err, &requestError) {
+		return probeError(requestError.Err)
+	}
 	var dns *net.DNSError
 	if errors.As(err, &dns) {
 		return "dns: " + dns.Error()
@@ -936,7 +1083,7 @@ func probe(ctx context.Context, client *http.Client, u string) error {
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10)) // lets the connection be reused
 	resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 399 {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("health check returned %s", resp.Status)
 	}
 	return nil

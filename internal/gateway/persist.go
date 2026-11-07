@@ -27,7 +27,8 @@ type persistedState struct {
 // persistedApp is one registered app: its backends, which are not in the
 // configuration, and its routing in the same fields as the default app.
 type persistedApp struct {
-	Backends map[string]string `json:"backends"`
+	HealthPath string            `json:"healthPath,omitempty"`
+	Backends   map[string]string `json:"backends"`
 	persistedState
 }
 
@@ -46,7 +47,8 @@ func loadState(path string) (*persistedState, error) {
 // persistLocked copies one app's routing. Caller holds rt.mu.
 func (rt *router) persistLocked() persistedApp {
 	pa := persistedApp{
-		Backends: make(map[string]string, len(rt.backends)),
+		HealthPath: rt.healthPath,
+		Backends:   make(map[string]string, len(rt.backends)),
 		persistedState: persistedState{
 			WriteBackend: rt.writeBackend,
 			ReadWeights:  make(map[string]int, len(rt.readWeights)),
@@ -103,7 +105,9 @@ func (g *Gateway) trySave() error {
 	}
 	g.saveMu.Lock()
 	defer g.saveMu.Unlock()
-	return writeFileAtomic(g.cfg.StateFile, g.snapshot())
+	err := writeFileAtomic(g.cfg.StateFile, g.snapshot())
+	g.persistenceFailed.Store(err != nil)
+	return err
 }
 
 func writeFileAtomic(path string, st persistedState) error {

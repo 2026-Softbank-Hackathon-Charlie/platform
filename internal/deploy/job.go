@@ -673,6 +673,9 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([
 			return ErrWritesHeld
 		}
 		routed = gatewaySpec(cur, app.Environments, urls)
+		if svc.HealthCheck != "" {
+			routed.HealthPath = svc.HealthCheck
+		}
 		if len(routed.Backends) == 0 {
 			return fmt.Errorf("no environment of %s answered", instance)
 		}
@@ -848,6 +851,7 @@ func (j *job) waitForBackends(ctx context.Context, envs, need []string, urls map
 func gatewaySpec(cur *gateway.AppInfo, appEnvs []string, urls map[string]string) gateway.AppSpec {
 	out := gateway.AppSpec{Backends: map[string]string{}}
 	if cur != nil {
+		out.HealthPath = cur.HealthPath
 		maps.Copy(out.Backends, cur.Backends)
 	}
 	maps.Copy(out.Backends, urls)

@@ -13,6 +13,8 @@ import (
 
 // AppSpec is the body of PUT /apps/{app}.
 type AppSpec struct {
+	// HealthPath is the app readiness endpoint. Empty inherits the gateway default.
+	HealthPath string `json:"healthPath,omitempty"`
 	// Backends maps each environment to the app's URL there.
 	Backends map[string]string `json:"backends"`
 	// WriteBackend receives every write.
@@ -24,7 +26,8 @@ type AppSpec struct {
 
 // AppInfo is one app in GET /apps and the answer to PUT /apps/{app}.
 type AppInfo struct {
-	Name string `json:"name"`
+	HealthPath string `json:"healthPath,omitempty"`
+	Name       string `json:"name"`
 	// Default marks the app that the gateway's configuration (-backends)
 	// serves. It cannot be replaced or deleted through the API.
 	Default bool `json:"default"`
@@ -112,6 +115,8 @@ func (g *Gateway) handleListApps(w http.ResponseWriter, _ *http.Request) {
 // routing. A replace keeps the app's in-flight writes counted, so a hold
 // right after it still waits for writes sent before it.
 func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
 	name := r.PathValue("app")
 	if !appName.MatchString(name) {
 		writeError(w, http.StatusBadRequest, "invalid_app_name", fmt.Sprintf("app name %q must match %s", name, appName))
@@ -124,6 +129,14 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 	var spec AppSpec
 	if !decodeJSON(w, r, &spec) {
 		return
+	}
+	if spec.HealthPath != "" && !validHealthPath(spec.HealthPath) {
+		writeError(w, http.StatusBadRequest, "invalid_health_path", "healthPath must be a local HTTP path without fragment")
+		return
+	}
+	healthPath := spec.HealthPath
+	if healthPath == "" {
+		healthPath = g.cfg.HealthPath
 	}
 	bcs, err := parseBackendMap(spec.Backends)
 	if err != nil {
@@ -164,6 +177,12 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 	if exists {
 		rt.backends, rt.byName, _ = rt.newBackends(bcs, rt.byName)
 	}
+	if rt.healthPath != healthPath {
+		rt.healthPath = healthPath
+		for _, b := range rt.backends {
+			b.healthy.Store(false)
+		}
+	}
 	rt.writeBackend = spec.WriteBackend
 	rt.readWeights = rt.fullWeightsLocked(weights)
 	rt.mu.Unlock()
@@ -184,6 +203,8 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 // handleDeleteApp removes a registered app. Its host answers 404 from then on;
 // requests already being proxied finish.
 func (g *Gateway) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
 	name := r.PathValue("app")
 	if name == g.router.name {
 		defaultApp(w, name)
@@ -226,6 +247,7 @@ func (rt *router) info() AppInfo {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	info := AppInfo{
+		HealthPath:   rt.healthPath,
 		Name:         rt.name,
 		Default:      rt == rt.g.router,
 		Backends:     make(map[string]string, len(rt.backends)),
