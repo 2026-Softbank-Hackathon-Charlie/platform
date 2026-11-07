@@ -35,6 +35,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy"
@@ -148,6 +149,20 @@ func main() {
 	envSvc, err := envs.New(envCfg, envs.Options{})
 	if err != nil {
 		fatal("environments", "err", err)
+	}
+	onpremConnector, err := onprem.FromEnv(ctx, os.Getenv, st, secretsKey, envSvc)
+	if err != nil {
+		log.Error("onprem registration is disabled until its configuration is corrected", "err", err)
+		onpremConnector = nil
+	}
+	if onpremConnector != nil {
+		go func() {
+			restoreCtx, cancelRestore := context.WithTimeout(ctx, 60*time.Second)
+			if err := onpremConnector.Restore(restoreCtx); err != nil {
+				log.Warn("onprem environment restore is pending; device registration will retry", "err", err)
+			}
+			cancelRestore()
+		}()
 	}
 	// What each environment can take: sealing needs the cluster's
 	// sealed-secrets certificate, buckets need a storage driver (ADR 0016).
@@ -422,6 +437,10 @@ func main() {
 		go runner.RunRetention(retentionCtx)
 	}
 	deps.Apps = appCat
+	deps.OnpremConnector = onpremConnector
+	if appCat != nil {
+		appCat.SetEnvironmentSource(envSvc.Configs)
+	}
 	deps.Buckets = bucketInspector
 	// Draft plans can carry the source's numbers (POST /v1/plans/draft with
 	// sourceStats), measured like the capacity gate does, on request only.
@@ -708,22 +727,30 @@ func envOr(k, def string) string {
 // time.
 func workloadClients(envSvc *envs.Service) func(env string) (dynamic.Interface, error) {
 	var mu sync.Mutex
-	clients := map[string]dynamic.Interface{}
+	type cachedWorkload struct {
+		client dynamic.Interface
+		token  string
+	}
+	clients := map[string]cachedWorkload{}
 	return func(env string) (dynamic.Interface, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		if dyn, ok := clients[env]; ok {
-			return dyn, nil
-		}
 		c, known := envSvc.Config(env)
 		if !known {
 			return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
+		}
+		token := ""
+		if c.RESTConfig != nil {
+			token = c.RESTConfig.BearerToken
+		}
+		if cached, ok := clients[env]; ok && cached.token == token {
+			return cached.client, nil
 		}
 		_, d, err := envs.NewReadClients(c, api.DBClusterTimeout)
 		if err != nil {
 			return nil, err
 		}
-		clients[env] = d
+		clients[env] = cachedWorkload{client: d, token: token}
 		return d, nil
 	}
 }

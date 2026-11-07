@@ -7,6 +7,7 @@ package envs
 import (
 	"errors"
 	"fmt"
+	"k8s.io/client-go/rest"
 	"os"
 	"regexp"
 
@@ -17,6 +18,8 @@ import (
 
 // EnvConfig is one registered environment.
 type EnvConfig struct {
+	// RESTConfig is a verified, in-memory connection. It cannot be supplied by YAML/JSON.
+	RESTConfig *rest.Config `json:"-"`
 	// Name is the environment id used in URLs and plans, e.g. "gke".
 	Name string `json:"name"`
 	// Provider is aws, gcp or onprem.

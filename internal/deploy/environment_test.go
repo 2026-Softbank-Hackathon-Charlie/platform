@@ -379,7 +379,11 @@ func TestEnvironmentDeploymentNeverReplacesANewerCommit(t *testing.T) {
 	te := newTestEnv(t)
 	te.register("shop", "gke", "eks")
 	ctx := context.Background()
-	push := te.deployment("shop", sha("c1"), "gke") // unfinished, not taken
+	push := te.deployment("shop", sha("c1"), "gke")
+	// Start recovers this queued push too. Hold its build so the intended
+	// unfinished-push precondition does not depend on worker scheduling.
+	_, release := te.builder.hold(push.ID)
+	defer release()
 	env := te.environmentDeployment(store.Deployment{App: "shop", Branch: "main", Instance: "shop", Ref: "main", Commit: sha("old"), Images: []store.DeploymentImage{}}, "gke", "eks")
 	te.start()
 	te.enqueue(env.ID)

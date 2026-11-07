@@ -12,10 +12,47 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest"
 )
 
+type configuredRegistration struct{}
+
+func (configuredRegistration) CheckConfiguration(context.Context, string) error { return nil }
+
+type ownerCheckedRegistration struct {
+	calls  int
+	reject bool
+}
+
+func (*ownerCheckedRegistration) CheckConfiguration(context.Context, string) error { return nil }
+func (r *ownerCheckedRegistration) CanEnrollEnvironment(context.Context, string, string) error {
+	r.calls++
+	if r.reject {
+		return store.ErrConflict
+	}
+	return nil
+}
+
+func TestIssuanceChecksEnvironmentOwnershipWithoutBreakingReplay(t *testing.T) {
+	now := time.Now().UTC()
+	registrar := &ownerCheckedRegistration{}
+	s := Service{Store: storetest.NewMemory(), Origin: "https://api.example.test", Now: func() time.Time { return now }, Registrar: registrar}
+	a, created, err := s.Create(t.Context(), "alice", "ownership-key", CreateRequest{Environment: "edge"})
+	if err != nil || !created {
+		t.Fatal(err)
+	}
+	registrar.reject = true
+	replay, created, err := s.Create(t.Context(), "alice", "ownership-key", CreateRequest{Environment: "edge"})
+	if err != nil || created || replay.Enrollment.ID != a.Enrollment.ID || registrar.calls != 1 {
+		t.Fatal("idempotency replay retried environment admission", err)
+	}
+	result, _, err := s.Create(t.Context(), "alice", "other-ownership-key", CreateRequest{Environment: "edge"})
+	if !errors.Is(err, store.ErrConflict) || result.Code != "" || result.InstallCommand != "" {
+		t.Fatal("issued code for owned environment", err)
+	}
+}
+
 func TestIssueReplayClaimAndRevocation(t *testing.T) {
 	st := storetest.NewMemory()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	s := Service{Store: st, Origin: "https://api.example.test", Now: func() time.Time { return now }}
+	s := Service{Store: st, Origin: "https://api.example.test", Now: func() time.Time { return now }, Registrar: configuredRegistration{}}
 	req := CreateRequest{Environment: "onprem", InstallK3s: false}
 	a, fresh, err := s.Create(t.Context(), "alice", "request-0001", req)
 	if err != nil || !fresh || len(a.Code) != 47 || a.InstallCommand == "" {
@@ -27,7 +64,7 @@ func TestIssueReplayClaimAndRevocation(t *testing.T) {
 		t.Fatal("grant is not hash-only with 15 minute expiry")
 	}
 	// A fresh service on the same persisted store cannot recover the code.
-	s2 := Service{Store: st, Origin: s.Origin, Now: s.Now}
+	s2 := Service{Store: st, Origin: s.Origin, Now: s.Now, Registrar: configuredRegistration{}}
 	b, fresh, err := s2.Create(t.Context(), "alice", "request-0001", req)
 	if err != nil || fresh || b.Enrollment.ID != a.Enrollment.ID || b.Code != "" || b.InstallCommand != "" {
 		t.Fatal("retry issued another grant or exposed the code")
@@ -42,6 +79,20 @@ func TestIssueReplayClaimAndRevocation(t *testing.T) {
 	if err != nil || v.Status != "claimed" {
 		t.Fatalf("claim %v", err)
 	}
+	if len(v.ConnectionToken) != 47 {
+		t.Fatal("missing connection session")
+	}
+	row, err = st.GetOnpremEnrollment(t.Context(), v.ID, now)
+	sessionHash := sha256.Sum256([]byte(v.ConnectionToken))
+	if err != nil || string(row.SessionHash) != string(sessionHash[:]) || !row.SessionExpiresAt.Equal(now.Add(30*24*time.Hour)) {
+		t.Fatal("session not atomically persisted hash-only")
+	}
+	if _, err = s.AuthenticateConnection(t.Context(), v.ID, v.ConnectionToken); err != nil {
+		t.Fatal("valid connection rejected", err)
+	}
+	if _, err = s.AuthenticateConnection(t.Context(), v.ID, "onc_"+strings.Repeat("x", 43)); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("wrong session accepted", err)
+	}
 	for _, c := range v.Checks {
 		if c.Status != "unknown" || c.CheckedAt != nil {
 			t.Fatal("self-report invented a successful probe")
@@ -53,6 +104,9 @@ func TestIssueReplayClaimAndRevocation(t *testing.T) {
 	if _, err = s.Revoke(t.Context(), v.ID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = s.AuthenticateConnection(t.Context(), v.ID, v.ConnectionToken); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("revoked session authenticated", err)
+	}
 	if _, err = s.Claim(t.Context(), v.ID, a.Code, ClaimRequest{Environment: "onprem"}); !errors.Is(err, store.ErrConflict) {
 		t.Fatal("revocation did not fence claims")
 	}
@@ -61,7 +115,7 @@ func TestIssueReplayClaimAndRevocation(t *testing.T) {
 func TestExpiryAndUnsafeIssuance(t *testing.T) {
 	now := time.Now().UTC()
 	st := storetest.NewMemory()
-	s := Service{Store: st, Origin: "https://api.example.test", Now: func() time.Time { return now }}
+	s := Service{Store: st, Origin: "https://api.example.test", Now: func() time.Time { return now }, Registrar: configuredRegistration{}}
 	a, _, err := s.Create(context.Background(), "alice", "request-0002", CreateRequest{Environment: "onprem"})
 	if err != nil {
 		t.Fatal(err)
@@ -82,5 +136,26 @@ func TestExpiryAndUnsafeIssuance(t *testing.T) {
 	s.Origin = "https://user:secret@example.test"
 	if _, _, err = s.Create(t.Context(), "alice", "request-0004", CreateRequest{Environment: "onprem"}); !errors.Is(err, ErrUnavailable) || strings.Contains(err.Error(), "secret") {
 		t.Fatal("invalid issuer origin accepted or leaked")
+	}
+}
+
+func TestRegistrationRequiresConfigurationAndSessionExpires(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	s := Service{Store: storetest.NewMemory(), Origin: "https://api.example.test", Now: func() time.Time { return now }}
+	if _, _, err := s.Create(t.Context(), "alice", "missing-worker", CreateRequest{Environment: "edge"}); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("issued grant without registrar", err)
+	}
+	s.Registrar = configuredRegistration{}
+	a, _, err := s.Create(t.Context(), "alice", "configured-worker", CreateRequest{Environment: "edge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Claim(t.Context(), a.Enrollment.ID, a.Code, ClaimRequest{Environment: "edge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(30 * 24 * time.Hour)
+	if _, err = s.AuthenticateConnection(t.Context(), v.ID, v.ConnectionToken); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("expired connection session accepted", err)
 	}
 }

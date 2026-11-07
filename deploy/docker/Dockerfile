@@ -12,6 +12,7 @@ RUN apk add --no-cache ca-certificates rclone tzdata \
  && chown -R app:app /data /home/app
 
 COPY bin/hopcharlie-api bin/hopcharlie-gateway /usr/local/bin/
+COPY bin/onprem-agent/ /usr/local/lib/hopcharlie-onprem-agent/
 
 USER app
 WORKDIR /data

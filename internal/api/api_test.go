@@ -323,6 +323,9 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	tokens.Add("ai", apiv1.RoleAgent, agentToken)
 	tokens.Add("view", apiv1.RoleViewer, viewerToken)
 	api := New(Config{Tokens: tokens, Admins: h.admins, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret, GitOpsRepo: h.gitOpsRepo, AppDBTopology: h.appDBTopology, AppDBEnvs: h.dbEnvs(), Onboarding: h.onboarding}, d)
+	if d.OnpremConnector == nil {
+		api.enrollments.Registrar = testEnrollmentRegistrar{}
+	}
 	if h.now != nil {
 		api.now = h.now
 	}
