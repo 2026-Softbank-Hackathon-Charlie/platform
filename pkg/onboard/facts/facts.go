@@ -201,6 +201,11 @@ type Container struct {
 	Started  time.Time `json:"started,omitzero"`
 	// MemoryLimitBytes is the container's memory limit, 0 for none.
 	MemoryLimitBytes int64 `json:"memoryLimitBytes,omitempty"`
+	// ReverseProxy marks the TLS reverse proxy in front of the app (caddy,
+	// nginx, traefik and the like, publishing only 80 and 443): the
+	// platform's gateway replaces it, and its volumes (certificate caches)
+	// are VolumeProxy, not data.
+	ReverseProxy bool `json:"reverseProxy,omitempty"`
 }
 
 // Port is one published or exposed port.
@@ -224,8 +229,9 @@ type Volume struct {
 	SizeBytes int64  `json:"sizeBytes"`
 	// UsedBy are the containers that mount it; Role is what the platform
 	// takes it for: VolumeDatabase (the DB's PGDATA), VolumeObjectStorage
-	// (an in-VM MinIO, blocker storage_out_of_scope) or VolumeData (any
-	// other data, blocker data_volume_out_of_scope).
+	// (an in-VM MinIO, blocker storage_out_of_scope), VolumeProxy (the
+	// reverse proxy's), VolumeEmpty or VolumeData (any other data, blocker
+	// data_volume_out_of_scope).
 	UsedBy []string `json:"usedBy"`
 	Role   string   `json:"role"`
 }
@@ -237,6 +243,9 @@ const (
 	VolumeData          = "data"
 	// VolumeEmpty is a volume with no data worth moving (size 0, a cache).
 	VolumeEmpty = "empty"
+	// VolumeProxy is a volume of the ReverseProxy container: its
+	// certificates and caches, which the gateway does not need.
+	VolumeProxy = "proxy"
 )
 
 // EnvVar is one environment variable of a container, without its value.

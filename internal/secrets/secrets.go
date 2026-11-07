@@ -332,3 +332,40 @@ func (c *Cipher) OpenDatabase(d store.AppDatabase) (password, caKey string, err 
 	}
 	return password, caKey, nil
 }
+
+// onboardingData binds an onboarding's ciphertext to its id and field:
+// ("onboardings", id, field, ""), like databaseData's with the table's name.
+func onboardingData(id, field string) []byte {
+	return lengthPrefixed("onboardings", id, field, "")
+}
+
+// SealOnboarding encrypts one field of an onboarding (OnboardingSecrets,
+// OnboardingSuperuserPassword or OnboardingReplicationPassword) for the
+// row's nonce and ciphertext columns; the row's KeyVersion and KeyCheck are
+// KeyVersion and KeyCheck().
+func (c *Cipher) SealOnboarding(id, field, value string) (nonce, ciphertext []byte, err error) {
+	nonce = make([]byte, c.aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, nil, err
+	}
+	return nonce, c.aead.Seal(nil, nonce, []byte(value), onboardingData(id, field)), nil
+}
+
+// OpenOnboarding decrypts one field of a stored onboarding. A row of
+// another key is ErrKeyMismatch; the errors never contain a value.
+func (c *Cipher) OpenOnboarding(o store.Onboarding, field string, nonce, ciphertext []byte) (string, error) {
+	if o.KeyCheck != c.keyCheck {
+		return "", fmt.Errorf("onboarding %s: %w (stored with key check %q, the server's key has %q)", o.ID, ErrKeyMismatch, o.KeyCheck, c.keyCheck)
+	}
+	if o.KeyVersion != KeyVersion {
+		return "", fmt.Errorf("onboarding %s: key version %d is not the current key (%d)", o.ID, o.KeyVersion, KeyVersion)
+	}
+	if len(nonce) != c.aead.NonceSize() {
+		return "", fmt.Errorf("onboarding %s: stored %s nonce has %d bytes", o.ID, field, len(nonce))
+	}
+	out, err := c.aead.Open(nil, nonce, ciphertext, onboardingData(o.ID, field))
+	if err != nil {
+		return "", fmt.Errorf("onboarding %s: the %s does not decrypt with the secrets key", o.ID, field)
+	}
+	return string(out), nil
+}
