@@ -2,11 +2,13 @@
 -- VM (ADR 0042).
 --
 -- onboardings holds one row per onboarding. state is its state
--- (apiv1.OnboardingState); doc is the full apiv1.Onboarding JSON, of which
--- app, repo and state are copies for queries; facts is the discovery's
--- pkg/onboard/facts.Facts JSON, which never holds a secret value. At most
--- one onboarding per app is not done (onboardings_app_active), so a failed
--- one is resumed or deleted before the app is onboarded again.
+-- (apiv1.OnboardingState); doc is the full apiv1.Onboarding JSON object,
+-- whose id, app, repo and state every write sets from the columns, which
+-- are the source of truth; facts is the discovery's pkg/onboard/facts.Facts
+-- JSON, which never holds a secret value. revision is 1 at creation and
+-- grows with every update, which applies only to the revision it read. At
+-- most one onboarding per app is not done (onboardings_app_active), so a
+-- failed one is resumed or deleted before the app is onboarded again.
 --
 -- The values discovery and connecting got from the VM are only stored as
 -- AES-256-GCM ciphertext under the platform's secrets key, like app_secrets
@@ -18,7 +20,8 @@
 -- pair is NULL until it is known.
 --
 -- onboarding_events is an onboarding's step log (GET
--- /v1/onboardings/{id}/events); seq increases across all onboardings.
+-- /v1/onboardings/{id}/events); seq increases across all onboardings, and
+-- only an onboarding's newest 2000 are kept.
 -- DeleteOnboarding removes an onboarding's events with it.
 --
 -- app_databases gets what an onboarded app's database needs:
@@ -28,6 +31,7 @@
 --                 app; '' is the operator's default
 --   database,     the database name and its owner; '' is app
 --   owner
+--   storage_size  the PVC size ('2Gi'); '' is the chart's default
 --   external_host the tailnet hostname of the source (hop-db-legacy-<app>)
 --   replication_password_nonce, replication_password_ciphertext
 --                 hopcharlie_replicator's password, sealed like the app
@@ -43,6 +47,7 @@ CREATE TABLE onboardings (
     app                             text NOT NULL,
     repo                            text NOT NULL,
     state                           text NOT NULL,
+    revision                        bigint NOT NULL DEFAULT 1,
     doc                             jsonb NOT NULL,
     facts                           jsonb,
     key_version                     integer NOT NULL DEFAULT 0,
@@ -77,6 +82,7 @@ ALTER TABLE app_databases
     ADD COLUMN image text NOT NULL DEFAULT '',
     ADD COLUMN database text NOT NULL DEFAULT '',
     ADD COLUMN owner text NOT NULL DEFAULT '',
+    ADD COLUMN storage_size text NOT NULL DEFAULT '',
     ADD COLUMN external_host text NOT NULL DEFAULT '',
     ADD COLUMN replication_password_nonce bytea,
     ADD COLUMN replication_password_ciphertext bytea,

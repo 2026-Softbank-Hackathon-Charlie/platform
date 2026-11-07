@@ -34,12 +34,18 @@ type AppDatabase struct {
 	// SourceKind is DBSourcePeer for a pair born on the platform, or
 	// DBSourceExternal for an onboarded app's database (ADR 0042), born in
 	// PrimaryEnv as a replica of a source outside the platform until the
-	// cutover succeeded. Empty is stored as DBSourcePeer.
+	// cutover succeeded. Empty is stored as DBSourcePeer. The deploy
+	// renderer derives the onboarding values (deploy.File.Postgres,
+	// DBTopology.External, OnboardingCold) from this row and the app's
+	// onboarding on every deployment, not from the deployment that asked,
+	// so a push while the onboarding is syncing still renders the app cold.
 	SourceKind string
 	// Image is the CNPG image, pinned by digest, of every database of the
 	// app (the peer's too); empty leaves the operator's default. Database
 	// and Owner are the database's name and owner; empty is app.
-	Image, Database, Owner string
+	// StorageSize is the database's PVC size (2Gi); empty is the chart's
+	// default.
+	Image, Database, Owner, StorageSize string
 	// ExternalHost is the source's tailnet hostname (hop-db-legacy-<app>),
 	// ReplicationPassword* hopcharlie_replicator's password encrypted like
 	// the app account's, and Reindex the "schema.index" names rebuilt after
@@ -62,7 +68,7 @@ const (
 // slices copied. Stores apply it on every write.
 func (d AppDatabase) Clean() AppDatabase {
 	for _, f := range []*string{&d.App, &d.PrimaryEnv, &d.PeerEnv, &d.KeyCheck, &d.CACert,
-		&d.SourceKind, &d.Image, &d.Database, &d.Owner, &d.ExternalHost} {
+		&d.SourceKind, &d.Image, &d.Database, &d.Owner, &d.StorageSize, &d.ExternalHost} {
 		*f = CleanText(*f)
 	}
 	if d.SourceKind == "" {

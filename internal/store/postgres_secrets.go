@@ -219,13 +219,13 @@ func (s *Postgres) DeleteInstanceStorage(ctx context.Context, instance, env stri
 }
 
 const appDatabaseColumns = `app, primary_env, peer_env, key_version, key_check, password_nonce, password_ciphertext, ca_cert, ca_key_nonce, ca_key_ciphertext, created_at, peer_generation,
-	source_kind, image, database, owner, external_host, replication_password_nonce, replication_password_ciphertext, reindex`
+	source_kind, image, database, owner, storage_size, external_host, replication_password_nonce, replication_password_ciphertext, reindex`
 
 func scanAppDatabase(row pgx.Row) (AppDatabase, error) {
 	var d AppDatabase
 	if err := row.Scan(&d.App, &d.PrimaryEnv, &d.PeerEnv, &d.KeyVersion, &d.KeyCheck, &d.PasswordNonce, &d.PasswordCiphertext,
 		&d.CACert, &d.CAKeyNonce, &d.CAKeyCiphertext, &d.CreatedAt, &d.PeerGeneration,
-		&d.SourceKind, &d.Image, &d.Database, &d.Owner, &d.ExternalHost,
+		&d.SourceKind, &d.Image, &d.Database, &d.Owner, &d.StorageSize, &d.ExternalHost,
 		&d.ReplicationPasswordNonce, &d.ReplicationPasswordCiphertext, &d.Reindex); err != nil {
 		return AppDatabase{}, err
 	}

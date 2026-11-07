@@ -8,13 +8,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const onboardingColumns = `id, app, repo, state, doc, facts, key_version, key_check,
+const onboardingColumns = `id, app, repo, state, revision, doc, facts, key_version, key_check,
 	secrets_nonce, secrets_ciphertext, superuser_password_nonce, superuser_password_ciphertext,
 	replication_password_nonce, replication_password_ciphertext, created_at, updated_at`
 
 func scanOnboarding(row pgx.Row) (Onboarding, error) {
 	var o Onboarding
-	err := row.Scan(&o.ID, &o.App, &o.Repo, &o.State, &o.Doc, &o.Facts, &o.KeyVersion, &o.KeyCheck,
+	err := row.Scan(&o.ID, &o.App, &o.Repo, &o.State, &o.Revision, &o.Doc, &o.Facts, &o.KeyVersion, &o.KeyCheck,
 		&o.SecretsNonce, &o.SecretsCiphertext, &o.SuperuserPasswordNonce, &o.SuperuserPasswordCiphertext,
 		&o.ReplicationPasswordNonce, &o.ReplicationPasswordCiphertext, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
@@ -30,7 +30,7 @@ func (s *Postgres) CreateOnboarding(ctx context.Context, o Onboarding) error {
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `INSERT INTO onboardings (`+onboardingColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 		o.ID, o.App, o.Repo, o.State, o.Doc, o.Facts, o.KeyVersion, o.KeyCheck,
 		o.SecretsNonce, o.SecretsCiphertext, o.SuperuserPasswordNonce, o.SuperuserPasswordCiphertext,
 		o.ReplicationPasswordNonce, o.ReplicationPasswordCiphertext, o.CreatedAt, o.UpdatedAt)
@@ -52,7 +52,10 @@ func (s *Postgres) GetOnboarding(ctx context.Context, id string) (Onboarding, er
 }
 
 func (s *Postgres) ListOnboardings(ctx context.Context) ([]Onboarding, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+onboardingColumns+` FROM onboardings ORDER BY created_at DESC, id DESC`)
+	// Summaries: no facts and no sealed values.
+	rows, err := s.pool.Query(ctx, `SELECT id, app, repo, state, revision, doc, NULL::jsonb, key_version, key_check,
+		NULL::bytea, NULL::bytea, NULL::bytea, NULL::bytea, NULL::bytea, NULL::bytea, created_at, updated_at
+		FROM onboardings ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -67,14 +70,16 @@ func (s *Postgres) UpdateOnboarding(ctx context.Context, o Onboarding, from []st
 	if !Clean(o.ID) || o.ID == "" {
 		return Onboarding{}, fmt.Errorf("%w: onboarding %q", ErrNotFound, o.ID)
 	}
-	got, err := scanOnboarding(s.pool.QueryRow(ctx, `UPDATE onboardings SET state = $2, doc = $3, facts = $4,
+	got, err := scanOnboarding(s.pool.QueryRow(ctx, `UPDATE onboardings SET state = $2,
+		doc = $3::jsonb || jsonb_build_object('id', id, 'app', app, 'repo', repo, 'state', $2::text), facts = $4,
 		key_version = $5, key_check = $6, secrets_nonce = $7, secrets_ciphertext = $8,
 		superuser_password_nonce = $9, superuser_password_ciphertext = $10,
-		replication_password_nonce = $11, replication_password_ciphertext = $12, updated_at = $13
-		WHERE id = $1 AND state = ANY($14) RETURNING `+onboardingColumns,
+		replication_password_nonce = $11, replication_password_ciphertext = $12, updated_at = $13,
+		revision = revision + 1
+		WHERE id = $1 AND state = ANY($14) AND revision = $15 RETURNING `+onboardingColumns,
 		o.ID, o.State, o.Doc, o.Facts, o.KeyVersion, o.KeyCheck, o.SecretsNonce, o.SecretsCiphertext,
 		o.SuperuserPasswordNonce, o.SuperuserPasswordCiphertext, o.ReplicationPasswordNonce, o.ReplicationPasswordCiphertext,
-		o.UpdatedAt, from))
+		o.UpdatedAt, from, o.Revision))
 	if isUniqueViolation(err) {
 		return Onboarding{}, fmt.Errorf("%w: app %s has another onboarding that is not done", ErrConflict, o.App)
 	}
@@ -82,14 +87,15 @@ func (s *Postgres) UpdateOnboarding(ctx context.Context, o Onboarding, from []st
 		return got, err
 	}
 	var current string
-	err = s.pool.QueryRow(ctx, `SELECT state FROM onboardings WHERE id = $1`, o.ID).Scan(&current)
+	var rev int64
+	err = s.pool.QueryRow(ctx, `SELECT state, revision FROM onboardings WHERE id = $1`, o.ID).Scan(&current, &rev)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Onboarding{}, fmt.Errorf("%w: onboarding %s", ErrNotFound, o.ID)
 	}
 	if err != nil {
 		return Onboarding{}, err
 	}
-	return Onboarding{}, fmt.Errorf("%w: onboarding %s is %s", ErrConflict, o.ID, current)
+	return Onboarding{}, fmt.Errorf("%w: onboarding %s is %s at revision %d (written from revision %d)", ErrConflict, o.ID, current, rev, o.Revision)
 }
 
 func (s *Postgres) DeleteOnboarding(ctx context.Context, id string) error {
@@ -133,14 +139,15 @@ func (s *Postgres) AppendOnboardingEvent(ctx context.Context, e OnboardingEvent)
 	if !Clean(e.OnboardingID) {
 		return OnboardingEvent{}, fmt.Errorf("%w: onboarding %q", ErrNotFound, e.OnboardingID)
 	}
-	// The row lock keeps a delete from passing an append in between.
+	// The row lock serializes the onboarding's appends, so its events commit
+	// in seq order, and keeps a delete from passing an append.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return OnboardingEvent{}, err
 	}
 	defer tx.Rollback(ctx) // no-op after Commit
 	var id string
-	err = tx.QueryRow(ctx, `SELECT id FROM onboardings WHERE id = $1 FOR SHARE`, e.OnboardingID).Scan(&id)
+	err = tx.QueryRow(ctx, `SELECT id FROM onboardings WHERE id = $1 FOR UPDATE`, e.OnboardingID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OnboardingEvent{}, fmt.Errorf("%w: onboarding %s", ErrNotFound, e.OnboardingID)
 	}
@@ -151,6 +158,11 @@ func (s *Postgres) AppendOnboardingEvent(ctx context.Context, e OnboardingEvent)
 		VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+onboardingEventColumns,
 		e.OnboardingID, e.Time, e.State, e.Kind, e.Message, e.Data))
 	if err != nil {
+		return OnboardingEvent{}, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM onboarding_events WHERE onboarding_id = $1 AND seq <= (
+		SELECT seq FROM onboarding_events WHERE onboarding_id = $1 ORDER BY seq DESC OFFSET $2 LIMIT 1)`,
+		e.OnboardingID, OnboardingEventsKept); err != nil {
 		return OnboardingEvent{}, err
 	}
 	return got, tx.Commit(ctx)

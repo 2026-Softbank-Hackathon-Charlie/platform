@@ -581,6 +581,7 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	// An onboarded app's database keeps its external source (ADR 0042).
 	ext := newAppDatabase("eks", "gke", 1)
 	ext.SourceKind, ext.Image, ext.Database, ext.Owner = store.DBSourceExternal, "ghcr.io/cloudnative-pg/postgresql:17.11-standard-bookworm@sha256:0f", "moimroom", "moimroom"
+	ext.StorageSize = "2Gi"
 	ext.ExternalHost, ext.Reindex = "hop-db-legacy-legacy-app", []string{"public.users_email_idx", "public.posts_title_idx"}
 	ext.ReplicationPasswordNonce, ext.ReplicationPasswordCiphertext = []byte("nonce-repl"), []byte("sealed:repl")
 	must(t, s.CreateAppWithDatabase(ctx, newApp("legacy-app", 0), ext))

@@ -53,7 +53,7 @@ func (m *memory) CreateOnboarding(_ context.Context, o store.Onboarding) error {
 	if err := checkOnboarding(o); err != nil {
 		return err
 	}
-	o.CreatedAt, o.UpdatedAt = pgTime(o.CreatedAt), pgTime(o.UpdatedAt)
+	o.CreatedAt, o.UpdatedAt, o.Revision = pgTime(o.CreatedAt), pgTime(o.UpdatedAt), 1
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.onboard.rows[o.ID]; ok {
@@ -84,7 +84,12 @@ func (m *memory) ListOnboardings(_ context.Context) ([]store.Onboarding, error) 
 	defer m.mu.Unlock()
 	out := []store.Onboarding{}
 	for _, o := range m.onboard.rows {
-		out = append(out, copyOnboarding(o))
+		o = copyOnboarding(o)
+		o.Facts = nil
+		o.SecretsNonce, o.SecretsCiphertext = nil, nil
+		o.SuperuserPasswordNonce, o.SuperuserPasswordCiphertext = nil, nil
+		o.ReplicationPasswordNonce, o.ReplicationPasswordCiphertext = nil, nil
+		out = append(out, o)
 	}
 	slices.SortFunc(out, func(a, b store.Onboarding) int {
 		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
@@ -106,8 +111,8 @@ func (m *memory) UpdateOnboarding(_ context.Context, o store.Onboarding, from []
 	if !ok {
 		return store.Onboarding{}, fmt.Errorf("%w: onboarding %s", store.ErrNotFound, o.ID)
 	}
-	if !slices.Contains(from, cur.State) {
-		return store.Onboarding{}, fmt.Errorf("%w: onboarding %s is %s", store.ErrConflict, o.ID, cur.State)
+	if !slices.Contains(from, cur.State) || cur.Revision != o.Revision {
+		return store.Onboarding{}, fmt.Errorf("%w: onboarding %s is %s at revision %d (written from revision %d)", store.ErrConflict, o.ID, cur.State, cur.Revision, o.Revision)
 	}
 	if o.State == "" || o.Doc == nil {
 		return store.Onboarding{}, fmt.Errorf("storetest: onboarding %s needs a state and a doc", o.ID)
@@ -115,12 +120,19 @@ func (m *memory) UpdateOnboarding(_ context.Context, o store.Onboarding, from []
 	if o.State != store.OnboardingDone && m.onboard.activeOnboarding(cur.App, cur.ID) != "" {
 		return store.Onboarding{}, fmt.Errorf("%w: app %s has another onboarding that is not done", store.ErrConflict, cur.App)
 	}
-	cur.State, cur.Doc, cur.Facts = o.State, o.Doc, o.Facts
+	// An update keeps the id, app and repo; the doc follows the stored ones.
+	synced := o
+	synced.ID, synced.App, synced.Repo = cur.ID, cur.App, cur.Repo
+	if synced, err = synced.Clean(); err != nil {
+		return store.Onboarding{}, err
+	}
+	cur.State, cur.Doc, cur.Facts = o.State, synced.Doc, o.Facts
 	cur.KeyVersion, cur.KeyCheck = o.KeyVersion, o.KeyCheck
 	cur.SecretsNonce, cur.SecretsCiphertext = o.SecretsNonce, o.SecretsCiphertext
 	cur.SuperuserPasswordNonce, cur.SuperuserPasswordCiphertext = o.SuperuserPasswordNonce, o.SuperuserPasswordCiphertext
 	cur.ReplicationPasswordNonce, cur.ReplicationPasswordCiphertext = o.ReplicationPasswordNonce, o.ReplicationPasswordCiphertext
 	cur.UpdatedAt = pgTime(o.UpdatedAt)
+	cur.Revision++
 	m.onboard.rows[o.ID] = cur
 	return copyOnboarding(cur), nil
 }
@@ -150,6 +162,25 @@ func (m *memory) AppendOnboardingEvent(_ context.Context, e store.OnboardingEven
 	e.State, e.Kind, e.Message = store.CleanText(e.State), store.CleanText(e.Kind), store.CleanText(e.Message)
 	e.Data = bytes.Clone(e.Data)
 	m.onboard.events = append(m.onboard.events, e)
+	var mine []int // indexes of this onboarding's events, oldest first
+	for i, x := range m.onboard.events {
+		if x.OnboardingID == e.OnboardingID {
+			mine = append(mine, i)
+		}
+	}
+	if extra := len(mine) - store.OnboardingEventsKept; extra > 0 {
+		drop := map[int]bool{}
+		for _, i := range mine[:extra] {
+			drop[i] = true
+		}
+		kept := m.onboard.events[:0]
+		for i, x := range m.onboard.events {
+			if !drop[i] {
+				kept = append(kept, x)
+			}
+		}
+		m.onboard.events = kept
+	}
 	out := e
 	out.Data = bytes.Clone(e.Data)
 	return out, nil
