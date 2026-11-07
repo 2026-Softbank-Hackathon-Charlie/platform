@@ -115,12 +115,10 @@ func (w *world) Discover(_ context.Context, req DiscoverRequest) (Discovered, er
 	sn, sc, _ := w.cipher.SealOnboarding(req.ID, secrets.OnboardingSecrets, string(vals))
 	pn, pc, _ := w.cipher.SealOnboarding(req.ID, secrets.OnboardingSuperuserPassword, "pw")
 	d := Discovered{Facts: w.facts(), Secrets: Sealed{sn, sc}, SuperuserPassword: Sealed{pn, pc}}
+	// delete_dns_record is not done until syncing sees the name move.
 	d.HumanActions = []apiv1.OnboardingHumanAction{{Kind: apiv1.OnboardingHumanActionKindDeleteDnsRecord, Done: false}}
 	if w.human {
 		d.HumanActions = append(d.HumanActions, apiv1.OnboardingHumanAction{Kind: apiv1.OnboardingHumanActionKindInstallGithubApp})
-		d.HumanActions[0].Done = true
-	} else {
-		d.HumanActions[0].Done = true // DNS is waited for in syncing
 	}
 	return d, nil
 }

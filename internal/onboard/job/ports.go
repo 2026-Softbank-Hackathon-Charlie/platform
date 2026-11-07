@@ -45,8 +45,12 @@ type Discovered struct {
 	// Secrets is the JSON object {"<container>": {"<NAME>": "<value>"}}
 	// (secrets.OnboardingSecrets); SuperuserPassword the fence user's.
 	Secrets, SuperuserPassword Sealed
-	// HumanActions are what a person must do first (install_github_app,
-	// delete_dns_record); one not Done makes the onboarding wait for resume.
+	// KeyVersion and KeyCheck are the secrets key's that sealed them.
+	KeyVersion int
+	KeyCheck   string
+	// HumanActions are what a person must do: install_github_app not done
+	// makes the onboarding wait for resume; delete_dns_record is done in
+	// syncing, when the name points at the gateway.
 	HumanActions []apiv1.OnboardingHumanAction
 }
 

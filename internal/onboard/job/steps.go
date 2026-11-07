@@ -88,7 +88,13 @@ func (r *Runner) discovering(ctx context.Context, x *rec) (bool, error) {
 	var to string
 	x2, err := r.update(ctx, x.row.ID, []string{store.OnboardingDiscovering}, func(x *rec) (string, error) {
 		x.facts = &f
-		x.row.KeyVersion, x.row.KeyCheck = secrets.KeyVersion, r.keyCheck()
+		x.row.KeyVersion, x.row.KeyCheck = d.KeyVersion, d.KeyCheck
+		if d.KeyCheck == "" {
+			x.row.KeyVersion, x.row.KeyCheck = d.KeyVersion, d.KeyCheck
+		if d.KeyCheck == "" {
+			x.row.KeyVersion, x.row.KeyCheck = secrets.KeyVersion, r.keyCheck()
+		}
+		}
 		x.row.SecretsNonce, x.row.SecretsCiphertext = d.Secrets.Nonce, d.Secrets.Ciphertext
 		x.row.SuperuserPasswordNonce, x.row.SuperuserPasswordCiphertext = d.SuperuserPassword.Nonce, d.SuperuserPassword.Ciphertext
 		x.doc.HumanActions = d.HumanActions
@@ -99,7 +105,9 @@ func (r *Runner) discovering(ctx context.Context, x *rec) (bool, error) {
 		}
 		x.doc.Internal.TargetPeer = r.peerOf(x.doc.TargetEnv)
 		switch {
-		case slices.ContainsFunc(d.HumanActions, func(a apiv1.OnboardingHumanAction) bool { return !a.Done }):
+		case slices.ContainsFunc(d.HumanActions, func(a apiv1.OnboardingHumanAction) bool {
+			return !a.Done && a.Kind == apiv1.OnboardingHumanActionKindInstallGithubApp
+		}):
 			x.doc.Internal.Waiting = true
 			return "", nil
 		case len(f.Report.Blockers) > 0:
