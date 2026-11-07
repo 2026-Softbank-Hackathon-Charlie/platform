@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/connect"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/discover"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/vm"
@@ -34,13 +36,13 @@ func (a discoverer) Discover(ctx context.Context, req DiscoverRequest) (Discover
 
 // FromConnector is the Connector of internal/onboard/connect; stop stops
 // the instance (EC2 StopInstances, which connect does not do).
-func FromConnector(c *connect.Connector, stop func(ctx context.Context, req ConnectRequest) error) Connector {
+func FromConnector(c *connect.Connector, stop func(ctx context.Context, req ConnectRequest) ([]apiv1.OnboardingLegacyChange, error)) Connector {
 	return connector{c, stop}
 }
 
 type connector struct {
 	c    *connect.Connector
-	stop func(ctx context.Context, req ConnectRequest) error
+	stop func(ctx context.Context, req ConnectRequest) ([]apiv1.OnboardingLegacyChange, error)
 }
 
 func (a connector) Connect(ctx context.Context, req ConnectRequest) (Connected, error) {
@@ -77,9 +79,21 @@ func (a connector) Disconnect(ctx context.Context, req ConnectRequest, _ []apiv1
 	return out, err
 }
 
-func (a connector) StopInstance(ctx context.Context, req ConnectRequest) error {
+func (a connector) RemoveDevice(ctx context.Context, req ConnectRequest) ([]apiv1.OnboardingLegacyChange, error) {
+	if a.c.Tailscale == nil {
+		return nil, fmt.Errorf("%w: Tailscale", ErrNotConfigured)
+	}
+	host := onboard.TailnetHost(req.App)
+	if _, err := a.c.Tailscale.DeleteDevice(ctx, host); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	return []apiv1.OnboardingLegacyChange{{Kind: apiv1.OnboardingLegacyChangeKindTailscaleDeviceJoined, Target: host, UndoneAt: &now}}, nil
+}
+
+func (a connector) StopInstance(ctx context.Context, req ConnectRequest) ([]apiv1.OnboardingLegacyChange, error) {
 	if a.stop == nil {
-		return ErrNotConfigured
+		return nil, ErrNotConfigured
 	}
 	return a.stop(ctx, req)
 }

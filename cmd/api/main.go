@@ -19,10 +19,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg"
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
@@ -32,6 +34,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
@@ -327,6 +330,14 @@ func main() {
 		}
 		planSvc.SetResidencyGate(g)
 		rcfg.FileSyncer = g.FileSyncer
+		// An onboarding's plan reaches its source bucket through its own
+		// legacy remote (ADR 0042), set once the onboarding runner exists.
+		g.SetRemote(func(p *plan.Plan) fileguard.Remote {
+			if f := onboardRemote.Load(); f != nil {
+				return (*f)(p)
+			}
+			return fileguard.Remote{}
+		})
 		bucketInspector = g
 		log.Info("residency gate enabled", "policyDigest", g.PolicyDigest())
 	} else {
@@ -607,6 +618,8 @@ func main() {
 		Onboarding:          onboarding,
 	}, deps)
 	if r := apiServer.Onboardings(); r != nil {
+		f := r.Remote
+		onboardRemote.Store(&f)
 		// From the rows, also after a restart; steps outlive requests.
 		go r.Run(runCtx)
 	}
@@ -651,6 +664,9 @@ func main() {
 		_ = runner.Wait(final)
 	}
 }
+
+// onboardRemote is the onboarding runner's Remote once it exists.
+var onboardRemote atomic.Pointer[func(*plan.Plan) fileguard.Remote]
 
 // residencyGate loads the reviewed residency policy. Every environment it
 // names must be registered, or a typo would silently deny every migration.

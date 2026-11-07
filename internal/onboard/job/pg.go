@@ -74,6 +74,22 @@ func (PG) Replication(ctx context.Context, host, database, user, password string
 	return state == "streaming", time.Duration(lag * float64(time.Second)), nil
 }
 
+// ReadOnly implements SourceDB.
+func (PG) ReadOnly(ctx context.Context, host, database, user, password string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	c, err := pgx.Connect(ctx, dsn(host, database, user, password))
+	if err != nil {
+		return false, err
+	}
+	defer c.Close(ctx)
+	var v string
+	if err := c.QueryRow(ctx, "SHOW default_transaction_read_only").Scan(&v); err != nil {
+		return false, err
+	}
+	return v == "on", nil
+}
+
 // DropRole implements SourceDB.
 func (PG) DropRole(ctx context.Context, dsn, role string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -95,9 +111,11 @@ var differences = regexp.MustCompile(`(\d+) differences found`)
 // Copy implements Files: rclone copy, then rclone check --one-way for what
 // still differs.
 func (Rclone) Copy(ctx context.Context, env []string, src, dst string) (int, int, error) {
+	// Only what rclone needs: no server secret, and no config file.
+	base := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
 	run := func(args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "rclone", args...)
-		cmd.Env = append(os.Environ(), env...)
+		cmd := exec.CommandContext(ctx, "rclone", append(args, "--config", os.DevNull)...)
+		cmd.Env = append(base, env...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -128,7 +146,7 @@ type Resolver struct {
 }
 
 // PointsAtGateway implements DNS.
-func (d Resolver) PointsAtGateway(ctx context.Context, host string) (bool, error) {
+func (d Resolver) PointsAtGateway(ctx context.Context, host, vmIP string) (bool, error) {
 	r := d.R
 	if r == nil {
 		r = net.DefaultResolver
@@ -140,6 +158,9 @@ func (d Resolver) PointsAtGateway(ctx context.Context, host string) (bool, error
 	want, err := r.LookupHost(ctx, "onb-wildcard-probe."+strings.TrimPrefix(d.Domain, "."))
 	if err != nil {
 		return false, err
+	}
+	if vmIP != "" && slices.Contains(got, vmIP) {
+		return false, nil
 	}
 	slices.Sort(got)
 	slices.Sort(want)

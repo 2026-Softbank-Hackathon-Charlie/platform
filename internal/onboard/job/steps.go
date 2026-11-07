@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,8 +30,8 @@ func (r *Runner) step(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	if x.doc.Deleting {
-		if !x.doc.Internal.DeleteRequested {
-			return false, nil // the undo failed: only DELETE tries again
+		if !x.doc.Internal.DeleteRequested || !x.deletable() {
+			return false, nil // the undo failed (only DELETE tries again), or a cutover started first
 		}
 		return false, r.undo(ctx, x)
 	}
@@ -504,7 +505,9 @@ func (r *Runner) connecting(ctx context.Context, x *rec) (bool, error) {
 		if uerr != nil {
 			return false, uerr
 		}
-		x, _ = r.load(ctx, x.row.ID)
+		if x, err = r.load(ctx, x.row.ID); err != nil {
+			return false, err
+		}
 		if res.Rotated && x.doc.Internal.Registered {
 			if err := r.rotated(ctx, x); err != nil {
 				return false, err
@@ -517,14 +520,13 @@ func (r *Runner) connecting(ctx context.Context, x *rec) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("the route to the source: %w", err)
 		}
-		if _, err := r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
+		if x, err = r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
 			x.addChange(apiv1.OnboardingLegacyChange{At: r.cfg.Now(), Kind: apiv1.OnboardingLegacyChangeKindDbRouteCreated, Target: onboard.RouteName(x.row.App)})
 			x.doc.Internal.SourceHost = host
 			return "", nil
 		}); err != nil {
 			return false, err
 		}
-		x, _ = r.load(ctx, x.row.ID)
 	}
 	// 6. Superuser and replication connections through it.
 	if r.cfg.SourceDB != nil && x.facts != nil && x.facts.DB != nil {
@@ -537,7 +539,20 @@ func (r *Runner) connecting(ctx context.Context, x *rec) (bool, error) {
 			return false, err
 		}
 		if err := r.cfg.SourceDB.Check(ctx, x.doc.Internal.SourceHost, x.facts.DB.Database, x.facts.DB.FenceUser, su, repl); err != nil {
-			// The tailnet proxy may need a moment; try again next round.
+			// The tailnet proxy may need a moment; try again next round, for
+			// SourceCheckWait at most.
+			since := x.doc.Internal.CheckSince
+			if since == nil {
+				now := r.cfg.Now()
+				_, uerr := r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
+					x.doc.Internal.CheckSince = &now
+					return "", nil
+				})
+				return false, uerr
+			}
+			if r.cfg.Now().Sub(*since) > SourceCheckWait {
+				return false, fmt.Errorf("the source does not answer through %s after %s: %w", x.doc.Internal.SourceHost, SourceCheckWait, err)
+			}
 			r.event(ctx, x, apiv1.OnboardingEventKindLog, "the source does not answer through the route yet: "+err.Error(), nil)
 			return false, nil
 		}
@@ -578,6 +593,10 @@ func (r *Runner) rotated(ctx context.Context, x *rec) error {
 }
 
 const onboardActor = "onboarding"
+
+// SourceCheckWait is how long connecting and the post-run steps retry a
+// database that does not answer before the onboarding fails.
+var SourceCheckWait = 10 * time.Minute
 
 // standbyFloors are CNPG's defaults, under which a replica must not start
 // (a hot standby needs these at least the primary's).
@@ -630,37 +649,52 @@ func (r *Runner) registering(ctx context.Context, x *rec) (bool, error) {
 			return false, err
 		}
 	}
-	// The app, its database row and secrets, then its first deployment.
+	// The app, its database row and secrets (again: the same, and refused
+	// for an app of that name that is not this onboarding's).
 	if !x.doc.Internal.Registered {
 		reg, err := r.registration(x)
 		if err != nil {
 			return false, err
 		}
-		dep, err := r.cfg.Apps.Register(ctx, reg)
-		if err != nil {
+		if err := r.cfg.Apps.Register(ctx, reg); err != nil {
 			return false, fmt.Errorf("register the app: %w", err)
 		}
-		if _, err := r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
-			x.doc.Internal.Registered, x.doc.Internal.Deployment = true, dep
+		if x, err = r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
+			x.doc.Internal.Registered = true
 			return "", nil
 		}); err != nil {
 			return false, err
 		}
-		x, _ = r.load(ctx, x.row.ID)
 	}
-	// The gateway: legacy (dialled at the VM) and the target, writes and
-	// reads to legacy. Again is the same.
+	// The gateway before the first deployment, so the deployment keeps
+	// writes on legacy: legacy (dialled at the VM) and the target.
 	if !x.doc.Internal.GatewayReady {
 		target, err := r.cfg.Apps.BackendURL(ctx, x.row.App, x.doc.TargetEnv)
 		if err != nil {
 			return false, err
 		}
-		spec := legacySpec(x, target)
+		spec, err := legacySpec(x, target)
+		if err != nil {
+			return false, err
+		}
 		if err := r.cfg.Gateway.PutApp(ctx, x.row.App, spec); err != nil {
 			return false, fmt.Errorf("register with the gateway: %w", err)
 		}
-		if _, err := r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
+		if x, err = r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
 			x.doc.Internal.GatewayReady = true
+			return "", nil
+		}); err != nil {
+			return false, err
+		}
+	}
+	// The first deployment; after one that failed, resume queues another.
+	if x.doc.Internal.Deployment == "" {
+		dep, err := r.cfg.Apps.Deploy(ctx, x.row.App, deref(x.doc.ApprovedBy))
+		if err != nil {
+			return false, err
+		}
+		if x, err = r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
+			x.doc.Internal.Deployment = dep
 			return "", nil
 		}); err != nil {
 			return false, err
@@ -673,6 +707,12 @@ func (r *Runner) registering(ctx context.Context, x *rec) (bool, error) {
 	switch status {
 	case store.DeployHealthy:
 	case store.DeployFailed, store.DeploySuperseded:
+		if _, err := r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
+			x.doc.Internal.Deployment = ""
+			return "", nil
+		}); err != nil {
+			return false, err
+		}
 		return false, fmt.Errorf("the first deployment %s: %s", status, msg)
 	default:
 		return false, nil
@@ -683,20 +723,25 @@ func (r *Runner) registering(ctx context.Context, x *rec) (bool, error) {
 	return err == nil, err
 }
 
-// legacySpec is the gateway app while the onboarding syncs.
-func legacySpec(x *rec, target string) gateway.AppSpec {
+// legacySpec is the gateway app while the onboarding syncs: legacy dialled
+// at the VM, and the target when target is not empty.
+func legacySpec(x *rec, target string) (gateway.AppSpec, error) {
+	if x.facts == nil || x.facts.Instance == nil || x.facts.Instance.PublicIP == "" {
+		return gateway.AppSpec{}, errors.New("the facts have no public IP of the VM to dial the legacy backend at")
+	}
 	spec := gateway.AppSpec{
-		Backends:     map[string]string{onboard.SourceName: x.doc.ServiceUrl, x.doc.TargetEnv: target},
+		Backends:     map[string]string{onboard.SourceName: x.doc.ServiceUrl},
 		WriteBackend: onboard.SourceName,
 		ReadWeights:  map[string]int{onboard.SourceName: 100},
+		Dial:         map[string]string{onboard.SourceName: net.JoinHostPort(x.facts.Instance.PublicIP, "443")},
 	}
-	if x.facts != nil && x.facts.Instance != nil && x.facts.Instance.PublicIP != "" {
-		spec.Dial = map[string]string{onboard.SourceName: x.facts.Instance.PublicIP + ":443"}
+	if target != "" {
+		spec.Backends[x.doc.TargetEnv] = target
 	}
-	if x.facts != nil && x.facts.Target != nil {
+	if x.facts.Target != nil {
 		spec.HealthPath = x.facts.Target.HealthCheck
 	}
-	return spec
+	return spec, nil
 }
 
 // registration is the app as registering stores it.
@@ -825,16 +870,25 @@ func (r *Runner) syncing(ctx context.Context, x *rec) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if target.Bucket != "" {
-			copied, pending, err = r.cfg.Files.Copy(ctx, env, onboard.SourceName+":"+f.Storage.Bucket, target.Bucket)
-			if err != nil {
-				r.event(ctx, x, apiv1.OnboardingEventKindLog, "file copy: "+err.Error(), nil)
-				pending = onboard.MaxFileDiff + 1
-			}
+		if target.Bucket == "" {
+			r.event(ctx, x, apiv1.OnboardingEventKindLog, "the source has files in "+f.Storage.Bucket+", but the app has no bucket in "+x.doc.TargetEnv+" (an s3 resource in platform.yaml) to copy them to; it does not get ready", nil)
+			return false, nil
 		}
+		copied, pending, err = r.cfg.Files.Copy(ctx, env, onboard.SourceName+":"+f.Storage.Bucket, target.Bucket)
+		if err != nil {
+			r.event(ctx, x, apiv1.OnboardingEventKindLog, "file copy: "+err.Error(), nil)
+			pending = onboard.MaxFileDiff + 1
+		}
+	} else if f != nil && f.Storage != nil {
+		r.event(ctx, x, apiv1.OnboardingEventKindLog, "the source has files, but this server cannot copy them (no rclone); it does not get ready", nil)
+		return false, nil
 	}
 	host := strings.TrimPrefix(x.doc.ServiceUrl, "https://")
-	dns, err := r.cfg.DNS.PointsAtGateway(ctx, host)
+	vmIP := ""
+	if f != nil && f.Instance != nil {
+		vmIP = f.Instance.PublicIP
+	}
+	dns, err := r.cfg.DNS.PointsAtGateway(ctx, host, vmIP)
 	if err != nil {
 		dns = false
 	}
@@ -964,16 +1018,10 @@ func (r *Runner) decommissioning(ctx context.Context, x *rec) (bool, error) {
 		}
 	}
 	if !x.doc.Internal.DeviceRemoved {
-		var ts []apiv1.OnboardingLegacyChange
-		for _, c := range x.doc.LegacyChanges {
-			switch c.Kind {
-			case apiv1.OnboardingLegacyChangeKindTailscaleDeviceJoined, apiv1.OnboardingLegacyChangeKindTailscaleContainerStarted, apiv1.OnboardingLegacyChangeKindTailscaleVolumeCreated:
-				if c.UndoneAt == nil {
-					ts = append(ts, c)
-				}
-			}
-		}
-		undone, err := r.cfg.Connect.Disconnect(ctx, r.connectReq(x), ts)
+		// Only the tailnet device: the source is fenced read-only, so its
+		// database changes stay (and go with the instance), and the
+		// instance tag stays for the stop's IAM condition.
+		undone, err := r.cfg.Connect.RemoveDevice(ctx, r.connectReq(x))
 		r.markUndone(ctx, x.row.ID, undone)
 		if err != nil {
 			return false, fmt.Errorf("remove the Tailscale device: %w", err)

@@ -10,7 +10,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
@@ -103,6 +106,27 @@ func (r *Runner) startRun(ctx context.Context, x *rec, actor string) (apiv1.Run,
 		r.cfg.Log.Warn("onboarding: link the plan to its run", "onboarding", x.row.ID, "err", err)
 	}
 	return run, uerr
+}
+
+// Remote is the rclone remote legacy of an onboarding's plan, for the gate's
+// probes and the run's file copies (fileguard.Remote); empty for any other
+// plan.
+func (r *Runner) Remote(p *plan.Plan) fileguard.Remote {
+	n := len(onboard.IDPrefix) + 12
+	if p == nil || len(p.ID) <= n || !onboard.ID.MatchString(p.ID[:n]) || p.ID[n] != '-' {
+		return fileguard.Remote{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	x, err := r.load(ctx, p.ID[:n])
+	if err != nil || x.facts == nil || x.facts.Storage == nil {
+		return fileguard.Remote{}
+	}
+	env, err := r.legacyRemote(x)
+	if err != nil {
+		return fileguard.Remote{}
+	}
+	return fileguard.Remote{Env: env, Buckets: []string{onboard.SourceName + ":" + x.facts.Storage.Bucket}}
 }
 
 // Scope is the plans.OnboardingScope of an onboarding's plan id, for
@@ -298,6 +322,21 @@ func (r *Runner) cuttingOver(ctx context.Context, x *rec) (bool, error) {
 			})
 			return err == nil, err
 		case apiv1.RunStatusRolledBack, apiv1.RunStatusAborted, apiv1.RunStatusFailed:
+			// Ready again only once the source takes writes: the engine's
+			// unfence may not have run.
+			if r.cfg.SourceDB != nil && x.facts != nil && x.facts.DB != nil {
+				pw, err := r.open(x, secrets.OnboardingSuperuserPassword, x.row.SuperuserPasswordNonce, x.row.SuperuserPasswordCiphertext)
+				if err != nil {
+					return false, err
+				}
+				fenced, err := r.cfg.SourceDB.ReadOnly(ctx, x.doc.Internal.SourceHost, x.facts.DB.Database, x.facts.DB.FenceUser, pw)
+				if err != nil {
+					return false, fmt.Errorf("the run ended %s, and whether the source takes writes again is not known: %w", run.Status, err)
+				}
+				if fenced {
+					return false, fmt.Errorf("the run ended %s, but the source still refuses writes (default_transaction_read_only on); ALTER SYSTEM RESET default_transaction_read_only and reload it, then resume", run.Status)
+				}
+			}
 			_, err := r.update(ctx, x.row.ID, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
 				return store.OnboardingReady, nil
 			})
@@ -375,6 +414,18 @@ func (r *Runner) postRun(ctx context.Context, x *rec) (bool, error) {
 				return false, err
 			}
 			if err := r.cfg.SourceDB.DropRole(ctx, dsn, onboard.ReplicationUser); err != nil {
+				since := x.doc.Internal.DropSince
+				if since == nil {
+					now := r.cfg.Now()
+					_, uerr := r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
+						x.doc.Internal.DropSince = &now
+						return "", nil
+					})
+					return false, uerr
+				}
+				if r.cfg.Now().Sub(*since) > SourceCheckWait {
+					return false, fmt.Errorf("drop %s on the new primary after %s: %w", onboard.ReplicationUser, SourceCheckWait, err)
+				}
 				r.event(ctx, x, apiv1.OnboardingEventKindLog, "drop "+onboard.ReplicationUser+": "+err.Error(), nil)
 				return false, nil
 			}

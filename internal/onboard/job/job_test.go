@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/onboard/facts"
@@ -98,7 +99,7 @@ func TestHappyPath(t *testing.T) {
 	order := []string{"discover", "hopai", "open pr hopcharlie/onboard into main", "deploy test " + id + " hopcharlie/onboard", "remove app " + id,
 		"disable workflow", "connect", "route", "check source", "merge 9fceb02", "register moim", "gateway put legacy dial=203.0.113.10:443",
 		"reserve", "run", "replica source moim-db-gke", "source peer", "redeploy", "drop hopcharlie_replicator",
-		"gateway put eks dial=", "undo tailscale_device_joined", "remove route", "stop instance"}
+		"gateway put eks dial=", "remove device", "remove route", "stop instance"}
 	at := 0
 	for _, s := range order {
 		i := strings.Index(got[at:], s)
@@ -504,5 +505,21 @@ func TestRotatedPasswordRedeploys(t *testing.T) {
 	got := strings.Join(w.done(), ",")
 	if !strings.Contains(got, "seal replication password repl,redeploy") {
 		t.Fatalf("no reseal and redeploy in %s", got)
+	}
+}
+
+// TestRemoteOfThePlan: the run's legacy remote comes from the row, only
+// for the onboarding's own plans.
+func TestRemoteOfThePlan(t *testing.T) {
+	w := newWorld(t)
+	r := w.runner()
+	id := toReady(t, w, r)
+	got := r.Remote(&plan.Plan{ID: id + "-1"})
+	if !slices.Contains(got.Env, "RCLONE_CONFIG_LEGACY_ACCESS_KEY_ID=AKIA") || !slices.Contains(got.Env, "RCLONE_CONFIG_LEGACY_TYPE=s3") ||
+		!slices.Equal(got.Buckets, []string{"legacy:moim-files"}) {
+		t.Fatalf("remote %+v", got)
+	}
+	if other := r.Remote(&plan.Plan{ID: "shop-eks-to-gke"}); len(other.Env)+len(other.Buckets) != 0 {
+		t.Fatalf("another plan got %+v", other)
 	}
 }

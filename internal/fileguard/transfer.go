@@ -25,12 +25,38 @@ type object struct {
 
 type command func(context.Context, io.Writer, ...string) error
 
+// remoteKey holds the remotes one run adds (WithRemote).
+type remoteKey struct{}
+
+// Remote is a run's own rclone remote: its RCLONE_CONFIG_<NAME>_* variables
+// and the buckets ("name:bucket") it reaches. An onboarding's legacy remote
+// (ADR 0042) exists only for its plan, never in the server's environment.
+type Remote struct {
+	Env     []string
+	Buckets []string
+}
+
+// WithRemote makes the rclone runs under ctx see r's variables.
+func WithRemote(ctx context.Context, r Remote) context.Context {
+	if len(r.Env) == 0 && len(r.Buckets) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, remoteKey{}, r)
+}
+
+// RemoteOf is the remote WithRemote put in ctx.
+func RemoteOf(ctx context.Context) Remote {
+	r, _ := ctx.Value(remoteKey{}).(Remote)
+	return r
+}
+
 // run ignores config files and raw process output. Remote credentials come only
-// from the server environment, the same source bucketprobe measures.
+// from the server environment, the same source bucketprobe measures, and the
+// run's own remote (WithRemote).
 func run(ctx context.Context, out io.Writer, args ...string) error {
 	args = append(args, "--config", os.DevNull, "--log-level", "ERROR", "--log-file", "")
 	cmd := exec.CommandContext(ctx, "rclone", args...)
-	cmd.Env = remoteEnvironment(os.Environ())
+	cmd.Env = remoteEnvironment(append(os.Environ(), RemoteOf(ctx).Env...))
 	cmd.WaitDelay = 5 * time.Second // bound pipe teardown after process cancellation
 	cmd.Stdout, cmd.Stderr = out, io.Discard
 	if err := cmd.Run(); err != nil {
@@ -264,6 +290,14 @@ type Syncer struct {
 	before         func(context.Context) error
 	authorize      func(context.Context, Report) error
 	execute        command
+	remote         Remote
+}
+
+// WithRemote gives the syncer's runs (and the gate's checks before them) a
+// remote of their own; it returns s.
+func (s *Syncer) WithRemote(r Remote) *Syncer {
+	s.remote = r
+	return s
 }
 
 func New(source, target string, reviews []Review, binary string, before func(context.Context) error, authorize func(context.Context, Report) error) *Syncer {
@@ -281,6 +315,7 @@ func (s *Syncer) Available() error {
 }
 
 func (s *Syncer) prepare(ctx context.Context, src, dst string) (*snapshot, error) {
+	ctx = WithRemote(ctx, s.remote)
 	if s == nil || s.before == nil || s.authorize == nil || src != s.source || dst != s.target {
 		return nil, ErrDenied
 	}
@@ -334,6 +369,7 @@ func (s *Syncer) Readable(ctx context.Context, remote string) error {
 
 // transfer runs rclone op ("sync" or "copy") from a new inspected snapshot.
 func (s *Syncer) transfer(ctx context.Context, op, src, dst string) (result files.SyncResult, err error) {
+	ctx = WithRemote(ctx, s.remote)
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
@@ -362,6 +398,7 @@ func (s *Syncer) transfer(ctx context.Context, op, src, dst string) (result file
 }
 
 func (s *Syncer) Check(ctx context.Context, src, dst string) (result files.CheckResult, err error) {
+	ctx = WithRemote(ctx, s.remote)
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 	shot, err := s.prepare(ctx, src, dst)

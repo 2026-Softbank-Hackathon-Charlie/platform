@@ -94,8 +94,13 @@ type Connector interface {
 	// are) in reverse order and returns them with UndoneAt set on those it
 	// undid, also with an error.
 	Disconnect(ctx context.Context, req ConnectRequest, changes []apiv1.OnboardingLegacyChange) ([]apiv1.OnboardingLegacyChange, error)
-	// StopInstance stops (never terminates) the tagged instance.
-	StopInstance(ctx context.Context, req ConnectRequest) error
+	// RemoveDevice deletes the source's tailnet device and nothing else
+	// (decommissioning: the source is fenced, its database changes stay).
+	RemoveDevice(ctx context.Context, req ConnectRequest) ([]apiv1.OnboardingLegacyChange, error)
+	// StopInstance stops (never terminates) the instance once it checked
+	// that its onboarding tag is req.ID, then removes the tag; it returns
+	// the instance_tagged change undone.
+	StopInstance(ctx context.Context, req ConnectRequest) ([]apiv1.OnboardingLegacyChange, error)
 }
 
 // GitHub is the App's calls (internal/github.Client).
@@ -153,9 +158,17 @@ type Apps interface {
 	// DeployTest registers the test app unless it is there and queues a
 	// deployment of Branch; it returns the deployment id.
 	DeployTest(ctx context.Context, t TestApp) (string, error)
-	// Register registers the onboarded app unless it is there and returns
-	// its first deployment's id.
-	Register(ctx context.Context, r Registration) (string, error)
+	// Register stores the onboarded app, its database row and its secrets
+	// unless the app is there; an app of that name that is not this
+	// onboarding's (Owned) is an error. Again, it writes the secrets again.
+	Register(ctx context.Context, r Registration) error
+	// Deploy returns the app's unfinished or healthy deployment, or queues
+	// a deployment of its branch's head when it has none.
+	Deploy(ctx context.Context, app, actor string) (string, error)
+	// Owned says the app is an onboarding's: its database row has
+	// source_kind external (or had: peer after the cutover) and the
+	// external host onboard.TailnetHost(app).
+	Owned(ctx context.Context, app string) (bool, error)
 	// Redeploy queues a deployment of the app's current commit to all its
 	// environments, rendered from its rows as they are now.
 	Redeploy(ctx context.Context, app, actor string) (string, error)
@@ -195,8 +208,9 @@ type Files interface {
 
 // DNS checks where a name points.
 type DNS interface {
-	// PointsAtGateway says host resolves to the gateway (the wildcard).
-	PointsAtGateway(ctx context.Context, host string) (bool, error)
+	// PointsAtGateway says host resolves to the gateway (the wildcard) and
+	// no answer is vmIP, the VM's address.
+	PointsAtGateway(ctx context.Context, host, vmIP string) (bool, error)
 }
 
 // Gateway is the traffic gateway's app API (internal/gateway.Client).
@@ -231,6 +245,9 @@ type SourceDB interface {
 	// Replication says whether hopcharlie_replicator streams from the
 	// source (pg_stat_replication, read as the fence user) and its replay lag.
 	Replication(ctx context.Context, host, database, user, password string) (streaming bool, lag time.Duration, err error)
+	// ReadOnly says the source refuses writes (default_transaction_read_only
+	// on: still fenced).
+	ReadOnly(ctx context.Context, host, database, user, password string) (bool, error)
 	// DropRole drops role on the database dsn reaches.
 	DropRole(ctx context.Context, dsn, role string) error
 }

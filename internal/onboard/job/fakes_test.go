@@ -57,6 +57,10 @@ type world struct {
 	noPostgres bool // the registered platform.yaml has no postgres resource
 	rotated    bool // connect says the replication password changed
 	lostRun    bool // no run of the plan was found after a restart
+	foreignApp bool // an app of the onboarding's name is not its own
+
+	firstDeployFails int
+	sourceFenced     bool // the source still refuses writes after a run ended
 
 	runStatus  apiv1.RunStatus
 	reserveErr error
@@ -156,9 +160,13 @@ func (w *world) Disconnect(_ context.Context, _ ConnectRequest, ch []apiv1.Onboa
 	return out, nil
 }
 
-func (w *world) StopInstance(context.Context, ConnectRequest) error {
+func (w *world) StopInstance(context.Context, ConnectRequest) ([]apiv1.OnboardingLegacyChange, error) {
 	w.did("stop instance")
-	return nil
+	return []apiv1.OnboardingLegacyChange{{Kind: apiv1.OnboardingLegacyChangeKindInstanceTagged, Target: "i-1", UndoneAt: &w.now}}, nil
+}
+func (w *world) RemoveDevice(context.Context, ConnectRequest) ([]apiv1.OnboardingLegacyChange, error) {
+	w.did("remove device")
+	return []apiv1.OnboardingLegacyChange{{Kind: apiv1.OnboardingLegacyChangeKindTailscaleDeviceJoined, Target: "hop-db-legacy-moim", UndoneAt: &w.now}}, nil
 }
 
 // GitHub
@@ -223,7 +231,17 @@ func (w *world) DeployTest(_ context.Context, t TestApp) (string, error) {
 	}
 	return w.newDeployment(status), nil
 }
-func (w *world) Register(ctx context.Context, r Registration) (string, error) {
+func (w *world) Owned(_ context.Context, app string) (bool, error) { return !w.foreignApp, nil }
+func (w *world) Deploy(context.Context, string, string) (string, error) {
+	w.did("deploy")
+	status := store.DeployHealthy
+	if w.firstDeployFails > 0 {
+		w.firstDeployFails--
+		status = store.DeployFailed
+	}
+	return w.newDeployment(status), nil
+}
+func (w *world) Register(ctx context.Context, r Registration) error {
 	w.did("register " + r.App)
 	if r.AppPassword != "pw" || r.ReplicationPassword != "repl" || r.Secrets["JWT_SECRET"] != "jwt" || len(r.Secrets) != 1 ||
 		r.Parameters["max_connections"] != "100" || r.Parameters["max_worker_processes"] != "32" {
@@ -234,9 +252,9 @@ func (w *world) Register(ctx context.Context, r Registration) (string, error) {
 		spec = `{"name":"moim","services":[{"name":"web","port":8080,"public":true,"healthCheck":"/healthz","replicas":2}],"resources":[]}`
 	}
 	if err := w.st.CreateApp(ctx, store.App{Name: r.App, Repo: r.Repo, Branch: "main", Environments: []string{r.Env}, Spec: []byte(spec), CreatedAt: w.now}); err != nil && !errors.Is(err, store.ErrConflict) {
-		return "", err
+		return err
 	}
-	return w.newDeployment(store.DeployHealthy), nil
+	return nil
 }
 func (w *world) Redeploy(context.Context, string, string) (string, error) {
 	w.did("redeploy")
@@ -279,7 +297,15 @@ func (w *world) SetReplicaSource(_ context.Context, _, _, cluster, source string
 func (w *world) Copy(_ context.Context, env []string, src, dst string) (int, int, error) {
 	return 3, 0, nil
 }
-func (w *world) PointsAtGateway(context.Context, string) (bool, error) { return w.dns, nil }
+func (w *world) PointsAtGateway(_ context.Context, _, vmIP string) (bool, error) {
+	if vmIP != "203.0.113.10" {
+		w.t.Errorf("DNS check without the VM's address: %q", vmIP)
+	}
+	return w.dns, nil
+}
+func (w *world) ReadOnly(context.Context, string, string, string, string) (bool, error) {
+	return w.sourceFenced, nil
+}
 
 // Gateway
 func (w *world) Apps(context.Context) (gateway.AppList, error) {

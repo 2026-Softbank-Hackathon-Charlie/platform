@@ -400,7 +400,9 @@ func (r *Runner) Decommission(ctx context.Context, id, actor string) (apiv1.Onbo
 	if r.cfg.Connect == nil {
 		return apiv1.Onboarding{}, ErrNotConfigured
 	}
-	if err := r.cfg.Connect.StopInstance(ctx, r.connectReq(x)); err != nil {
+	undone, err := r.cfg.Connect.StopInstance(ctx, r.connectReq(x))
+	r.markUndone(ctx, id, undone)
+	if err != nil {
 		return apiv1.Onboarding{}, err
 	}
 	x, err = r.update(ctx, id, []string{store.OnboardingDecommissioning}, func(x *rec) (string, error) {

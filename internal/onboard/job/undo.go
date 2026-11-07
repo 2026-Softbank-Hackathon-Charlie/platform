@@ -45,25 +45,37 @@ func (r *Runner) undoSteps(ctx context.Context, x *rec) error {
 			return fmt.Errorf("remove the test app: %w", err)
 		}
 	}
-	if stateOrder[x.effectiveState()] <= stateOrder[store.OnboardingAwaitingApproval] {
-		if x.doc.Pr != nil && (x.doc.Pr.Merged == nil || !*x.doc.Pr.Merged) && r.cfg.GitHub != nil {
+	// The PR, unless it was merged (a merged PR stays, ADR 0042).
+	if x.doc.Pr != nil && (x.doc.Pr.Merged == nil || !*x.doc.Pr.Merged) && r.cfg.GitHub != nil {
+		pr, err := r.cfg.GitHub.GetPR(ctx, x.row.Repo, x.doc.Pr.Number)
+		if err != nil {
+			return fmt.Errorf("read the PR: %w", err)
+		}
+		if !pr.Merged && pr.State == "open" {
 			if err := r.cfg.GitHub.ClosePR(ctx, x.row.Repo, x.doc.Pr.Number); err != nil {
 				return fmt.Errorf("close the PR: %w", err)
 			}
 		}
+	}
+	if stateOrder[x.effectiveState()] <= stateOrder[store.OnboardingAwaitingApproval] {
 		return nil
 	}
-	// The registered app first, so nothing routes or deploys to what is
-	// undone below.
-	if x.doc.Internal.GatewayReady && r.cfg.Gateway != nil {
-		var ae *gateway.APIError
-		if err := r.cfg.Gateway.DeleteApp(ctx, x.row.App); err != nil && !(errors.As(err, &ae) && ae.Status == 404) {
-			return fmt.Errorf("delete the gateway app: %w", err)
+	// From registering on: the gateway app and the app, if they are this
+	// onboarding's, whatever the step got to.
+	if stateOrder[x.effectiveState()] >= stateOrder[store.OnboardingRegistering] && r.cfg.Apps != nil {
+		owned, err := r.cfg.Apps.Owned(ctx, x.row.App)
+		if err != nil {
+			return err
 		}
-	}
-	if x.doc.Internal.Registered && r.cfg.Apps != nil {
-		if err := r.cfg.Apps.Remove(ctx, x.row.App); err != nil {
-			return fmt.Errorf("delete the app: %w", err)
+		if owned && r.cfg.Gateway != nil {
+			if err := r.undoGateway(ctx, x); err != nil {
+				return err
+			}
+		}
+		if owned {
+			if err := r.cfg.Apps.Remove(ctx, x.row.App); err != nil {
+				return fmt.Errorf("delete the app: %w", err)
+			}
 		}
 	}
 	connected := false
@@ -111,6 +123,29 @@ func (r *Runner) undoSteps(ctx context.Context, x *rec) error {
 		}
 		now := r.cfg.Now()
 		r.markUndone(ctx, x.row.ID, []apiv1.OnboardingLegacyChange{{Kind: c.Kind, Target: c.Target, UndoneAt: &now}})
+	}
+	return nil
+}
+
+// undoGateway deletes the gateway app, or, once the name points at the
+// gateway (the individual record was deleted), keeps it with legacy alone:
+// deleting it would leave the name answering 404 until the record is back
+// (ADR 0042 DELETE). The owner restores the record and deletes the app.
+func (r *Runner) undoGateway(ctx context.Context, x *rec) error {
+	if x.doc.Internal.DNSAt != nil {
+		spec, err := legacySpec(x, "")
+		if err != nil {
+			return err
+		}
+		if err := r.cfg.Gateway.PutApp(ctx, x.row.App, spec); err != nil {
+			return fmt.Errorf("keep the gateway app on legacy: %w", err)
+		}
+		r.event(ctx, x, apiv1.OnboardingEventKindHuman, x.row.App+" points at the gateway, which keeps sending it to the VM; restore its A record, then delete the gateway app "+x.row.App, nil)
+		return nil
+	}
+	var ae *gateway.APIError
+	if err := r.cfg.Gateway.DeleteApp(ctx, x.row.App); err != nil && !(errors.As(err, &ae) && ae.Status == 404) {
+		return fmt.Errorf("delete the gateway app: %w", err)
 	}
 	return nil
 }

@@ -8,6 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"slices"
+	"strings"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
@@ -64,6 +67,20 @@ type Gate struct {
 	digest                string
 	inspector             ContentInspector
 	inspectionEnvironment string
+	// remote is a plan's own rclone remote (SetRemote); nil: none.
+	remote func(*plan.Plan) fileguard.Remote
+}
+
+// SetRemote gives the plans it knows a remote of their own (an onboarding's
+// legacy source bucket, ADR 0042): its buckets count as registered for that
+// plan, and the gate's probes and copies of that plan see its variables.
+func (g *Gate) SetRemote(f func(*plan.Plan) fileguard.Remote) { g.remote = f }
+
+func (g *Gate) remoteOf(p *plan.Plan) fileguard.Remote {
+	if g == nil || g.remote == nil || p == nil {
+		return fileguard.Remote{}
+	}
+	return g.remote(p)
 }
 
 // New prepares the policy. collector nil uses inventory.Collector{}; the
@@ -92,6 +109,29 @@ func New(ctx context.Context, cfg residency.Config, collector Collector) (*Gate,
 	return &Gate{evaluator: e, collector: collector, prober: bucketprobe.Prober{}, registered: registered, buckets: buckets, digest: e.PolicyDigest(), inspector: fileguard.Inspector{}, inspectionEnvironment: cfg.InspectionEnvironment}, nil
 }
 
+// probe is the prober's Probe, with the plan's own remote variables first
+// when the prober reads the environment (bucketprobe.Prober).
+func (g *Gate) probe(ctx context.Context, bucket string, opt bucketprobe.Options) (preflight.BucketObservation, bucketprobe.Result) {
+	r := fileguard.RemoteOf(ctx)
+	bp, ok := g.prober.(bucketprobe.Prober)
+	if !ok || len(r.Env) == 0 {
+		return g.prober.Probe(ctx, bucket, opt)
+	}
+	base := bp.Getenv
+	if base == nil {
+		base = os.Getenv
+	}
+	bp.Getenv = func(k string) string {
+		for _, kv := range r.Env {
+			if name, v, _ := strings.Cut(kv, "="); name == k {
+				return v
+			}
+		}
+		return base(k)
+	}
+	return bp.Probe(ctx, bucket, opt)
+}
+
 // WithProber replaces the bucket prober (tests). It returns g.
 func (g *Gate) WithProber(p Prober) *Gate {
 	g.prober = p
@@ -109,6 +149,7 @@ func (g *Gate) PolicyDigest() string { return g.digest }
 // the source's relations and never leaves this call. A nil error does not
 // mean allowed: always check Allowed.
 func (g *Gate) Check(ctx context.Context, p *plan.Plan) (preflight.ResidencyVerdict, error) {
+	ctx = fileguard.WithRemote(ctx, g.remoteOf(p))
 	v, err := g.check(ctx, p, nil)
 	if err != nil || !v.Allowed || p.Files == nil {
 		return v, err
@@ -152,7 +193,7 @@ func (g *Gate) FileSyncer(p *plan.Plan) engine.FileSyncer {
 		}
 		return nil
 	}
-	return fileguard.New(p.Files.Source, p.Files.Target, g.buckets[p.Files.Source].ReviewedFiles, g.buckets[p.Files.Source].BinaryLabel, before, authorize)
+	return fileguard.New(p.Files.Source, p.Files.Target, g.buckets[p.Files.Source].ReviewedFiles, g.buckets[p.Files.Source].BinaryLabel, before, authorize).WithRemote(g.remoteOf(p))
 }
 
 func (g *Gate) check(ctx context.Context, p *plan.Plan, labels []string) (preflight.ResidencyVerdict, error) {
@@ -205,7 +246,7 @@ func (g *Gate) check(ctx context.Context, p *plan.Plan, labels []string) (prefli
 		// A store the policy does not know is never contacted.
 		var unregistered []preflight.Reason
 		for _, name := range []string{p.Files.Source, p.Files.Target} {
-			if !g.registered[name] && residency.ValidBucket(name) {
+			if !g.registered[name] && !slices.Contains(fileguard.RemoteOf(ctx).Buckets, name) && residency.ValidBucket(name) {
 				unregistered = append(unregistered, preflight.Reason{Code: "unregistered_bucket", MovementID: movementID(p), Bucket: name})
 			}
 		}
@@ -222,7 +263,7 @@ func (g *Gate) check(ctx context.Context, p *plan.Plan, labels []string) (prefli
 			{p.Files.Source, bucketprobe.Options{Prefixes: true}, &files.SourceObserved},
 			{p.Files.Target, bucketprobe.Options{Replication: true}, &files.TargetObserved},
 		} {
-			obs, res := g.prober.Probe(ctx, b.name, b.opt)
+			obs, res := g.probe(ctx, b.name, b.opt)
 			if res.Code != "" {
 				bucket := ""
 				if residency.ValidBucket(b.name) {

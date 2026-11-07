@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,6 +23,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/connect"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/discover"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/job"
@@ -82,13 +85,8 @@ func onboardingConfig(ctx context.Context, log *slog.Logger, envSvc *envs.Servic
 	} else {
 		conn.Tailscale = ts
 	}
-	cfg.Connect = job.FromConnector(conn, func(ctx context.Context, req job.ConnectRequest) error {
-		in := req.Facts.Instance
-		if in == nil || in.ID == "" {
-			return errors.New("the facts have no instance")
-		}
-		_, err := ec2For(in.Region).StopInstances(ctx, &ec2.StopInstancesInput{InstanceIds: []string{in.ID}})
-		return err
+	cfg.Connect = job.FromConnector(conn, func(ctx context.Context, req job.ConnectRequest) ([]apiv1.OnboardingLegacyChange, error) {
+		return stopInstance(ctx, ec2For, req)
 	})
 	return cfg
 }
@@ -103,6 +101,43 @@ func engineClients(envSvc *envs.Service) func(string) (dynamic.Interface, error)
 		}
 		return kube.Dynamic("", c.KubeContext)
 	}
+}
+
+// stopInstance stops the onboarding's instance after checking its tag is
+// the onboarding id (the IAM condition of StopInstances needs the tag), then
+// removes the tag.
+func stopInstance(ctx context.Context, ec2For func(string) *ec2.Client, req job.ConnectRequest) ([]apiv1.OnboardingLegacyChange, error) {
+	in := req.Facts.Instance
+	if in == nil || in.ID == "" {
+		return nil, errors.New("the facts have no instance")
+	}
+	c := ec2For(in.Region)
+	out, err := c.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{in.ID}})
+	if err != nil {
+		return nil, err
+	}
+	tagged := false
+	for _, res := range out.Reservations {
+		for _, i := range res.Instances {
+			for _, t := range i.Tags {
+				if t.Key != nil && *t.Key == onboard.InstanceTag && t.Value != nil && *t.Value == req.ID {
+					tagged = true
+				}
+			}
+		}
+	}
+	if !tagged {
+		return nil, fmt.Errorf("instance %s does not carry %s=%s, so it is not stopped", in.ID, onboard.InstanceTag, req.ID)
+	}
+	if _, err := c.StopInstances(ctx, &ec2.StopInstancesInput{InstanceIds: []string{in.ID}}); err != nil {
+		return nil, err
+	}
+	key := onboard.InstanceTag
+	if _, err := c.DeleteTags(ctx, &ec2.DeleteTagsInput{Resources: []string{in.ID}, Tags: []ec2types.Tag{{Key: &key}}}); err != nil {
+		return nil, fmt.Errorf("stopped %s, but its tag stays: %w", in.ID, err)
+	}
+	now := time.Now().UTC()
+	return []apiv1.OnboardingLegacyChange{{Kind: apiv1.OnboardingLegacyChangeKindInstanceTagged, Target: in.ID, UndoneAt: &now}}, nil
 }
 
 // cutover is job.Cutover over the plan service and the runner.

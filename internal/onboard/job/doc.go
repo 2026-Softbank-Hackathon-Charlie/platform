@@ -41,6 +41,8 @@ type internal struct {
 	Connected      bool       `json:"connected,omitempty"`
 	SourceHost     string     `json:"sourceHost,omitempty"` // db-legacy-<app>.<ns>.svc.cluster.local:5432
 	SourceChecked  bool       `json:"sourceChecked,omitempty"`
+	CheckSince     *time.Time `json:"checkSince,omitempty"` // the first failed source check
+	DropSince      *time.Time `json:"dropSince,omitempty"`  // the first failed drop of the replicator
 
 	// registering
 	Registered   bool   `json:"registered,omitempty"`

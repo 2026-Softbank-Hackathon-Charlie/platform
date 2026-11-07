@@ -11,6 +11,7 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/job"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -102,16 +103,27 @@ func (a onboardApps) DeployTest(ctx context.Context, t job.TestApp) (string, err
 	return a.queue(ctx, app, t.Branch, commit, apiv1.DeploymentTriggerRegister)
 }
 
-func (a onboardApps) Register(ctx context.Context, r job.Registration) (string, error) {
-	if id, ok, err := a.existing(ctx, r.App); err != nil || ok {
-		return id, err
-	}
+func (a onboardApps) Register(ctx context.Context, r job.Registration) error {
 	if a.s.d.Secrets == nil {
-		return "", errors.New("an onboarded app's database needs PLATFORM_SECRETS_KEY")
+		return errors.New("an onboarded app's database needs PLATFORM_SECRETS_KEY")
+	}
+	_, err := a.s.d.Store.GetApp(ctx, r.App)
+	switch {
+	case err == nil:
+		owned, err := a.Owned(ctx, r.App)
+		if err != nil {
+			return err
+		}
+		if !owned {
+			return fmt.Errorf("an app named %s is registered and is not this onboarding's", r.App)
+		}
+		return a.putSecrets(ctx, r) // again after a crash: the same values
+	case !errors.Is(err, store.ErrNotFound):
+		return err
 	}
 	commit, spec, err := a.specAt(ctx, r.Repo, r.Branch)
 	if err != nil {
-		return "", err
+		return err
 	}
 	raw, _ := json.Marshal(spec)
 	now := storeTime()
@@ -124,43 +136,84 @@ func (a onboardApps) Register(ctx context.Context, r job.Registration) (string, 
 	// A new CA (ADR 0030) with the source's own app password.
 	made, err := deploy.NewAppDatabase(a.s.d.Secrets, r.App, envs, now)
 	if err != nil {
-		return "", err
+		return err
 	}
 	_, caKey, err := a.s.d.Secrets.OpenDatabase(made)
 	if err != nil {
-		return "", err
+		return err
 	}
 	db, err := a.s.d.Secrets.DatabaseRow(r.App, made.PrimaryEnv, made.PeerEnv, r.AppPassword, made.CACert, caKey)
 	if err != nil {
-		return "", err
+		return err
 	}
 	db.CreatedAt = now
 	db.SourceKind, db.Image, db.Database, db.Owner, db.StorageSize = store.DBSourceExternal, r.Image, r.Database, r.Owner, r.StorageSize
 	db.ExternalHost, db.Reindex, db.Parameters = r.ExternalHost, r.Reindex, r.Parameters
 	if db.ReplicationPasswordNonce, db.ReplicationPasswordCiphertext, err = a.s.d.Secrets.SealDatabaseField(r.App, secrets.DatabaseReplicationPassword, r.ReplicationPassword); err != nil {
-		return "", err
+		return err
 	}
 	if err := a.s.d.Store.CreateAppWithDatabase(ctx, app, db); err != nil {
-		return "", err
+		return err
 	}
-	if len(r.Secrets) > 0 {
-		rows := make([]store.AppSecret, 0, len(r.Secrets))
-		for name, v := range r.Secrets {
-			row, err := a.s.d.Secrets.Row(r.App, "", name, v, r.Actor)
-			if err != nil {
-				return "", err
-			}
-			row.UpdatedAt = now
-			rows = append(rows, row)
-		}
-		if err := a.s.d.Store.ChangeAppSecrets(ctx, r.App, "", rows, nil, maxSecretsPerScope); err != nil {
-			return "", err
-		}
+	if err := a.putSecrets(ctx, r); err != nil {
+		return err
 	}
 	if a.s.d.DBRoutes != nil {
 		a.s.d.DBRoutes.Added(db)
 	}
-	return a.queue(ctx, app, r.Branch, commit, apiv1.DeploymentTriggerRegister)
+	return nil
+}
+
+// putSecrets writes the onboarded app's secrets (app-wide).
+func (a onboardApps) putSecrets(ctx context.Context, r job.Registration) error {
+	if len(r.Secrets) == 0 {
+		return nil
+	}
+	rows := make([]store.AppSecret, 0, len(r.Secrets))
+	for name, v := range r.Secrets {
+		row, err := a.s.d.Secrets.Row(r.App, "", name, v, r.Actor)
+		if err != nil {
+			return err
+		}
+		row.UpdatedAt = storeTime()
+		rows = append(rows, row)
+	}
+	return a.s.d.Store.ChangeAppSecrets(ctx, r.App, "", rows, nil, maxSecretsPerScope)
+}
+
+func (a onboardApps) Owned(ctx context.Context, name string) (bool, error) {
+	db, err := a.s.d.Store.GetAppDatabase(ctx, name)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return db.ExternalHost == onboard.TailnetHost(name) && (db.SourceKind == store.DBSourceExternal || db.SourceKind == store.DBSourcePeer), nil
+}
+
+func (a onboardApps) Deploy(ctx context.Context, name, by string) (string, error) {
+	app, err := a.s.d.Store.GetApp(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	list, err := a.s.d.Store.ListDeployments(ctx, name, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(list) > 0 && (!store.DeploymentFinished(list[0].Status) || list[0].Status == store.DeployHealthy) {
+		return list[0].ID, nil
+	}
+	commit, _, err := a.specAt(ctx, app.Repo, app.Branch)
+	if err != nil {
+		return "", err
+	}
+	d := newDeployment(app, defaultInstance(app), app.Branch, commit, apiv1.DeploymentTriggerRegister, cmp.Or(by, onboardActor), storeTime())
+	if err := a.s.d.Store.CreateDeployment(ctx, d); err != nil {
+		return "", err
+	}
+	a.s.enqueue(ctx, d.ID)
+	return d.ID, nil
 }
 
 func (a onboardApps) Redeploy(ctx context.Context, name, by string) (string, error) {
