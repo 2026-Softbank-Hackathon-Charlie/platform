@@ -51,6 +51,12 @@ type Bucket struct {
 	// covers only objects directly under the bucket path.
 	Prefixes      []ClassifiedPrefix        `json:"prefixes,omitempty"`
 	ReviewedFiles []preflight.ContentReview `json:"reviewedFiles,omitempty"`
+	// BinaryLabel classifies the source objects the content scanner cannot
+	// read (images and other binary formats) when this bucket is the source
+	// of a copy. Without it such objects deny (file_content_unsupported).
+	// Text objects are still scanned, and the label is evaluated against the
+	// target's country like any other content label.
+	BinaryLabel string `json:"binaryLabel,omitempty"`
 }
 
 // BucketExpect is what the measured bucket must show. A provider-hosted
@@ -295,5 +301,9 @@ func normalizedBucket(b Bucket) (Bucket, error) {
 		out.ReviewedFiles = append(out.ReviewedFiles, r)
 	}
 	slices.SortFunc(out.ReviewedFiles, func(a, b preflight.ContentReview) int { return cmp.Compare(a.SHA256, b.SHA256) })
+	if b.BinaryLabel != "" && !validLabel(b.BinaryLabel) {
+		return Bucket{}, errors.New("binaryLabel: unsupported label")
+	}
+	out.BinaryLabel = b.BinaryLabel
 	return out, nil
 }

@@ -81,7 +81,7 @@ func cleanRemote() *testRemote {
 }
 
 func makeSyncer(r *testRemote, authorize func(context.Context, Report) error) *Syncer {
-	s := New("src:bucket", "dst:bucket", nil, func(context.Context) error { return nil }, authorize)
+	s := New("src:bucket", "dst:bucket", nil, "", func(context.Context) error { return nil }, authorize)
 	s.execute = r.command
 	return s
 }
@@ -211,7 +211,7 @@ func TestLocalRcloneIntegration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "data.txt"), []byte("hello"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s := New(src, dst, nil, func(context.Context) error { return nil }, func(_ context.Context, r Report) error {
+	s := New(src, dst, nil, "", func(context.Context) error { return nil }, func(_ context.Context, r Report) error {
 		if slices.Contains(r.Labels, "kr-only") {
 			return ErrDenied
 		}

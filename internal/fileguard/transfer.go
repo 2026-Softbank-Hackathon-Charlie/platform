@@ -73,6 +73,7 @@ type snapshot struct {
 	dir       string
 	inventory inventory
 	reviews   []Review
+	binary    string
 	report    Report
 }
 
@@ -83,13 +84,13 @@ func (s *snapshot) close() error {
 	return nil
 }
 
-func take(ctx context.Context, source string, reviews []Review, execute command) (_ *snapshot, err error) {
+func take(ctx context.Context, source string, reviews []Review, binary string, execute command) (_ *snapshot, err error) {
 	root, err := os.MkdirTemp("", "hopcharlie-inspect-")
 	if err != nil {
 		return nil, ErrRead
 	}
 	dir := filepath.Join(root, "data")
-	s := &snapshot{root: root, dir: dir, reviews: slices.Clone(reviews)}
+	s := &snapshot{root: root, dir: dir, reviews: slices.Clone(reviews), binary: binary}
 	defer func() {
 		if err != nil {
 			if e := s.close(); e != nil {
@@ -132,7 +133,7 @@ func take(ctx context.Context, source string, reviews []Review, execute command)
 	if openErr != nil {
 		return nil, ErrRead
 	}
-	s.report, err = scanEach(ctx, dir, s.inventory.walk, reviews, &boundedWriter{manifest, 16 << 20})
+	s.report, err = scanEach(ctx, dir, s.inventory.walk, reviews, binary, &boundedWriter{manifest, 16 << 20})
 	closeErr := manifest.Close()
 	if err != nil {
 		return nil, err
@@ -228,7 +229,7 @@ func (s *snapshot) verify(ctx context.Context) error {
 	if err != nil || count != s.inventory.count {
 		return ErrChanged
 	}
-	r, err := scanEach(ctx, s.dir, s.inventory.walk, s.reviews)
+	r, err := scanEach(ctx, s.dir, s.inventory.walk, s.reviews, s.binary)
 	if err != nil || r.ManifestDigest != s.report.ManifestDigest {
 		return ErrChanged
 	}
@@ -239,10 +240,10 @@ func (s *snapshot) verify(ctx context.Context) error {
 // A start-time report is not reused as permission for later changed bytes.
 type Inspector struct{}
 
-func (Inspector) Inspect(ctx context.Context, source string, reviews []Review) (Report, error) {
+func (Inspector) Inspect(ctx context.Context, source string, reviews []Review, binary string) (Report, error) {
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
-	s, err := take(ctx, source, reviews, run)
+	s, err := take(ctx, source, reviews, binary, run)
 	if err != nil {
 		return Report{}, err
 	}
@@ -259,13 +260,14 @@ func (Inspector) Inspect(ctx context.Context, source string, reviews []Review) (
 type Syncer struct {
 	source, target string
 	reviews        []Review
+	binary         string
 	before         func(context.Context) error
 	authorize      func(context.Context, Report) error
 	execute        command
 }
 
-func New(source, target string, reviews []Review, before func(context.Context) error, authorize func(context.Context, Report) error) *Syncer {
-	return &Syncer{source: source, target: target, reviews: slices.Clone(reviews), before: before, authorize: authorize, execute: run}
+func New(source, target string, reviews []Review, binary string, before func(context.Context) error, authorize func(context.Context, Report) error) *Syncer {
+	return &Syncer{source: source, target: target, reviews: slices.Clone(reviews), binary: binary, before: before, authorize: authorize, execute: run}
 }
 
 func (s *Syncer) Available() error {
@@ -285,7 +287,7 @@ func (s *Syncer) prepare(ctx context.Context, src, dst string) (*snapshot, error
 	if err := s.before(ctx); err != nil {
 		return nil, ErrDenied
 	}
-	shot, err := take(ctx, src, s.reviews, s.execute)
+	shot, err := take(ctx, src, s.reviews, s.binary, s.execute)
 	if err != nil {
 		return nil, err
 	}

@@ -41,7 +41,7 @@ func testScan(t *testing.T, name string, data []byte, reviews []Review) (Report,
 	if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	return scan(context.Background(), dir, []object{{Path: name, Size: int64(len(data))}}, reviews)
+	return scan(context.Background(), dir, []object{{Path: name, Size: int64(len(data))}}, reviews, "")
 }
 
 func TestTextAndZIPFindings(t *testing.T) {
@@ -148,5 +148,49 @@ func TestPortablePaths(t *testing.T) {
 		if !safePath(s) {
 			t.Errorf("rejected safe path %q", s)
 		}
+	}
+}
+
+func TestBinaryLabelClassifiesUnreadableObjects(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "photo.png"), png, 0600); err != nil {
+		t.Fatal(err)
+	}
+	objects := []object{{Path: "photo.png", Size: int64(len(png))}}
+	if _, err := scan(context.Background(), dir, objects, nil, ""); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("binary allowed without a label: %v", err)
+	}
+	r, err := scan(context.Background(), dir, objects, nil, "apac")
+	if err != nil || !slices.Equal(r.Labels, []string{"apac", "global"}) {
+		t.Fatalf("binary label not applied: %+v %v", r, err)
+	}
+	if _, err := scan(context.Background(), dir, objects, nil, "unknown"); !errors.Is(err, ErrOptions) {
+		t.Fatalf("unsupported binary label accepted: %v", err)
+	}
+	// Unreadable bytes that are not an image still deny: CP949 text, a
+	// pg_dump archive, gzip, a PDF.
+	for name, data := range map[string][]byte{
+		"cp949":     {0xc8, 0xab, 0xb1, 0xe6, 0xb5, 0xbf, ',', '0', '1', '0'},
+		"dump":      []byte("PGDMP\x01\x0e\x00"),
+		"gzip":      {0x1f, 0x8b, 0x08, 0x00},
+		"gif-text":  []byte("GIF89a demo@example.invalid"),
+		"webp-text": []byte("RIFFabcdWEBP demo@example.invalid"),
+		"pdf":       []byte("%PDF-1.7\nbody"),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := scan(context.Background(), dir, []object{{Path: name, Size: int64(len(data))}}, nil, "global"); !errors.Is(err, ErrUnsupported) {
+			t.Fatalf("%s labelled as an image: %v", name, err)
+		}
+	}
+	// The label covers only unreadable bytes: text is still scanned.
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("demo@example.invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, err = scan(context.Background(), dir, append(objects, object{Path: "note.txt", Size: 20}), nil, "global")
+	if err != nil || !slices.Contains(r.Labels, "kr-only") || r.Findings["email"] != 1 {
+		t.Fatalf("binary label weakened text findings: %+v %v", r, err)
 	}
 }
