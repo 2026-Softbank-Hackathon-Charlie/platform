@@ -9,6 +9,7 @@
 |---|---|---|
 | `-max-hold` | 55s | hold와 dispatch 슬롯을 기다릴 수 있는 요청별 시간 |
 | `-held-body-timeout` | 10s | 보류 중 처음 64KiB 본문 수신 시간, max-hold로도 제한 |
+| `-admin-body-timeout` | 10s | 관리자 JSON 본문 수신 시간. 이후 drain·dispatch 대기는 포함하지 않음 |
 | `-max-concurrent-writes` | 64 | 앱별 동시 전달 요청, DB 내부 실행 수의 보장은 아님 |
 | `-max-buffered-bytes` | 67108864 | 모든 앱의 보류 본문 예약 예산 합계 |
 | `-max-held` | 2000 | 앱별 보류 요청 수, 본문 수신 중인 요청 포함 |
@@ -58,5 +59,16 @@ histogram_quantile(0.95,
 `dial`(백엔드 이름에서 `host:port`로 가는 맵)은 ADR 0042의 계약이다. 백엔드 URL의 호스트를
 TLS 이름과 Host로 두고 그 주소로 접속한다. 아직 구현하지 않아서 비어 있지 않으면 400
 `dial_not_supported`다.
+
+## 관리자 요청 본문과 제어 잠금
+
+`PUT /apps/{app}`의 본문 수신·순수 검증은 전역 제어 잠금 밖에서 한다. 느린 등록
+요청 때문에 다른 앱의 Hold·Route·Release가 기다리지 않는다. 실제 교체는 잠금
+안에서 현재 Hold 상태를 다시 검사하므로 본문을 받는 동안 시작된 Hold를 덮어쓰지 않는다.
+
+관리자 JSON 본문은 전체 64KiB와 수신 10초를 제한한다. 제한 시간 초과는
+408 `body_timeout`, 크기 초과는 413 `body_too_large`, 잘못된 JSON·추가 JSON 값은
+400 `invalid_request`이며 제어 상태는 바꾸지 않는다. JSON 한 개 뒤 공백은 허용한다.
+이 제한은 일반 앱 요청이나 Hold의 drain·Release의 dispatch 대기를 제한하지 않는다.
 
 설계 근거: [ADR 0040](../../docs/adr/0040-gateway-durability-and-write-bounds.md).

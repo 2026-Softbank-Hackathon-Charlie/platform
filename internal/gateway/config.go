@@ -27,13 +27,14 @@ const (
 	// both this and the proxy's timeout raised.
 	DefaultMaxHold = 55 * time.Second
 	// DefaultMaxHeld bounds held-write memory: each buffers up to 64 KiB.
-	DefaultMaxHeld                   = 2000
-	DefaultWriteTimeout              = 2 * time.Minute
-	DefaultBodyReadTimeout           = 10 * time.Second
-	DefaultMaxConcurrentWrites       = 64
-	DefaultMaxBufferedBytes    int64 = 64 << 20
-	DefaultHealthInterval            = 2 * time.Second
-	DefaultHealthPath                = "/healthz"
+	DefaultMaxHeld                    = 2000
+	DefaultWriteTimeout               = 2 * time.Minute
+	DefaultBodyReadTimeout            = 10 * time.Second
+	DefaultAdminBodyReadTimeout       = 10 * time.Second
+	DefaultMaxConcurrentWrites        = 64
+	DefaultMaxBufferedBytes     int64 = 64 << 20
+	DefaultHealthInterval             = 2 * time.Second
+	DefaultHealthPath                 = "/healthz"
 	// DefaultConnRecycle is how often idle backend connections are closed, so
 	// the next request dials, and resolves the backend's name, again.
 	DefaultConnRecycle = 30 * time.Second
@@ -61,6 +62,9 @@ type Config struct {
 	StateFile string
 	// AdminToken guards the admin API. Empty disables auth.
 	AdminToken string
+	// AdminBodyReadTimeout bounds JSON body receipt, without bounding the
+	// control action's subsequent drain or dispatch wait.
+	AdminBodyReadTimeout time.Duration
 	// AppDomain turns on host routing: Host <app>.<AppDomain> goes to the app
 	// registered as <app> through the admin API, and is answered 404 when
 	// there is none. Any other host goes to the default app. Empty sends
@@ -203,6 +207,9 @@ func validHealthPath(path string) bool {
 }
 
 func (c *Config) setDefaults() {
+	if c.AdminBodyReadTimeout <= 0 {
+		c.AdminBodyReadTimeout = DefaultAdminBodyReadTimeout
+	}
 	if c.MaxConcurrentWrites <= 0 {
 		c.MaxConcurrentWrites = DefaultMaxConcurrentWrites
 	}
