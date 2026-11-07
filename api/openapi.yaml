@@ -58,6 +58,51 @@ tags:
   - name: onboarding
 
 paths:
+  /v1/migration-recommendations:
+    get:
+      operationId: getMigrationRecommendations
+      summary: Read or start one cached assessment using the existing sandbox AI
+      description: Viewer access. No query parameters. At most one assessment per fifteen minutes; this never creates a migration Plan or starts a migration.
+      responses:
+        "200":
+          description: Cached recommendations, generating, unavailable or not configured
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MigrationRecommendations" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/migration-recommendations/status:
+    get:
+      operationId: getMigrationRecommendationStatus
+      summary: Read the assessment cache without querying prices or starting AI work
+      responses:
+        "200":
+          description: Cheap cache-only status; nextCheckAt controls manual checks
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MigrationRecommendations" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/migration-recommendations/{id}/result:
+    post:
+      operationId: completeMigrationRecommendation
+      summary: Submit a nonce-bound result from the existing AI agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, pattern: '^rec-[a-f0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MigrationRecommendationResult" }
+      responses:
+        "200":
+          description: The result was validated and cached
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MigrationRecommendations" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /v1/onprem/enrollments:
     post:
       tags: [environments]
@@ -3131,6 +3176,72 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    MigrationRecommendationSource:
+      type: object
+      additionalProperties: false
+      required: [title, url, observedAt]
+      properties:
+        title: { type: string, maxLength: 120 }
+        url: { type: string, format: uri }
+        observedAt: { type: string, format: date-time, nullable: true }
+    MigrationRecommendation:
+      type: object
+      additionalProperties: false
+      required: [id, app, source, target, action, title, reasons, missing, sources, estimatedMonthlySavingsUsd]
+      properties:
+        id: { type: string, maxLength: 128 }
+        app: { type: string, maxLength: 63 }
+        source: { type: string, nullable: true }
+        target: { type: string, nullable: true }
+        action: { type: string, enum: [move, stay, insufficient] }
+        title: { type: string, maxLength: 80 }
+        reasons: { type: array, maxItems: 2, items: { type: string, maxLength: 120 } }
+        missing: { type: array, maxItems: 12, items: { type: string } }
+        sources: { type: array, maxItems: 8, items: { $ref: "#/components/schemas/MigrationRecommendationSource" } }
+        estimatedMonthlySavingsUsd: { type: number, format: double, minimum: 0, nullable: true }
+    MigrationRecommendations:
+      type: object
+      additionalProperties: false
+      required: [status, generatedAt, nextRefreshAt, nextCheckAt, ttlSeconds, cacheStatus, recommendations, ai]
+      properties:
+        status: { type: string, enum: [ready, generating, not_configured, unavailable] }
+        generatedAt: { type: string, format: date-time }
+        nextRefreshAt: { type: string, format: date-time }
+        nextCheckAt: { type: string, format: date-time, nullable: true }
+        ttlSeconds: { type: integer, enum: [900] }
+        cacheStatus: { type: string, enum: [fresh, cached] }
+        recommendations: { type: array, maxItems: 4, items: { $ref: "#/components/schemas/MigrationRecommendation" } }
+        ai:
+          type: object
+          additionalProperties: false
+          required: [status, model, sessionId]
+          properties:
+            status: { type: string }
+            model: { type: string, nullable: true }
+            sessionId: { type: string, nullable: true }
+    MigrationRecommendationResult:
+      type: object
+      additionalProperties: false
+      required: [nonce, snapshotId, status]
+      properties:
+        nonce: { type: string, minLength: 8, maxLength: 128 }
+        snapshotId: { type: string, maxLength: 128 }
+        status: { type: string, enum: [ready, unavailable] }
+        model: { type: string, maxLength: 120 }
+        sessionId: { type: string, maxLength: 128 }
+        errorCode: { type: string, enum: [ai_unavailable, invalid_input] }
+        recommendations:
+          type: array
+          maxItems: 4
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, action, reasons]
+            properties:
+              id: { type: string, maxLength: 128 }
+              action: { type: string, enum: [move, stay, insufficient] }
+              title: { type: string, maxLength: 80 }
+              reasons: { type: array, minItems: 1, maxItems: 2, items: { type: string, maxLength: 120 } }
     OnpremEnrollmentCreateRequest:
       type: object
       additionalProperties: false

@@ -649,6 +649,141 @@ func (e LLMObservationLevel) Valid() bool {
 	}
 }
 
+// Defines values for MigrationRecommendationAction.
+const (
+	MigrationRecommendationActionInsufficient MigrationRecommendationAction = "insufficient"
+	MigrationRecommendationActionMove         MigrationRecommendationAction = "move"
+	MigrationRecommendationActionStay         MigrationRecommendationAction = "stay"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationAction enum.
+func (e MigrationRecommendationAction) Valid() bool {
+	switch e {
+	case MigrationRecommendationActionInsufficient:
+		return true
+	case MigrationRecommendationActionMove:
+		return true
+	case MigrationRecommendationActionStay:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationResultErrorCode.
+const (
+	MigrationRecommendationResultErrorCodeAiUnavailable MigrationRecommendationResultErrorCode = "ai_unavailable"
+	MigrationRecommendationResultErrorCodeInvalidInput  MigrationRecommendationResultErrorCode = "invalid_input"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationResultErrorCode enum.
+func (e MigrationRecommendationResultErrorCode) Valid() bool {
+	switch e {
+	case MigrationRecommendationResultErrorCodeAiUnavailable:
+		return true
+	case MigrationRecommendationResultErrorCodeInvalidInput:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationResultRecommendationsAction.
+const (
+	MigrationRecommendationResultRecommendationsActionInsufficient MigrationRecommendationResultRecommendationsAction = "insufficient"
+	MigrationRecommendationResultRecommendationsActionMove         MigrationRecommendationResultRecommendationsAction = "move"
+	MigrationRecommendationResultRecommendationsActionStay         MigrationRecommendationResultRecommendationsAction = "stay"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationResultRecommendationsAction enum.
+func (e MigrationRecommendationResultRecommendationsAction) Valid() bool {
+	switch e {
+	case MigrationRecommendationResultRecommendationsActionInsufficient:
+		return true
+	case MigrationRecommendationResultRecommendationsActionMove:
+		return true
+	case MigrationRecommendationResultRecommendationsActionStay:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationResultStatus.
+const (
+	MigrationRecommendationResultStatusReady       MigrationRecommendationResultStatus = "ready"
+	MigrationRecommendationResultStatusUnavailable MigrationRecommendationResultStatus = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationResultStatus enum.
+func (e MigrationRecommendationResultStatus) Valid() bool {
+	switch e {
+	case MigrationRecommendationResultStatusReady:
+		return true
+	case MigrationRecommendationResultStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationsCacheStatus.
+const (
+	MigrationRecommendationsCacheStatusCached MigrationRecommendationsCacheStatus = "cached"
+	MigrationRecommendationsCacheStatusFresh  MigrationRecommendationsCacheStatus = "fresh"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationsCacheStatus enum.
+func (e MigrationRecommendationsCacheStatus) Valid() bool {
+	switch e {
+	case MigrationRecommendationsCacheStatusCached:
+		return true
+	case MigrationRecommendationsCacheStatusFresh:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationsStatus.
+const (
+	MigrationRecommendationsStatusGenerating    MigrationRecommendationsStatus = "generating"
+	MigrationRecommendationsStatusNotConfigured MigrationRecommendationsStatus = "not_configured"
+	MigrationRecommendationsStatusReady         MigrationRecommendationsStatus = "ready"
+	MigrationRecommendationsStatusUnavailable   MigrationRecommendationsStatus = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationsStatus enum.
+func (e MigrationRecommendationsStatus) Valid() bool {
+	switch e {
+	case MigrationRecommendationsStatusGenerating:
+		return true
+	case MigrationRecommendationsStatusNotConfigured:
+		return true
+	case MigrationRecommendationsStatusReady:
+		return true
+	case MigrationRecommendationsStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationsTtlSeconds.
+const (
+	MigrationRecommendationsTtlSecondsN900 MigrationRecommendationsTtlSeconds = 900
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationsTtlSeconds enum.
+func (e MigrationRecommendationsTtlSeconds) Valid() bool {
+	switch e {
+	case MigrationRecommendationsTtlSecondsN900:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ObserveStepVerdict.
 const (
 	ObserveStepVerdictInconclusive ObserveStepVerdict = "inconclusive"
@@ -3943,6 +4078,80 @@ type MatrixRoute struct {
 	Target string     `json:"target"`
 }
 
+// MigrationRecommendation defines model for MigrationRecommendation.
+type MigrationRecommendation struct {
+	Action                     MigrationRecommendationAction   `json:"action"`
+	App                        string                          `json:"app"`
+	EstimatedMonthlySavingsUsd *float64                        `json:"estimatedMonthlySavingsUsd"`
+	Id                         string                          `json:"id"`
+	Missing                    []string                        `json:"missing"`
+	Reasons                    []string                        `json:"reasons"`
+	Source                     *string                         `json:"source"`
+	Sources                    []MigrationRecommendationSource `json:"sources"`
+	Target                     *string                         `json:"target"`
+	Title                      string                          `json:"title"`
+}
+
+// MigrationRecommendationAction defines model for MigrationRecommendation.Action.
+type MigrationRecommendationAction string
+
+// MigrationRecommendationResult defines model for MigrationRecommendationResult.
+type MigrationRecommendationResult struct {
+	ErrorCode       *MigrationRecommendationResultErrorCode `json:"errorCode,omitempty"`
+	Model           *string                                 `json:"model,omitempty"`
+	Nonce           string                                  `json:"nonce"`
+	Recommendations *[]struct {
+		Action  MigrationRecommendationResultRecommendationsAction `json:"action"`
+		Id      string                                             `json:"id"`
+		Reasons []string                                           `json:"reasons"`
+		Title   *string                                            `json:"title,omitempty"`
+	} `json:"recommendations,omitempty"`
+	SessionId  *string                             `json:"sessionId,omitempty"`
+	SnapshotId string                              `json:"snapshotId"`
+	Status     MigrationRecommendationResultStatus `json:"status"`
+}
+
+// MigrationRecommendationResultErrorCode defines model for MigrationRecommendationResult.ErrorCode.
+type MigrationRecommendationResultErrorCode string
+
+// MigrationRecommendationResultRecommendationsAction defines model for MigrationRecommendationResult.Recommendations.Action.
+type MigrationRecommendationResultRecommendationsAction string
+
+// MigrationRecommendationResultStatus defines model for MigrationRecommendationResult.Status.
+type MigrationRecommendationResultStatus string
+
+// MigrationRecommendationSource defines model for MigrationRecommendationSource.
+type MigrationRecommendationSource struct {
+	ObservedAt *time.Time `json:"observedAt"`
+	Title      string     `json:"title"`
+	Url        string     `json:"url"`
+}
+
+// MigrationRecommendations defines model for MigrationRecommendations.
+type MigrationRecommendations struct {
+	Ai struct {
+		Model     *string `json:"model"`
+		SessionId *string `json:"sessionId"`
+		Status    string  `json:"status"`
+	} `json:"ai"`
+	CacheStatus     MigrationRecommendationsCacheStatus `json:"cacheStatus"`
+	GeneratedAt     time.Time                           `json:"generatedAt"`
+	NextCheckAt     *time.Time                          `json:"nextCheckAt"`
+	NextRefreshAt   time.Time                           `json:"nextRefreshAt"`
+	Recommendations []MigrationRecommendation           `json:"recommendations"`
+	Status          MigrationRecommendationsStatus      `json:"status"`
+	TtlSeconds      MigrationRecommendationsTtlSeconds  `json:"ttlSeconds"`
+}
+
+// MigrationRecommendationsCacheStatus defines model for MigrationRecommendations.CacheStatus.
+type MigrationRecommendationsCacheStatus string
+
+// MigrationRecommendationsStatus defines model for MigrationRecommendations.Status.
+type MigrationRecommendationsStatus string
+
+// MigrationRecommendationsTtlSeconds defines model for MigrationRecommendations.TtlSeconds.
+type MigrationRecommendationsTtlSeconds int
+
 // NodeSummary defines model for NodeSummary.
 type NodeSummary struct {
 	Architectures []string `json:"architectures"`
@@ -6204,6 +6413,9 @@ type LoginJSONRequestBody = LoginRequest
 
 // CreatePushTokenJSONRequestBody defines body for CreatePushToken for application/json ContentType.
 type CreatePushTokenJSONRequestBody = PushTokenRequest
+
+// CompleteMigrationRecommendationJSONRequestBody defines body for CompleteMigrationRecommendation for application/json ContentType.
+type CompleteMigrationRecommendationJSONRequestBody = MigrationRecommendationResult
 
 // StartMigrationJSONRequestBody defines body for StartMigration for application/json ContentType.
 type StartMigrationJSONRequestBody = StartMigrationRequest
