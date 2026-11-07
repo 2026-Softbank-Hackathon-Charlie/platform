@@ -41,6 +41,11 @@ type Inventory struct {
 
 const PhysicalReplication = "physical-replication"
 
+// ObjectCopy is a movement of an app without a database (ADR 0049): only
+// Files is copied. Its Source has only Environment and its Inventory is
+// empty; the policy's database rules do not apply to it.
+const ObjectCopy = "object-copy"
+
 // Movement describes one entire-cluster physical replication path. The first
 // version supports no other kinds and has no caller-provided labels, countries,
 // table selection or verification filter. Backup and restore execution are not

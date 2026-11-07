@@ -34,6 +34,9 @@ const (
 	ParityNoApp = "no_app"
 	// ParityError: the check itself could not run (invalid request, cancelled).
 	ParityError = "error"
+	// ParityNoDatabase: the plan moves an app without a database (ADR
+	// 0049); its probes look at a CNPG cluster, which it has none of ("DB 없음").
+	ParityNoDatabase = "no_database"
 )
 
 // ParityCheck is what was recorded for a reservation, for the audit log.
@@ -90,6 +93,8 @@ func (s *Service) checkParity(ctx context.Context, rollbackOf string, p *plan.Pl
 	switch {
 	case s.parity == nil:
 		return ParityCheck{Outcome: ParityNotConfigured}
+	case NoDatabase(p):
+		return ParityCheck{Outcome: ParityNoDatabase}
 	case rollbackOf != "":
 		return ParityCheck{Outcome: ParityRollbackExempt}
 	}

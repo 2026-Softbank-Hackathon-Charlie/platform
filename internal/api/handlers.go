@@ -199,6 +199,7 @@ func (s *Server) startMigration(w http.ResponseWriter, r *http.Request) {
 	run, err := s.d.Runs.Start(ctx, runs.StartOptions{
 		PlanRef:    req.PlanRef,
 		Plan:       res.Plan,
+		App:        res.Summary.App,
 		Source:     res.Summary.Source,
 		Target:     res.Summary.Target,
 		Actor:      actor(r),

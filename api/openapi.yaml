@@ -1535,6 +1535,12 @@ paths:
         - DSNs read the password from the environment's `passwordEnv` as `${VAR}`.
         - `files` is set when both environments have a bucket, unless `files` is false.
         - `gateway` is mode `http` with the platform gateway when the server has one, otherwise `none`.
+        - For an app without a database (`resources.postgres` false, ADR 0049)
+          both endpoints are `{kind: none, env}`, `gateway` must be the
+          app's scope (a server without a gateway answers 400), and
+          `sourceStats` and `writtenRecordsStream` are refused (400). The
+          traffic gateway must already route the app to both backends,
+          otherwise 400 `gateway_backend_missing`.
         - With `sourceStats: true` the server also measures the source database
           and the response is a `PlanDraftResult`: the plan under `plan`, the
           numbers under `sourceStats`. This takes about five seconds (the WAL
@@ -1665,9 +1671,12 @@ paths:
         Start the AI runner for one app and route, so nobody runs hopai by
         hand. The app and both environments must be in the server's
         configuration (`GET /v1/apps`). One run per app at a time: a second
-        one while the first is running answers 409 `ai_run_active`. Without a
-        configured Job template (PLATFORM_AIRUN_JOB_TEMPLATE) the server
-        answers 503 `ai_runner_not_configured`.
+        one while the first is running answers 409 `ai_run_active`. An app
+        without a database (`resources.postgres` false) answers 409
+        `no_database`: the runner plans database moves, so draft and submit
+        its plan directly (ADR 0049). Without a configured Job template
+        (PLATFORM_AIRUN_JOB_TEMPLATE) the server answers 503
+        `ai_runner_not_configured`.
 
         Roles: operator.
       requestBody:
@@ -3151,16 +3160,22 @@ components:
             maxFenceGate: { type: string, example: "20s", description: "Longest the fence gate may take; delta times a rehearsal of it before writes are held. Default 20s." }
 
     EnginePlanEndpoint:
+      description: |
+        One environment of the plan. With `kind` `none` (an app without a
+        database, ADR 0049; source and target both) the endpoint is only
+        `env` and `kind`: there is no namespace, cluster or DSN. Otherwise
+        `namespace`, `cluster` and `dsn` are required.
       type: object
       additionalProperties: false
-      required: [env, namespace, cluster, dsn]
+      required: [env]
       properties:
+        kind: { type: string, enum: [cnpg, external, none], description: "`cnpg` (absent means cnpg): a CNPG cluster. `external` (source only): a PostgreSQL primary outside CNPG (engine ADR 0017). `none` (source and target both): the app has no database (ADR 0049)." }
         env: { type: string, example: gke }
         kubeconfig: { type: string }
         context: { type: string }
-        namespace: { type: string }
-        cluster: { type: string, description: CNPG Cluster name }
-        dsn: { type: string }
+        namespace: { type: string, x-go-type-skip-optional-pointer: true }
+        cluster: { type: string, description: CNPG Cluster name, x-go-type-skip-optional-pointer: true }
+        dsn: { type: string, x-go-type-skip-optional-pointer: true }
         manifest: { type: string, description: target only }
 
     PlanStatus:
@@ -3172,6 +3187,7 @@ components:
       type: object
       required: [env, namespace, cluster]
       properties:
+        kind: { type: string, enum: [cnpg, external, none], description: "the plan endpoint's kind; `none`: an app without a database (ADR 0049), whose namespace and cluster are empty" }
         env: { type: string }
         context: { type: string }
         namespace: { type: string }
@@ -3185,6 +3201,7 @@ components:
       required: [planId, source, target, files, gatewayMode, fenceGate, maxDowntime]
       properties:
         planId: { type: string }
+        app: { type: string, description: "the app a plan without a database moves, from its gateway scope (ADR 0049); absent for a plan with databases" }
         source: { $ref: "#/components/schemas/PlanEndpoint" }
         target: { $ref: "#/components/schemas/PlanEndpoint" }
         files: { type: boolean, description: the plan also moves object storage }
@@ -3514,6 +3531,7 @@ components:
         runId: { type: string }
         planRef: { type: string }
         planId: { type: string }
+        app: { type: string, description: "the app a run without a database moves (PlanSummary.app, ADR 0049); absent for a run with databases, whose namespaces name the app" }
         source: { $ref: "#/components/schemas/PlanEndpoint" }
         target: { $ref: "#/components/schemas/PlanEndpoint" }
         status: { $ref: "#/components/schemas/RunStatus" }
@@ -4807,18 +4825,37 @@ components:
         what migrations use; `deploy` is set for registered apps. A
         registered app that is not in the file has `namespace` = name,
         `database` = `{name: app, user: app, schemas: []}` and no
-        `environments`.
+        `environments`, unless plans can be drafted for it: one with a
+        database pair (ADR 0030), or one without a postgres resource or pair, with a public service,
+        that is registered in two or more environments (ADR 0049). The latter has
+        `database` = `{name: "", user: "", schemas: []}` and
+        `resources.postgres` false.
       type: object
-      required: [name, namespace, database, environments]
+      required: [name, namespace, database, environments, resources]
       properties:
         name: { type: string, example: shop }
         namespace: { type: string, example: shop }
         database: { $ref: "#/components/schemas/AppDatabase" }
         environments:
-          description: The environments the app runs in according to PLATFORM_APPS_FILE, in PLATFORM_ENVS_FILE order. Empty for an app that is only registered from GitHub (see deploy.environments).
+          description: The environments plans can be drafted between, in PLATFORM_ENVS_FILE order. Empty for a registered app plans cannot be drafted for (see deploy.environments).
           type: array
           items: { $ref: "#/components/schemas/AppEnvironment" }
+        resources: { $ref: "#/components/schemas/AppResources" }
         deploy: { $ref: "#/components/schemas/AppDeploy" }
+
+    AppResources:
+      description: |
+        What the app keeps besides its services (ADR 0049). An app of
+        PLATFORM_APPS_FILE always has a database, and object storage when an
+        environment has a bucket; a registered app has what the platform.yaml
+        of its default instance declares (a postgres or s3 resource). A
+        migration of an app without a database moves only its traffic (and
+        its files, with s3).
+      type: object
+      required: [postgres, s3]
+      properties:
+        postgres: { type: boolean }
+        s3: { type: boolean }
 
     AppDatabase:
       type: object
@@ -4832,12 +4869,13 @@ components:
           items: { type: string }
 
     AppEnvironment:
+      description: The app in one environment. `cnpgCluster` and `dbHost` are absent for an app without a database (`resources.postgres` false).
       type: object
-      required: [env, cnpgCluster, dbHost]
+      required: [env]
       properties:
         env: { type: string, example: gke }
-        cnpgCluster: { type: string, example: shop-db-gke }
-        dbHost: { type: string, description: "host:port of the cluster's -rw service", example: "shop-db-gke-rw.shop.gke.ts.net:5432" }
+        cnpgCluster: { type: string, example: shop-db-gke, x-go-type-skip-optional-pointer: true }
+        dbHost: { type: string, description: "host:port of the cluster's -rw service", example: "shop-db-gke-rw.shop.gke.ts.net:5432", x-go-type-skip-optional-pointer: true }
         bucket: { type: string, description: the rclone remote and bucket of the app's files, example: "gcs:shop-uploads-gke" }
 
     BucketInspectRequest:

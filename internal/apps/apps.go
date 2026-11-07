@@ -36,7 +36,16 @@ type App struct {
 	Environments map[string]Environment `json:"environments"`
 	// Registered s3 resources must not silently disappear from a file-enabled draft.
 	filesRequired bool
+
+	// resources is set for a registered app, from its spec (Registry.app);
+	// nil for an app of the file, which has a database and has object
+	// storage when an environment has a bucket.
+	resources *apiv1.AppResources
 }
+
+// noDatabase reports whether a is a registered app without a postgres
+// resource (ADR 0049): its plans move traffic and files, no database.
+func (a App) noDatabase() bool { return a.resources != nil && !a.resources.Postgres }
 
 // Database is what the DSNs connect to and what verification compares.
 type Database struct {
@@ -238,8 +247,9 @@ func (c *Catalog) List() []apiv1.App {
 }
 
 // Lookup returns the app as List shows it: the apps file's entry, or else
-// a registered app with a database pair (WithRegistry, ADR 0030). false
-// when it is neither.
+// a registered app with a database pair (WithRegistry, ADR 0030) or
+// without a postgres resource in two or more environments (ADR 0049).
+// false when it is none of these.
 func (c *Catalog) Lookup(ctx context.Context, name string) (apiv1.App, bool, error) {
 	if a, ok := c.app(name); ok {
 		return c.view(a), true, nil
@@ -261,6 +271,10 @@ func (c *Catalog) view(a App) apiv1.App {
 		Namespace:    a.Namespace,
 		Database:     apiv1.AppDatabase{Name: a.Database.Name, User: a.Database.User, Schemas: slices.Clone(a.Database.Schemas)},
 		Environments: []apiv1.AppEnvironment{},
+		Resources:    apiv1.AppResources{Postgres: true},
+	}
+	if a.resources != nil {
+		item.Resources = *a.resources
 	}
 	if item.Database.Schemas == nil {
 		item.Database.Schemas = []string{}
@@ -270,10 +284,16 @@ func (c *Catalog) view(a App) apiv1.App {
 		if !ok {
 			continue
 		}
-		ae := apiv1.AppEnvironment{Env: env.Name, CnpgCluster: e.CnpgCluster, DbHost: hostPort(e)}
+		ae := apiv1.AppEnvironment{Env: env.Name}
+		if !a.noDatabase() {
+			ae.CnpgCluster, ae.DbHost = e.CnpgCluster, hostPort(e)
+		}
 		if e.Bucket != "" {
 			b := e.Bucket
 			ae.Bucket = &b
+			if a.resources == nil {
+				item.Resources.S3 = true
+			}
 		}
 		item.Environments = append(item.Environments, ae)
 	}

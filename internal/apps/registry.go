@@ -16,6 +16,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 )
 
@@ -106,46 +107,101 @@ func (r *Registry) endpoints(d store.AppDatabase, appEnvs []string) []endpoint {
 	return out
 }
 
-// app returns the registered app name as a catalog entry with its pair, or
-// false when it has no pair or no postgres resource.
-func (r *Registry) app(ctx context.Context, name string) (App, store.AppDatabase, bool, error) {
-	d, err := r.Store.GetAppDatabase(ctx, name)
-	if errors.Is(err, store.ErrNotFound) {
-		return App{}, store.AppDatabase{}, false, nil
-	}
-	if err != nil {
-		return App{}, store.AppDatabase{}, false, err
-	}
+// app returns the registered app name as a catalog entry: with its pair
+// when it has a postgres resource, or without a pair (nil) when it has
+// none and is registered in two or more environments (ADR 0049). false for
+// an app with a postgres resource and no pair, or without one in fewer
+// environments.
+func (r *Registry) app(ctx context.Context, name string) (App, *store.AppDatabase, bool, error) {
 	a, err := r.Store.GetApp(ctx, name)
 	if errors.Is(err, store.ErrNotFound) {
-		return App{}, store.AppDatabase{}, false, nil
+		return App{}, nil, false, nil
 	}
 	if err != nil {
-		return App{}, store.AppDatabase{}, false, err
+		return App{}, nil, false, err
 	}
-	var spec appspec.Spec
-	if err := json.Unmarshal(a.Spec, &spec); err != nil {
-		return App{}, store.AppDatabase{}, false, fmt.Errorf("the stored spec of %s: %w", name, err)
+	res, spec, err := specResources(a)
+	if err != nil {
+		// Unknown resources: neither a database app nor one without (the
+		// API shows it as registered only and logs it).
+		return App{}, nil, false, nil
+	}
+	d, err := r.Store.GetAppDatabase(ctx, name)
+	paired := err == nil
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return App{}, nil, false, err
+	}
+	if !res.Postgres {
+		// A pair without a postgres resource is a spec that changed after
+		// registration: neither path fits, so drafts and the policy
+		// (statelessApps) both leave it out.
+		if paired {
+			return App{}, nil, false, nil
+		}
+		out, ok := r.statelessApp(a, res, spec)
+		return out, nil, ok, nil
+	}
+	if !paired {
+		return App{}, nil, false, nil
 	}
 	i := slices.IndexFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres })
-	if i < 0 {
-		return App{}, store.AppDatabase{}, false, nil
-	}
 	// The chart's names (ADR 0030): namespace the instance, Cluster
 	// <app>-<resource>, database app owned by app.
 	// An s3 resource is the instance's bucket, <bucketPrefix><instance>
 	// (ADR 0016), named through the environment's remote (ADR 0032).
-	hasBucket := slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypeS3 })
-	out := App{Name: name, Namespace: name, Database: Database{Name: "app", User: "app"}, Environments: map[string]Environment{}}
-	out.filesRequired = hasBucket && len(r.BucketPrefixes) > 0
+	out := App{Name: name, Namespace: name, Database: Database{Name: "app", User: "app"}, Environments: map[string]Environment{}, resources: &res}
+	out.filesRequired = res.S3 && len(r.BucketPrefixes) > 0
 	for _, e := range r.endpoints(d, a.Environments) {
 		env := Environment{CnpgCluster: name + "-" + spec.Resources[i].Name, DBHost: e.host, DBPort: 5432, PasswordEnv: e.passwordEnv}
-		if hasBucket {
+		if res.S3 {
 			env.Bucket = r.fileBucket(e.env, name)
 		}
 		out.Environments[e.env] = env
 	}
-	return out, d, true, nil
+	return out, &d, true, nil
+}
+
+// statelessApp is a registered app without a postgres resource as a
+// catalog entry (ADR 0049): its environments are the app's own, without a
+// database, each with the instance's bucket when it has an s3 resource and
+// the registry moves files there. false in fewer than two environments,
+// where there is nothing to move it to, and without a public service,
+// which is the only thing of the app the gateway routes.
+func (r *Registry) statelessApp(a store.App, res apiv1.AppResources, spec appspec.Spec) (App, bool) {
+	if len(a.Environments) < 2 || !slices.ContainsFunc(spec.Services, func(s appspec.Service) bool { return s.Public }) {
+		return App{}, false
+	}
+	out := App{Name: a.Name, Namespace: a.Name, Environments: map[string]Environment{}, resources: &res}
+	for _, env := range a.Environments {
+		var e Environment
+		if res.S3 {
+			e.Bucket = r.fileBucket(env, a.Name)
+		}
+		out.Environments[env] = e
+	}
+	return out, true
+}
+
+// specResources reads which resources the stored spec of a's default
+// instance declares.
+func specResources(a store.App) (apiv1.AppResources, appspec.Spec, error) {
+	var spec appspec.Spec
+	if err := json.Unmarshal(a.Spec, &spec); err != nil {
+		return apiv1.AppResources{}, appspec.Spec{}, fmt.Errorf("the stored spec of %s: %w", a.Name, err)
+	}
+	var res apiv1.AppResources
+	for _, x := range spec.Resources {
+		res.Postgres = res.Postgres || x.Type == appspec.TypePostgres
+		res.S3 = res.S3 || x.Type == appspec.TypeS3
+	}
+	return res, spec, nil
+}
+
+// SpecResources is what the stored spec of a registered app's default
+// instance declares, for an app the catalog has no entry for.
+func SpecResources(a store.App) (apiv1.AppResources, error) {
+	res, _, err := specResources(a)
+	return res, err
 }
 
 // pairedApp is a pair the catalog takes from the registry with its app's
@@ -276,6 +332,72 @@ func (c *Catalog) RegistryBuckets(ctx context.Context) ([]string, error) {
 				out = append(out, b)
 			}
 		}
+	}
+	stateless, err := c.statelessApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range stateless {
+		for _, e := range a.Environments {
+			if e.Bucket != "" {
+				out = append(out, e.Bucket)
+			}
+		}
+	}
+	return out, nil
+}
+
+// statelessApps lists, read now, the registered apps without a postgres
+// resource that plans can be drafted for (Registry.statelessApp, ADR 0049),
+// not of the apps file. An app whose stored spec does not decode is left
+// out: its plans are refused rather than every plan.
+func (c *Catalog) statelessApps(ctx context.Context) ([]App, error) {
+	pairs, err := c.registry.Store.ListAppDatabases(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read the database pairs: %w", err)
+	}
+	all, err := c.registry.Store.ListApps(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read the registered apps: %w", err)
+	}
+	var out []App
+	for _, a := range all {
+		if c.Has(a.Name) || slices.ContainsFunc(pairs, func(d store.AppDatabase) bool { return d.App == a.Name }) {
+			continue
+		}
+		res, spec, err := specResources(a)
+		if err != nil || res.Postgres {
+			continue
+		}
+		if s, ok := c.registry.statelessApp(a, res, spec); ok {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// RegistryStateless returns, read now, every registered app without a
+// database that plans can be drafted for, with the gateway backend and
+// bucket of each environment it is registered in, for the plan policy
+// (plans.AppDatabases): a plan without a database must use the gateway
+// scope of such an app, between two of its environments (ADR 0049). Empty without a registry.
+func (c *Catalog) RegistryStateless(ctx context.Context) (map[string]map[string]plans.StatelessEnv, error) {
+	out := map[string]map[string]plans.StatelessEnv{}
+	if c.registry == nil {
+		return out, nil
+	}
+	apps, err := c.statelessApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range apps {
+		envs := map[string]plans.StatelessEnv{}
+		for name, e := range a.Environments {
+			if env, ok := c.env(name); ok { // an environment no longer in the file is left out
+				envs[name] = plans.StatelessEnv{Backend: env.GatewayBackend, Bucket: e.Bucket}
+			}
+		}
+		out[a.Name] = envs
 	}
 	return out, nil
 }
