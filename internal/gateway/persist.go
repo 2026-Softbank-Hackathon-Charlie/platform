@@ -29,6 +29,7 @@ type persistedState struct {
 type persistedApp struct {
 	HealthPath string            `json:"healthPath,omitempty"`
 	Backends   map[string]string `json:"backends"`
+	Dial       map[string]string `json:"dial,omitempty"`
 	persistedState
 }
 
@@ -57,6 +58,12 @@ func (rt *router) persistLocked() persistedApp {
 	}
 	for _, b := range rt.backends {
 		pa.Backends[b.name] = b.url.String()
+		if b.dial != "" {
+			if pa.Dial == nil {
+				pa.Dial = map[string]string{}
+			}
+			pa.Dial[b.name] = b.dial
+		}
 	}
 	for k, v := range rt.readWeights {
 		pa.ReadWeights[k] = v

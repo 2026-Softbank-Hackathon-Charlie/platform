@@ -322,8 +322,9 @@ func TestAppAdmin(t *testing.T) {
 		{AppSpec{Backends: spec.Backends, WriteBackend: "aks"}, "unknown_backend"},
 		{AppSpec{Backends: spec.Backends, WriteBackend: "gke", ReadWeights: map[string]int{"gke": 90}}, "invalid_weights"},
 		{AppSpec{Backends: spec.Backends, WriteBackend: "gke", ReadWeights: map[string]int{"gke": 50, "aks": 50}}, "invalid_weights"},
-		// The contract of ADR 0042, not done yet.
-		{AppSpec{Backends: spec.Backends, WriteBackend: "gke", Dial: map[string]string{"gke": "203.0.113.10:443"}}, "dial_not_supported"},
+		{AppSpec{Backends: spec.Backends, WriteBackend: "gke", Dial: map[string]string{"aks": "203.0.113.10:443"}}, "invalid_dial"},
+		{AppSpec{Backends: spec.Backends, WriteBackend: "gke", Dial: map[string]string{"gke": "203.0.113.10"}}, "invalid_dial"},
+		{AppSpec{Backends: spec.Backends, WriteBackend: "gke", Dial: map[string]string{"gke": "http://203.0.113.10:443"}}, "invalid_dial"},
 	} {
 		wantAPIError(t, c.PutApp(ctx, "shop", bad.spec), http.StatusBadRequest, bad.code)
 	}

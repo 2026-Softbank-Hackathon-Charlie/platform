@@ -29,8 +29,7 @@ type AppSpec struct {
 	// IP, so the gateway does not reach itself once the name points at it.
 	// Backends without an entry dial their URL. The proxy and the health
 	// checks both use it, and it is part of the saved state and of whether
-	// a replace keeps a backend. This gateway does not do it yet and
-	// refuses a non-empty Dial (dial_not_supported).
+	// a replace keeps a backend (a changed address is a new backend).
 	Dial map[string]string `json:"dial,omitempty"`
 }
 
@@ -140,10 +139,6 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 	if !g.decodeJSON(w, r, &spec) {
 		return
 	}
-	if len(spec.Dial) > 0 {
-		writeError(w, http.StatusBadRequest, "dial_not_supported", "dial is not supported by this gateway yet (ADR 0042)")
-		return
-	}
 	if spec.HealthPath != "" && !validHealthPath(spec.HealthPath) {
 		writeError(w, http.StatusBadRequest, "invalid_health_path", "healthPath must be a local HTTP path without fragment")
 		return
@@ -155,6 +150,10 @@ func (g *Gateway) handlePutApp(w http.ResponseWriter, r *http.Request) {
 	bcs, err := parseBackendMap(spec.Backends)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_backends", err.Error())
+		return
+	}
+	if bcs, err = withDial(bcs, spec.Dial); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_dial", err.Error())
 		return
 	}
 	names := make([]string, len(bcs))
@@ -279,6 +278,12 @@ func (rt *router) info() AppInfo {
 	}
 	for _, b := range rt.backends {
 		info.Backends[b.name] = b.url.Redacted()
+		if b.dial != "" {
+			if info.Dial == nil {
+				info.Dial = map[string]string{}
+			}
+			info.Dial[b.name] = b.dial
+		}
 	}
 	return info
 }
