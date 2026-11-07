@@ -117,3 +117,7 @@ values:
 - 관리 클러스터 권한(infra가 별도 매니페스트로 적용): `hopcharlie-db-network`의 Role에 `services`의 `get, list, watch, create, delete`, `charlie-platform/hopcharlie-platform`에 RoleBinding. update와 patch는 주지 않는다. VAP로 CREATE는 라벨과 이름, `placeholder`, annotation 값을, DELETE는 `oldObject`의 managed-by 라벨을 검사한다.
 - 초안의 원본 측정이 실패하면(`sourceStatsReason: not_measured`) 서버 로그와 API 설명에 "등록 직후라면 관리 경로를 만드는 중일 수 있으니 잠시 뒤 다시 초안을 만든다"를 남긴다. 경로 준비 상태를 API로 보여 주는 일(`routes[]`, 409 `db_route_pending`)은 하지 않는다. operator의 준비 조건이 실제 연결을 뜻하지 않기 때문이다.
 - 등록 앱마다 관리 EKS에 프록시 Pod가 환경마다 하나씩 생긴다. 앱 수가 늘면 ProxyGroup egress를 다시 검토한다.
+
+## 추가: 한 환경 앱과 나중에 더하는 환경 (2026-11-07)
+
+ADR 0037이 "대상"을 넓힌다. 한 환경으로 등록한 postgres 앱도 템플릿이 있는 다른 환경이 정확히 하나면 그 환경을 peer로 짝을 만들고, primary 파일에 `dbTopology.peerPresent: false`를 쓴다. "등록한 환경 목록은 바뀌지 않는다"는 더 이상 맞지 않는다. `POST /v1/apps/{name}/environments`가 peer를 더하고 `DELETE /v1/apps/{name}/environments/{env}`가 뺀다. DB 경로, 초안, 정책은 짝의 환경 중 앱의 환경에 있는 쪽만 쓴다.
