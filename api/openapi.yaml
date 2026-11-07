@@ -265,6 +265,28 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OnpremEnrollmentResponse" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/onprem/admission/cluster-secret:
+    post:
+      tags: [environments]
+      operationId: validateOnpremClusterSecret
+      security: []
+      description: |
+        Stateless admission.k8s.io/v1 Secret validation. No credentials are
+        reflected, no storage or network is accessed, and no mutation occurs.
+        The management API server invokes this HTTPS endpoint through a
+        narrowly matched, failurePolicy Fail validating webhook.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: AdmissionReview with only response UID, decision and generic status.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        default: { $ref: "#/components/responses/Internal" }
   /healthz:
     get:
       tags: [system]

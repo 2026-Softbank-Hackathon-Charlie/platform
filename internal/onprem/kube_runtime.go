@@ -107,7 +107,11 @@ func (k *KubeRuntime) verifyManagementAdmission(ctx context.Context) error {
 		return ErrUnavailable
 	}
 	name := registrationResourceName(id)
-	config, err := json.Marshal(map[string]any{"bearerToken": "readiness-probe-only", "tlsClientConfig": map[string]any{"caData": base64.StdEncoding.EncodeToString([]byte("readiness-probe-ca")), "insecure": false, "serverName": "kubernetes.default.svc"}})
+	probeCA, err := admissionProbeCA()
+	if err != nil {
+		return ErrUnavailable
+	}
+	config, err := json.Marshal(map[string]any{"bearerToken": "readiness-probe-only", "tlsClientConfig": map[string]any{"caData": base64.StdEncoding.EncodeToString(probeCA), "insecure": false, "serverName": "kubernetes.default.svc"}})
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -118,7 +122,7 @@ func (k *KubeRuntime) verifyManagementAdmission(ctx context.Context) error {
 	}
 	secret.Data["config"] = []byte(strings.Replace(string(config), `"serverName":"kubernetes.default.svc"`, `"serverName":"attacker.invalid"`, 1))
 	_, err = k.cfg.Kube.CoreV1().Secrets(k.cfg.ArgoNamespace).Create(ctx, secret, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
-	if !admissionDeniedBy(err, "hopcharlie-onprem-secret") {
+	if !admissionDeniedBy(err, "hopcharlie-onprem-secret.hopcharlie.dev") {
 		return ErrUnavailable
 	}
 	state := RegistrationState{EnrollmentID: id, Environment: "onprem-policy-probe", Connection: ConnectionRequest{ClusterUID: uid}}
@@ -410,7 +414,7 @@ func (k *KubeRuntime) Publish(ctx context.Context, s RegistrationState) error {
 		return ErrInvalid
 	}
 	name := registrationResourceName(s.EnrollmentID)
-	desired := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: k.cfg.ArgoNamespace, Labels: map[string]string{"argocd.argoproj.io/secret-type": "cluster", registrationOwnerLabel: s.EnrollmentID, registrationUIDLabel: s.Connection.ClusterUID}, Annotations: map[string]string{"hopcharlie.dev/registration-version": strconv.FormatInt(s.RegistrationVersion, 10), "hopcharlie.dev/token-expires-at": s.Connection.TokenExpiresAt.UTC().Format(time.RFC3339)}}, Data: map[string][]byte{"name": []byte(name), "server": []byte(s.Endpoint), "config": secretConfig, "clusterResources": []byte("true")}}
+	desired := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: k.cfg.ArgoNamespace, Labels: map[string]string{"argocd.argoproj.io/secret-type": "cluster", registrationOwnerLabel: s.EnrollmentID, registrationUIDLabel: s.Connection.ClusterUID}, Annotations: map[string]string{"hopcharlie.dev/registration-version": strconv.FormatInt(s.RegistrationVersion, 10), "hopcharlie.dev/token-expires-at": s.Connection.TokenExpiresAt.UTC().Format(time.RFC3339)}}, Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"name": []byte(name), "server": []byte(s.Endpoint), "config": secretConfig, "clusterResources": []byte("true")}}
 	secrets := k.cfg.Kube.CoreV1().Secrets(k.cfg.ArgoNamespace)
 	_, err = secrets.Create(ctx, desired, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {

@@ -269,6 +269,7 @@ type Server struct {
 	enrollments                    *onprem.Service
 	enrollmentIP, enrollmentGlobal *auth.LoginLimiter
 	enrollmentSlots                chan struct{}
+	onpremAdmissionSlots           chan struct{}
 	cfg                            Config
 	d                              Deps
 	mux                            *http.ServeMux
@@ -316,6 +317,7 @@ func New(cfg Config, d Deps) *Server {
 	s.enrollmentIP = auth.NewLoginLimiter(20, time.Minute, 1024)
 	s.enrollmentGlobal = auth.NewLoginLimiter(120, time.Minute, 1)
 	s.enrollmentSlots = make(chan struct{}, 16)
+	s.onpremAdmissionSlots = make(chan struct{}, 64)
 	if d.Runs != nil {
 		// The observe phase rolls back through the same path as the endpoint.
 		d.Runs.SetAutoRollback(s.autoRollback)
@@ -329,6 +331,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/onprem/enrollments/{id}/connection/status", "", s.onpremConnectionStatus)
 	s.route("POST /v1/onprem/enrollments/{id}/connection", "", s.onpremConnection)
 	s.route("GET /v1/onprem/agent.bin", "", s.onpremAgentBinary)
+	s.route("POST /v1/onprem/admission/cluster-secret", "", s.onpremSecretAdmission)
 	s.route("GET /v1/onprem/installer.sh", "", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")

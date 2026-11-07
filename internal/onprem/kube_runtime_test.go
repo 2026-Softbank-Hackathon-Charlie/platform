@@ -65,7 +65,7 @@ func testKubeRuntime(t *testing.T) *KubeRuntime {
 		if !strings.Contains(string(obj.Data["config"]), `"serverName":"attacker.invalid"`) {
 			t.Fatal("unexpected TLS mutation")
 		}
-		return true, nil, apierrors.NewForbidden(corev1.Resource("secrets"), obj.Name, errors.New("ValidatingAdmissionPolicy hopcharlie-onprem-secret denied invalid TLS name"))
+		return true, nil, apierrors.NewForbidden(corev1.Resource("secrets"), obj.Name, errors.New("admission webhook \"hopcharlie-onprem-secret.hopcharlie.dev\" denied invalid TLS name"))
 	})
 	kube.PrependReactor("create", "selfsubjectaccessreviews", func(a ktesting.Action) (bool, runtime.Object, error) {
 		review := a.(ktesting.CreateAction).GetObject().(*authv1.SelfSubjectAccessReview).DeepCopy()
@@ -152,7 +152,7 @@ func TestManagementAdmissionReadinessRequiresEveryPolicy(t *testing.T) {
 							policy = "hopcharlie-onprem-api-route"
 						}
 						if resource == "secrets" {
-							policy = "hopcharlie-onprem-secret"
+							policy = "hopcharlie-onprem-secret.hopcharlie.dev"
 						}
 						message = policy + "-disabled denied"
 						if mode == "always-deny" {

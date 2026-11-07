@@ -25,3 +25,13 @@
 ## 검증
 
 실제 새 클러스터에서 claim→설치/연결 서비스→서버의 API/TLS/UID 확인→Argo 등록→env 목록 노출→이미지 다운로드와 HTTP 응답→ready를 시험한다. 다른 환경 덮어쓰기, 다른 등록의 토큰, UID 변경, 만료·폐기, 서버 재시작, 단기 접속 토큰 만료 뒤 갱신 실패는 반드시 실패/미확인으로 보인다. mock 결과로 운영 연결 성공을 주장하지 않는다.
+
+## 진행 기록
+
+- 플랫폼 Draft #140: 등록 서비스·암호화 영속화·소유권/CAS·복구·연결 agent·동적 registry·기본 5개 실측 검사 구현. `7fc969c`의 Go/race/실제 PostgreSQL 및 minio 검사 성공.
+- 실제 kind 첫 실행에서 Secret의 GET/RV 없는 갱신은 통과했고, bootstrap VAP 리소스 wildcard 오류를 발견해 수정했다. 후속 실제 클러스터 결과를 확인하기 전에는 통합 성공으로 보고하지 않는다.
+- 독립 검토에서 폐기/복구 경합과 foreign namespace ServiceAccount 우회를 발견했다. 복구의 공통 lease/CAS 재사용, namespace 소유권, workload SA/토큰 제한, 검증 Pod로만 제한한 HTTP proxy 권한을 반영했다.
+- 관리 평면에서도 정상 DryRun 4개가 허용되고 변조 4개가 정확한 정책 이름으로 거부돼야만 발급을 허용한다. RBAC만 준비됐거나 정책이 모든 요청을 거부해도 코드를 발급하지 않는다.
+- 프론트 #95는 실제 이름 중복, 설정 미완료, 단계와 기본 연결 검증 범위를 표시한다. 관련 테스트 56개·타입·빌드 통과, 실제 브라우저는 미검증이다.
+- 인프라 Draft #157은 API 전용 SA/PodIdentity, 신규 OAuth 경로, 전용 proxy/ACL, 실제 admission 검증 및 기존 GCP WIF 호환 변경을 준비한다. 클러스터·IAM·OAuth 운영 변경은 하지 않았다.
+- Kubernetes 기본 연결과 제한된 Hello World의 성공을 공개 앱 경로·레지스트리 자격·Sealed Secrets·CNPG·MinIO·GPU 준비 완료로 사용하지 않는다. 이들 기능은 별도의 기존 환경 준비 조건을 만족해야 한다.
