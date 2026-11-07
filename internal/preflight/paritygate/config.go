@@ -53,8 +53,9 @@ type AuditCollector struct {
 // AppResources must be reviewed separately per environment. Names are not
 // inferred from a Plan, copied from another environment, or submitted by AI.
 type AppResources struct {
-	Secrets []probes.SecretRequirement `json:"secrets,omitempty"`
-	Backup  *Backup                    `json:"backup,omitempty"`
+	Secrets     []probes.SecretRequirement `json:"secrets,omitempty"`
+	SecretUsage *probes.SecretUsage        `json:"secretUsage,omitempty"`
+	Backup      *Backup                    `json:"backup,omitempty"`
 }
 
 type Backup struct {
@@ -188,6 +189,11 @@ func (c Config) validate(envs []string) error {
 					return bad("apps[%d].environments: backup needs cluster and maxAge from 1m to 720h", i)
 				}
 				configured = true
+			}
+			if u := resources.SecretUsage; u != nil {
+				if err := u.Validate(resources.Secrets); err != nil {
+					return bad("apps[%d].environments: invalid secretUsage binding", i)
+				}
 			}
 			if e := c.Environments[env]; e.AuditCollector != nil {
 				configured = true

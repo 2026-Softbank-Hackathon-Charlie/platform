@@ -44,12 +44,15 @@ type ResourceFactory func(env string) (metadata.Interface, dynamic.Interface, er
 
 // Gate builds the probes for a plan's target and evaluates them.
 type Gate struct {
-	digest    string
-	cfg       Config
-	sar       SARFactory
-	http      *http.Client
-	resources ResourceFactory
+	digest     string
+	cfg        Config
+	sar        SARFactory
+	http       *http.Client
+	resources  ResourceFactory
+	usageFetch probes.UsageFetch
 }
+
+func (g *Gate) SetUsageFetcher(fetch probes.UsageFetch) { g.usageFetch = fetch }
 
 // New returns a gate. sar may be nil (no identity probe); httpClient nil
 // uses a client with a 10 second timeout.
@@ -147,6 +150,11 @@ func (g *Gate) probes(target parity.Target, app App, targetCluster string) map[p
 	if len(resources.Secrets) > 0 {
 		out[parity.Secret] = failing{}
 		if p, err := probes.NewSecrets(target, meta, resources.Secrets); err == nil {
+			if resources.SecretUsage != nil {
+				if err := p.WithUsage(*resources.SecretUsage, g.usageFetch); err != nil {
+					return out
+				}
+			}
 			out[parity.Secret] = p
 		}
 	}
