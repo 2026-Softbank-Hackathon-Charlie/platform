@@ -65,6 +65,10 @@ func TestReadRetriedOnAnotherBackend(t *testing.T) {
 	if got := tg.backends["src"].reads.Load(); got != 5 {
 		t.Fatalf("src got %d reads, want its 5 by weight", got)
 	}
+	// A flushed HTTP body can reach the client before forward's deferred
+	// counters run. Wait for the actual handler completion, not a timer or a
+	// smaller expected count; every exact assertion below still applies.
+	waitFor(t, "all read attempts accounted", func() bool { return tg.g.inflightReads.Load() == 0 })
 
 	st, err := tg.client.State(ctx, 20*time.Second)
 	if err != nil {
