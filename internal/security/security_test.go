@@ -87,8 +87,73 @@ func TestReportCachesAndThrottlesRefresh(t *testing.T) {
 		t.Fatal("collected again before the TTL")
 	}
 	clk.add(2 * time.Second)
-	if _, _ = s.Report(ctx, false); c.calls.Load() != 3 {
-		t.Fatalf("not collected after the TTL: calls=%d", c.calls.Load())
+	if _, err := s.Report(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	waitCalls(t, c, 3) // collected in the background after the TTL
+}
+
+// waitCalls waits for a background collection to reach n calls.
+func waitCalls(t *testing.T, c *fakeCollector, n int32) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); c.calls.Load() != n; {
+		if time.Now().After(deadline) {
+			t.Fatalf("calls=%d, want %d", c.calls.Load(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestExpiredCollectionAnsweredWhileTheNextRuns(t *testing.T) {
+	clk := &clock{t: t0}
+	src := Source{Name: "x", Provider: apiv1.SecurityProviderPlatform, Environment: "platform"}
+	gate := make(chan struct{}, 3)
+	gate <- struct{}{} // the first collection does not wait
+	c := &fakeCollector{srcs: []Source{src}, fn: func(context.Context) []Report {
+		<-gate
+		return []Report{{Source: src, Status: apiv1.SecuritySourceStatusOk}}
+	}}
+	s := New([]Collector{c}, Options{Now: clk.now})
+	ctx := t.Context()
+	first, err := s.Report(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Past the TTL: the expired collection comes back at once, and the next
+	// one runs (blocked on gate) in the background.
+	clk.add(DefaultTTL + time.Second)
+	got, err := s.Report(ctx, false)
+	if err != nil || !got.GeneratedAt.Equal(first.GeneratedAt) {
+		t.Fatalf("expired collection not answered at once: %v %v", err, got.GeneratedAt)
+	}
+	waitCalls(t, c, 2)
+	// Asked again while it runs: still at once, no second background run.
+	if got, _ := s.Report(ctx, false); !got.GeneratedAt.Equal(first.GeneratedAt) || c.calls.Load() != 2 {
+		t.Fatalf("while collecting: %v calls=%d", got.GeneratedAt, c.calls.Load())
+	}
+	gate <- struct{}{}
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(time.Millisecond) {
+		if got, _ := s.Report(ctx, false); got.GeneratedAt.After(first.GeneratedAt) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the background collection was never answered")
+		}
+	}
+
+	// Past TTL plus maxStale: too old to answer, the caller waits.
+	clk.add(DefaultTTL + maxStale + time.Second)
+	done := make(chan apiv1.SecurityReport, 1)
+	go func() { rep, _ := s.Report(ctx, false); done <- rep }()
+	select {
+	case <-done:
+		t.Fatal("a collection older than maxStale was answered without waiting")
+	case <-time.After(50 * time.Millisecond):
+	}
+	gate <- struct{}{}
+	if rep := <-done; !rep.GeneratedAt.Equal(clk.now()) {
+		t.Fatalf("waited for the old collection: %v", rep.GeneratedAt)
 	}
 }
 

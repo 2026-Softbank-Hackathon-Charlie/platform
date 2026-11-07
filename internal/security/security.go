@@ -94,6 +94,10 @@ const (
 	DefaultMinRefresh = 10 * time.Second
 )
 
+// maxStale is how long past its TTL a collection is still answered at once
+// (without refresh) while the next one runs.
+const maxStale = 5 * time.Minute
+
 // Options tunes a Service. Zero values select the defaults.
 type Options struct {
 	// Timeout bounds one collector (default 25s).
@@ -156,7 +160,9 @@ func New(collectors []Collector, opt Options) *Service {
 }
 
 // Report returns the latest collection while it is younger than TTL, and
-// collects otherwise. refresh collects again unless the latest collection
+// collects otherwise. Without refresh, a collection that expired less than
+// maxStale ago is returned at once while the next one runs in the
+// background. refresh collects again unless the latest collection
 // started less than MinRefresh ago. Callers that ask while a collection runs
 // share it. The result is unfiltered (see Filter) and must not be modified.
 // The only error is ctx's.
@@ -182,6 +188,13 @@ func (s *Service) Collection(ctx context.Context, refresh bool) (Collection, err
 		f = &flight{done: make(chan struct{})}
 		s.flight, s.started = f, now
 		go s.collect(f)
+	}
+	// A page that polls every TTL would otherwise wait for a whole
+	// collection (several seconds) on each poll.
+	if !refresh && s.latest != nil && now.Before(s.expires.Add(maxStale)) {
+		c := *s.latest
+		s.mu.Unlock()
+		return c, nil
 	}
 	s.mu.Unlock()
 

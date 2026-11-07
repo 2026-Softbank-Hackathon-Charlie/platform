@@ -337,10 +337,10 @@ func New(cfg Config, d Deps) *Server {
 	s.route("POST /v1/residency/buckets/inspect", agent, s.inspectBucket)
 	s.route("POST /v1/migrations/{runId}/rollback", operator, s.rollbackMigration)
 	s.route("GET /{$}", "", s.root)
-	s.route("GET /v1/security", viewer, s.security)
-	s.route("GET /v1/security/ocsf", viewer, s.securityOCSF)
-	s.route("GET /v1/security/controls", viewer, s.securityControls)
-	s.route("GET /v1/security/vulnerabilities", viewer, s.securityVulnerabilities)
+	s.route("GET /v1/security", viewer, gzipped(s.security))
+	s.route("GET /v1/security/ocsf", viewer, gzipped(s.securityOCSF))
+	s.route("GET /v1/security/controls", viewer, gzipped(s.securityControls))
+	s.route("GET /v1/security/vulnerabilities", viewer, gzipped(s.securityVulnerabilities))
 	// The image scan workflow posts what Grype found; the API only stores it (SEC-04).
 	s.route("POST /v1/security/scans", agent, s.submitSecurityScan)
 	// Time-limited exceptions for findings and vulnerabilities (SEC-08).

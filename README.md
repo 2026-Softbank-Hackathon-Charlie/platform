@@ -373,7 +373,7 @@ CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks -
 - 컨테이너는 컨테이너의 `runAsUser`, `runAsNonRoot`가 파드 값보다 우선합니다. `runAsNonRoot: true`이거나 `runAsUser`가 0이 아니면 root가 아닌 것으로 봅니다.
 - `system:authenticated`, `system:unauthenticated`, `system:serviceaccounts`, `system:serviceaccounts:<ns>`에 cluster-admin을 묶으면 critical입니다.
 - 401로 막힌 요청은 호출자가 경로를 마음대로 쓸 수 있으므로 경로를 보여 주지 않고 라우트(`GET /v1/plans/{ref}`)만 보여 줍니다. 403의 경로는 제어 문자를 지우고 80자에서 자르며, 3개까지만 적고 나머지는 개수만 적습니다.
-- 결과는 60초 동안 캐시합니다. `?refresh=true`는 다시 읽지만 10초에 한 번까지입니다. `?environment=gke`, `?severity=high`(그 이상만)로 거릅니다.
+- 결과는 60초 동안 캐시합니다. 60초가 지난 뒤 5분 안의 요청에는 지난 결과를 바로 돌려주고 새로 읽기는 뒤에서 합니다(`generatedAt`으로 읽은 시각을 알 수 있습니다). `?refresh=true`는 다시 읽을 때까지 기다리지만 10초에 한 번까지입니다. `GET /v1/security`, `/ocsf`, `/controls`, `/vulnerabilities`의 응답은 요청에 `Accept-Encoding: gzip`이 있으면 gzip으로 압축합니다. `?environment=gke`, `?severity=high`(그 이상만)로 거릅니다.
 - 수집기는 소스마다 하나이고 동시에 실행하며, 하나가 느려도 25초에서 끊습니다. 새 공급자는 `security.Collector` 구현 하나를 추가하면 됩니다.
 - AWS는 SDK 기본 자격 증명 체인(환경 변수, `AWS_PROFILE`, 인스턴스 역할)을 쓰고 `PLATFORM_AWS_REGION`(기본 `ap-northeast-2`) 한 리전을 읽습니다. Describe, List, Get 호출만 하며 아무것도 켜거나 바꾸지 않습니다. 관리 호스트 역할에는 infra 레포의 Terraform이 수집기가 부르는 읽기 API 17개만 허용하는 인라인 정책(`read-security-configuration`)을 붙입니다.
 - 자격 증명이 정말 없을 때(인스턴스에 역할이 없거나 메타데이터 서비스가 꺼짐)만 `not_configured`입니다. 메타데이터 서비스 시간 초과나 네트워크 오류로 가져오지 못하면 `error`이고, 메시지에는 SDK 원문 대신 실패 종류만 적습니다.
