@@ -730,6 +730,10 @@ func TestCanaryGateFailureRollsReadsBack(t *testing.T) {
 	if run.Engine.Steps["fence"].Status != apiv1.StepStatusPending {
 		t.Fatal("a failed canary must stop before fence")
 	}
+	// Without probes more time brings no more requests: no step is extended.
+	if n := extensionEvents(h.stream(id, "")); n != 0 {
+		t.Fatalf("extension events without probes: %d", n)
+	}
 	h.traffic.mu.Lock()
 	w := fmt.Sprint(h.traffic.weights)
 	h.traffic.mu.Unlock()
@@ -871,6 +875,79 @@ func TestCanaryWaitsForSlowProbes(t *testing.T) {
 	}
 	if s, f := started.Load(), finished.Load(); s < 20 || s != f {
 		t.Fatalf("probes started %d, finished %d: every started read must finish before the gate", s, f)
+	}
+}
+
+func extensionEvents(ms []sseMsg) int {
+	n := 0
+	for _, m := range ms {
+		if strings.Contains(m.data, "extending the step") {
+			n++
+		}
+	}
+	return n
+}
+
+// Probe reads reach the target at random by weight, so a step can come up
+// short. With probes the step is extended once and judged on all its reads.
+func TestCanaryExtendsAShortStepOnce(t *testing.T) {
+	var calls atomic.Int64
+	var h *harness
+	h = newHarness(t, func(_ *harness, rc *runs.Config, _ *Deps) {
+		rc.Probe = func(_ context.Context, _ string) error {
+			// A 100% step sends at most 60 reads, so later ones are the
+			// extension's. Before it only 5 reach the target.
+			if n := calls.Add(1); n > 5 && n <= 60 {
+				return nil
+			}
+			h.traffic.mu.Lock()
+			s := h.traffic.stats["eks"]
+			s.Requests++
+			s.P95Millis = 30
+			h.traffic.stats["eks"] = s
+			h.traffic.mu.Unlock()
+			return nil
+		}
+	})
+	h.traffic.stats["eks"] = apiv1.BackendStats{}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, AutoSwitch: ptr(true), Canary: &apiv1.CanaryOptions{Weights: []int{100}, StepDuration: ptr("200ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusSucceeded))
+	c := run.Canary
+	if c.Passed == nil || !*c.Passed || len(c.Steps) != 1 || *c.Steps[0].Verdict != apiv1.CanaryStepVerdictOk {
+		t.Fatalf("canary: %+v", c.Steps)
+	}
+	if d := c.Steps[0].EndedAt.Sub(c.Steps[0].StartedAt); d < 400*time.Millisecond {
+		t.Fatalf("extended step took %s, want at least two step durations", d)
+	}
+	msgs := h.stream(id, "")
+	if n := extensionEvents(msgs); n != 1 {
+		t.Fatalf("extension events: %d", n)
+	}
+	for _, m := range msgs {
+		if strings.Contains(m.data, "extending the step") && !strings.Contains(m.data, "only 5 requests reached eks at 100%") {
+			t.Fatalf("extension event: %s", m.data)
+		}
+	}
+}
+
+// A step still short after its one extension is judged as before: at the last
+// step it fails.
+func TestCanaryExtendsOnlyOnce(t *testing.T) {
+	h := newHarness(t, func(_ *harness, rc *runs.Config, _ *Deps) {
+		rc.Probe = func(context.Context, string) error { return nil } // never reaches the target
+	})
+	h.traffic.stats["eks"] = apiv1.BackendStats{Requests: 3, P95Millis: 30}
+	ref := h.approved(planJSON("p1", "a", "b", true))
+	id := h.start(apiv1.StartMigrationRequest{PlanRef: ref, Canary: &apiv1.CanaryOptions{Weights: []int{10, 100}, StepDuration: ptr("20ms")}})
+	run := h.waitRun(id, ended(apiv1.RunStatusRolledBack))
+	c := run.Canary
+	if len(c.Steps) != 2 || *c.Steps[0].Verdict != apiv1.CanaryStepVerdictInconclusive ||
+		*c.Steps[1].Verdict != apiv1.CanaryStepVerdictFailed || !strings.Contains(c.Steps[1].Gate.Reason, "last step") {
+		t.Fatalf("canary: %+v", c.Steps)
+	}
+	if n := extensionEvents(h.stream(id, "")); n != 2 {
+		t.Fatalf("extension events: %d, want one per step", n)
 	}
 }
 

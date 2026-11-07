@@ -113,17 +113,29 @@ type Config struct {
 	TrafficAt func(gatewayURL string) Traffic
 	// Probe sends one synthetic read (GET /) through the gateway's public proxy
 	// to the app whose admin scope is gatewayURL. During every canary step the
-	// runner sends probeFactor x the gate's minimum requests, spread over the
-	// step, so that an app without users still gets the target judged on real
-	// requests through the real route. The gate counts them like any request.
+	// runner sends enough reads, spread over the step, that about probeFactor x
+	// the gate's minimum requests reach the target at the step's weight (at
+	// most maxProbes), so that an app without users still gets the target
+	// judged on real requests through the real route. If the target still got
+	// fewer than the minimum, the step is extended once with another batch.
+	// The gate counts them like any request.
 	// Nil sends none: a quiet app then fails the canary for too few requests.
 	Probe func(ctx context.Context, gatewayURL string) error
 }
 
-// probeFactor is how many synthetic reads per canary step the runner sends,
-// in multiples of the gate's minimum requests: at a 50% step about half reach
-// the target, which then still clears the minimum.
+// probeFactor is how many synthetic reads per canary step the runner expects
+// to reach the target, in multiples of the gate's minimum requests. The
+// gateway picks the backend of each read at random by weight, so the margin
+// keeps an unlucky step above the minimum.
 const probeFactor = 3
+
+// probeCount is how many synthetic reads a canary step at weight (percent of
+// reads to the target) sends: enough that probeFactor x minRequests are
+// expected on the target, at most maxProbes.
+func probeCount(minRequests, weight int) int {
+	want := probeFactor * minRequests * 100
+	return min((want+weight-1)/weight, maxProbes)
+}
 
 // StartOptions describe a new run.
 type StartOptions struct {
@@ -628,30 +640,28 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 		}
 		l.emitPlatform(EventCanaryStep, "", fmt.Sprintf("%d%% of reads to %s", w, dst), map[string]any{"weight": w, "readWeights": weights})
 
+		minRequests := int(*opts.Gate.MinRequests)
+		timeout := probeTimeout(*opts.Gate.MaxP95Millis)
 		stepStart := time.Now()
-		probe := r.probe(ctx, l, probeFactor*int(*opts.Gate.MinRequests), stepDur, probeTimeout(*opts.Gate.MaxP95Millis))
-		select {
-		case <-ctx.Done():
-			probe.stop()
-			return false, "aborted during the canary"
-		case <-r.stopCh:
-			probe.stop()
-			l.markInterrupted()
-			return false, "the platform is shutting down"
-		case <-time.After(stepDur):
+		probe := r.probe(ctx, l, probeCount(minRequests, w), stepDur, timeout)
+		if done, reason := r.waitStep(ctx, l, probe, stepDur); done {
+			return false, reason
 		}
-		// Let the reads in flight finish, so a slow target counts with its real
-		// latency instead of as a cut request, then judge everything the step sent.
-		probe.wait()
-		// whole seconds rounded up, so the step's first reads stay in; the gateway keeps 300s
-		window := min(max(time.Since(stepStart).Truncate(time.Second)+time.Second, stepDur), 300*time.Second)
+		ts, err := r.stepState(l, stepStart, stepDur)
+		// Probe reads go to the target at random by weight, so a step can come
+		// up short by chance. Extend it once with another batch over another
+		// stepDuration, then judge the whole step. Without probes more time
+		// would not bring more requests.
+		if n := ts.Stats[dst].Requests; err == nil && probe.cancel != nil && n < int64(minRequests) {
+			l.emitPlatform(engine.EventLog, "", fmt.Sprintf("only %d requests reached %s at %d%%; extending the step by %s with more probe reads", n, dst, w, stepDur),
+				map[string]any{"weight": w, "requests": n, "minRequests": minRequests, "extension": stepDur.String()})
+			probe = r.probe(ctx, l, probeCount(minRequests, w), stepDur, timeout)
+			if done, reason := r.waitStep(ctx, l, probe, stepDur); done {
+				return false, reason
+			}
+			ts, err = r.stepState(l, stepStart, stepDur)
+		}
 
-		var ts apiv1.TrafficState
-		err := r.withTimeout(func(c context.Context) error {
-			var err error
-			ts, err = l.traffic.State(c, window)
-			return err
-		})
 		var gate apiv1.GateResult
 		verdict := apiv1.CanaryStepVerdictFailed
 		if err != nil {
@@ -695,7 +705,40 @@ func (r *Runner) canary(ctx context.Context, l *live) (bool, string) {
 	return true, ""
 }
 
-// maxProbes caps the synthetic reads of one canary step.
+// waitStep waits out d of a canary step while its probe reads run. It returns
+// true with the run's reason if the run was aborted or the platform is
+// shutting down. Otherwise it lets the reads in flight finish, so a slow
+// target counts with its real latency instead of as a cut request.
+func (r *Runner) waitStep(ctx context.Context, l *live, probe probing, d time.Duration) (bool, string) {
+	select {
+	case <-ctx.Done():
+		probe.stop()
+		return true, "aborted during the canary"
+	case <-r.stopCh:
+		probe.stop()
+		l.markInterrupted()
+		return true, "the platform is shutting down"
+	case <-time.After(d):
+	}
+	probe.wait()
+	return false, ""
+}
+
+// stepState reads the gateway's request stats over everything the step sent
+// since start.
+func (r *Runner) stepState(l *live, start time.Time, stepDur time.Duration) (apiv1.TrafficState, error) {
+	// whole seconds rounded up, so the step's first reads stay in; the gateway keeps 300s
+	window := min(max(time.Since(start).Truncate(time.Second)+time.Second, stepDur), 300*time.Second)
+	var ts apiv1.TrafficState
+	err := r.withTimeout(func(c context.Context) error {
+		var err error
+		ts, err = l.traffic.State(c, window)
+		return err
+	})
+	return ts, err
+}
+
+// maxProbes caps the synthetic reads of one batch of a canary step.
 const maxProbes = 300
 
 // probeTimeout is how long one synthetic read may take: twice the gate's p95

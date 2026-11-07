@@ -2080,7 +2080,10 @@ type BucketSample struct {
 // reads back on the source and ends the run as `rolled_back`. A step with
 // fewer than `gate.minRequests` requests and no other breach is
 // `inconclusive` and the canary moves on, except at the last step, which
-// must pass with enough requests. Gradual steps such as
+// must pass with enough requests. When the platform sends synthetic
+// probe reads, a step whose target got fewer than `gate.minRequests` is
+// extended once by another `stepDuration` with more probe reads and then
+// judged over the whole step. Gradual steps such as
 // 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 type CanaryOptions struct {
 	Gate         *GateThresholds `json:"gate,omitempty"`
@@ -2098,7 +2101,10 @@ type CanaryResult struct {
 	// reads back on the source and ends the run as `rolled_back`. A step with
 	// fewer than `gate.minRequests` requests and no other breach is
 	// `inconclusive` and the canary moves on, except at the last step, which
-	// must pass with enough requests. Gradual steps such as
+	// must pass with enough requests. When the platform sends synthetic
+	// probe reads, a step whose target got fewer than `gate.minRequests` is
+	// extended once by another `stepDuration` with more probe reads and then
+	// judged over the whole step. Gradual steps such as
 	// 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 	Options CanaryOptions `json:"options"`
 	Passed  *bool         `json:"passed,omitempty"`
@@ -3966,7 +3972,10 @@ type StartMigrationRequest struct {
 	// reads back on the source and ends the run as `rolled_back`. A step with
 	// fewer than `gate.minRequests` requests and no other breach is
 	// `inconclusive` and the canary moves on, except at the last step, which
-	// must pass with enough requests. Gradual steps such as
+	// must pass with enough requests. When the platform sends synthetic
+	// probe reads, a step whose target got fewer than `gate.minRequests` is
+	// extended once by another `stepDuration` with more probe reads and then
+	// judged over the whole step. Gradual steps such as
 	// 1, 10, 25, 50, 75, 90, 100 are recommended. Needs gateway mode http.
 	Canary *CanaryOptions `json:"canary,omitempty"`
 
