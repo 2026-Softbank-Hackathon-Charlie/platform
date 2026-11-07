@@ -1,7 +1,8 @@
 // Package paritygate runs RBAC, Prometheus and optional resource-evidence
 // probes against a migration's target before it starts and
-// returns the report for the audit log. It only records: nothing it finds
-// stops a run. The configuration is server-owned (PLATFORM_PARITY_FILE),
+// returns the report for the audit log. A separate explicit per-app
+// observability opt-in can block unverified signal delivery. Other capabilities
+// retain audit semantics. Configuration is server-owned (PLATFORM_PARITY_FILE),
 // never taken from a plan or an agent.
 package paritygate
 
@@ -22,7 +23,7 @@ import (
 
 var ErrInvalidConfig = errors.New("invalid parity configuration")
 
-// ModeAudit records the report and never blocks. End-to-end secret usability,
+// ModeAudit records the overall report without blanket enforcement. End-to-end secret usability,
 // audit delivery, restore and alert verification remain incomplete.
 const ModeAudit = "audit"
 
@@ -41,6 +42,32 @@ type Config struct {
 type EnvProbes struct {
 	Prometheus     *Prometheus     `json:"prometheus,omitempty"`
 	AuditCollector *AuditCollector `json:"auditCollector,omitempty"`
+	Telemetry      *Telemetry      `json:"telemetry,omitempty"`
+}
+
+type Telemetry struct {
+	ClusterName           string `json:"clusterName"`
+	DeploymentEnvironment string `json:"deploymentEnvironment"`
+	MaxAge                string `json:"maxAge,omitempty"`
+}
+
+func (t Telemetry) maxAge() (time.Duration, error) {
+	if t.MaxAge == "" {
+		return 2 * time.Minute, nil
+	}
+	d, err := time.ParseDuration(t.MaxAge)
+	if err != nil || d < time.Second || d > 10*time.Minute {
+		return 0, ErrInvalidConfig
+	}
+	return d, nil
+}
+
+// Required signals are an explicit per-app opt-in. Existing global audit mode
+// remains unchanged and never becomes a blanket enforce switch.
+type ObservationRequirement struct {
+	RequiredSignals []string `json:"requiredSignals"`
+	ServiceNames    []string `json:"serviceNames,omitempty"`
+	Enforce         bool     `json:"enforce,omitempty"`
 }
 
 // AuditCollector names an existing collector, not a claim of audit coverage.
@@ -77,7 +104,8 @@ func (b Backup) maxAge() (time.Duration, error) {
 type Prometheus struct {
 	URL string `json:"url"`
 	// MaxAge is the oldest acceptable last scrape, e.g. "2m" (1s to 10m).
-	MaxAge string `json:"maxAge,omitempty"`
+	MaxAge string            `json:"maxAge,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // App is what parity expects of one app in every environment.
@@ -95,6 +123,7 @@ type App struct {
 	// PrometheusJob is the scrape job of the app's targets.
 	PrometheusJob string                  `json:"prometheusJob,omitempty"`
 	Environments  map[string]AppResources `json:"environments,omitempty"`
+	Observability *ObservationRequirement `json:"observability,omitempty"`
 }
 
 type Baseline struct {
@@ -137,11 +166,31 @@ func (c Config) validate(envs []string) error {
 		return bad("version must be 1")
 	}
 	if c.Mode != ModeAudit {
-		return bad("mode must be %q (parity only records; it never blocks a run)", ModeAudit)
+		return bad("mode must be %q (only explicit per-app observability may enforce)", ModeAudit)
 	}
+	clusters := map[string]bool{}
 	for name, e := range c.Environments {
 		if !slices.Contains(envs, name) {
 			return bad("environments.%s is not a registered environment", name)
+		}
+		if e.Telemetry != nil {
+			if !id.MatchString(e.Telemetry.ClusterName) || !id.MatchString(e.Telemetry.DeploymentEnvironment) || clusters[e.Telemetry.ClusterName] {
+				return bad("environments.%s.telemetry: invalid clusterName", name)
+			}
+			clusters[e.Telemetry.ClusterName] = true
+			if _, err := e.Telemetry.maxAge(); err != nil {
+				return bad("environments.%s.telemetry: invalid maxAge", name)
+			}
+		}
+		if e.Prometheus != nil {
+			for key, value := range e.Prometheus.Labels {
+				if (key != "environment" && key != "cluster") || len(value) == 0 || len(value) > 200 || strings.ContainsAny(value, "\r\n\x00") {
+					return bad("environments.%s.prometheus: invalid binding labels", name)
+				}
+				if key == "environment" && value != name || key == "cluster" && e.Telemetry != nil && value != e.Telemetry.ClusterName {
+					return bad("environments.%s.prometheus: binding labels do not match registered scope", name)
+				}
+			}
 		}
 		if a := e.AuditCollector; a != nil {
 			if !id.MatchString(a.Namespace) || a.Deployment == "" || len(validation.IsDNS1123Subdomain(a.Deployment)) != 0 {
@@ -163,6 +212,26 @@ func (c Config) validate(envs []string) error {
 	}
 	names, namespaces := map[string]bool{}, map[string]bool{}
 	for i, a := range c.Apps {
+		if o := a.Observability; o != nil {
+			if len(o.RequiredSignals) == 0 || len(o.RequiredSignals) > 3 {
+				return bad("apps[%d].observability: one to three required signals expected", i)
+			}
+			seen := map[string]bool{}
+			for _, signal := range o.RequiredSignals {
+				if (signal != "logs" && signal != "traces" && signal != "metrics") || seen[signal] {
+					return bad("apps[%d].observability: invalid or duplicate signal", i)
+				}
+				seen[signal] = true
+			}
+			if len(o.ServiceNames) > 16 || (seen["logs"] || seen["traces"]) && len(o.ServiceNames) == 0 {
+				return bad("apps[%d].observability: exact service names required", i)
+			}
+			for _, service := range o.ServiceNames {
+				if !id.MatchString(service) {
+					return bad("apps[%d].observability: invalid service name", i)
+				}
+			}
+		}
 		for env, baseline := range a.Baselines {
 			if !slices.Contains(envs, env) || !id.MatchString(baseline.Revision) || baseline.ReviewedAt.IsZero() || !baseline.ExpiresAt.After(baseline.ReviewedAt) || baseline.ExpiresAt.Sub(baseline.ReviewedAt) > 30*24*time.Hour {
 				return bad("apps[%d].baselines: registered environment, revision and review interval up to 30 days required", i)
@@ -172,7 +241,7 @@ func (c Config) validate(envs []string) error {
 			return bad("apps[%d]: invalid or duplicate name or namespace", i)
 		}
 		names[a.Name], namespaces[a.Namespace] = true, true
-		configured := len(a.RBAC) > 0 || a.PrometheusJob != ""
+		configured := len(a.RBAC) > 0 || a.PrometheusJob != "" || a.Observability != nil
 		for env, resources := range a.Environments {
 			if !slices.Contains(envs, env) {
 				return bad("apps[%d].environments: unregistered environment", i)

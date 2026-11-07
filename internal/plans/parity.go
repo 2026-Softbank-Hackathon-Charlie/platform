@@ -15,13 +15,14 @@ import (
 )
 
 // ParityGate checks the target's identity and monitoring against what the
-// app needs (paritygate.Gate). Its report is recorded, never enforced.
+// app needs (paritygate.Gate). Its overall report is recorded. Only the optional
+// explicit per-app ObservabilityDecision interface can enforce required signals.
 type ParityGate interface {
 	Check(ctx context.Context, p *plan.Plan) (parity.Report, error)
 }
 
 // SetParityGate makes Reserve record a parity report for every new run.
-// The report never stops a run (audit mode). Without a gate nothing runs.
+// Overall audit findings do not stop a run. An explicit observability opt-in can.
 func (s *Service) SetParityGate(g ParityGate) { s.parity = g }
 
 // Parity outcomes recorded on a reservation.
@@ -41,10 +42,18 @@ const (
 
 // ParityCheck is what was recorded for a reservation, for the audit log.
 type ParityCheck struct {
-	Outcome string
-	Report  *parity.Report
-	Binding *ParityBinding
+	Outcome               string
+	Report                *parity.Report
+	Binding               *ParityBinding
+	ObservabilityEnforced bool
 }
+
+var ErrObservabilityUnverified = errors.New("required source and target observability signals are unverified")
+
+type ObservabilityDenied struct{ Check ParityCheck }
+
+func (e *ObservabilityDenied) Error() string        { return ErrObservabilityUnverified.Error() }
+func (e *ObservabilityDenied) Is(target error) bool { return target == ErrObservabilityUnverified }
 
 // ParityBinding binds start-time evidence to the approved, unexpanded content.
 // It is an audit record, not authorization to reuse evidence for another run.
@@ -93,7 +102,7 @@ func (s *Service) checkParity(ctx context.Context, rollbackOf string, p *plan.Pl
 	switch {
 	case s.parity == nil:
 		return ParityCheck{Outcome: ParityNotConfigured}
-	case NoDatabase(p):
+	case NoDatabase(p) && !s.observabilityConfigured(p):
 		return ParityCheck{Outcome: ParityNoDatabase}
 	case rollbackOf != "":
 		return ParityCheck{Outcome: ParityRollbackExempt}
@@ -106,4 +115,9 @@ func (s *Service) checkParity(ctx context.Context, rollbackOf string, p *plan.Pl
 		return ParityCheck{Outcome: ParityError}
 	}
 	return ParityCheck{Outcome: ParityRecorded, Report: &r}
+}
+
+func (s *Service) observabilityConfigured(p *plan.Plan) bool {
+	gate, ok := s.parity.(interface{ ObservabilityConfigured(*plan.Plan) bool })
+	return ok && gate.ObservabilityConfigured(p)
 }

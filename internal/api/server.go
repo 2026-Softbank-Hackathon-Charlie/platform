@@ -688,6 +688,12 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_plan", err.Error())
 	case errors.Is(err, plans.ErrWrongStatus):
 		s.fail(w, r, http.StatusConflict, "plan_state_conflict", err.Error())
+	case errors.Is(err, plans.ErrObservabilityUnverified):
+		var denied *plans.ObservabilityDenied
+		if errors.As(err, &denied) {
+			noteParity(r, denied.Check)
+		}
+		s.fail(w, r, http.StatusConflict, "observability_unverified", err.Error())
 	case errors.Is(err, plans.ErrRehearsal):
 		s.fail(w, r, http.StatusConflict, "rehearsal_required", err.Error())
 	case errors.Is(err, plans.ErrResidencyDenied):
@@ -756,9 +762,9 @@ func noteVersion(r *http.Request, c plans.VersionCheck) {
 func noteParity(r *http.Request, c plans.ParityCheck) {
 	switch {
 	case c.Report != nil:
-		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "passed": c.Report.Passed, "results": paritygate.Lines(*c.Report), "binding": c.Binding, "configDigest": c.Report.ConfigDigest, "baselineStatus": c.Report.BaselineStatus, "observedAt": c.Report.ObservedAt, "expiresAt": c.Report.ExpiresAt})
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "observabilityEnforced": c.ObservabilityEnforced, "passed": c.Report.Passed, "results": paritygate.Lines(*c.Report), "binding": c.Binding, "configDigest": c.Report.ConfigDigest, "baselineStatus": c.Report.BaselineStatus, "observedAt": c.Report.ObservedAt, "expiresAt": c.Report.ExpiresAt})
 	case c.Outcome != "":
-		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "binding": c.Binding})
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "observabilityEnforced": c.ObservabilityEnforced, "binding": c.Binding})
 	}
 }
 
