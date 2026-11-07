@@ -84,3 +84,13 @@ func TestStartOnboard(t *testing.T) {
 		}
 	}
 }
+
+func TestLastResult(t *testing.T) {
+	log := "starting\n{\"kind\":\"onboard\",\"head\":\"old\"}\nmore log\n{\"kind\":\"onboard\",\"head\":\"new\"}\ntrailing stderr\n"
+	if got := string(lastResult([]byte(log))); got != `{"kind":"onboard","head":"new"}` {
+		t.Fatalf("got %q", got)
+	}
+	if lastResult([]byte("nothing\n")) != nil {
+		t.Fatal("a result from a log without one")
+	}
+}

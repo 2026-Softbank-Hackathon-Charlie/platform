@@ -605,6 +605,19 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	}
 	eqList(t, "app databases", apps, []string{"blog", "moimroom-mig"})
 
+	// SetAppDatabaseSourceKind flips an onboarded pair to peer (ADR 0042).
+	if err := s.SetAppDatabaseSourceKind(ctx, "nothing", store.DBSourceExternal, store.DBSourcePeer); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetAppDatabaseSourceKind of no pair = %v", err)
+	}
+	if err := s.SetAppDatabaseSourceKind(ctx, "blog", store.DBSourceExternal, store.DBSourcePeer); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("SetAppDatabaseSourceKind from the wrong kind = %v", err)
+	}
+	must(t, s.SetAppDatabaseSourceKind(ctx, "blog", store.DBSourcePeer, store.DBSourceExternal))
+	if d, _ := s.GetAppDatabase(ctx, "blog"); d.SourceKind != store.DBSourceExternal {
+		t.Fatalf("source kind %q", d.SourceKind)
+	}
+	must(t, s.SetAppDatabaseSourceKind(ctx, "blog", store.DBSourceExternal, store.DBSourcePeer))
+
 	// NextPeerGeneration counts up one pair's peer removals (ADR 0043).
 	if _, err := s.NextPeerGeneration(ctx, "nothing"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("NextPeerGeneration of no pair = %v, want ErrNotFound", err)

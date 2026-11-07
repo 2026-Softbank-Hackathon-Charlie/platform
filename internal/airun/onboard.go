@@ -152,3 +152,57 @@ func (r *Runner) StopOnboard(ctx context.Context, id string) error {
 	return nil
 }
 
+
+// OnboardOutcome is how an onboarding's hopai Job ended (ai-sandbox hopai
+// onboard): its container's exit code (0 done, 1 failed, 2 usage, 3 no
+// contract can be added, or the default branch has platform.yaml already)
+// and its result, the last log line with "kind":"onboard" (nil when there
+// is none).
+type OnboardOutcome struct {
+	ExitCode int
+	Result   []byte
+	// Log is the end of the Job's log, for the events.
+	Log string
+}
+
+// onboardLogTail is how much of the pod's log OnboardOutcome reads.
+const onboardLogTail = 256 << 10
+
+// Outcome reads the pod of a finished Job: its exit code and log. It needs
+// get and list of pods and get of pods/log in the namespace.
+func (r *Runner) Outcome(ctx context.Context, job string) (OnboardOutcome, error) {
+	pods, err := r.cs.CoreV1().Pods(r.namespace).List(ctx, metav1.ListOptions{LabelSelector: "job-name=" + job})
+	if err != nil {
+		return OnboardOutcome{}, fmt.Errorf("airun: list the pods of %s: %w", job, err)
+	}
+	if len(pods.Items) == 0 {
+		return OnboardOutcome{}, fmt.Errorf("airun: Job %s has no pod", job)
+	}
+	pod := pods.Items[len(pods.Items)-1] // the last attempt
+	out := OnboardOutcome{ExitCode: -1}
+	for _, s := range pod.Status.ContainerStatuses {
+		if s.Name == Container && s.State.Terminated != nil {
+			out.ExitCode = int(s.State.Terminated.ExitCode)
+		}
+	}
+	limit := int64(onboardLogTail)
+	raw, err := r.cs.CoreV1().Pods(r.namespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: Container, LimitBytes: &limit}).DoRaw(ctx)
+	if err != nil {
+		return out, fmt.Errorf("airun: read the log of %s: %w", pod.Name, err)
+	}
+	out.Log = string(raw)
+	out.Result = lastResult(raw)
+	return out, nil
+}
+
+// lastResult is the last line of log that holds "kind":"onboard".
+func lastResult(log []byte) []byte {
+	lines := strings.Split(string(log), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(l, "{") && (strings.Contains(l, `"kind":"onboard"`) || strings.Contains(l, `"kind": "onboard"`)) {
+			return []byte(l)
+		}
+	}
+	return nil
+}

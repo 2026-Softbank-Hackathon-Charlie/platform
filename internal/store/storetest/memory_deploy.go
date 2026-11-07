@@ -124,6 +124,21 @@ func (m *memory) NextPeerGeneration(_ context.Context, app string) (int, error) 
 	return d.PeerGeneration, nil
 }
 
+func (m *memory) SetAppDatabaseSourceKind(_ context.Context, app, from, to string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.deploy.databases[app]
+	if !ok {
+		return fmt.Errorf("%w: database pair of app %s", store.ErrNotFound, app)
+	}
+	if d.SourceKind != from {
+		return fmt.Errorf("%w: database pair of app %s is %s, not %s", store.ErrConflict, app, d.SourceKind, from)
+	}
+	d.SourceKind = to
+	m.deploy.databases[app] = d
+	return nil
+}
+
 func (m *memory) ListAppDatabases(_ context.Context) ([]store.AppDatabase, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

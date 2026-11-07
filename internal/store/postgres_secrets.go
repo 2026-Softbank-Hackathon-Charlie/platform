@@ -247,6 +247,23 @@ func (s *Postgres) GetAppDatabase(ctx context.Context, app string) (AppDatabase,
 	return d, err
 }
 
+func (s *Postgres) SetAppDatabaseSourceKind(ctx context.Context, app, from, to string) error {
+	if !Clean(app) {
+		return fmt.Errorf("%w: database pair of app %q", ErrNotFound, app)
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE app_databases SET source_kind = $3 WHERE app = $1 AND source_kind = $2`, app, from, to)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := s.GetAppDatabase(ctx, app); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: database pair of app %s is not %s", ErrConflict, app, from)
+	}
+	return nil
+}
+
 func (s *Postgres) NextPeerGeneration(ctx context.Context, app string) (int, error) {
 	if !Clean(app) {
 		return 0, fmt.Errorf("%w: database pair of app %q", ErrNotFound, app)
