@@ -342,7 +342,7 @@ func directCanaryAdvance(g *Gateway, body, key string) *httptest.ResponseRecorde
 func TestAIQualitySlowEvaluationDoesNotCountAsNewStageObservation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		provider := qualityProviderFunc(func(c context.Context, p llmquality.Policy, n, b time.Time) llmquality.Verdict {
-			time.Sleep(45 * time.Second)
+			time.Sleep(5 * time.Second)
 			return passQuality(c, p, n, b)
 		})
 		g := qualityGW(t, "", provider)
@@ -356,6 +356,7 @@ func TestAIQualitySlowEvaluationDoesNotCountAsNewStageObservation(t *testing.T) 
 		if !at.Equal(time.Now().UTC()) {
 			t.Fatalf("query time reused as activation: %v; now %v", at, time.Now())
 		}
+		time.Sleep(26 * time.Second) // 31s since query, only 26s since activation
 		second := directCanaryAdvance(g, `{"expectedVersion":1,"targetPercent":25}`, "advance-too-soon")
 		if second.Code != 409 || !strings.Contains(second.Body.String(), "canary_soak_incomplete") {
 			t.Fatalf("query time counted as soak: %d %s", second.Code, second.Body)

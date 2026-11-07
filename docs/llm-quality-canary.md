@@ -70,7 +70,10 @@ Content-Type: application/json
 {"expectedVersion":0,"targetPercent":5}
 ```
 
-200은 해당 stage가 영속화되어 신규 추론 선택에 적용됐다는 뜻이며 전체 이전 완료가 아니다.
+200은 해당 의도 stage가 영속화됐다는 뜻이며 전체 이전 완료가 아니다. 디스크 저장 도중
+점수가 만료되면 verdict는 unknown, effectiveTargetPercent는 0인 정지 상태로 응답한다.
+관측 시간은 조회 시작 시각이 아니라 저장 후 실제 admission 노출 직전부터 계산한다.
+재시작하면 관측 경계를 시작 시각으로 다시 잡아 downtime이나 저장 지연을 관측 시간으로 세지 않는다.
 최근 성공 명령의 같은 키/같은 본문 재시도는 중복 실행하지 않는다. 오래된 명령은 version 충돌로
 거부한다. 같은 키에 다른 본문은 409다. 다중 gateway 인스턴스 분산 CAS는 지원하지 않는다.
 진행은 `0→5→25→50→100`; 0 복구는 모든 stage에서 가능하다.
