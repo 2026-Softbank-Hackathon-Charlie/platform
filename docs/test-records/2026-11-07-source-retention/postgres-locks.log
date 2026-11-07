@@ -1,0 +1,4 @@
+=== RUN   TestClusterLeaseAcrossPools
+--- PASS: TestClusterLeaseAcrossPools (0.34s)
+PASS
+ok  	github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store	0.341s

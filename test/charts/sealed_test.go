@@ -1,6 +1,7 @@
 package charts
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -67,5 +68,67 @@ resources:
 	}
 	if d.Spec.Template.Annotations["hopcharlie.dev/secrets-checksum"] != strings.Repeat("c", 64) {
 		t.Errorf("pod annotations %v", d.Spec.Template.Annotations)
+	}
+}
+
+// TestPlatformDBTopologyFile renders the primary's gitops file of a
+// database pair as the platform writes it, with the peer absent and then
+// present (ADR 0030, ADR 0043), through the chart with the tailnet path on:
+// with peerPresent false the chart draws the same Cluster and Secrets and
+// none of the tailnet objects; with the peer present it draws them too.
+func TestPlatformDBTopologyFile(t *testing.T) {
+	spec, errs := appspec.Check([]byte(`name: moimroom
+services:
+  - name: web
+    port: 8080
+    public: true
+resources:
+  - {name: db, type: postgres}
+`))
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	profile := writeValues(t, `profile:
+  networkPolicy: {enabled: true}
+  dbNetwork: {enabled: true, tailnetDomain: tail567fe8.ts.net, ingressTag: "tag:hop-db-gke", egressTag: "tag:hop-db-client-gke",
+    ingressProxyClass: hopcharlie-app-db-ingress-gke, egressProxyClass: hopcharlie-app-db-egress-gke, proxyNamespace: hopcharlie-db-network}
+`)
+	renderFile := func(absent bool) map[string][]byte {
+		t.Helper()
+		content, err := deploy.Render(deploy.File{
+			App: "moimroom", Instance: "moimroom", Env: "gke", Commit: strings.Repeat("a", 40), Deployment: "dep_1", Spec: *spec,
+			Images: map[string]string{"web": "r/hopcharlie/apps/moimroom/web@sha256:" + strings.Repeat("b", 64)},
+			Sealed: &deploy.Sealed{
+				PGApp: map[string]string{"username": "AgB1", "password": "AgB2", "dbname": "AgB3", "host": "AgB4", "port": "AgB5", "uri": "AgB6", "jdbc-uri": "AgB7"},
+				PGCA:  map[string]string{"ca.crt": "AgB8", "ca.key": "AgB9"},
+			},
+			DBTopology: &deploy.DBTopology{Primary: "gke", Peer: "eks", PeerAbsent: absent},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The whole file is the values file, as the ApplicationSet gives it.
+		return mustRender(t, appChart, "moimroom", writeValues(t, string(content)), profile)
+	}
+	paired, alone := renderFile(false), renderFile(true)
+	tailnet := []string{"Service/moimroom-db-ts", "Service/moimroom-db-to-eks", "NetworkPolicy/moimroom-db-replication"}
+	for _, k := range tailnet {
+		if _, ok := paired[k]; !ok {
+			t.Fatalf("paired: no %s; rendered %v", k, keys(paired))
+		}
+		if _, ok := alone[k]; ok {
+			t.Errorf("peer absent: drew %s", k)
+		}
+	}
+	for k, doc := range paired {
+		if slices.Contains(tailnet, k) {
+			continue
+		}
+		if string(alone[k]) != string(doc) {
+			t.Errorf("peer absent: %s differs:\n%s\nwant:\n%s", k, alone[k], doc)
+		}
+	}
+	if len(alone) != len(paired)-len(tailnet) {
+		t.Errorf("peer absent rendered %v, paired %v", keys(alone), keys(paired))
 	}
 }

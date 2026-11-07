@@ -27,10 +27,13 @@ const (
 	// both this and the proxy's timeout raised.
 	DefaultMaxHold = 55 * time.Second
 	// DefaultMaxHeld bounds held-write memory: each buffers up to 64 KiB.
-	DefaultMaxHeld        = 2000
-	DefaultWriteTimeout   = 2 * time.Minute
-	DefaultHealthInterval = 2 * time.Second
-	DefaultHealthPath     = "/healthz"
+	DefaultMaxHeld                   = 2000
+	DefaultWriteTimeout              = 2 * time.Minute
+	DefaultBodyReadTimeout           = 10 * time.Second
+	DefaultMaxConcurrentWrites       = 64
+	DefaultMaxBufferedBytes    int64 = 64 << 20
+	DefaultHealthInterval            = 2 * time.Second
+	DefaultHealthPath                = "/healthz"
 	// DefaultConnRecycle is how often idle backend connections are closed, so
 	// the next request dials, and resolves the backend's name, again.
 	DefaultConnRecycle = 30 * time.Second
@@ -75,9 +78,13 @@ type Config struct {
 	MaxHeld int // more waiting writes than this get 503
 	// WriteTimeout bounds a forwarded write. Writes are not cancelled when
 	// their client leaves, so the backend's work is always waited for.
-	WriteTimeout   time.Duration
-	HealthInterval time.Duration
-	HealthPath     string
+	WriteTimeout time.Duration
+	// BodyReadTimeout bounds the initial held-body read, also capped by MaxHold.
+	BodyReadTimeout     time.Duration
+	MaxConcurrentWrites int   // per app, including normal writes after release
+	MaxBufferedBytes    int64 // global held-body reservation across all apps
+	HealthInterval      time.Duration
+	HealthPath          string
 
 	Log *slog.Logger
 	// Rand returns a number in [0, n). Tests inject it to make read routing
@@ -173,6 +180,9 @@ func parseBackend(name, raw string) (BackendConfig, error) {
 
 // checkApps validates DefaultApp and AppDomain (after setDefaults).
 func (c *Config) checkApps() error {
+	if !validHealthPath(c.HealthPath) {
+		return errors.New("health path must be a local HTTP path without fragment")
+	}
 	if !appName.MatchString(c.DefaultApp) {
 		return fmt.Errorf("default app name %q: must match %s", c.DefaultApp, appName)
 	}
@@ -187,7 +197,21 @@ func (c *Config) checkApps() error {
 	return nil
 }
 
+func validHealthPath(path string) bool {
+	u, err := url.ParseRequestURI(path)
+	return err == nil && strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "//") && u.Scheme == "" && u.Host == "" && !strings.Contains(path, "#")
+}
+
 func (c *Config) setDefaults() {
+	if c.MaxConcurrentWrites <= 0 {
+		c.MaxConcurrentWrites = DefaultMaxConcurrentWrites
+	}
+	if c.MaxBufferedBytes <= 0 {
+		c.MaxBufferedBytes = DefaultMaxBufferedBytes
+	}
+	if c.BodyReadTimeout <= 0 {
+		c.BodyReadTimeout = DefaultBodyReadTimeout
+	}
 	if c.DrainTimeout <= 0 {
 		c.DrainTimeout = DefaultDrainTimeout
 	}

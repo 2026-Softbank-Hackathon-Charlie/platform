@@ -38,6 +38,7 @@ type Registry struct {
 // RegistryStore is the part of the store a Registry reads.
 type RegistryStore interface {
 	GetApp(ctx context.Context, name string) (store.App, error)
+	ListApps(ctx context.Context) ([]store.App, error)
 	GetAppDatabase(ctx context.Context, app string) (store.AppDatabase, error)
 	ListAppDatabases(ctx context.Context) ([]store.AppDatabase, error)
 }
@@ -81,14 +82,15 @@ type endpoint struct {
 
 func (e endpoint) hostPort() string { return net.JoinHostPort(e.host, "5432") }
 
-// endpoints are the pair's databases in the environments that have a host
-// template; an environment whose host or variable would not be allowed is
-// left out.
-func (r *Registry) endpoints(d store.AppDatabase) []endpoint {
+// endpoints are the pair's databases in the environments of appEnvs, the
+// app's, that have a host template: a peer the app was never added to, or
+// was taken out of again (ADR 0043), has no database. An environment whose
+// host or variable would not be allowed is left out.
+func (r *Registry) endpoints(d store.AppDatabase, appEnvs []string) []endpoint {
 	var out []endpoint
 	for _, env := range []string{d.PrimaryEnv, d.PeerEnv} {
 		tmpl, ok := r.HostTemplates[env]
-		if !ok {
+		if !ok || !slices.Contains(appEnvs, env) {
 			continue
 		}
 		host := strings.ReplaceAll(tmpl, "{instance}", d.App) // the default instance
@@ -132,7 +134,7 @@ func (r *Registry) app(ctx context.Context, name string) (App, store.AppDatabase
 	// (ADR 0016), named through the environment's remote (ADR 0032).
 	hasBucket := slices.ContainsFunc(spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypeS3 })
 	out := App{Name: name, Namespace: name, Database: Database{Name: "app", User: "app"}, Environments: map[string]Environment{}}
-	for _, e := range r.endpoints(d) {
+	for _, e := range r.endpoints(d, a.Environments) {
 		env := Environment{CnpgCluster: name + "-" + spec.Resources[i].Name, DBHost: e.host, DBPort: 5432, PasswordEnv: e.passwordEnv}
 		if hasBucket {
 			env.Bucket = r.fileBucket(e.env, name)
@@ -142,14 +144,39 @@ func (r *Registry) app(ctx context.Context, name string) (App, store.AppDatabase
 	return out, d, true, nil
 }
 
+// pairedApp is a pair the catalog takes from the registry with its app's
+// environments.
+type pairedApp struct {
+	store.AppDatabase
+	envs []string
+}
+
+// endpoints are the pair's databases (Registry.endpoints).
+func (p pairedApp) endpoints(r *Registry) []endpoint { return r.endpoints(p.AppDatabase, p.envs) }
+
 // pairs lists the pairs the catalog takes from the registry: not of an app
-// of the file.
-func (c *Catalog) pairs(ctx context.Context) ([]store.AppDatabase, error) {
+// of the file, and of an app that is registered. Pairs are listed before
+// apps, so an app registered in between is left out until the next read.
+func (c *Catalog) pairs(ctx context.Context) ([]pairedApp, error) {
 	all, err := c.registry.Store.ListAppDatabases(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return slices.DeleteFunc(all, func(d store.AppDatabase) bool { return c.Has(d.App) }), nil
+	apps, err := c.registry.Store.ListApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	envs := map[string][]string{}
+	for _, a := range apps {
+		envs[a.Name] = a.Environments
+	}
+	var out []pairedApp
+	for _, d := range all {
+		if e, ok := envs[d.App]; ok && !c.Has(d.App) {
+			out = append(out, pairedApp{AppDatabase: d, envs: e})
+		}
+	}
+	return out, nil
 }
 
 // RegistryHosts returns, read now, the password variables of the
@@ -169,7 +196,7 @@ func (c *Catalog) RegistryHosts(ctx context.Context) (passwordHosts, appHosts ma
 	static := c.PasswordHosts()
 	for _, d := range pairs {
 		var hosts []string
-		for _, e := range c.registry.endpoints(d) {
+		for _, e := range d.endpoints(c.registry) {
 			hosts = append(hosts, e.hostPort())
 			if _, taken := static[e.passwordEnv]; !taken {
 				passwordHosts[e.passwordEnv] = []string{e.hostPort()}
@@ -199,7 +226,7 @@ func (c *Catalog) RegistryBuckets(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("read the database pairs: %w", err)
 	}
 	for _, d := range pairs {
-		for _, e := range c.registry.endpoints(d) {
+		for _, e := range d.endpoints(c.registry) {
 			if b := c.registry.fileBucket(e.env, d.App); b != "" {
 				out = append(out, b)
 			}
@@ -224,11 +251,11 @@ func (c *Catalog) SetRegistryPasswords(ctx context.Context, refs []string) error
 	}
 	static := c.PasswordHosts()
 	for _, d := range pairs {
-		for _, e := range c.registry.endpoints(d) {
+		for _, e := range d.endpoints(c.registry) {
 			if _, taken := static[e.passwordEnv]; taken || !slices.Contains(refs, e.passwordEnv) {
 				continue
 			}
-			if err := c.setPassword(d, e.passwordEnv); err != nil {
+			if err := c.setPassword(d.AppDatabase, e.passwordEnv); err != nil {
 				return err
 			}
 		}

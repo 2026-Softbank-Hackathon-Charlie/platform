@@ -19,7 +19,7 @@ func ocsfSchemas(t *testing.T) map[int]*jsonschema.Schema {
 	t.Helper()
 	dir := filepath.Join("testdata", "ocsf-"+OCSFVersion)
 	out := map[int]*jsonschema.Schema{}
-	for class, file := range map[int]string{ocsfCompliance: "compliance_finding.json", ocsfDetection: "detection_finding.json"} {
+	for class, file := range map[int]string{ocsfCompliance: "compliance_finding.json", ocsfDetection: "detection_finding.json", ocsfVulnerability: "vulnerability_finding.json"} {
 		f, err := os.Open(filepath.Join(dir, file))
 		if err != nil {
 			t.Fatal(err)
@@ -44,6 +44,12 @@ func ocsfSchemas(t *testing.T) map[int]*jsonschema.Schema {
 
 func validate(t *testing.T, schemas map[int]*jsonschema.Schema, e OCSFFinding) error {
 	t.Helper()
+	return validateClass(t, schemas, e.ClassUID, e)
+}
+
+// validateClass validates any event against the schema of class.
+func validateClass(t *testing.T, schemas map[int]*jsonschema.Schema, class int, e any) error {
+	t.Helper()
 	raw, err := json.Marshal(e)
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +58,7 @@ func validate(t *testing.T, schemas map[int]*jsonschema.Schema, e OCSFFinding) e
 	if err != nil {
 		t.Fatal(err)
 	}
-	return schemas[e.ClassUID].Validate(inst)
+	return schemas[class].Validate(inst)
 }
 
 var observed = time.Date(2026, 11, 3, 7, 0, 0, 0, time.UTC)

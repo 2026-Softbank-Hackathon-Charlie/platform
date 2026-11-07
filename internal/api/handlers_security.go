@@ -29,16 +29,34 @@ func (s *Server) root(w http.ResponseWriter, _ *http.Request) {
 // GET /v1/security?environment=&severity=&refresh=
 func (s *Server) security(w http.ResponseWriter, r *http.Request) {
 	if rep, ok := s.securityReport(w, r); ok {
+		security.AttachFindingExceptions(&rep, s.activeExceptions(r))
 		writeJSON(w, http.StatusOK, rep)
 	}
 }
 
 // GET /v1/security/ocsf?environment=&severity=&refresh=: the same findings as
-// OCSF Detection and Compliance Finding events.
+// OCSF Detection and Compliance Finding events, and the vulnerabilities and
+// control evaluations of the same collection (SEC-09) as Vulnerability and
+// Compliance Finding events. severity filters the findings only.
 func (s *Server) securityOCSF(w http.ResponseWriter, r *http.Request) {
-	if rep, ok := s.securityReport(w, r); ok {
-		writeJSON(w, http.StatusOK, security.ToOCSF(rep))
+	rep, ok := s.securityReport(w, r)
+	if !ok {
+		return
 	}
+	active := s.activeExceptions(r)
+	security.AttachFindingExceptions(&rep, active)
+	// securityReport has read (or refreshed) the collection; this reads it
+	// from the cache. Without it the two arrays stay empty.
+	col, err := s.d.Security.Collection(r.Context(), false)
+	if err != nil {
+		s.cfg.Log.Warn("ocsf export without vulnerabilities and controls: reading the collection failed", "err", err)
+		writeJSON(w, http.StatusOK, security.ToOCSF(rep))
+		return
+	}
+	env := r.URL.Query().Get("environment") // checked by securityReport
+	vulns := s.vulnerabilityReport(r, col, env, active)
+	controls := security.ControlReport(col, env, s.d.ImageScans)
+	writeJSON(w, http.StatusOK, security.ToOCSFAll(rep, &vulns, &controls))
 }
 
 // securityReport collects (or reads the cached) report and applies the
@@ -85,17 +103,25 @@ func (s *Server) securityControls(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/security/vulnerabilities?environment=&refresh=: running images,
 // their scan state and the vulnerabilities of stored scans (ADR 0034). It only
-// reads stored scans; it never scans.
+// reads stored scans; it never scans. KEV and EPSS are looked up for its CVEs (SEC-07).
 func (s *Server) securityVulnerabilities(w http.ResponseWriter, r *http.Request) {
 	if col, env, ok := s.securityCollection(w, r); ok {
-		rep := security.VulnerabilityReport(col, env, s.d.ImageScans)
-		var recs security.DeploymentRecords
-		if s.d.Store != nil {
-			recs = s.d.Store
-		}
-		security.CompareDeployed(r.Context(), &rep, recs)
-		writeJSON(w, http.StatusOK, rep)
+		writeJSON(w, http.StatusOK, s.vulnerabilityReport(r, col, env, s.activeExceptions(r)))
 	}
+}
+
+// vulnerabilityReport builds the vulnerability report of col for env with
+// deployment records, KEV/EPSS and the active exceptions attached.
+func (s *Server) vulnerabilityReport(r *http.Request, col security.Collection, env string, active map[string]apiv1.SecurityException) apiv1.SecurityVulnerabilityReport {
+	rep := security.VulnerabilityReport(col, env, s.d.ImageScans)
+	var recs security.DeploymentRecords
+	if s.d.Store != nil {
+		recs = s.d.Store
+	}
+	security.CompareDeployed(r.Context(), &rep, recs)
+	security.AttachExploitation(r.Context(), &rep, s.d.Exploits)
+	security.AttachVulnerabilityExceptions(&rep, active)
+	return rep
 }
 
 // securityCollection reads the collection and checks the query's environment

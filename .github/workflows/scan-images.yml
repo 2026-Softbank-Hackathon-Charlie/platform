@@ -31,7 +31,7 @@ concurrency:
 jobs:
   scan:
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, hopcharlie]
+    runs-on: ubuntu-24.04
     timeout-minutes: 50
     env:
       GRYPE_VERSION: 0.121.0

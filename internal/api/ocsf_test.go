@@ -15,14 +15,27 @@ func TestSecurityOCSFExport(t *testing.T) {
 		t.Fatalf("%d %s", code, b)
 	}
 	var exp struct {
-		OCSFVersion string           `json:"ocsfVersion"`
-		Findings    []map[string]any `json:"findings"`
+		OCSFVersion     string           `json:"ocsfVersion"`
+		Findings        []map[string]any `json:"findings"`
+		Vulnerabilities []map[string]any `json:"vulnerabilities"`
+		Controls        []map[string]any `json:"controls"`
 	}
 	if err := json.Unmarshal(b, &exp); err != nil {
 		t.Fatal(err)
 	}
 	if exp.OCSFVersion != "1.9.0" || len(exp.Findings) == 0 {
 		t.Fatalf("%s", b)
+	}
+	// No scanner: no vulnerabilities, but the array is there. Controls are
+	// the collection's evaluations as Compliance Findings, none not_applicable.
+	if exp.Vulnerabilities == nil || len(exp.Vulnerabilities) != 0 || len(exp.Controls) == 0 {
+		t.Fatalf("vulnerabilities and controls: %s", b)
+	}
+	for _, e := range exp.Controls {
+		c := e["compliance"].(map[string]any)
+		if e["class_uid"] != float64(2003) || (c["status_id"] != float64(0) && c["status_id"] != float64(1) && c["status_id"] != float64(3)) {
+			t.Fatalf("control event: %v", e)
+		}
 	}
 	var privileged map[string]any
 	for _, e := range exp.Findings {
@@ -42,8 +55,10 @@ func TestSecurityOCSFExport(t *testing.T) {
 	if len(rep.Findings) != len(exp.Findings) {
 		t.Fatalf("ocsf has %d events, report %d findings", len(exp.Findings), len(rep.Findings))
 	}
-	if code, b := h.do("GET", "/v1/security/ocsf?severity=critical", viewerToken, nil); code != 200 || json.Unmarshal(b, &exp) != nil || len(exp.Findings) != 0 {
-		t.Fatalf("critical only: %d %s", code, b)
+	controls := len(exp.Controls)
+	if code, b := h.do("GET", "/v1/security/ocsf?severity=critical", viewerToken, nil); code != 200 || json.Unmarshal(b, &exp) != nil || len(exp.Findings) != 0 ||
+		len(exp.Controls) != controls {
+		t.Fatalf("critical only filters findings only: %d %s", code, b)
 	}
 	if code, _ := h.do("GET", "/v1/security/ocsf?environment=mars", viewerToken, nil); code != 400 {
 		t.Fatalf("unknown environment: %d", code)

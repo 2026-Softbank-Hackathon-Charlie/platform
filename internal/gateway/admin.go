@@ -25,6 +25,9 @@ func (g *Gateway) adminMux() http.Handler {
 		writeJSON(w, http.StatusOK, apiv1.Health{Status: "ok"})
 	})
 	mux.Handle("GET /metrics", promhttp.HandlerFor(g.prom.reg, promhttp.HandlerOpts{}))
+	// Liveness remains independent: removing a serving gateway from traffic
+	// cannot repair its disk. This diagnostic reports control-plane durability.
+	mux.HandleFunc("GET /readyz", g.durabilityHealth)
 	// The default app's API, and the same API for any app under
 	// /apps/{app}, which therefore works as a gateway base URL (engine,
 	// Client.App).
@@ -45,7 +48,7 @@ func (g *Gateway) adminMux() http.Handler {
 		mux.HandleFunc(method+" /apps/{app}"+path, g.auth(g.scoped(e.h)))
 	}
 	mux.HandleFunc("GET /apps/{app}/healthz", g.auth(g.scoped(func(_ *router, w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, apiv1.Health{Status: "ok"})
+		g.durabilityHealth(w, nil)
 	})))
 	mux.HandleFunc("GET /apps", g.auth(g.handleListApps))
 	mux.HandleFunc("PUT /apps/{app}", g.auth(g.handlePutApp))
@@ -76,6 +79,7 @@ func (g *Gateway) auth(h http.HandlerFunc) http.HandlerFunc {
 // not drain in time is reverted before answering.
 func (rt *router) handleHold(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	rt.g.controlMu.Lock()
 	rt.mu.Lock()
 	changed := !rt.held
 	if changed {
@@ -84,9 +88,21 @@ func (rt *router) handleHold(w http.ResponseWriter, r *http.Request) {
 	id := rt.gen.id
 	inFlight := rt.inflightWrites
 	rt.mu.Unlock()
-	if changed {
-		rt.g.save()
+	// No successful hold may be acknowledged before it survives a restart.
+	// Other administrative changes cannot race this first persistence attempt.
+	if err := rt.g.trySave(); err != nil {
+		rt.log.Error("persist gateway hold state", "err", err, "newHoldReverted", changed)
+		if changed {
+			rt.mu.Lock()
+			rt.releaseLocked()
+			rt.mu.Unlock()
+			rt.metrics.writePause.WithLabelValues("persistence_reverted").Observe(time.Since(start).Seconds())
+		}
+		rt.g.controlMu.Unlock()
+		persistenceUnavailable(w)
+		return
 	}
+	rt.g.controlMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(r.Context(), rt.g.cfg.DrainTimeout)
 	defer cancel()
@@ -115,11 +131,15 @@ func (rt *router) handleHold(w http.ResponseWriter, r *http.Request) {
 	// a successful hold, so the write backend is still the one the in-flight
 	// writes went to, and the waiting writes can safely follow them.
 	left := rt.inflightWrites
+	heldFor := time.Since(rt.heldSince)
+	// Do not race a route/release while reverting this hold.
+	// Release already takes rt.mu; the generation check above protects it.
 	gen := rt.releaseLocked()
 	// Read under the lock: released writes decrement gen.pending as they go.
 	released, backend := gen.pending, gen.backend.name
 	rt.mu.Unlock()
 	rt.g.save()
+	rt.metrics.writePause.WithLabelValues("drain_reverted").Observe(heldFor.Seconds())
 	rt.log.Warn("admin action", "action", "hold", "changed", changed, "hold", id, "result", "drain_timeout",
 		"reverted", true, "err", drainErr, "inFlightAtHold", inFlight, "inFlightLeft", left,
 		"released", released, "backend", backend, "waitedMillis", time.Since(start).Milliseconds())
@@ -132,18 +152,30 @@ func (rt *router) handleHold(w http.ResponseWriter, r *http.Request) {
 // now, so route-then-release sends them to the new backend.
 func (rt *router) handleRelease(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	rt.g.controlMu.Lock()
+	// Save the current route while the hold is still on. If release's later
+	// save fails, restart conservatively restores this route with writes held.
+	if err := rt.g.trySave(); err != nil {
+		rt.log.Error("persist gateway route before release", "err", err)
+		rt.g.controlMu.Unlock()
+		persistenceUnavailable(w)
+		return
+	}
 	rt.mu.Lock()
 	if !rt.held {
 		rt.mu.Unlock()
+		rt.g.controlMu.Unlock()
 		rt.log.Info("admin action", "action", "release", "changed", false)
 		writeJSON(w, http.StatusOK, rt.state(defaultWindow))
 		return
 	}
-	heldFor := start.Sub(rt.heldSince)
+	heldFor := time.Since(rt.heldSince)
+	rt.metrics.writePause.WithLabelValues("released").Observe(heldFor.Seconds())
 	gen := rt.releaseLocked()
 	n := gen.pending
 	rt.mu.Unlock()
 	rt.g.save()
+	rt.g.controlMu.Unlock()
 
 	select {
 	case <-gen.dispatched:
@@ -160,6 +192,8 @@ func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	rt.g.controlMu.Lock()
+	defer rt.g.controlMu.Unlock()
 	rt.mu.Lock()
 	if _, ok := rt.byName[req.Backend]; !ok {
 		names := rt.namesLocked()
@@ -169,6 +203,11 @@ func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prev, held := rt.writeBackend, rt.held
+	if held && rt.inflightWrites > 0 && prev != req.Backend {
+		rt.mu.Unlock()
+		writeError(w, http.StatusConflict, "writes_draining", "wait for existing writes to drain before changing the write backend")
+		return
+	}
 	rt.writeBackend = req.Backend
 	rt.readWeights = rt.weightsAllToLocked(req.Backend)
 	rt.mu.Unlock()
@@ -182,6 +221,8 @@ func (rt *router) handleWeights(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	rt.g.controlMu.Lock()
+	defer rt.g.controlMu.Unlock()
 	rt.mu.Lock()
 	if err := validateWeights(req.ReadWeights, rt.namesLocked()); err != nil {
 		rt.mu.Unlock()
@@ -195,6 +236,18 @@ func (rt *router) handleWeights(w http.ResponseWriter, r *http.Request) {
 	rt.g.save()
 	rt.log.Info("admin action", "action", "weights", "readWeights", next, "previous", prev)
 	writeJSON(w, http.StatusOK, rt.state(defaultWindow))
+}
+
+func persistenceUnavailable(w http.ResponseWriter) {
+	writeError(w, http.StatusServiceUnavailable, "persistence_unavailable", "gateway state could not be saved; check routing and hold state before retrying the migration")
+}
+
+func (g *Gateway) durabilityHealth(w http.ResponseWriter, _ *http.Request) {
+	if g.persistenceFailed.Load() {
+		persistenceUnavailable(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, apiv1.Health{Status: "ok"})
 }
 
 func (rt *router) handleState(w http.ResponseWriter, r *http.Request) {

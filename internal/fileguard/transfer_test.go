@@ -43,6 +43,20 @@ func (r *testRemote) command(_ context.Context, out io.Writer, args ...string) e
 		}
 		_, err := out.Write(b)
 		return err
+	case "copy":
+		if !slices.Contains(args, "--files-from-raw") || !slices.Contains(args, "--max-transfer") || !slices.Contains(args, "--cutoff-mode") {
+			return errors.New("unbounded download")
+		}
+		for _, o := range r.objects {
+			name := filepath.Join(args[2], filepath.FromSlash(o.Path))
+			if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(name, r.data[o.Path], 0600); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "sync":
 		r.uploads++
 		r.stage = args[1]
@@ -128,8 +142,8 @@ func TestSnapshotMutationPreventsUpload(t *testing.T) {
 		return nil
 	})
 	s.execute = func(ctx context.Context, w io.Writer, args ...string) error {
-		if args[0] == "cat" {
-			stage = w.(*boundedWriter).w.(*os.File).Name()
+		if args[0] == "copy" {
+			stage = filepath.Join(args[2], "body.txt")
 		}
 		return execute(ctx, w, args...)
 	}
@@ -139,7 +153,7 @@ func TestSnapshotMutationPreventsUpload(t *testing.T) {
 }
 
 func TestTransferFailuresAndLimitsAreClosedAndRedacted(t *testing.T) {
-	for _, name := range []string{"lsjson", "cat", "sync", "check"} {
+	for _, name := range []string{"lsjson", "copy", "sync", "check"} {
 		t.Run(name, func(t *testing.T) {
 			r := cleanRemote()
 			r.fail = name
@@ -147,7 +161,7 @@ func TestTransferFailuresAndLimitsAreClosedAndRedacted(t *testing.T) {
 			if err == nil || strings.Contains(err.Error(), "TOPSECRET") {
 				t.Fatalf("unsafe failure: %v", err)
 			}
-			if (name == "lsjson" || name == "cat") && r.uploads != 0 {
+			if (name == "lsjson" || name == "copy") && r.uploads != 0 {
 				t.Fatal("uploaded after incomplete read")
 			}
 		})

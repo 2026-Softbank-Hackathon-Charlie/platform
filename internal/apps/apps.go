@@ -7,7 +7,6 @@ package apps
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -112,11 +111,10 @@ func (c *Catalog) WithRegistry(r *Registry) *Catalog {
 
 // New validates cfg against the registered environments (normalized, as
 // envs.LoadConfig returns them). gatewayURL is the platform gateway's admin
-// URL, or "" when the server has none.
+// URL, or "" when the server has none. A file without apps (apps: []) is
+// valid: it is the catalog of a platform whose apps are all registered from
+// GitHub, or whose last file app was removed.
 func New(cfg Config, environments []envs.EnvConfig, gatewayURL string) (*Catalog, error) {
-	if len(cfg.Apps) == 0 {
-		return nil, errors.New("no apps configured")
-	}
 	known := map[string]bool{}
 	for _, e := range environments {
 		known[e.Name] = true

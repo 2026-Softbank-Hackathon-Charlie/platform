@@ -1,0 +1,31 @@
+{{- /* The shared app entry (infra ADR 0058): the cluster's Traefik routes
+<namespace>.<hostSuffix>, the backend host the platform gives the gateway,
+to the public Service. */}}
+{{- $ing := .Values.profile.ingress }}
+{{- if $ing.enabled }}
+{{- range $svc := .Values.values.services }}
+{{- if $svc.public }}
+{{- $ctx := dict "root" $ "svc" $svc }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ printf "%s-%s" $.Values.values.app $svc.name }}
+  labels:
+    {{- include "hopcharlie-app.labels" $ctx | nindent 4 }}
+spec:
+  ingressClassName: {{ required "profile.ingress.className is required with profile.ingress.enabled" $ing.className }}
+  rules:
+    - host: {{ printf "%s.%s" $.Release.Namespace (required "profile.ingress.hostSuffix is required with profile.ingress.enabled" $ing.hostSuffix) }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ printf "%s-%s" $.Values.values.app $svc.name }}
+                port:
+                  name: http
+{{- end }}
+{{- end }}
+{{- end }}

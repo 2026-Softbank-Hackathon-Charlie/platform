@@ -18,10 +18,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
@@ -33,20 +36,26 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"golang.org/x/term"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/metadata"
+	"k8s.io/client-go/rest"
 )
 
 func main() {
@@ -74,6 +83,10 @@ func main() {
 	tokens, err := auth.ParseTokens(os.Getenv("PLATFORM_TOKENS"))
 	if err != nil {
 		fatal("PLATFORM_TOKENS", "err", err)
+	}
+	writtenTokens, err := auth.ParseWrittenTokens(os.Getenv("PLATFORM_WRITTEN_RECORD_TOKENS"))
+	if err != nil {
+		fatal("PLATFORM_WRITTEN_RECORD_TOKENS", "err", err)
 	}
 	if t := os.Getenv("PLATFORM_API_TOKEN"); t != "" { // the first version's single operator token
 		tokens.Add("operator", apiv1.RoleOperator, t)
@@ -221,7 +234,7 @@ func main() {
 	// must not abort a migration. runCtx is only cancelled on a forced shutdown.
 	runCtx, cancelRuns := context.WithCancel(ctx)
 	defer cancelRuns()
-	rcfg := runs.Config{StateDir: *stateDir, Store: st, Log: log}
+	rcfg := runs.Config{StateDir: *stateDir, Store: st, Log: log, ClusterLease: st.TryClusterLease}
 	if gw != nil {
 		rcfg.Traffic = gw
 		// A plan's gateway.url is the root or an app's scope (plans.Policy):
@@ -344,6 +357,23 @@ func main() {
 		fatal("PLATFORM_VERSION_GATE must be on or off", "value", v)
 	}
 
+	rcfg.RetentionPlan = planSvc.Load
+	// Explicit server opt-in. Retention is never read from an AI/client plan.
+	if value := os.Getenv("PLATFORM_SOURCE_RETENTION"); value != "" && value != "off" {
+		period, err := time.ParseDuration(value)
+		if err != nil || period < time.Minute || period > 30*24*time.Hour {
+			fatal("PLATFORM_SOURCE_RETENTION must be off or a duration between 1m and 720h")
+		}
+		if gw == nil {
+			fatal("source retention requires the platform gateway")
+		}
+		backend, err := retention.NewKube(envCfg.Environments, func(u string) retention.Traffic { return &gateway.Client{BaseURL: u, Token: gw.Token, HTTP: gw.HTTP} })
+		if err != nil {
+			fatal("initialize source retention", "err", err)
+		}
+		rcfg.Retention, rcfg.RetentionPeriod, rcfg.RetentionPlan = backend, period, planSvc.Load
+		log.Warn("source retention enabled; source database deletion ends immediate rollback, PVCs retained", "period", period)
+	}
 	runner := runs.New(runCtx, rcfg)
 	if n, err := planSvc.RecoverStarting(ctx); err != nil {
 		fatal("recover plans", "err", err)
@@ -357,6 +387,11 @@ func main() {
 	}
 
 	deps := api.Deps{Plans: planSvc, Runs: runner, Store: st, Envs: envSvc, EnvNotFound: envs.ErrNotFound}
+	if rcfg.Retention != nil {
+		retentionCtx, stopRetention := context.WithCancel(runCtx)
+		defer stopRetention()
+		go runner.RunRetention(retentionCtx)
+	}
 	deps.Apps = appCat
 	deps.Buckets = bucketInspector
 	// Draft plans can carry the source's numbers (POST /v1/plans/draft with
@@ -380,6 +415,11 @@ func main() {
 	}), security.Options{Log: log})
 	// Scans the image scan workflow posted to POST /v1/security/scans (SEC-04).
 	deps.ImageScans = security.StoredScans{Store: st}
+	// KEV and EPSS for the vulnerability report (SEC-07): public feeds, no credentials.
+	deps.Exploits = security.NewExploitIntel()
+	// Read the KEV catalog now, off the request path, so the 7-day exception
+	// limit for KEV-listed CVEs (SEC-08) holds right after a restart.
+	go deps.Exploits.Warm(ctx)
 	// A running agent session with no event for PLATFORM_AGENT_IDLE is closed
 	// as cancelled, so an agent that crashed does not leave it open forever.
 	agentIdle := agentlog.DefaultIdle
@@ -405,8 +445,45 @@ func main() {
 	} else {
 		log.Info("PLATFORM_AIRUN_JOB_TEMPLATE is not set: the console cannot start the AI runner; run hopai by hand")
 	}
+	// Optional: read what the AI runner did from the observability stack's
+	// ClickHouse (the HyperDX store) so the console's migration map can show the
+	// real calls. A read-only ClickHouse user is expected; the password comes
+	// from a mounted file, never an environment value. A bad setting turns only
+	// /v1/ai-activity off (503).
+	if u := os.Getenv("PLATFORM_AIOBS_CLICKHOUSE_URL"); u != "" {
+		pw := ""
+		if f := os.Getenv("PLATFORM_AIOBS_CLICKHOUSE_PASSWORD_FILE"); f != "" {
+			raw, err := os.ReadFile(f)
+			if err != nil {
+				log.Error("AI activity is off: the ClickHouse password file cannot be read; /v1/ai-activity answers 503", "err", err)
+				u = ""
+			}
+			pw = strings.TrimSpace(string(raw))
+		}
+		if u != "" {
+			c, err := aiobs.New(u, os.Getenv("PLATFORM_AIOBS_CLICKHOUSE_USER"), pw, os.Getenv("PLATFORM_AIOBS_CLICKHOUSE_TABLE"))
+			if err != nil {
+				log.Error("AI activity is off; /v1/ai-activity answers 503", "err", err)
+			} else {
+				deps.AIActivity = c
+				log.Info("AI activity enabled", "table", c.Table)
+			}
+		}
+	} else {
+		log.Info("PLATFORM_AIOBS_CLICKHOUSE_URL is not set: /v1/ai-activity answers 503")
+	}
 	deps.Secrets = secretsKey
 	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }
+	deps.SealingConfigured = func(env string) bool { _, err := envSvc.Sealer(env); return err == nil }
+	// The readiness of a database pair (ADR 0043) reads the app's CNPG
+	// Clusters with the platform's own workload credentials.
+	workloads := workloadClients(envSvc)
+	deps.DBCluster = dbClusterReader(workloads)
+	// Adding an environment back waits until its earlier workloads are gone.
+	deps.WorkloadResidue = workloadResidue(workloads)
+	if gw != nil {
+		deps.Gateway = gw
+	}
 	go agents.RunSweeper(runCtx, agentIdle, log)
 	// Optional (ADR 0030): the management cluster's routes to registered apps' databases.
 	if dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log); err != nil {
@@ -477,12 +554,13 @@ func main() {
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{
-			Tokens:      tokens,
-			Insecure:    *insecure,
-			Admins:      admins,
-			ConsoleURL:  os.Getenv("PLATFORM_CONSOLE_URL"),
-			CORSOrigins: splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
-			Log:         log,
+			WrittenTokens: writtenTokens,
+			Tokens:        tokens,
+			Insecure:      *insecure,
+			Admins:        admins,
+			ConsoleURL:    os.Getenv("PLATFORM_CONSOLE_URL"),
+			CORSOrigins:   splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
+			Log:           log,
 
 			GitHubWebhookSecret: webhookSecret,
 			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
@@ -592,6 +670,73 @@ func envOr(k, def string) string {
 	return def
 }
 
+// workloadClients returns each environment's dynamic client for its
+// workload cluster, built on first use from its kubeconfig context with the
+// platform's own credentials and kept; a failed build is tried again next
+// time.
+func workloadClients(envSvc *envs.Service) func(env string) (dynamic.Interface, error) {
+	var mu sync.Mutex
+	clients := map[string]dynamic.Interface{}
+	return func(env string) (dynamic.Interface, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if dyn, ok := clients[env]; ok {
+			return dyn, nil
+		}
+		c, known := envSvc.Config(env)
+		if !known {
+			return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
+		}
+		_, d, err := envs.NewReadClients(c, api.DBClusterTimeout)
+		if err != nil {
+			return nil, err
+		}
+		clients[env] = d
+		return d, nil
+	}
+}
+
+// dbClusterReader reads a CNPG Cluster in an environment's workload cluster.
+func dbClusterReader(clients func(string) (dynamic.Interface, error)) api.DBClusterReader {
+	return func(ctx context.Context, env, namespace, name string) (*cnpg.Status, error) {
+		dyn, err := clients(env)
+		if err != nil {
+			return nil, err
+		}
+		return cnpg.New(dyn, namespace, name).Get(ctx)
+	}
+}
+
+// workloadResidue lists one Service and one Pod of a namespace in an
+// environment's workload cluster (the platform's observer role lists both,
+// infra ADR 0063), for whether an environment removed from an app is gone
+// (ADR 0043).
+func workloadResidue(clients func(string) (dynamic.Interface, error)) api.WorkloadResidue {
+	kinds := []struct {
+		kind string
+		gvr  schema.GroupVersionResource
+	}{
+		{"Service", schema.GroupVersionResource{Version: "v1", Resource: "services"}},
+		{"Pod", schema.GroupVersionResource{Version: "v1", Resource: "pods"}},
+	}
+	return func(ctx context.Context, env, namespace string) (string, error) {
+		dyn, err := clients(env)
+		if err != nil {
+			return "", err
+		}
+		for _, k := range kinds {
+			list, err := dyn.Resource(k.gvr).Namespace(namespace).List(ctx, metav1.ListOptions{Limit: 1})
+			if err != nil {
+				return "", err
+			}
+			if len(list.Items) > 0 {
+				return k.kind + " " + list.Items[0].GetName(), nil
+			}
+		}
+		return "", nil
+	}
+}
+
 func splitList(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
@@ -632,5 +777,31 @@ func parityGate(path string, envSvc *envs.Service) (*paritygate.Gate, error) {
 		}
 		return envs.NewReadClients(c, 10*time.Second)
 	}
-	return paritygate.NewWithResources(cfg, sar, nil, resources), nil
+	g := paritygate.NewWithResources(cfg, sar, nil, resources)
+	var cloudEnvironments []string
+	for _, name := range envSvc.Names() {
+		c, _ := envSvc.Config(name)
+		if c.Provider == "aws" || c.Provider == "gcp" {
+			cloudEnvironments = append(cloudEnvironments, name)
+		}
+	}
+	g.SetCloudPolicyFetcher(cloudpolicy.New(func(environment string) (cloudpolicy.Environment, error) {
+		c, ok := envSvc.Config(environment)
+		if !ok {
+			return cloudpolicy.Environment{}, errors.New("unknown environment")
+		}
+		return cloudpolicy.Environment{Provider: c.Provider, Region: c.Region}, nil
+	}, nil, nil).Check, cloudEnvironments...)
+	g.SetUsageFetcher(probes.ServiceUsageFetcher(func(environment string) (rest.Interface, error) {
+		c, ok := envSvc.Config(environment)
+		if !ok {
+			return nil, errors.New("unknown environment")
+		}
+		k, err := envs.NewKubeClient(c, 5*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return k.CoreV1().RESTClient(), nil
+	}))
+	return g, nil
 }

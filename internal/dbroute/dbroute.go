@@ -1,8 +1,9 @@
 // Package dbroute keeps the management cluster's routes to the databases of
 // registered apps (ADR 0030, "관리 쪽 DB 경로"): for each app with a database
 // pair it creates, in the cluster the API runs in, one Tailscale egress
-// Service per environment of the pair, named after the environment's database
-// host template, and deletes them when the app goes. The Tailscale operator
+// Service per environment of the pair while both are the app's environments
+// (ADR 0043), named after the environment's database host template, and
+// deletes them when the app or one of the environments goes. The Tailscale operator
 // turns each Service into a proxy to the app's database in that environment.
 //
 // It only creates and deletes Services, never updates them: the operator
@@ -58,10 +59,31 @@ const Interval = 2 * time.Minute
 // ErrConflict is a Service of a route's name that is not ours.
 var ErrConflict = errors.New("a service of the same name is not managed by the platform")
 
-// Pairs reads the database pairs of registered apps (store.Store).
+// Pairs reads the database pairs of registered apps and the apps
+// themselves, for their environments (store.Store).
 type Pairs interface {
 	GetAppDatabase(ctx context.Context, app string) (store.AppDatabase, error)
 	ListAppDatabases(ctx context.Context) ([]store.AppDatabase, error)
+	GetApp(ctx context.Context, name string) (store.App, error)
+	ListApps(ctx context.Context) ([]store.App, error)
+}
+
+// envs are the environments of pair d that get a route: those with a route,
+// and only while both environments of the pair are environments of app a.
+// The routes are for migrating between the two, so a pair whose peer was
+// never added, or was removed again, has none, and no egress proxy stands
+// for it (ADR 0043).
+func (m *Manager) envs(d store.AppDatabase, a store.App) []string {
+	if !slices.Contains(a.Environments, d.PrimaryEnv) || !slices.Contains(a.Environments, d.PeerEnv) {
+		return nil
+	}
+	var out []string
+	for _, env := range []string{d.PrimaryEnv, d.PeerEnv} {
+		if _, ok := m.cfg.Routes[env]; ok {
+			out = append(out, env)
+		}
+	}
+	return out
 }
 
 // Route is where one environment's databases are reached from the
@@ -194,15 +216,13 @@ func (m *Manager) ours(svc *corev1.Service) (app, env string, ok bool) {
 	return app, env, true
 }
 
-// Ensure creates the missing route Services of d's pair. One that exists is
-// left as it is (the operator changes it). A Service of the same name that
-// is not ours is ErrConflict.
-func (m *Manager) Ensure(ctx context.Context, d store.AppDatabase) error {
+// Ensure creates the missing route Services of d's pair in the
+// environments of a, its app. One that exists is left as it is (the
+// operator changes it). A Service of the same name that is not ours is
+// ErrConflict.
+func (m *Manager) Ensure(ctx context.Context, d store.AppDatabase, a store.App) error {
 	var errs []error
-	for _, env := range []string{d.PrimaryEnv, d.PeerEnv} {
-		if _, ok := m.cfg.Routes[env]; !ok {
-			continue
-		}
+	for _, env := range m.envs(d, a) {
 		if err := m.ensure(ctx, env, d.App); err != nil {
 			errs = append(errs, fmt.Errorf("route of %s to %s: %w", d.App, env, err))
 		}
@@ -260,8 +280,16 @@ func annotationsMatch(want, got *corev1.Service) bool {
 // Remove deletes the route Services of app in every environment. A Service
 // of a route's name that is not ours is left alone.
 func (m *Manager) Remove(ctx context.Context, app string) error {
+	return m.remove(ctx, app, nil)
+}
+
+// remove deletes the route Services of app in every environment but keep.
+func (m *Manager) remove(ctx context.Context, app string, keep []string) error {
 	var errs []error
 	for _, env := range slices.Sorted(maps.Keys(m.cfg.Routes)) {
+		if slices.Contains(keep, env) {
+			continue
+		}
 		r := m.cfg.Routes[env]
 		got, err := m.cfg.Client.CoreV1().Services(r.Namespace).Get(ctx, r.Name(app), metav1.GetOptions{})
 		switch {
@@ -299,20 +327,53 @@ func (m *Manager) delete(ctx context.Context, svc *corev1.Service, app, env stri
 	return nil
 }
 
-// Reconcile creates the missing routes of every pair and deletes the routes
-// of apps whose pair is gone. It deletes nothing when the pairs cannot be
-// listed or there are none, and a route only when reading its app's pair
-// says it does not exist.
+// Sync makes the routes of app what its pair and its environments say:
+// the missing ones are created and those of an environment the app no
+// longer has are deleted; without a pair every route of the app goes.
+func (m *Manager) Sync(ctx context.Context, app string) error {
+	d, err := m.cfg.Pairs.GetAppDatabase(ctx, app)
+	if errors.Is(err, store.ErrNotFound) {
+		return m.Remove(ctx, app)
+	}
+	if err != nil {
+		return fmt.Errorf("read the database pair of %s: %w", app, err)
+	}
+	a, err := m.cfg.Pairs.GetApp(ctx, app)
+	if err != nil {
+		return fmt.Errorf("read app %s: %w", app, err)
+	}
+	return errors.Join(m.Ensure(ctx, d, a), m.remove(ctx, app, m.envs(d, a)))
+}
+
+// Reconcile creates the missing routes of every pair, deletes the routes of
+// apps whose pair is gone and those of an environment a paired app no
+// longer has. It deletes nothing when the pairs or the apps cannot be
+// listed or there are no pairs, and a route of an app without a listed pair
+// only when reading its app's pair says it does not exist.
 func (m *Manager) Reconcile(ctx context.Context) error {
 	pairs, err := m.cfg.Pairs.ListAppDatabases(ctx)
 	if err != nil {
 		return fmt.Errorf("list database pairs: %w", err)
 	}
+	apps, err := m.cfg.Pairs.ListApps(ctx)
+	if err != nil {
+		return fmt.Errorf("list apps: %w", err)
+	}
+	byName := map[string]store.App{}
+	for _, a := range apps {
+		byName[a.Name] = a
+	}
 	var errs []error
 	paired := map[string]bool{}
+	wanted := map[string][]string{} // by app; absent for a pair whose app was not listed
 	for _, d := range pairs {
 		paired[d.App] = true
-		if err := m.Ensure(ctx, d); err != nil {
+		a, ok := byName[d.App]
+		if !ok {
+			continue // registered or deleted between the two lists
+		}
+		wanted[d.App] = m.envs(d, a)
+		if err := m.Ensure(ctx, d, a); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -332,7 +393,15 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		for i := range list.Items {
 			svc := &list.Items[i]
 			app, env, ok := m.ours(svc)
-			if !ok || paired[app] {
+			if !ok {
+				continue
+			}
+			if paired[app] {
+				if keep, known := wanted[app]; known && !slices.Contains(keep, env) {
+					if err := m.delete(ctx, svc, app, env); err != nil {
+						errs = append(errs, err)
+					}
+				}
 				continue
 			}
 			_, err := m.cfg.Pairs.GetAppDatabase(ctx, app)
@@ -373,8 +442,21 @@ func (m *Manager) Added(d store.AppDatabase) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := m.Ensure(ctx, d); err != nil {
+		if err := m.Sync(ctx, d.App); err != nil {
 			m.cfg.Log.Warn("database routes of a new app not created yet; retried every few minutes", "app", d.App, "err", err)
+		}
+	}()
+}
+
+// Changed makes the routes of an app whose environments just changed (ADR
+// 0043) follow them, in the background. A failure is only logged; Run
+// reconciles later.
+func (m *Manager) Changed(app string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := m.Sync(ctx, app); err != nil {
+			m.cfg.Log.Warn("database routes of an app whose environments changed not updated yet; retried every few minutes", "app", app, "err", err)
 		}
 	}()
 }

@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   go:
-    runs-on: [self-hosted, hopcharlie]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
@@ -148,7 +148,7 @@ jobs:
         run: docker rm -f -v "$PG_CONTAINER" >/dev/null 2>&1 || true
 
   shell:
-    runs-on: [self-hosted, hopcharlie]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
