@@ -378,7 +378,11 @@ func (g *Gateway) shuttingDown() bool {
 // Close persists the final state. Call it after the servers have stopped; a
 // hold in progress stays recorded as held.
 func (g *Gateway) Close() error {
-	return g.trySave()
+	err := g.trySave()
+	if err != nil {
+		g.log.Error("persist gateway state", "file", g.cfg.StateFile, "err", err)
+	}
+	return err
 }
 
 // HoldAfterOwnerLoss is called before serving requests after an unclean

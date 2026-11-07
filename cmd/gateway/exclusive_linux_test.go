@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -41,6 +42,17 @@ func TestExclusiveProcessFailover(t *testing.T) {
 	}
 	var writes atomic.Int64
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/upgrade" {
+			conn, out, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			out.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: hop-test\r\n\r\n")
+			out.Flush()
+			io.Copy(io.Discard, conn)
+			return
+		}
 		if r.Method == http.MethodPost {
 			writes.Add(1)
 		}
@@ -113,9 +125,41 @@ func TestExclusiveProcessFailover(t *testing.T) {
 	waitReady(adminB)
 	// A clean SIGTERM drains, durably checkpoints, clears the marker and lets
 	// the other process serve writes without entering unknown-owner recovery.
+	upgraded, err := net.DialTimeout("tcp", strings.TrimPrefix(publicA, "http://"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	upgraded.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(upgraded, "GET /upgrade HTTP/1.1\r\nHost: app\r\nConnection: Upgrade\r\nUpgrade: hop-test\r\n\r\n")
+	reader := bufio.NewReader(upgraded)
+	line, err := reader.ReadString('\n')
+	if err != nil || !strings.Contains(line, "101") {
+		t.Fatalf("upgrade: %q %v", line, err)
+	}
+	for {
+		line, err = reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
 	if err := owner.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(150 * time.Millisecond)
+	probe, err := openStateLock(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned, err := probe.TryLock(); err != nil || owned {
+		probe.Close()
+		t.Fatalf("lock released with upgraded request in flight: %v %v", owned, err)
+	}
+	probe.Close()
+	upgraded.Close()
 	if err := owner.Wait(); err != nil {
 		t.Fatalf("clean exit: %v", err)
 	}
