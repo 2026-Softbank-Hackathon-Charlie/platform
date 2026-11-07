@@ -25,7 +25,11 @@ type AppDatabase struct {
 	CACert             string // PEM; public
 	CAKeyNonce         []byte
 	CAKeyCiphertext    []byte
-	CreatedAt          time.Time
+	// PeerGeneration counts the removals of PeerEnv from the app (ADR
+	// 0043). The peer's backup path has it once it is not 0, so a peer
+	// added back archives to a new, empty path.
+	PeerGeneration int
+	CreatedAt      time.Time
 }
 
 // Clean returns d with every string passed through CleanText and its byte

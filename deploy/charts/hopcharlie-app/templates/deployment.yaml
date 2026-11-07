@@ -41,11 +41,21 @@ spec:
     metadata:
       labels:
         {{- include "hopcharlie-app.labels" $ctx | nindent 8 }}
-      {{- with $.Values.values.sealedSecrets.appChecksum }}
+        {{- if $.Values.profile.observability.enabled }}
+        observability.hopcharlie.dev/enabled: "true"
+        observability.hopcharlie.dev/kind: application
+        app.kubernetes.io/version: {{ $.Values.commit | default "unknown" | trunc 63 | quote }}
+        {{- end }}
+      {{- if or $.Values.values.sealedSecrets.appChecksum $.Values.profile.observability.enabled }}
+      annotations:
+        {{- with $.Values.values.sealedSecrets.appChecksum }}
       # Sealing gives new ciphertexts on every deploy; this changes only with
       # the secrets themselves, so the pods restart exactly then.
-      annotations:
         hopcharlie.dev/secrets-checksum: {{ . | quote }}
+        {{- end }}
+        {{- if $.Values.profile.observability.enabled }}
+        checksum/observability-ca: {{ $.Values.profile.observability.caBundle | sha256sum }}
+        {{- end }}
       {{- end }}
     spec:
       automountServiceAccountToken: false
@@ -80,9 +90,13 @@ spec:
                 name: app-secrets
           {{- end }}
           {{- $platformEnv := include "hopcharlie-app.platformEnv" $ctx | trim }}
-          {{- if or $platformEnv $svc.env }}
+          {{- $otelEnv := include "hopcharlie-app.otelEnv" $ctx | trim }}
+          {{- if or $platformEnv $svc.env $otelEnv }}
           env:
             {{- with $platformEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with $otelEnv }}
             {{- . | nindent 12 }}
             {{- end }}
             {{- range $k, $v := $svc.env }}
@@ -137,4 +151,13 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          {{- if $.Values.profile.observability.enabled }}
+          volumeMounts:
+            - {name: observability-ca, mountPath: /etc/otel/ca, readOnly: true}
+          {{- end }}
+      {{- if $.Values.profile.observability.enabled }}
+      volumes:
+        - name: observability-ca
+          configMap: {name: hopcharlie-observability-ca}
+      {{- end }}
 {{- end }}

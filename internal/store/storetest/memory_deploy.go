@@ -109,6 +109,18 @@ func (m *memory) GetAppDatabase(_ context.Context, app string) (store.AppDatabas
 	return d.Clean(), nil // Clean copies the byte slices
 }
 
+func (m *memory) NextPeerGeneration(_ context.Context, app string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.deploy.databases[app]
+	if !ok {
+		return 0, fmt.Errorf("%w: database pair of app %s", store.ErrNotFound, app)
+	}
+	d.PeerGeneration++
+	m.deploy.databases[app] = d
+	return d.PeerGeneration, nil
+}
+
 func (m *memory) ListAppDatabases(_ context.Context) ([]store.AppDatabase, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -158,9 +170,37 @@ func (m *memory) UpdateApp(_ context.Context, a store.App) error {
 	if _, ok := m.deploy.branches[a.Name][a.Branch]; ok {
 		return fmt.Errorf("%w: %s is an added branch of app %s", store.ErrBranchExists, a.Branch, a.Name)
 	}
-	cur.Branch, cur.Environments, cur.AutoDeploy = a.Branch, append([]string{}, a.Environments...), a.AutoDeploy
+	cur.Branch, cur.AutoDeploy = a.Branch, a.AutoDeploy
 	cur.Spec, cur.SpecCommit = bytes.Clone(a.Spec), a.SpecCommit
 	m.deploy.apps[a.Name] = cur
+	return nil
+}
+
+func (m *memory) SetAppEnvironments(_ context.Context, name string, from, to []string) error {
+	if !store.Clean(name) {
+		return fmt.Errorf("%w: app %q", store.ErrNotFound, name)
+	}
+	if len(to) == 0 {
+		return fmt.Errorf("storetest: app %s keeps at least one environment", name)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.deploy.apps[name]
+	if !ok {
+		return fmt.Errorf("%w: app %s", store.ErrNotFound, name)
+	}
+	clean := func(list []string) []string {
+		out := make([]string, len(list))
+		for i, e := range list {
+			out[i] = store.CleanText(e)
+		}
+		return out
+	}
+	if !slices.Equal(cur.Environments, clean(from)) {
+		return fmt.Errorf("%w: app %s is in %v, not %v", store.ErrConflict, name, cur.Environments, from)
+	}
+	cur.Environments = clean(to)
+	m.deploy.apps[name] = cur
 	return nil
 }
 

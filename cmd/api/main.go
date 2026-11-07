@@ -18,9 +18,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
@@ -47,6 +49,8 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"golang.org/x/term"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
@@ -470,6 +474,16 @@ func main() {
 	}
 	deps.Secrets = secretsKey
 	deps.StorageConfigured = func(env string) bool { _, err := envSvc.Storage(env); return err == nil }
+	deps.SealingConfigured = func(env string) bool { _, err := envSvc.Sealer(env); return err == nil }
+	// The readiness of a database pair (ADR 0043) reads the app's CNPG
+	// Clusters with the platform's own workload credentials.
+	workloads := workloadClients(envSvc)
+	deps.DBCluster = dbClusterReader(workloads)
+	// Adding an environment back waits until its earlier workloads are gone.
+	deps.WorkloadResidue = workloadResidue(workloads)
+	if gw != nil {
+		deps.Gateway = gw
+	}
 	go agents.RunSweeper(runCtx, agentIdle, log)
 	// Optional (ADR 0030): the management cluster's routes to registered apps' databases.
 	if dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log); err != nil {
@@ -654,6 +668,73 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// workloadClients returns each environment's dynamic client for its
+// workload cluster, built on first use from its kubeconfig context with the
+// platform's own credentials and kept; a failed build is tried again next
+// time.
+func workloadClients(envSvc *envs.Service) func(env string) (dynamic.Interface, error) {
+	var mu sync.Mutex
+	clients := map[string]dynamic.Interface{}
+	return func(env string) (dynamic.Interface, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if dyn, ok := clients[env]; ok {
+			return dyn, nil
+		}
+		c, known := envSvc.Config(env)
+		if !known {
+			return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
+		}
+		_, d, err := envs.NewReadClients(c, api.DBClusterTimeout)
+		if err != nil {
+			return nil, err
+		}
+		clients[env] = d
+		return d, nil
+	}
+}
+
+// dbClusterReader reads a CNPG Cluster in an environment's workload cluster.
+func dbClusterReader(clients func(string) (dynamic.Interface, error)) api.DBClusterReader {
+	return func(ctx context.Context, env, namespace, name string) (*cnpg.Status, error) {
+		dyn, err := clients(env)
+		if err != nil {
+			return nil, err
+		}
+		return cnpg.New(dyn, namespace, name).Get(ctx)
+	}
+}
+
+// workloadResidue lists one Service and one Pod of a namespace in an
+// environment's workload cluster (the platform's observer role lists both,
+// infra ADR 0063), for whether an environment removed from an app is gone
+// (ADR 0043).
+func workloadResidue(clients func(string) (dynamic.Interface, error)) api.WorkloadResidue {
+	kinds := []struct {
+		kind string
+		gvr  schema.GroupVersionResource
+	}{
+		{"Service", schema.GroupVersionResource{Version: "v1", Resource: "services"}},
+		{"Pod", schema.GroupVersionResource{Version: "v1", Resource: "pods"}},
+	}
+	return func(ctx context.Context, env, namespace string) (string, error) {
+		dyn, err := clients(env)
+		if err != nil {
+			return "", err
+		}
+		for _, k := range kinds {
+			list, err := dyn.Resource(k.gvr).Namespace(namespace).List(ctx, metav1.ListOptions{Limit: 1})
+			if err != nil {
+				return "", err
+			}
+			if len(list.Items) > 0 {
+				return k.kind + " " + list.Items[0].GetName(), nil
+			}
+		}
+		return "", nil
+	}
 }
 
 func splitList(s string) []string {

@@ -7,8 +7,16 @@ kind: Namespace
 metadata:
   name: {{ .Release.Namespace }}
   labels:
+    {{- if .Values.profile.observability.enabled }}
+    observability.hopcharlie.dev/enabled: "true"
+    {{- end }}
     hopcharlie.dev/app: {{ .Values.values.app }}
     hopcharlie.dev/instance: {{ .Release.Namespace }}
+    {{- if .Values.values.dbTopology }}
+    # Where the platform may patch the CNPG Cluster's replica (infra ADR 0063)
+    # and the shared database proxies accept replication.
+    hopcharlie.dev/db-topology: "true"
+    {{- end }}
     app.kubernetes.io/part-of: {{ .Values.values.app }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
     {{- with .Values.profile.podSecurity }}

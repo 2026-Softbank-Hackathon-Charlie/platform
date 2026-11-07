@@ -149,4 +149,8 @@ type SecretStore interface {
 	// ListAppDatabases returns every app's database pair, by app in byte
 	// order; empty, not nil, when there are none.
 	ListAppDatabases(ctx context.Context) ([]AppDatabase, error)
+	// NextPeerGeneration adds one to the PeerGeneration of app's database
+	// pair and returns the new value (ADR 0043). ErrNotFound when it has
+	// none.
+	NextPeerGeneration(ctx context.Context, app string) (int, error)
 }

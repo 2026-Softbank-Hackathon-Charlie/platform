@@ -116,7 +116,7 @@ request.
 {{/*
 A SealedSecret in the release namespace. strict scope: the ciphertexts open
 only as this name in this namespace. Call with (dict "root" $ "name" <name>
-"data" <key: ciphertext>).
+"data" <key: ciphertext>), and "type" for a Secret type other than Opaque.
 */}}
 {{- define "hopcharlie-app.sealedSecret" -}}
 apiVersion: bitnami.com/v1alpha1
@@ -137,7 +137,7 @@ spec:
     metadata:
       name: {{ .name }}
       namespace: {{ .root.Release.Namespace }}
-    type: Opaque
+    type: {{ .type | default "Opaque" }}
 {{- end -}}
 
 {{/*
@@ -164,5 +164,108 @@ public service, and no env name that is also a sealed app secret.
 {{- end -}}
 {{- if gt (len $public) 1 -}}
 {{- fail (printf "values.services: only one service may be public (%s)" (join ", " $public)) -}}
+{{- end -}}
+{{- $topo := include "hopcharlie-app.dbTopology" . | fromJson -}}
+{{- with $topo.cluster -}}
+{{- range list $topo.ingressService $topo.egressService -}}
+{{- if gt (len .) 63 -}}
+{{- fail (printf "values.dbTopology: Service name %s is longer than 63 characters" .) -}}
+{{- end -}}
+{{- if hasKey $names (trimPrefix (printf "%s-" $.Values.values.app) .) -}}
+{{- fail (printf "values.dbTopology: Service %s is also an app service's Service" .) -}}
+{{- end -}}
+{{- end -}}
+{{- range list $topo.ingressHost $topo.egressHost $topo.peerHost -}}
+{{- if gt (len .) 63 -}}
+{{- fail (printf "values.dbTopology: Tailscale hostname %s is longer than 63 characters" .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The names of the postgres resource's half of a CNPG distributed topology
+(values.dbTopology, infra ADR 0063) as JSON, or {} without dbTopology. The
+gitops values, these names and the Secret names are the contract with the
+platform, which builds the same names for the migration engine:
+
+  cluster          <app>-<pg>
+  self, other      <cluster>-<env>, <cluster>-<other env>: replica.self and
+                   the externalClusters
+  ingressService   <cluster>-ts, the primary exposed on the tailnet as
+                   hop-db-<env>-<instance>
+  egressService    <cluster>-to-<other env>, the peer's database through the
+                   tailnet host hop-db-<env>-<instance>-to-<other env>
+
+other is the environment of the file that is not env. The platform writes peer
+as the environment born a replica, the same value in both files; a peer that
+is the other environment seen from this file is accepted too. peerPresent
+false (infra ADR 0074) means the peer environment does not exist yet: only
+the primary's file may say so, and dbnetwork.yaml then draws no tailnet
+objects. Fails on values the platform must not write.
+*/}}
+{{- define "hopcharlie-app.dbTopology" -}}
+{{- $t := .Values.values.dbTopology -}}
+{{- $out := dict -}}
+{{- if $t -}}
+{{- $sealed := .Values.values.sealedSecrets | default dict -}}
+{{- $pg := include "hopcharlie-app.resource" (dict "root" . "type" "postgres") | fromJson -}}
+{{- if not (and $pg.name $sealed.pgApp $sealed.pgCA) -}}
+{{- fail "values.dbTopology needs a postgres resource, values.sealedSecrets.pgApp and values.sealedSecrets.pgCA (infra ADR 0063)" -}}
+{{- end -}}
+{{- $env := .Values.env -}}
+{{- $other := ternary $t.peer $t.primary (eq $env $t.primary) -}}
+{{- if or (not $env) (eq $other $env) (not (has $t.peer (list $env $other))) -}}
+{{- fail (printf "values.dbTopology: env %q must be one of primary %q and peer %q, and the other must differ (infra ADR 0063)" $env $t.primary $t.peer) -}}
+{{- end -}}
+{{- $peerPresent := not (and (hasKey $t "peerPresent") (not $t.peerPresent)) -}}
+{{- if and (not $peerPresent) (ne $env $t.primary) -}}
+{{- fail (printf "values.dbTopology.peerPresent false is only for the primary's file (env %q, primary %q; infra ADR 0074)" $env $t.primary) -}}
+{{- end -}}
+{{- $cluster := printf "%s-%s" .Values.values.app $pg.name -}}
+{{- $instance := .Release.Namespace -}}
+{{- $_ := set $out "cluster" $cluster -}}
+{{- $_ := set $out "peerPresent" $peerPresent -}}
+{{- $_ := set $out "env" $env -}}
+{{- $_ := set $out "other" $other -}}
+{{- $_ := set $out "isPrimary" (eq $env $t.primary) -}}
+{{- $_ := set $out "self" (printf "%s-%s" $cluster $env) -}}
+{{- $_ := set $out "primary" (printf "%s-%s" $cluster $t.primary) -}}
+{{- $_ := set $out "source" (printf "%s-%s" $cluster $other) -}}
+{{- $_ := set $out "ingressService" (printf "%s-ts" $cluster) -}}
+{{- $_ := set $out "egressService" (printf "%s-to-%s" $cluster $other) -}}
+{{- $_ := set $out "ingressHost" (printf "hop-db-%s-%s" $env $instance) -}}
+{{- $_ := set $out "egressHost" (printf "hop-db-%s-%s-to-%s" $env $instance $other) -}}
+{{- $_ := set $out "peerHost" (printf "hop-db-%s-%s" $other $instance) -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
+{{/* Namespace-independent OTel wiring; no credential in app values. */}}
+{{- define "hopcharlie-app.otelEnv" -}}
+{{- $o := .root.Values.profile.observability -}}
+{{- if $o.enabled -}}
+{{- range $key, $_ := .svc.env -}}
+{{- if hasPrefix "OTEL_" $key -}}
+{{- fail "OTEL_* is managed by the enabled environment observability profile" -}}
+{{- end -}}
+{{- end -}}
+{{- range $key, $value := .root.Values.values.sealedSecrets.app -}}
+{{- if hasPrefix "OTEL_" $key -}}
+{{- fail "OTEL_* sealed variables conflict with the environment observability profile" -}}
+{{- end -}}
+{{- end -}}
+- {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ $o.endpoint | quote }}}
+- {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf"}
+- {name: OTEL_EXPORTER_OTLP_CERTIFICATE, value: /etc/otel/ca/ca.crt}
+- {name: OTEL_EXPORTER_OTLP_INSECURE, value: "false"}
+- {name: OTEL_TRACES_EXPORTER, value: otlp}
+- {name: OTEL_METRICS_EXPORTER, value: none}
+- {name: OTEL_LOGS_EXPORTER, value: none}
+- {name: OTEL_SERVICE_NAME, value: {{ printf "%s-%s" .root.Values.values.app .svc.name | quote }}}
+- name: OTEL_K8S_POD_UID
+  valueFrom: {fieldRef: {fieldPath: metadata.uid}}
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: {{ printf "service.version=%s,k8s.cluster.name=%s,k8s.namespace.name=%s,k8s.pod.uid=$(OTEL_K8S_POD_UID),cloud.provider=%s,cloud.region=%s,deployment.environment.name=%s" (.root.Values.commit | default "unknown") $o.clusterName .root.Release.Namespace $o.cloudProvider $o.region (.root.Values.env | default "unknown") | quote }}
 {{- end -}}
 {{- end -}}

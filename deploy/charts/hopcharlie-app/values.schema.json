@@ -92,11 +92,46 @@
                 "accessKey": { "$ref": "#/definitions/ciphertext" },
                 "secretKey": { "$ref": "#/definitions/ciphertext" }
               }
+            },
+            "pgApp": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["username", "password", "dbname", "host", "port", "uri", "jdbc-uri"],
+              "properties": {
+                "username": { "$ref": "#/definitions/ciphertext" },
+                "password": { "$ref": "#/definitions/ciphertext" },
+                "dbname": { "$ref": "#/definitions/ciphertext" },
+                "host": { "$ref": "#/definitions/ciphertext" },
+                "port": { "$ref": "#/definitions/ciphertext" },
+                "uri": { "$ref": "#/definitions/ciphertext" },
+                "jdbc-uri": { "$ref": "#/definitions/ciphertext" }
+              }
+            },
+            "pgCA": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["ca.crt", "ca.key"],
+              "properties": {
+                "ca.crt": { "$ref": "#/definitions/ciphertext" },
+                "ca.key": { "$ref": "#/definitions/ciphertext" }
+              }
             }
           },
           "dependencies": {
             "app": ["appChecksum"],
-            "appChecksum": ["app"]
+            "appChecksum": ["app"],
+            "pgApp": ["pgCA"],
+            "pgCA": ["pgApp"]
+          }
+        },
+        "dbTopology": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["primary", "peer"],
+          "properties": {
+            "primary": { "$ref": "#/definitions/envName" },
+            "peer": { "$ref": "#/definitions/envName" },
+            "peerPresent": { "type": "boolean" }
           }
         },
         "backup": {
@@ -114,6 +149,65 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "observability": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "metricsEnabled": {
+              "type": "boolean"
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "caBundle": {
+              "type": "string"
+            },
+            "clusterName": {
+              "type": "string"
+            },
+            "cloudProvider": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "endpoint",
+                  "caBundle",
+                  "clusterName"
+                ],
+                "properties": {
+                  "endpoint": {
+                    "pattern": "^https://[a-z0-9.-]+:443$"
+                  },
+                  "caBundle": {
+                    "pattern": "-----BEGIN CERTIFICATE-----"
+                  },
+                  "clusterName": {
+                    "pattern": "^[a-z0-9][a-z0-9.-]+$"
+                  }
+                }
+              }
+            }
+          ]
+        },
         "publicService": {
           "type": "object",
           "additionalProperties": false,
@@ -122,6 +216,15 @@
             "externalTrafficPolicy": { "enum": ["", "Cluster", "Local"] },
             "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
             "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "className": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$" },
+            "hostSuffix": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)?$" }
           }
         },
         "imagePullSecrets": { "type": "array", "items": { "type": "string" } },
@@ -136,6 +239,7 @@
           "properties": {
             "storageSize": { "type": "string" },
             "storageClass": { "type": "string" },
+            "topologyStorageSize": { "type": "string" },
             "resources": { "type": "object" },
             "backup": {
               "type": "object",
@@ -188,12 +292,26 @@
             "operatorNamespace": { "type": "string" },
             "extraEgress": { "type": "array", "items": { "type": "object" } }
           }
+        },
+        "dbNetwork": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "tailnetDomain": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.ts\\.net)?$" },
+            "ingressTag": { "type": "string", "pattern": "^(tag:[a-z][a-z0-9-]*)?$" },
+            "egressTag": { "type": "string", "pattern": "^(tag:[a-z][a-z0-9-]*)?$" },
+            "ingressProxyClass": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$" },
+            "egressProxyClass": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$" },
+            "proxyNamespace": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$" }
+          }
         }
       }
     }
   },
   "definitions": {
     "partName": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$" },
+    "envName": { "type": "string", "pattern": "^[a-z0-9-]+$" },
     "ciphertext": { "type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$" },
     "quantity": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?([eE][0-9]+|[mkMGTPE]|[KMGTPE]i)?$" },
     "reservedEnv": {

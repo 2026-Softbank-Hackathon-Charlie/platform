@@ -265,6 +265,7 @@ type harness struct {
 	gitOpsRepo    string           // Config.GitOpsRepo
 	admins        *auth.Admins     // Config.Admins
 	appDBTopology bool             // Config.AppDBTopology, with gke and eks as Config.AppDBEnvs
+	appDBEnvs     []string         // Config.AppDBEnvs instead of gke and eks
 	now           func() time.Time // Server.now; nil keeps the real clock
 	api           *Server          // the server behind srv
 }
@@ -320,7 +321,7 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	tokens.Add("op", apiv1.RoleOperator, opToken)
 	tokens.Add("ai", apiv1.RoleAgent, agentToken)
 	tokens.Add("view", apiv1.RoleViewer, viewerToken)
-	api := New(Config{Tokens: tokens, Admins: h.admins, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret, GitOpsRepo: h.gitOpsRepo, AppDBTopology: h.appDBTopology, AppDBEnvs: []string{"gke", "eks"}}, d)
+	api := New(Config{Tokens: tokens, Admins: h.admins, CORSOrigins: []string{"http://console.test"}, GitHubWebhookSecret: h.webhookSecret, GitOpsRepo: h.gitOpsRepo, AppDBTopology: h.appDBTopology, AppDBEnvs: h.dbEnvs()}, d)
 	if h.now != nil {
 		api.now = h.now
 	}
@@ -1437,4 +1438,12 @@ func TestApproveAIPlanNeedsRehearsal(t *testing.T) {
 	if code, b := h.do("POST", "/v1/plans/"+op.Ref+"/approve", opToken, nil); code != 200 {
 		t.Fatalf("approve an operator plan: %d %s", code, b)
 	}
+}
+
+// dbEnvs is Config.AppDBEnvs: gke and eks unless appDBEnvs says otherwise.
+func (h *harness) dbEnvs() []string {
+	if h.appDBEnvs != nil {
+		return h.appDBEnvs
+	}
+	return []string{"gke", "eks"}
 }

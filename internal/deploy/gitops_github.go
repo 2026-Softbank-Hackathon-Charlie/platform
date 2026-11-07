@@ -90,10 +90,10 @@ func (g *GitHubGitOps) Delete(ctx context.Context, dirs []string, message string
 	})
 }
 
-// underAny reports whether path is under one of dirs.
+// underAny reports whether path is under one of dirs or is one of them.
 func underAny(path string, dirs []string) bool {
 	for _, d := range dirs {
-		if strings.HasPrefix(path, strings.TrimSuffix(d, "/")+"/") {
+		if d = strings.TrimSuffix(d, "/"); path == d || strings.HasPrefix(path, d+"/") {
 			return true
 		}
 	}
