@@ -1078,6 +1078,36 @@ func (e SecurityVulnerabilitySeverity) Valid() bool {
 	}
 }
 
+// Defines values for SourceRetentionResponseJobStatus.
+const (
+	SourceRetentionResponseJobStatusBlocked   SourceRetentionResponseJobStatus = "blocked"
+	SourceRetentionResponseJobStatusCancelled SourceRetentionResponseJobStatus = "cancelled"
+	SourceRetentionResponseJobStatusCaptured  SourceRetentionResponseJobStatus = "captured"
+	SourceRetentionResponseJobStatusDeleted   SourceRetentionResponseJobStatus = "deleted"
+	SourceRetentionResponseJobStatusDeleting  SourceRetentionResponseJobStatus = "deleting"
+	SourceRetentionResponseJobStatusScheduled SourceRetentionResponseJobStatus = "scheduled"
+)
+
+// Valid indicates whether the value is a known member of the SourceRetentionResponseJobStatus enum.
+func (e SourceRetentionResponseJobStatus) Valid() bool {
+	switch e {
+	case SourceRetentionResponseJobStatusBlocked:
+		return true
+	case SourceRetentionResponseJobStatusCancelled:
+		return true
+	case SourceRetentionResponseJobStatusCaptured:
+		return true
+	case SourceRetentionResponseJobStatusDeleted:
+		return true
+	case SourceRetentionResponseJobStatusDeleting:
+		return true
+	case SourceRetentionResponseJobStatusScheduled:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StepStatus.
 const (
 	StepStatusFailed    StepStatus = "failed"
@@ -3932,6 +3962,28 @@ type SeverityCounts struct {
 	Total    int `json:"total"`
 }
 
+// SourceRetentionResponse defines model for SourceRetentionResponse.
+type SourceRetentionResponse struct {
+	Job *struct {
+		DueAt *time.Time `json:"dueAt,omitempty"`
+
+		// KeepForNanos Server policy at enrollment, in nanoseconds.
+		KeepForNanos int64 `json:"keepForNanos"`
+		Pods         []struct {
+			Name string `json:"name"`
+			Uid  string `json:"uid"`
+		} `json:"pods"`
+		Reason    *string                          `json:"reason,omitempty"`
+		RunId     string                           `json:"runId"`
+		SourceUID string                           `json:"sourceUID"`
+		Status    SourceRetentionResponseJobStatus `json:"status"`
+		TargetUID *string                          `json:"targetUID,omitempty"`
+	} `json:"job,omitempty"`
+}
+
+// SourceRetentionResponseJobStatus defines model for SourceRetentionResponse.Job.Status.
+type SourceRetentionResponseJobStatus string
+
 // SourceStats The source database as the capacity gate measures it. A hot standby
 // target needs max_connections and max_worker_processes of at least the
 // source's to start, and the gate wants max_connections of at least
@@ -4298,6 +4350,15 @@ type StreamMigrationEventsParams struct {
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
+// PreserveSourceJSONBody defines parameters for PreserveSource.
+type PreserveSourceJSONBody struct {
+	// Keep true cancels automatic cleanup permanently for this run.
+	Keep *bool `json:"keep,omitempty"`
+
+	// RetainUntil A later deadline, in the future and no more than 30 days from now.
+	RetainUntil *time.Time `json:"retainUntil,omitempty"`
+}
+
 // GetSecurityParams defines parameters for GetSecurity.
 type GetSecurityParams struct {
 	// Environment Only this environment, e.g. `gke`, `aws-account` or `platform`. Unknown names are a 400.
@@ -4395,6 +4456,9 @@ type StartMigrationJSONRequestBody = StartMigrationRequest
 
 // AbortMigrationJSONRequestBody defines body for AbortMigration for application/json ContentType.
 type AbortMigrationJSONRequestBody = AbortRequest
+
+// PreserveSourceJSONRequestBody defines body for PreserveSource for application/json ContentType.
+type PreserveSourceJSONRequestBody PreserveSourceJSONBody
 
 // RollbackMigrationJSONRequestBody defines body for RollbackMigration for application/json ContentType.
 type RollbackMigrationJSONRequestBody = RollbackRequest
