@@ -7,6 +7,33 @@ import (
 	"time"
 )
 
+// Defines values for AIActivityEventKind.
+const (
+	AIActivityEventKindBlocked    AIActivityEventKind = "blocked"
+	AIActivityEventKindModel      AIActivityEventKind = "model"
+	AIActivityEventKindRehearsal  AIActivityEventKind = "rehearsal"
+	AIActivityEventKindToolCall   AIActivityEventKind = "tool_call"
+	AIActivityEventKindToolResult AIActivityEventKind = "tool_result"
+)
+
+// Valid indicates whether the value is a known member of the AIActivityEventKind enum.
+func (e AIActivityEventKind) Valid() bool {
+	switch e {
+	case AIActivityEventKindBlocked:
+		return true
+	case AIActivityEventKindModel:
+		return true
+	case AIActivityEventKindRehearsal:
+		return true
+	case AIActivityEventKindToolCall:
+		return true
+	case AIActivityEventKindToolResult:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AIRunStatus.
 const (
 	AIRunStatusFailed    AIRunStatus = "failed"
@@ -1337,6 +1364,55 @@ func (e StreamAgentEventsParamsFormat) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// AIActivity defines model for AIActivity.
+type AIActivity struct {
+	Events  []AIActivityEvent `json:"events"`
+	Since   time.Time         `json:"since"`
+	Summary AIActivitySummary `json:"summary"`
+}
+
+// AIActivityEvent defines model for AIActivityEvent.
+type AIActivityEvent struct {
+	Kind  AIActivityEventKind `json:"kind"`
+	Model *string             `json:"model,omitempty"`
+
+	// Outcome tool_result: ok or error; rehearsal: the engine's result
+	Outcome *string `json:"outcome,omitempty"`
+
+	// Passed rehearsal: whether it passed
+	Passed *bool `json:"passed,omitempty"`
+
+	// Seconds rehearsal: how long it took
+	Seconds *int `json:"seconds,omitempty"`
+
+	// StopReason model: tool_use or end_turn
+	StopReason *string   `json:"stopReason,omitempty"`
+	Time       time.Time `json:"time"`
+	TokensIn   *int      `json:"tokensIn,omitempty"`
+	TokensOut  *int      `json:"tokensOut,omitempty"`
+
+	// Tool tool_call, tool_result, blocked: the tool's name
+	Tool *string `json:"tool,omitempty"`
+
+	// ToolCalls model: the tools it asked for
+	ToolCalls *[]string `json:"toolCalls,omitempty"`
+}
+
+// AIActivityEventKind defines model for AIActivityEvent.Kind.
+type AIActivityEventKind string
+
+// AIActivitySummary defines model for AIActivitySummary.
+type AIActivitySummary struct {
+	Blocked    int            `json:"blocked"`
+	LastEvent  *time.Time     `json:"lastEvent,omitempty"`
+	Model      *string        `json:"model,omitempty"`
+	ModelCalls int            `json:"modelCalls"`
+	Rehearsals int            `json:"rehearsals"`
+	TokensIn   int            `json:"tokensIn"`
+	TokensOut  int            `json:"tokensOut"`
+	Tools      map[string]int `json:"tools"`
 }
 
 // AIRun defines model for AIRun.
@@ -4500,6 +4576,12 @@ type StreamAgentEventsParams struct {
 
 // StreamAgentEventsParamsFormat defines parameters for StreamAgentEvents.
 type StreamAgentEventsParamsFormat string
+
+// GetAIActivityParams defines parameters for GetAIActivity.
+type GetAIActivityParams struct {
+	// Minutes how far back to read
+	Minutes *int `form:"minutes,omitempty" json:"minutes,omitempty"`
+}
 
 // ListAIRunsParams defines parameters for ListAIRuns.
 type ListAIRunsParams struct {

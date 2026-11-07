@@ -17,6 +17,7 @@ import (
 	"time"
 
 	specdoc "github.com/2026-Softbank-Hackathon-Charlie/platform/api"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
@@ -168,6 +169,10 @@ type Deps struct {
 	// Buckets inspects the residency policy's buckets (gate.Gate); nil
 	// answers POST /v1/residency/buckets/inspect 503 residency_not_configured.
 	Buckets BucketInspector
+	// AIActivity reads what the AI runner did from the observability
+	// stack's ClickHouse (aiobs.Client); nil answers GET /v1/ai-activity 503
+	// observability_not_configured.
+	AIActivity AIActivityReader
 	// AIRuns starts the AI runner as a Job (airun.Runner); nil answers the
 	// /v1/ai-runs endpoints 503 ai_runner_not_configured.
 	AIRuns AIRunner
@@ -183,6 +188,12 @@ type Deps struct {
 type AppDBRoutes interface {
 	Added(d store.AppDatabase)
 	Removed(app string)
+}
+
+// AIActivityReader returns the AI runner's parsed log events since a time,
+// oldest first (aiobs.Client).
+type AIActivityReader interface {
+	Events(ctx context.Context, since time.Time, limit int) ([]aiobs.Event, error)
 }
 
 // AIRunner starts and lists AI runner Jobs (airun.Runner).
@@ -288,6 +299,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/plans/{ref}/attachments/{name}", viewer, s.getPlanAttachment)
 	s.route("GET /v1/apps", viewer, s.listApps)
 	s.route("POST /v1/plans/draft", agent, s.draftPlan)
+	s.route("GET /v1/ai-activity", viewer, s.getAIActivity)
 	s.route("GET /v1/ai-runs", viewer, s.listAIRuns)
 	s.route("POST /v1/ai-runs", operator, s.startAIRun)
 	s.route("POST /v1/residency/buckets/inspect", agent, s.inspectBucket)
