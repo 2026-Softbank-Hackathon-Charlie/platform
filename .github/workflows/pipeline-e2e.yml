@@ -61,23 +61,32 @@ jobs:
         run: python3 harness/.github/scripts/pipeline-evidence.py --root "$GITHUB_WORKSPACE/subject" --output "$RUNNER_TEMP/pipeline-evidence/migration.json"
       - name: Remove only disposable fixture resources and verify absence
         if: always()
-        working-directory: subject
         run: |
-          set +e
-          bash test/e2e/down.sh >"$RUNNER_TEMP/pipeline-cleanup.private" 2>&1
-          set -e
+          set -euo pipefail
+          nodes=null
+          stores=null
+          cleanup_status=failed
+          record_cleanup() {
+            mkdir -p "$RUNNER_TEMP/pipeline-evidence"
+            printf '{"kind_nodes_remaining":%s,"fixture_stores_remaining":%s,"cleanup_status":"%s"}\n' "$nodes" "$stores" "$cleanup_status" >"$RUNNER_TEMP/pipeline-evidence/cleanup.json"
+            rm -f "$RUNNER_TEMP/pipeline-gitconfig" "$RUNNER_TEMP/pipeline-cleanup.private"
+          }
+          trap record_cleanup EXIT
+          if [ -f subject/test/e2e/down.sh ]; then
+            (cd subject && bash test/e2e/down.sh) >"$RUNNER_TEMP/pipeline-cleanup.private" 2>&1 || true
+          fi
           # Fallback also covers cancellation before kind was installed.
           ids="$(docker ps -aq --filter label=io.x-k8s.kind.cluster=hop-e2e)"
           if [ -n "$ids" ]; then docker rm -f -v $ids >/dev/null; fi
+          # run.sh creates this exact container with --label hopcharlie-e2e=1.
           ids="$(docker ps -aq --filter 'name=^hop-e2e-store$' --filter label=hopcharlie-e2e)"
           if [ -n "$ids" ]; then docker rm -f -v $ids >/dev/null; fi
-          nodes="$(docker ps -aq --filter label=io.x-k8s.kind.cluster=hop-e2e | wc -l)"
-          stores="$(docker ps -aq --filter 'name=^hop-e2e-store$' --filter label=hopcharlie-e2e | wc -l)"
-          mkdir -p "$RUNNER_TEMP/pipeline-evidence"
-          printf '{"kind_nodes_remaining":%s,"fixture_stores_remaining":%s}\n' "$nodes" "$stores" >"$RUNNER_TEMP/pipeline-evidence/cleanup.json"
-          rm -f "$RUNNER_TEMP/pipeline-gitconfig" "$RUNNER_TEMP/pipeline-cleanup.private"
+          # No label restriction on the final exact-name absence check.
+          nodes="$(docker ps -aq --filter label=io.x-k8s.kind.cluster=hop-e2e | wc -l | tr -d ' ')"
+          stores="$(docker ps -aq --filter 'name=^hop-e2e-store$' | wc -l | tr -d ' ')"
           test "$nodes" -eq 0
           test "$stores" -eq 0
+          cleanup_status=verified
       - name: Keep structured evidence only
         if: always()
         uses: actions/upload-artifact@v4

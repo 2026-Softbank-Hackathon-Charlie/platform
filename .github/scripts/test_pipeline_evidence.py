@@ -60,6 +60,12 @@ class PipelineEvidenceTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertFalse(summary["pipeline_passed"])
 
+    def test_oversized_output_fails_closed_even_after_pass_markers(self):
+        code, summary = self.summarize(self.successful_log() + "\n" + "x" * (32 * 1024 * 1024))
+        self.assertNotEqual(code, 0)
+        self.assertTrue(summary["output_truncated"])
+        self.assertFalse(summary["pipeline_passed"])
+
 
 if __name__ == "__main__":
     unittest.main()

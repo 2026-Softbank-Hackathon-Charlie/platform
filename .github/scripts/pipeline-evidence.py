@@ -13,6 +13,7 @@ import tempfile
 SCENARIOS = ("lost-response", "canary-fault", "observe-rollback", "migrate")
 STAGES = ("build", "kind cluster", "source pg-src", "platform store",
           "test apps, gateway, platform API", "second app by host name")
+MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 
 
 def summarize(raw, exit_code):
@@ -85,12 +86,19 @@ def main():
                                     env=environment, stdout=private_log,
                                     stderr=subprocess.STDOUT, check=False)
             private_log.seek(0)
-            raw = private_log.read()
+            raw = private_log.read(MAX_OUTPUT_BYTES + 1)
         exit_code = result.returncode
     else:
-        raw = args.log.read_bytes()
+        with args.log.open("rb") as private_log:
+            raw = private_log.read(MAX_OUTPUT_BYTES + 1)
         exit_code = args.exit_code
-    summary = summarize(raw, exit_code)
+    truncated = len(raw) > MAX_OUTPUT_BYTES
+    summary = summarize(raw[:MAX_OUTPUT_BYTES], exit_code)
+    summary["output_truncated"] = truncated
+    summary["private_output_hash_scope"] = "first_32_MiB" if truncated else "complete"
+    if truncated:
+        summary["pipeline_passed"] = False
+        summary["unverified"].append("output exceeded 32 MiB evidence limit")
     summary.update(started_at=started, completed_at=datetime.now(timezone.utc).isoformat())
     for key in ("TESTED_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
         value = os.environ.get(key, "")
