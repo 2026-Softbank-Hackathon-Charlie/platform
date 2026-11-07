@@ -55,6 +55,96 @@ func (e AIRunStatus) Valid() bool {
 	}
 }
 
+// Defines values for AIServiceObservationActivityState.
+const (
+	AIServiceObservationActivityStateActive  AIServiceObservationActivityState = "active"
+	AIServiceObservationActivityStateIdle    AIServiceObservationActivityState = "idle"
+	AIServiceObservationActivityStateUnknown AIServiceObservationActivityState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the AIServiceObservationActivityState enum.
+func (e AIServiceObservationActivityState) Valid() bool {
+	switch e {
+	case AIServiceObservationActivityStateActive:
+		return true
+	case AIServiceObservationActivityStateIdle:
+		return true
+	case AIServiceObservationActivityStateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AIServiceObservationKind.
+const (
+	AIServiceObservationKindExternal   AIServiceObservationKind = "external"
+	AIServiceObservationKindManaged    AIServiceObservationKind = "managed"
+	AIServiceObservationKindSelfHosted AIServiceObservationKind = "self_hosted"
+	AIServiceObservationKindUnknown    AIServiceObservationKind = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the AIServiceObservationKind enum.
+func (e AIServiceObservationKind) Valid() bool {
+	switch e {
+	case AIServiceObservationKindExternal:
+		return true
+	case AIServiceObservationKindManaged:
+		return true
+	case AIServiceObservationKindSelfHosted:
+		return true
+	case AIServiceObservationKindUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AIServiceObservationLocationAccelerator.
+const (
+	AIServiceObservationLocationAcceleratorCpu     AIServiceObservationLocationAccelerator = "cpu"
+	AIServiceObservationLocationAcceleratorGpu     AIServiceObservationLocationAccelerator = "gpu"
+	AIServiceObservationLocationAcceleratorUnknown AIServiceObservationLocationAccelerator = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the AIServiceObservationLocationAccelerator enum.
+func (e AIServiceObservationLocationAccelerator) Valid() bool {
+	switch e {
+	case AIServiceObservationLocationAcceleratorCpu:
+		return true
+	case AIServiceObservationLocationAcceleratorGpu:
+		return true
+	case AIServiceObservationLocationAcceleratorUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AIServiceTopologySourcesStatus.
+const (
+	AIServiceTopologySourcesStatusNotConfigured AIServiceTopologySourcesStatus = "not_configured"
+	AIServiceTopologySourcesStatusObserved      AIServiceTopologySourcesStatus = "observed"
+	AIServiceTopologySourcesStatusUnavailable   AIServiceTopologySourcesStatus = "unavailable"
+	AIServiceTopologySourcesStatusUnobserved    AIServiceTopologySourcesStatus = "unobserved"
+)
+
+// Valid indicates whether the value is a known member of the AIServiceTopologySourcesStatus enum.
+func (e AIServiceTopologySourcesStatus) Valid() bool {
+	switch e {
+	case AIServiceTopologySourcesStatusNotConfigured:
+		return true
+	case AIServiceTopologySourcesStatusObserved:
+		return true
+	case AIServiceTopologySourcesStatusUnavailable:
+		return true
+	case AIServiceTopologySourcesStatusUnobserved:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AgentEventType.
 const (
 	AgentEventTypeBlocked    AgentEventType = "blocked"
@@ -1895,6 +1985,68 @@ type AIRunRequest struct {
 	// Example: eks
 	Target string `json:"target"`
 }
+
+// AIServiceObservation defines model for AIServiceObservation.
+type AIServiceObservation struct {
+	Activity struct {
+		LastSeen *time.Time `json:"lastSeen,omitempty"`
+
+		// Requests Observed exported client-span count in the window, not an estimate of all requests.
+		Requests *int64                            `json:"requests,omitempty"`
+		State    AIServiceObservationActivityState `json:"state"`
+	} `json:"activity"`
+
+	// CallerEnv Empty when the caller deployment was not instrumented.
+	CallerEnv string `json:"callerEnv"`
+	Evidence  []struct {
+		Detail     string    `json:"detail"`
+		ObservedAt time.Time `json:"observedAt"`
+		Source     string    `json:"source"`
+	} `json:"evidence"`
+
+	// Id Route identity for this caller and physical service.
+	Id       string                   `json:"id"`
+	Kind     AIServiceObservationKind `json:"kind"`
+	Location struct {
+		Accelerator AIServiceObservationLocationAccelerator `json:"accelerator"`
+		Environment *string                                 `json:"environment,omitempty"`
+		Provider    *string                                 `json:"provider,omitempty"`
+		Region      *string                                 `json:"region,omitempty"`
+	} `json:"location"`
+	Model *string `json:"model,omitempty"`
+	Name  string  `json:"name"`
+
+	// ServiceId Observed physical-service identity, shared across callers.
+	ServiceId string `json:"serviceId"`
+}
+
+// AIServiceObservationActivityState defines model for AIServiceObservation.Activity.State.
+type AIServiceObservationActivityState string
+
+// AIServiceObservationKind defines model for AIServiceObservation.Kind.
+type AIServiceObservationKind string
+
+// AIServiceObservationLocationAccelerator defines model for AIServiceObservation.Location.Accelerator.
+type AIServiceObservationLocationAccelerator string
+
+// AIServiceTopology defines model for AIServiceTopology.
+type AIServiceTopology struct {
+	App         string                 `json:"app"`
+	GeneratedAt time.Time              `json:"generatedAt"`
+	Services    []AIServiceObservation `json:"services"`
+	Sources     []struct {
+		Message string                         `json:"message"`
+		Name    string                         `json:"name"`
+		Status  AIServiceTopologySourcesStatus `json:"status"`
+	} `json:"sources"`
+	Window struct {
+		From time.Time `json:"from"`
+		To   time.Time `json:"to"`
+	} `json:"window"`
+}
+
+// AIServiceTopologySourcesStatus defines model for AIServiceTopology.Sources.Status.
+type AIServiceTopologySourcesStatus string
 
 // AbortRequest defines model for AbortRequest.
 type AbortRequest struct {
@@ -5688,6 +5840,11 @@ type GetAIActivityParams struct {
 type ListAIRunsParams struct {
 	// App only this app's runs
 	App *string `form:"app,omitempty" json:"app,omitempty"`
+}
+
+// GetAppAIServicesParams defines parameters for GetAppAIServices.
+type GetAppAIServicesParams struct {
+	Minutes *int `form:"minutes,omitempty" json:"minutes,omitempty"`
 }
 
 // ListDeploymentsParams defines parameters for ListDeployments.
