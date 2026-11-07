@@ -3822,6 +3822,17 @@ components:
           description: Share of read requests per backend, summing to 100.
           type: object
           additionalProperties: { type: integer }
+        sourceReadExclusionSupported:
+          type: boolean
+          description: Current gateway instance supports durable lease-owned source read exclusion. Absent or false is unsupported; this is not an HA-wide drain proof.
+        readExclusions:
+          type: object
+          additionalProperties: { type: string }
+          description: Persisted backend-to-owner-lease exclusions on the current gateway instance, including exclusions still draining or whose acknowledgment failed.
+        readInFlight:
+          type: object
+          additionalProperties: { type: integer }
+          description: Active or reserved read attempts and health probes per backend on the current gateway instance. Includes already selected retry alternatives; all configured backends are listed with zero when idle.
         writesHeld: { type: boolean }
         heldSince: { type: string, format: date-time }
         heldWrites: { type: integer, description: write requests waiting right now }

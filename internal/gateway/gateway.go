@@ -107,19 +107,23 @@ type router struct {
 	mu sync.Mutex
 	// backends and byName are replaced, never changed in place, when a PUT
 	// replaces a registered app. Read them under mu.
-	backends       []*backend
-	byName         map[string]*backend
-	writeBackend   string
-	readWeights    map[string]int // every configured backend, summing to 100
-	held           bool
-	heldSince      time.Time
-	gen            *holdGen // non-nil while held
-	holdSeq        uint64   // id of the last hold started
-	buffering      int      // held writes still reading their body; count towards MaxHeld
-	inflightWrites int      // includes released writes not yet dispatched
-	writesIdle     chan struct{}
-	writeSlots     chan struct{}
-	healthPath     string
+	backends             []*backend
+	byName               map[string]*backend
+	writeBackend         string
+	readWeights          map[string]int // every configured backend, summing to 100
+	held                 bool
+	heldSince            time.Time
+	gen                  *holdGen // non-nil while held
+	holdSeq              uint64   // id of the last hold started
+	buffering            int      // held writes still reading their body; count towards MaxHeld
+	inflightWrites       int      // includes released writes not yet dispatched
+	writesIdle           chan struct{}
+	writeSlots           chan struct{}
+	healthPath           string
+	readExclusions       map[string]string
+	readActivity         map[string]*readActivity
+	readExclusionChanged chan struct{}
+	retired              bool // a deleted router cannot start any new attempt
 }
 
 // Gateway is the proxy plus its admin API.
@@ -137,8 +141,9 @@ type Gateway struct {
 
 	// Lock order: optional controlMu, saveMu, appsMu, router mu. Never save
 	// while holding appsMu/router mu, and never hold controlMu while draining.
-	appsMu sync.RWMutex
-	apps   map[string]*router // registered through the admin API
+	appsMu  sync.RWMutex
+	apps    map[string]*router // registered through the admin API
+	retired map[string]*router // deleted generations still draining before name reuse
 
 	saveMu sync.Mutex
 	// Serializes administrative state changes and their persistence. Hold
@@ -161,7 +166,7 @@ func New(cfg Config) (*Gateway, error) {
 	if err := cfg.checkAI(); err != nil {
 		return nil, err
 	}
-	g := &Gateway{cfg: cfg, log: cfg.Log, shutdown: make(chan struct{}), apps: map[string]*router{}}
+	g := &Gateway{cfg: cfg, log: cfg.Log, shutdown: make(chan struct{}), apps: map[string]*router{}, retired: map[string]*router{}}
 	g.prom = newMetrics(g)
 	def, err := g.newRouter(cfg.DefaultApp, cfg.Backends, g.log, g.prom.def.view(prometheus.Labels{}))
 	if err != nil {
@@ -176,7 +181,8 @@ func New(cfg Config) (*Gateway, error) {
 }
 
 func (g *Gateway) newRouter(name string, bcs []BackendConfig, log *slog.Logger, m *routerMetrics) (*router, error) {
-	rt := &router{g: g, name: name, log: log, metrics: m, writesIdle: make(chan struct{}), writeSlots: make(chan struct{}, g.cfg.MaxConcurrentWrites), healthPath: g.cfg.HealthPath}
+	rt := &router{g: g, name: name, log: log, metrics: m, writesIdle: make(chan struct{}), writeSlots: make(chan struct{}, g.cfg.MaxConcurrentWrites), healthPath: g.cfg.HealthPath,
+		readExclusions: make(map[string]string), readActivity: make(map[string]*readActivity), readExclusionChanged: make(chan struct{})}
 	var err error
 	rt.backends, rt.byName, err = rt.newBackends(bcs, nil)
 	if err != nil {
@@ -290,6 +296,12 @@ func (rt *router) restore(st *persistedState) error {
 	}
 	rt.writeBackend = st.WriteBackend
 	rt.readWeights = weights
+	for backend, lease := range st.ReadExclusions {
+		if rt.byName[backend] == nil || !readExclusionLease.MatchString(lease) {
+			return errors.New("persisted read exclusion has an unconfigured backend or invalid lease")
+		}
+		rt.readExclusions[backend] = lease
+	}
 	if st.WritesHeld {
 		since := time.Now()
 		if st.HeldSince != nil {
@@ -400,14 +412,28 @@ func (rt *router) serve(w http.ResponseWriter, r *http.Request) {
 
 func (rt *router) serveRead(w http.ResponseWriter, r *http.Request) {
 	rt.mu.Lock()
+	if rt.retired {
+		rt.mu.Unlock()
+		unknownApp(w, rt.name)
+		return
+	}
 	b := rt.pickReadLocked()
+	if b == nil {
+		rt.mu.Unlock()
+		retryLater(w, "no_read_backend", "no eligible read backend is available while source reads are excluded")
+		return
+	}
 	var alt *backend
 	if retryableRead(r) {
 		alt = rt.retryTargetLocked(b)
 	}
-	rt.mu.Unlock()
+	rt.reserveReadLocked(b)
+	if alt != nil {
+		rt.reserveReadLocked(alt)
+	}
 	rt.inflightReads.Add(1)
-	defer rt.inflightReads.Add(-1)
+	rt.mu.Unlock()
+	defer rt.finishReadAttempts(b, alt)
 	if alt == nil {
 		rt.forward(w, r, b, classRead, nil)
 		return
@@ -418,6 +444,13 @@ func (rt *router) serveRead(w http.ResponseWriter, r *http.Request) {
 	rw := &retryWriter{w: w, header: http.Header{}}
 	rt.forward(rw, r, b, classRead, rw)
 	if !rw.failed || r.Context().Err() != nil {
+		return
+	}
+	rt.mu.Lock()
+	excluded := rt.readExclusions[alt.name] != ""
+	rt.mu.Unlock()
+	if excluded {
+		retryLater(w, "no_read_backend", "the reserved retry backend is excluded from reads")
 		return
 	}
 	rt.metrics.readRetries.WithLabelValues(b.name).Inc()
@@ -447,7 +480,7 @@ func retryableRead(r *http.Request) bool {
 func (rt *router) retryTargetLocked(failed *backend) *backend {
 	var best *backend
 	for _, b := range rt.backends {
-		if b == failed || !b.healthy.Load() {
+		if b == failed || rt.readExclusions[b.name] != "" || !b.healthy.Load() {
 			continue
 		}
 		if w := rt.readWeights[b.name]; w > 0 && (best == nil || w > rt.readWeights[best.name]) {
@@ -457,12 +490,12 @@ func (rt *router) retryTargetLocked(failed *backend) *backend {
 	if best != nil {
 		return best
 	}
-	if wb := rt.byName[rt.writeBackend]; wb != failed && wb.healthy.Load() {
+	if wb := rt.byName[rt.writeBackend]; wb != nil && wb != failed && rt.readExclusions[wb.name] == "" && wb.healthy.Load() {
 		return wb
 	}
 	if rt.held {
 		for _, b := range rt.backends {
-			if b != failed && b.healthy.Load() {
+			if b != failed && rt.readExclusions[b.name] == "" && b.healthy.Load() {
 				return b
 			}
 		}
@@ -548,7 +581,7 @@ func copyHeader(dst, src http.Header) {
 func (rt *router) pickReadLocked() *backend {
 	total := 0
 	for _, b := range rt.backends {
-		if w := rt.readWeights[b.name]; w > 0 && b.healthy.Load() {
+		if w := rt.readWeights[b.name]; w > 0 && rt.readExclusions[b.name] == "" && b.healthy.Load() {
 			total += w
 		}
 	}
@@ -556,7 +589,7 @@ func (rt *router) pickReadLocked() *backend {
 		n := rt.g.cfg.Rand(total)
 		for _, b := range rt.backends {
 			w := rt.readWeights[b.name]
-			if w <= 0 || !b.healthy.Load() {
+			if w <= 0 || rt.readExclusions[b.name] != "" || !b.healthy.Load() {
 				continue
 			}
 			if n < w {
@@ -565,7 +598,17 @@ func (rt *router) pickReadLocked() *backend {
 			n -= w
 		}
 	}
-	return rt.byName[rt.writeBackend]
+	if wb := rt.byName[rt.writeBackend]; wb != nil && rt.readExclusions[wb.name] == "" && (len(rt.readExclusions) == 0 || wb.healthy.Load()) {
+		return wb
+	}
+	if rt.held {
+		for _, b := range rt.backends {
+			if rt.readExclusions[b.name] == "" && b.healthy.Load() {
+				return b
+			}
+		}
+	}
+	return nil
 }
 
 // serveWrite sends a write to the write backend, or parks it while writes are
@@ -575,6 +618,11 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 	arrived := time.Now()
 	buffered := false
 	rt.mu.Lock()
+	if rt.retired {
+		rt.mu.Unlock()
+		unknownApp(w, rt.name)
+		return
+	}
 	for rt.held {
 		if rt.g.shuttingDown() {
 			rt.mu.Unlock()
@@ -638,6 +686,12 @@ func (rt *router) serveWrite(w http.ResponseWriter, r *http.Request) {
 		}
 		defer rt.writeDone()
 		rt.dispatchWrite(w, r, b, arrived)
+		return
+	}
+	// A body may have been read while a hold ended and the app was deleted.
+	if rt.retired {
+		rt.mu.Unlock()
+		unknownApp(w, rt.name)
 		return
 	}
 	b := rt.byName[rt.writeBackend]
@@ -1052,8 +1106,18 @@ func (g *Gateway) Run(ctx context.Context) {
 
 func (rt *router) checkBackend(ctx context.Context, client *http.Client, b *backend) {
 	rt.mu.Lock()
+	if rt.retired || rt.byName[b.name] != b || rt.readExclusions[b.name] != "" {
+		rt.mu.Unlock()
+		return
+	}
 	path := rt.healthPath
+	rt.reserveReadLocked(b)
 	rt.mu.Unlock()
+	defer func() {
+		rt.mu.Lock()
+		rt.finishReadLocked(b)
+		rt.mu.Unlock()
+	}()
 	parsed, _ := url.ParseRequestURI(path)
 	u := b.url.JoinPath(parsed.EscapedPath())
 	u.RawQuery = parsed.RawQuery

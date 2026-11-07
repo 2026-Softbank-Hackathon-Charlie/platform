@@ -72,3 +72,41 @@ TLS 이름과 Host로 두고 그 주소로 접속한다. 아직 구현하지 않
 이 제한은 일반 앱 요청이나 Hold의 drain·Release의 dispatch 대기를 제한하지 않는다.
 
 설계 근거: [ADR 0040](../../docs/adr/0040-gateway-durability-and-write-bounds.md).
+
+## DB 쓰기 차단 전 source 읽기 제외
+
+읽기를 target 100%로 설정해도 기존 write backend로의 fallback과 이미 선택된 retry는
+source에 연결할 수 있다. DB 접근을 막기 전에 다음 관리자 계약으로 source를 제외한다.
+각 앱은 `/apps/{app}` 아래에서도 동일한 경로를 제공한다.
+
+```text
+POST /v1/reads/exclude {"backend":"source","lease":"unique-run-owner"}
+POST /v1/reads/include {"backend":"source","lease":"unique-run-owner"}
+```
+
+- `GET /v1/state`의 `sourceReadExclusionSupported: true`를 먼저 확인한다.
+  영속 StateFile이 없으면 false다. 필드가 없는 구버전은 지원으로 추정하지 않는다.
+- 새 exclude는 쓰기 Hold와 in-flight 쓰기 0을 요구한다. lease를 저장한 뒤 source의
+  기존 읽기·예약된 retry·health probe가 끝나야 200이다. source 제외와 primary·retry
+  예약은 같은 router 잠금으로 직렬화한다. 이후 fallback·retry·health도 제외를 지킨다.
+- `readExclusions`는 backend별 owner lease, `readInFlight`는 backend별 활성·예약 수다.
+  구성된 backend는 0도 명시하며 target 트래픽이 계속돼도 source만 drain한다.
+  이미 선택한 retry는 실제 사용하지 않더라도 해당 요청이 끝날 때까지 예약한다.
+- drain timeout은 503 `read_drain_timeout`, 저장 실패는 503 `persistence_unavailable`이다.
+  실패한 exclude도 현재 프로세스의 제외를 유지하므로 DB 변경 전에 상태를 재확인한다.
+  다른 lease는 409이며, timeout만으로 자동 include하지 않는다.
+- include는 같은 owner를 검사하고 해제 상태를 먼저 저장한 뒤 메모리에서 해제한다.
+  저장 실패는 제외를 유지한다. 제외가 이미 없으면 200이다. 호출자는 먼저 source DB의
+  역할·HBA 복원을 확인해야 한다. 게이트웨이는 SQL 상태를 확인하지 않는다.
+- lease가 있는 앱은 PUT·DELETE를 거부하고, 제외한 backend로의 Route·양수 읽기 가중치·
+  해당 backend가 writer인 상태의 Release를 거부한다. 다른 target으로 Route는 가능하다.
+- DELETE한 앱의 이전 읽기·예약 retry·health·쓰기·dispatch 대기가 끝나기 전에는 같은
+  이름의 PUT를 409 `app_draining`으로 거부한다. 기존 요청은 끝내고, 삭제 전 router를
+  찾아 둔 요청이 이후 새 upstream이나 제어 동작을 시작하는 경계도 차단한다.
+
+lease는 한 실행이 생성한 고유한 1–128자 영숫자·`._:-` 식별자이며 관리자 인증을
+대체하지 않는다. restart에도 제외를 복원한다. 활성 lease가 있는 동안 이를 모르는
+구버전으로 게이트웨이를 내리면 안 된다. 이 카운터와 ACK는 현재 gateway 인스턴스만의
+증명이며 HA 전체 drain이나 HTTP 밖 쓰기 차단 자체의 증명이 아니다.
+
+설계와 호출 순서는 [ADR 0049](../../docs/adr/0049-exclude-source-reads-before-database-fence.md)에 기록한다.
