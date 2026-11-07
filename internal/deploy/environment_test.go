@@ -389,3 +389,156 @@ func TestEnvironmentDeploymentNeverReplacesANewerCommit(t *testing.T) {
 		t.Fatalf("the push was finished: %s", got.Status)
 	}
 }
+
+// pushStoredTo stores a queued push deployment of commit to envs of the
+// app's default instance, as the webhook makes it from the app's
+// environments at that time.
+func (te *testEnv) pushStoredTo(app, commit string, envs ...string) store.Deployment {
+	te.t.Helper()
+	d := te.deploymentTo(app, "main", app, commit, envs...)
+	// deploymentTo stores a manual one; a push is the same with its trigger.
+	te.n++
+	d.ID, d.Trigger = fmt.Sprintf("dep_p%011d", te.n), "push"
+	d.CreatedAt = time.Date(2026, 11, 3, 0, 0, te.n, 0, time.UTC)
+	if err := te.store.CreateDeployment(context.Background(), d); err != nil {
+		te.t.Fatal(err)
+	}
+	return d
+}
+
+// TestPushFollowsTheAppsEnvironments: a push stored before an environment
+// was added (it supersedes the environment's deployment) deploys there too,
+// and one stored before an environment was removed leaves it out, instead
+// of failing (ADR 0037).
+func TestPushFollowsTheAppsEnvironments(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke")
+	te.start()
+	ctx := context.Background()
+
+	push := te.pushStoredTo("shop", sha("c1"), "gke")
+	if err := te.store.SetAppEnvironments(ctx, "shop", []string{"gke"}, []string{"gke", "eks"}); err != nil {
+		t.Fatal(err)
+	}
+	te.enqueue(push.ID)
+	got := te.wait(push.ID)
+	if got.Status != store.DeployHealthy || envNames(got.Environments) != "gke, eks" {
+		t.Fatalf("push stored before eks was added: %s %q to %s\n%s", got.Status, got.Error, envNames(got.Environments), te.dump(got.ID))
+	}
+	if files, _ := te.git.snapshot(); files[FilePath("shop", "eks")] == nil {
+		t.Fatalf("no eks file: %v", sortedKeys(files))
+	}
+	if !hasEvent(te.events(got.ID), EventLog, "the app's environments changed since this deployment was stored") {
+		t.Fatalf("events:\n%s", te.dump(got.ID))
+	}
+
+	te.github.push("main", sha("c2"), shopFiles)
+	push = te.pushStoredTo("shop", sha("c2"), "gke", "eks")
+	if err := te.store.SetAppEnvironments(ctx, "shop", []string{"gke", "eks"}, []string{"gke"}); err != nil {
+		t.Fatal(err)
+	}
+	te.enqueue(push.ID)
+	if got := te.wait(push.ID); got.Status != store.DeployHealthy || envNames(got.Environments) != "gke" {
+		t.Fatalf("push stored before eks was removed: %s %q to %s", got.Status, got.Error, envNames(got.Environments))
+	}
+}
+
+// TestPeerAddedBackGetsANewBackupPath: removing the peer of a database pair
+// counts up its generation, so the peer's next database archives under a
+// new, empty path in the backup bucket, while the primary's stays (ADR
+// 0037).
+func TestPeerAddedBackGetsANewBackupPath(t *testing.T) {
+	se := newStorageEnv(t)
+	se.github.push("main", sha("p1"), map[string]string{"platform.yaml": pgSpec, "Dockerfile": "FROM scratch\n"})
+	se.registerAlone("shop", "gke", "eks")
+	ex := se.start()
+	ctx := context.Background()
+	app, err := se.store.GetApp(ctx, "shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := se.deploy(sha("p1"), "gke")
+	if first.Status != store.DeployHealthy {
+		t.Fatalf("first: %s %q", first.Status, first.Error)
+	}
+	addPeer := func(want string) {
+		t.Helper()
+		a, _ := se.store.GetApp(ctx, "shop")
+		if err := se.store.SetAppEnvironments(ctx, "shop", a.Environments, []string{"gke", "eks"}); err != nil {
+			t.Fatal(err)
+		}
+		stored, _ := se.store.GetDeployment(ctx, first.ID)
+		d := se.environmentDeployment(stored, "gke", "eks")
+		se.enqueue(d.ID)
+		if got := se.wait(d.ID); got.Status != store.DeployHealthy {
+			t.Fatalf("add eks: %s %q\n%s", got.Status, got.Error, se.dump(got.ID))
+		}
+		if b := se.file("shop", "eks").Values.Backup; b == nil || b.Path != want {
+			t.Fatalf("eks backup %+v, want path %s", b, want)
+		}
+		if b := se.file("shop", "gke").Values.Backup; b == nil || b.Path != BackupPath(app.CreatedAt) {
+			t.Fatalf("gke backup %+v, want path %s", b, BackupPath(app.CreatedAt))
+		}
+	}
+	addPeer(BackupPath(app.CreatedAt))
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := se.store.GetAppDatabase(ctx, "shop"); row.PeerGeneration != 1 {
+		t.Fatalf("peer generation %d after one removal", row.PeerGeneration)
+	}
+	addPeer(BackupPath(app.CreatedAt) + "-1")
+}
+
+// TestRemoveEnvironmentTakesTheGatewayBackendFirst: the weight 0 backend
+// goes before the files, so a gitops failure leaves no backend pointing at
+// workloads that are going, and the environment stays for a retry.
+func TestRemoveEnvironmentTakesTheGatewayBackendFirst(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke", "eks")
+	ex := te.start()
+	ctx := context.Background()
+	d := te.deployment("shop", sha("c1"), "gke", "eks")
+	te.enqueue(d.ID)
+	if got := te.wait(d.ID); got.Status != store.DeployHealthy {
+		t.Fatalf("%s %q", got.Status, got.Error)
+	}
+	te.git.mu.Lock()
+	te.git.err = errors.New("github down")
+	te.git.mu.Unlock()
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); !errors.Is(err, ErrGitOps) {
+		t.Fatalf("err %v, want ErrGitOps", err)
+	}
+	if a, _ := te.gw.app("shop"); a.Backends["eks"] != "" || a.Backends["gke"] == "" {
+		t.Fatalf("gateway after a gitops failure %+v", a)
+	}
+	if a, _ := te.store.GetApp(ctx, "shop"); !slices.Equal(a.Environments, []string{"gke", "eks"}) {
+		t.Fatalf("environments %v", a.Environments)
+	}
+	te.git.mu.Lock()
+	te.git.err = nil
+	te.git.mu.Unlock()
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if files, _ := te.git.snapshot(); files[FilePath("shop", "eks")] != nil {
+		t.Fatal("eks file kept")
+	}
+}
+
+// TestRemoveEnvironmentErrors: what it refuses wraps the errors the API maps
+// to its codes.
+func TestRemoveEnvironmentErrors(t *testing.T) {
+	te := newTestEnv(t)
+	te.register("shop", "gke", "eks")
+	ex := te.start()
+	ctx := context.Background()
+	for env, want := range map[string]error{"gke": ErrPrimaryEnvironment, "onprem": ErrNotInEnvironment} {
+		if err := ex.RemoveEnvironment(ctx, "shop", env); !errors.Is(err, want) {
+			t.Fatalf("%s: %v, want %v", env, err, want)
+		}
+	}
+	if err := ex.RemoveEnvironment(ctx, "nope", "eks"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown app: %v", err)
+	}
+}

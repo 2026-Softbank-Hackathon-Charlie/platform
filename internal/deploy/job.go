@@ -14,6 +14,7 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 )
 
@@ -333,7 +334,6 @@ func imageServices(images []store.DeploymentImage) string {
 // under the instance's lock.
 func (j *job) commit(ctx context.Context, app store.App, spec appspec.Spec) (string, error) {
 	images := imagesFor(j.d.Images, spec)
-	msg := fmt.Sprintf("deploy %s %s to %s (%s)", j.d.Instance, short(j.d.Commit), envNames(j.d.Environments), j.d.ID)
 	var files map[string][]byte
 	var sha string
 	var changed bool
@@ -348,6 +348,9 @@ func (j *job) commit(ctx context.Context, app store.App, spec appspec.Spec) (str
 		if err != nil {
 			return fmt.Errorf("read app %s: %w", j.d.App, err)
 		}
+		if err := j.followEnvironments(ctx, app); err != nil {
+			return err
+		}
 		for _, e := range j.d.Environments {
 			if !slices.Contains(app.Environments, e.Env) {
 				return fmt.Errorf("environment %s was removed from app %s; deploy again", e.Env, app.Name)
@@ -356,6 +359,7 @@ func (j *job) commit(ctx context.Context, app store.App, spec appspec.Spec) (str
 		if files, err = j.sealedFiles(ctx, app, spec, images); err != nil {
 			return err
 		}
+		msg := fmt.Sprintf("deploy %s %s to %s (%s)", j.d.Instance, short(j.d.Commit), envNames(j.d.Environments), j.d.ID)
 		if sha, changed, err = j.e.cfg.GitOps.Write(ctx, files, msg); err != nil {
 			return fmt.Errorf("commit to the gitops repository: %w", err)
 		}
@@ -370,6 +374,50 @@ func (j *job) commit(ctx context.Context, app store.App, spec appspec.Spec) (str
 		j.note(ctx, "the gitops repository already has these files at "+short(sha))
 	}
 	return sha, nil
+}
+
+// followsApp reports whether a deployment goes to all of the app's
+// environments, whatever they are when it commits: a push, a registration
+// and an environment deployment do; a manual deployment or a redeploy goes
+// where it was asked to.
+func followsApp(trigger string) bool {
+	switch trigger {
+	case string(apiv1.DeploymentTriggerPush), string(apiv1.DeploymentTriggerRegister), TriggerEnvironment:
+		return true
+	}
+	return false
+}
+
+// followEnvironments makes a deployment that follows the app (followsApp)
+// go to app's environments as they are now, under the instance's lock
+// before the commit, and stores that (ADR 0037). A push stored before an
+// environment was added, which supersedes the environment's deployment,
+// so deploys there too, and one stored before an environment was removed
+// does not write its file again. Other deployments are left as they are.
+func (j *job) followEnvironments(ctx context.Context, app store.App) error {
+	if !followsApp(j.d.Trigger) {
+		return nil
+	}
+	have := make([]string, len(j.d.Environments))
+	for i, e := range j.d.Environments {
+		have[i] = e.Env
+	}
+	if slices.Equal(have, app.Environments) {
+		return nil
+	}
+	next := make([]store.DeploymentEnvironment, len(app.Environments))
+	for i, env := range app.Environments {
+		next[i] = store.DeploymentEnvironment{Env: env, Status: EnvPending}
+		if k := slices.Index(have, env); k >= 0 {
+			next[i] = j.d.Environments[k]
+		}
+	}
+	j.d.Environments = next
+	if err := j.save(ctx); err != nil {
+		return err
+	}
+	j.note(ctx, "the app's environments changed since this deployment was stored ("+strings.Join(have, ", ")+"); it deploys to "+envNames(next))
+	return nil
 }
 
 // --- syncing ---

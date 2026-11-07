@@ -692,23 +692,37 @@ var (
 	// the app's instances to the environment, so RemoveEnvironment changed
 	// nothing.
 	ErrEnvironmentInUse = errors.New("the traffic gateway sends requests to the environment")
+	// ErrNotInEnvironment means the app is not in the environment (any
+	// more), so RemoveEnvironment changed nothing.
+	ErrNotInEnvironment = errors.New("the app is not in the environment")
+	// ErrPrimaryEnvironment means the environment is the app's first, where
+	// its database was born primary, so RemoveEnvironment changed nothing.
+	ErrPrimaryEnvironment = errors.New("the environment is the app's first")
+	// ErrAppChanged means the app's branches or environments changed while
+	// RemoveEnvironment waited for the locks or stored the result; reading
+	// the app and asking again settles it.
+	ErrAppChanged = errors.New("the app changed meanwhile")
 )
 
 // RemoveEnvironment takes env out of a registered app (ADR 0037). Under the
 // locks of every instance of the app, and only while none of them has an
-// unfinished deployment, it commits the removal of
-// apps/<instance>/<env>.yaml of every instance in one commit, takes env's
-// backend out of every instance's gateway app, and then sets the app's
-// environments to the others. The ApplicationSet deletes the Applications
-// <instance>-<env> with what they created, as for a deleted app, and
-// CleanupStorage deletes the instances' buckets and keys there. Each step
-// can be repeated, so a failed removal is retried by calling it again; the
-// environments change last. It refuses (ErrEnvironmentInUse) when the
-// gateway sends an instance's writes or reads to env, and ErrWritesHeld
-// when it holds an instance's writes. A missing app is store.ErrNotFound;
-// an app without env, or with env as its only or first environment, is an
-// error and nothing is changed. The caller checks the rest (migrations,
-// which environment was ever written).
+// unfinished deployment, it takes env's backend out of every instance's
+// gateway app, commits the removal of apps/<instance>/<env>.yaml of every
+// instance in one commit, counts up the database pair's PeerGeneration when
+// env is its peer (a peer added back gets a new backup path), and then sets
+// the app's environments to the others. The gateway goes first so that no
+// request is sent to an environment whose workloads are going. The
+// ApplicationSet deletes the Applications <instance>-<env> with what they
+// created, as for a deleted app, and CleanupStorage deletes the instances'
+// buckets and keys there. Each step can be repeated, so a failed removal is
+// retried by calling it again; the environments change last. It refuses
+// (ErrEnvironmentInUse) when the gateway sends an instance's writes or
+// reads to env, and ErrWritesHeld when it holds an instance's writes. A
+// missing app is store.ErrNotFound, an app without env ErrNotInEnvironment,
+// env as the app's first environment ErrPrimaryEnvironment, and branches or
+// environments that changed meanwhile ErrAppChanged; nothing is changed
+// then. The caller checks the rest (migrations, which environment was ever
+// written).
 func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) error {
 	app, err := e.cfg.Store.GetApp(ctx, name)
 	if err != nil {
@@ -716,9 +730,9 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 	}
 	switch i := slices.Index(app.Environments, env); {
 	case i < 0:
-		return fmt.Errorf("app %s is not in environment %s", name, env)
+		return fmt.Errorf("%w: app %s is not in environment %s", ErrNotInEnvironment, name, env)
 	case i == 0:
-		return fmt.Errorf("%s is app %s's first environment, where its database was born primary", env, name)
+		return fmt.Errorf("%w: %s is app %s's first environment, where its database was born primary", ErrPrimaryEnvironment, env, name)
 	}
 	instances, err := e.instances(ctx, name)
 	if err != nil {
@@ -738,10 +752,10 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 	if now, err := e.instances(ctx, name); err != nil {
 		return err
 	} else if !slices.Equal(now, instances) {
-		return fmt.Errorf("the branches of %s changed meanwhile; remove the environment again", name)
+		return fmt.Errorf("%w: the branches of %s changed; remove the environment again", ErrAppChanged, name)
 	}
 	if !slices.Contains(app.Environments, env) {
-		return fmt.Errorf("app %s is not in environment %s", name, env)
+		return fmt.Errorf("%w: app %s is not in environment %s", ErrNotInEnvironment, name, env)
 	}
 	list, err := e.cfg.Store.ListDeployments(ctx, name, 0)
 	if err != nil {
@@ -752,13 +766,12 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 			return fmt.Errorf("%w: deployment %s of %s is %s", ErrDeploymentInProgress, d.ID, d.Instance, d.Status)
 		}
 	}
-	var routes map[string]gateway.AppInfo
 	if e.cfg.Gateway != nil {
 		all, err := e.cfg.Gateway.Apps(ctx)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrGateway, err)
 		}
-		routes = map[string]gateway.AppInfo{}
+		routes := map[string]gateway.AppInfo{}
 		for _, a := range all.Apps {
 			if !a.Default && slices.Contains(instances, a.Name) {
 				routes[a.Name] = a
@@ -774,6 +787,31 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 				return fmt.Errorf("%w: the traffic gateway sends the requests of %s to %s", ErrEnvironmentInUse, in, env)
 			}
 		}
+		// The weight 0 backends go first: no request is sent to an
+		// environment whose files are already gone.
+		for _, in := range instances {
+			cur, ok := routes[in]
+			if !ok || cur.Backends[env] == "" {
+				continue
+			}
+			if hidden := hiddenPasswords(&cur, map[string]string{env: ""}); len(hidden) > 0 {
+				return fmt.Errorf("%w: the gateway hides the password in the URL of the %s backend of %s, and sending that URL back would replace the password; set it again without a password in its URL, then remove the environment again", ErrGateway, strings.Join(hidden, ", "), in)
+			}
+			next := gateway.AppSpec{Backends: maps.Clone(cur.Backends), WriteBackend: cur.WriteBackend}
+			delete(next.Backends, env)
+			if weights := positive(cur.ReadWeights); len(weights) > 0 {
+				delete(weights, env)
+				next.ReadWeights = weights
+			}
+			err := e.cfg.Gateway.PutApp(ctx, in, next)
+			var ae *gateway.APIError
+			switch {
+			case errors.As(err, &ae) && ae.Status == 409:
+				return fmt.Errorf("%w: %s", ErrWritesHeld, ae.Message)
+			case err != nil:
+				return fmt.Errorf("%w: take %s out of %s: %w", ErrGateway, env, in, err)
+			}
+		}
 	}
 	files := make([]string, len(instances))
 	for i, in := range instances {
@@ -785,36 +823,39 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 	if err := e.cfg.Argo.RefreshApplicationSet(ctx); err != nil && ctx.Err() == nil {
 		e.cfg.Log.Warn("argo cd applicationset refresh after an environment removal", "app", name, "env", env, "err", err)
 	}
-	for _, in := range instances {
-		cur, ok := routes[in]
-		if !ok || cur.Backends[env] == "" {
-			continue
+	// The peer's database leaves its WAL in the backup bucket, so a peer
+	// added back archives under a new path (ADR 0037).
+	db, err := e.cfg.Store.GetAppDatabase(ctx, name)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return fmt.Errorf("read the database pair of %s: %w", name, err)
+	case db.PeerEnv == env:
+		gen, err := e.cfg.Store.NextPeerGeneration(ctx, name)
+		if err != nil {
+			return fmt.Errorf("count up the peer generation of %s: %w", name, err)
 		}
-		if hidden := hiddenPasswords(&cur, map[string]string{env: ""}); len(hidden) > 0 {
-			return fmt.Errorf("%w: the gateway hides the password in the URL of the %s backend of %s, and sending that URL back would replace the password; set it again without a password in its URL, then remove the environment again", ErrGateway, strings.Join(hidden, ", "), in)
-		}
-		next := gateway.AppSpec{Backends: maps.Clone(cur.Backends), WriteBackend: cur.WriteBackend}
-		delete(next.Backends, env)
-		if weights := positive(cur.ReadWeights); len(weights) > 0 {
-			delete(weights, env)
-			next.ReadWeights = weights
-		}
-		err := e.cfg.Gateway.PutApp(ctx, in, next)
-		var ae *gateway.APIError
-		switch {
-		case errors.As(err, &ae) && ae.Status == 409:
-			return fmt.Errorf("%w: %s", ErrWritesHeld, ae.Message)
-		case err != nil:
-			return fmt.Errorf("%w: take %s out of %s: %w", ErrGateway, env, in, err)
-		}
+		e.cfg.Log.Info("database pair peer removed; a peer added back gets a new backup path", "app", name, "env", env, "peerGeneration", gen)
 	}
 	rest := slices.DeleteFunc(slices.Clone(app.Environments), func(e string) bool { return e == env })
-	if err := e.cfg.Store.SetAppEnvironments(ctx, name, app.Environments, rest); err != nil {
+	if err := e.cfg.Store.SetAppEnvironments(ctx, name, app.Environments, rest); errors.Is(err, store.ErrConflict) {
+		return fmt.Errorf("%w: %w", ErrAppChanged, err)
+	} else if err != nil {
 		return fmt.Errorf("store the environments of %s: %w", name, err)
 	}
 	e.cfg.Log.Info("environment removed from app", "app", name, "env", env, "instances", instances)
 	e.wakeCleanup() // the instances' buckets and keys there
 	return nil
+}
+
+// ApplicationExists reports whether Argo CD still has the Application
+// name, such as one an environment removal is deleting (ADR 0037).
+func (e *Executor) ApplicationExists(ctx context.Context, name string) (bool, error) {
+	st, err := e.cfg.Argo.Status(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return st.Exists, nil
 }
 
 // AppURL is where an instance with a public service answers through the

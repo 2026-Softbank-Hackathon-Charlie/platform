@@ -75,6 +75,19 @@ func BackupInstance(app string) string { return app + backupSuffix }
 // database's WAL archive is empty passes (ADR 0025).
 func BackupPath(registered time.Time) string { return registered.UTC().Format("20060102T150405Z") }
 
+// backupPath is the path in env's backup bucket of the app registered at
+// registered, whose database pair is d (nil without one). The peer of a
+// pair whose peer environment was removed from the app before gets
+// BackupPath with the pair's PeerGeneration, "-1" after the first removal:
+// the database that was there left its WAL under the old path, and a new
+// replica needs an empty one (ADR 0037). Every other path is BackupPath.
+func (d *sealedDatabase) backupPath(registered time.Time, env string) string {
+	if d == nil || env != d.row.PeerEnv || d.row.PeerGeneration == 0 {
+		return BackupPath(registered)
+	}
+	return fmt.Sprintf("%s-%d", BackupPath(registered), d.row.PeerGeneration)
+}
+
 // checksumKeyID is where the bucket's key id goes in the checksum input. A
 // secret name cannot look like it, so it never collides with one.
 const checksumKeyID = "s3:keyId"
@@ -157,7 +170,7 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 				if err != nil {
 					return nil, err
 				}
-				sealed.PGBackup = &SealedBackup{SealedS3: *key, Bucket: backupDrv.Bucket(BackupInstance(app.Name)), Path: BackupPath(app.CreatedAt)}
+				sealed.PGBackup = &SealedBackup{SealedS3: *key, Bucket: backupDrv.Bucket(BackupInstance(app.Name)), Path: db.backupPath(app.CreatedAt, env.Env)}
 				j.keys = append(j.keys, sealedKey{env: env.Env, drv: backupDrv, in: storage.Instance{App: app.Name, Name: BackupInstance(app.Name)}, id: backupKeyID, pods: true, backup: true})
 			}
 			if len(values) > 0 {
