@@ -297,3 +297,25 @@ func TestDatabaseRow(t *testing.T) {
 		t.Error("the password decrypts as an app secret")
 	}
 }
+
+func TestOnboardingSealBindsIDAndField(t *testing.T) {
+	c, err := NewCipher(make([]byte, KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, ct, err := c.SealOnboarding("onb-0123456789ab", OnboardingSuperuserPassword, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := store.Onboarding{ID: "onb-0123456789ab", KeyVersion: KeyVersion, KeyCheck: c.KeyCheck()}
+	if v, err := c.OpenOnboarding(o, OnboardingSuperuserPassword, nonce, ct); err != nil || v != "pw" {
+		t.Fatalf("open: %q %v", v, err)
+	}
+	if _, err := c.OpenOnboarding(o, OnboardingReplicationPassword, nonce, ct); err == nil {
+		t.Fatal("opened under another field")
+	}
+	o.ID = "onb-ffffffffffff"
+	if _, err := c.OpenOnboarding(o, OnboardingSuperuserPassword, nonce, ct); err == nil {
+		t.Fatal("opened under another id")
+	}
+}

@@ -588,8 +588,11 @@ const (
 	OnboardingFindingCodeAutoConfSettings             OnboardingFindingCode = "auto_conf_settings"
 	OnboardingFindingCodeCheckFailed                  OnboardingFindingCode = "check_failed"
 	OnboardingFindingCodeCollationDependentConstraint OnboardingFindingCode = "collation_dependent_constraint"
+	OnboardingFindingCodeCollationOtherDatabase       OnboardingFindingCode = "collation_other_database"
+	OnboardingFindingCodeConfigNotWritable            OnboardingFindingCode = "config_not_writable"
 	OnboardingFindingCodeDataVolumeOutOfScope         OnboardingFindingCode = "data_volume_out_of_scope"
 	OnboardingFindingCodeDbNotPostgresContainer       OnboardingFindingCode = "db_not_postgres_container"
+	OnboardingFindingCodeDbUnreadable                 OnboardingFindingCode = "db_unreadable"
 	OnboardingFindingCodeDiskTooSmall                 OnboardingFindingCode = "disk_too_small"
 	OnboardingFindingCodeDomainOutOfScope             OnboardingFindingCode = "domain_out_of_scope"
 	OnboardingFindingCodeDriftLastDeploy              OnboardingFindingCode = "drift_last_deploy"
@@ -608,9 +611,11 @@ const (
 	OnboardingFindingCodeNoSuperuser                  OnboardingFindingCode = "no_superuser"
 	OnboardingFindingCodeNotHttps                     OnboardingFindingCode = "not_https"
 	OnboardingFindingCodePasswordEncryptionMd5        OnboardingFindingCode = "password_encryption_md5"
+	OnboardingFindingCodePendingConfig                OnboardingFindingCode = "pending_config"
 	OnboardingFindingCodeReindexRequired              OnboardingFindingCode = "reindex_required"
 	OnboardingFindingCodeRoleReadOnlySetting          OnboardingFindingCode = "role_read_only_setting"
 	OnboardingFindingCodeStorageOutOfScope            OnboardingFindingCode = "storage_out_of_scope"
+	OnboardingFindingCodeVmImagePullFailed            OnboardingFindingCode = "vm_image_pull_failed"
 	OnboardingFindingCodeVmInAutoscalingGroup         OnboardingFindingCode = "vm_in_autoscaling_group"
 	OnboardingFindingCodeVmIsEksNode                  OnboardingFindingCode = "vm_is_eks_node"
 	OnboardingFindingCodeVmNotSsmManaged              OnboardingFindingCode = "vm_not_ssm_managed"
@@ -633,9 +638,15 @@ func (e OnboardingFindingCode) Valid() bool {
 		return true
 	case OnboardingFindingCodeCollationDependentConstraint:
 		return true
+	case OnboardingFindingCodeCollationOtherDatabase:
+		return true
+	case OnboardingFindingCodeConfigNotWritable:
+		return true
 	case OnboardingFindingCodeDataVolumeOutOfScope:
 		return true
 	case OnboardingFindingCodeDbNotPostgresContainer:
+		return true
+	case OnboardingFindingCodeDbUnreadable:
 		return true
 	case OnboardingFindingCodeDiskTooSmall:
 		return true
@@ -673,11 +684,15 @@ func (e OnboardingFindingCode) Valid() bool {
 		return true
 	case OnboardingFindingCodePasswordEncryptionMd5:
 		return true
+	case OnboardingFindingCodePendingConfig:
+		return true
 	case OnboardingFindingCodeReindexRequired:
 		return true
 	case OnboardingFindingCodeRoleReadOnlySetting:
 		return true
 	case OnboardingFindingCodeStorageOutOfScope:
+		return true
+	case OnboardingFindingCodeVmImagePullFailed:
 		return true
 	case OnboardingFindingCodeVmInAutoscalingGroup:
 		return true
