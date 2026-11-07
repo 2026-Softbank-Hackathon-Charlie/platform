@@ -187,6 +187,9 @@ func (c Config) validate(envs []string) error {
 				if (key != "environment" && key != "cluster") || len(value) == 0 || len(value) > 200 || strings.ContainsAny(value, "\r\n\x00") {
 					return bad("environments.%s.prometheus: invalid binding labels", name)
 				}
+				if key == "environment" && value != name || key == "cluster" && e.Telemetry != nil && value != e.Telemetry.ClusterName {
+					return bad("environments.%s.prometheus: binding labels do not match registered scope", name)
+				}
 			}
 		}
 		if a := e.AuditCollector; a != nil {

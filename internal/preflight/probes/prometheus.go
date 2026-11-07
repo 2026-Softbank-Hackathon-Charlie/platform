@@ -56,7 +56,7 @@ func NewPrometheusWithLabels(target parity.Target, endpoint, job string, client 
 	}
 	owned := map[string]string{}
 	for key, value := range labels {
-		if (key != "environment" && key != "cluster") || len(value) == 0 || len(value) > 200 || strings.ContainsAny(value, "\r\n\x00") {
+		if (key != "environment" && key != "cluster") || len(value) == 0 || len(value) > 200 || strings.ContainsAny(value, "\r\n\x00") || key == "environment" && value != target.Environment {
 			return nil, ErrInvalidConfig
 		}
 		owned[key] = value

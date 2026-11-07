@@ -112,6 +112,16 @@ func TestSignalConfigurationAndReportBinding(t *testing.T) {
 		func(c *Config) { c.Environments["eks"].Telemetry.DeploymentEnvironment = "" },
 		func(c *Config) { c.Apps[0].Observability.RequiredSignals = []string{"logs", "logs"} },
 		func(c *Config) { c.Apps[0].Observability.ServiceNames = nil },
+		func(c *Config) {
+			e := c.Environments["eks"]
+			e.Prometheus = &Prometheus{URL: "http://metrics", MaxAge: "1m", Labels: map[string]string{"environment": "gke"}}
+			c.Environments["eks"] = e
+		},
+		func(c *Config) {
+			e := c.Environments["eks"]
+			e.Prometheus = &Prometheus{URL: "http://metrics", MaxAge: "1m", Labels: map[string]string{"cluster": "gke-cluster"}}
+			c.Environments["eks"] = e
+		},
 	} {
 		raw, _ := json.Marshal(g.cfg)
 		var candidate Config
@@ -168,5 +178,36 @@ func TestStatelessSignalScopeUsesExactRegisteredAppRoute(t *testing.T) {
 	p.Gateway.URL += "-other"
 	if g.ObservabilityConfigured(p) {
 		t.Fatal("app-prefix route crossed namespaces")
+	}
+}
+
+func TestSignalProbeCancellationJoinsBothEnvironmentReaders(t *testing.T) {
+	g := signalGate(t, true)
+	started, stopped := make(chan struct{}, 2), make(chan struct{}, 2)
+	g.SetSignalReader(signalReaderFunc(func(ctx context.Context, _ parity.SignalScope, _, _ time.Time) ([]parity.SignalCount, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		stopped <- struct{}{}
+		return nil, ctx.Err()
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _, _ = g.Check(ctx, shopPlan()); close(done) }()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("reader did not start")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled readers did not join")
+	}
+	if len(stopped) != 2 {
+		t.Fatal("returned before both source and target readers stopped")
 	}
 }
