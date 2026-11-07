@@ -12,14 +12,14 @@ SCENARIOS = ("lost-response", "canary-fault", "observe-rollback", "migrate")
 
 
 class PipelineEvidenceTests(unittest.TestCase):
-    def summarize(self, content, exit_code=0):
+    def summarize(self, content, exit_code=0, suite="migration"):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "private.log"
             output = Path(directory) / "summary.json"
             log.write_text(content, encoding="utf-8")
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), "--log", str(log),
-                 "--output", str(output), "--exit-code", str(exit_code)],
+                 "--output", str(output), "--exit-code", str(exit_code), "--suite", suite],
                 capture_output=True, text=True, check=False)
             self.assertTrue(output.exists(), result.stderr)
             return result.returncode, json.loads(output.read_text(encoding="utf-8"))
@@ -64,6 +64,29 @@ class PipelineEvidenceTests(unittest.TestCase):
         code, summary = self.summarize(self.successful_log() + "\n" + "x" * (32 * 1024 * 1024))
         self.assertNotEqual(code, 0)
         self.assertTrue(summary["output_truncated"])
+        self.assertFalse(summary["pipeline_passed"])
+
+    def test_remote_minio_requires_each_real_scenario_and_final_marker(self):
+        names = ("forward_copy", "reverse_copy_cache_reuse", "same_size_source_change",
+                 "target_corruption_detected", "target_corruption_repaired", "object_add_delete",
+                 "authorization_rechecked", "metadata_rechecked", "cancelled_no_upload",
+                 "fixture_bucket_cleanup")
+        log = "\n".join(f"FILEGUARD_MINIO_SCENARIO {name} passed" for name in names)
+        code, summary = self.summarize(log + "\nFILEGUARD_MINIO_RESULT passed\n", suite="minio")
+        self.assertEqual(code, 0)
+        self.assertTrue(summary["pipeline_passed"])
+        self.assertEqual([s["name"] for s in summary["scenarios"]], list(names))
+        code, summary = self.summarize(log, suite="minio")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(summary["pipeline_passed"])
+        incomplete = log.replace("FILEGUARD_MINIO_SCENARIO metadata_rechecked passed", "")
+        code, summary = self.summarize(incomplete + "\nFILEGUARD_MINIO_RESULT passed\n", suite="minio")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(summary["pipeline_passed"])
+
+    def test_remote_minio_skip_is_not_remote_success(self):
+        code, summary = self.summarize("--- SKIP: TestDisposableMinIOFileguard (0.00s)\nPASS\n", suite="minio")
+        self.assertNotEqual(code, 0)
         self.assertFalse(summary["pipeline_passed"])
 
 

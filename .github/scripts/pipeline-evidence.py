@@ -14,6 +14,10 @@ SCENARIOS = ("lost-response", "canary-fault", "observe-rollback", "migrate")
 STAGES = ("build", "kind cluster", "source pg-src", "platform store",
           "test apps, gateway, platform API", "second app by host name")
 MAX_OUTPUT_BYTES = 32 * 1024 * 1024
+MINIO_SCENARIOS = ("forward_copy", "reverse_copy_cache_reuse", "same_size_source_change",
+                   "target_corruption_detected", "target_corruption_repaired", "object_add_delete",
+                   "authorization_rechecked", "metadata_rechecked", "cancelled_no_upload",
+                   "fixture_bucket_cleanup")
 
 
 def summarize(raw, exit_code):
@@ -67,12 +71,32 @@ def summarize(raw, exit_code):
                            "moimroom application migration", "production rollout", "opt-in gateway HA"]}
 
 
+def summarize_minio(raw, exit_code):
+    scenarios = []
+    final_markers = 0
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        match = re.fullmatch(r"FILEGUARD_MINIO_SCENARIO ([a-z_]+) passed", line)
+        if match and match[1] in MINIO_SCENARIOS:
+            scenarios.append({"name": match[1], "passed": True})
+        if line == "FILEGUARD_MINIO_RESULT passed":
+            final_markers += 1
+    passed = (exit_code == 0 and final_markers == 1
+              and [s["name"] for s in scenarios] == list(MINIO_SCENARIOS))
+    return {"schema_version": 1, "pipeline_passed": passed,
+            "exit_code": exit_code, "scenarios": scenarios,
+            "private_output_sha256": hashlib.sha256(raw).hexdigest(),
+            "unverified": ["database and file migration in a single run",
+                           "moimroom application migration", "public-cloud endpoints",
+                           "production rollout"]}
+
+
 def main():
     parser = argparse.ArgumentParser()
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--root", type=Path)
     source.add_argument("--log", type=Path, help="parse a local test fixture only")
     parser.add_argument("--exit-code", type=int, default=0)
+    parser.add_argument("--suite", choices=("migration", "minio"), default="migration")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     started = datetime.now(timezone.utc).isoformat()
@@ -82,7 +106,10 @@ def main():
         environment["SCENARIOS"] = " ".join(SCENARIOS)
         # Never pipe child output to Actions: failure tails can contain DSNs.
         with tempfile.TemporaryFile() as private_log:
-            result = subprocess.run(["bash", "test/e2e/run.sh"], cwd=args.root,
+            command = (["bash", "test/e2e/run.sh"] if args.suite == "migration" else
+                       ["go", "test", "-race", "-count=1", "-v", "-timeout", "10m",
+                        "-run", "^TestDisposableMinIOFileguard$", "./internal/fileguard"])
+            result = subprocess.run(command, cwd=args.root,
                                     env=environment, stdout=private_log,
                                     stderr=subprocess.STDOUT, check=False)
             private_log.seek(0)
@@ -93,7 +120,13 @@ def main():
             raw = private_log.read(MAX_OUTPUT_BYTES + 1)
         exit_code = args.exit_code
     truncated = len(raw) > MAX_OUTPUT_BYTES
-    summary = summarize(raw[:MAX_OUTPUT_BYTES], exit_code)
+    summarize_suite = summarize if args.suite == "migration" else summarize_minio
+    summary = summarize_suite(raw[:MAX_OUTPUT_BYTES], exit_code)
+    summary["suite"] = args.suite
+    if args.suite == "minio":
+        version = os.environ.get("RCLONE_TESTED_VERSION", "")
+        if re.fullmatch(r"[0-9a-zA-Z.+-]+", version):
+            summary["rclone_version"] = version
     summary["output_truncated"] = truncated
     summary["private_output_hash_scope"] = "first_32_MiB" if truncated else "complete"
     if truncated:
