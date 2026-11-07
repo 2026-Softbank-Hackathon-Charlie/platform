@@ -168,6 +168,21 @@ func TestBinaryLabelClassifiesUnreadableObjects(t *testing.T) {
 	if _, err := scan(context.Background(), dir, objects, nil, "unknown"); !errors.Is(err, ErrOptions) {
 		t.Fatalf("unsupported binary label accepted: %v", err)
 	}
+	// Unreadable bytes that are not an image still deny: CP949 text, a
+	// pg_dump archive, gzip, a PDF.
+	for name, data := range map[string][]byte{
+		"cp949": {0xc8, 0xab, 0xb1, 0xe6, 0xb5, 0xbf, ',', '0', '1', '0'},
+		"dump":  []byte("PGDMP\x01\x0e\x00"),
+		"gzip":  {0x1f, 0x8b, 0x08, 0x00},
+		"pdf":   []byte("%PDF-1.7\nbody"),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := scan(context.Background(), dir, []object{{Path: name, Size: int64(len(data))}}, nil, "global"); !errors.Is(err, ErrUnsupported) {
+			t.Fatalf("%s labelled as an image: %v", name, err)
+		}
+	}
 	// The label covers only unreadable bytes: text is still scanned.
 	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("demo@example.invalid"), 0600); err != nil {
 		t.Fatal(err)

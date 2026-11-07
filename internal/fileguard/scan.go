@@ -186,7 +186,10 @@ func (s *scanner) inspectDigest(ctx context.Context, data []byte, depth int, dig
 	} else if !knownBinary(data) && plainText(data) {
 		labels = append(labels, s.textLabels(data)...)
 	} else if review == "" {
-		if s.binary == "" {
+		// The operator's label covers images only: other unreadable bytes
+		// (non-UTF-8 text, compressed text, dumps, documents) may hold
+		// personal data the patterns would find, so they still deny.
+		if s.binary == "" || !knownImage(data) {
 			return nil, ErrUnsupported
 		}
 		labels = append(labels, s.binary)
@@ -212,6 +215,26 @@ func knownBinary(b []byte) bool {
 	b = bytes.TrimPrefix(b, []byte{0xef, 0xbb, 0xbf})
 	for _, magic := range []string{"%PDF-", "{\\rtf", "IWAD", "PWAD", "MZ", "\x7fELF", "GIF87a", "GIF89a", "RIFF"} {
 		if bytes.HasPrefix(b, []byte(magic)) {
+			return true
+		}
+	}
+	return false
+}
+
+// knownImage recognizes image formats by magic bytes, never by extension.
+func knownImage(b []byte) bool {
+	for _, magic := range []string{"\x89PNG\r\n\x1a\n", "\xff\xd8\xff", "GIF87a", "GIF89a"} {
+		if bytes.HasPrefix(b, []byte(magic)) {
+			return true
+		}
+	}
+	if len(b) >= 12 && bytes.HasPrefix(b, []byte("RIFF")) && string(b[8:12]) == "WEBP" {
+		return true
+	}
+	// ISO BMFF: size, "ftyp", then the major brand.
+	if len(b) >= 12 && string(b[4:8]) == "ftyp" {
+		switch string(b[8:12]) {
+		case "heic", "heix", "mif1", "avif":
 			return true
 		}
 	}
