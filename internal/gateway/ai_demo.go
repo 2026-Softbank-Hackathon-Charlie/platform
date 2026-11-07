@@ -35,6 +35,9 @@ var aiRequestID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 func (c *Config) checkAI() error {
 	if c.AIDemo == nil {
+		if c.AIFollow != nil {
+			return errors.New("AI follow requires the AI demo (-ai-app)")
+		}
 		return nil
 	}
 	if c.AIDemo.App != c.DefaultApp || strings.TrimSpace(c.AIDemo.Token) == "" || strings.TrimSpace(c.AdminToken) == "" {
@@ -53,7 +56,7 @@ func (c *Config) checkAI() error {
 	if !names["gcp"] || !names["laptop"] {
 		return errors.New("AI demo requires gcp and laptop")
 	}
-	return nil
+	return c.checkAIFollow()
 }
 
 func (rt *router) aiEnabled() bool { return rt.g.cfg.AIDemo != nil && rt.g.cfg.AIDemo.App == rt.name }

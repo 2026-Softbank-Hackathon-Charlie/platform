@@ -47,6 +47,12 @@ func (g *Gateway) adminMux() http.Handler {
 		{"POST /v1/reads/exclude", (*router).handleExcludeReads},
 		{"POST /v1/reads/include", (*router).handleIncludeReads},
 	}
+	if g.cfg.AIFollow != nil {
+		perApp = append(perApp, struct {
+			pattern string
+			h       func(*router, http.ResponseWriter, *http.Request)
+		}{"POST /v1/follow", (*router).handleFollow})
+	}
 	for _, e := range perApp {
 		method, path, _ := strings.Cut(e.pattern, " ")
 		mux.HandleFunc(e.pattern, g.auth(func(w http.ResponseWriter, r *http.Request) { e.h(g.router, w, r) }))
@@ -211,30 +217,52 @@ func (rt *router) handleRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rt.g.controlMu.Unlock()
-	if _, ok := rt.byName[req.Backend]; !ok {
-		names := rt.namesLocked()
-		rt.mu.Unlock()
-		writeError(w, http.StatusBadRequest, "unknown_backend",
-			fmt.Sprintf("unknown backend %q (configured: %s)", req.Backend, strings.Join(names, ", ")))
+	prev, held, rerr := rt.routeLocked(req.Backend)
+	if rerr != nil {
+		writeError(w, rerr.status, rerr.code, rerr.msg)
 		return
 	}
-	if rt.readExclusions[req.Backend] != "" {
-		rt.mu.Unlock()
-		readsExcluded(w)
-		return
-	}
-	prev, held := rt.writeBackend, rt.held
-	if held && rt.inflightWrites > 0 && prev != req.Backend {
-		rt.mu.Unlock()
-		writeError(w, http.StatusConflict, "writes_draining", "wait for existing writes to drain before changing the write backend")
-		return
-	}
-	rt.writeBackend = req.Backend
-	rt.readWeights = rt.weightsAllToLocked(req.Backend)
-	rt.mu.Unlock()
 	rt.g.save()
+	if rt.follow != nil && rt.follow.setEnabled(false) {
+		rt.log.Info("AI follow paused by manual route", "backend", req.Backend)
+	}
 	rt.log.Info("admin action", "action", "route", "backend", req.Backend, "previous", prev, "writesHeld", held)
 	writeJSON(w, http.StatusOK, rt.state(defaultWindow))
+}
+
+// routeError is a route change that routeLocked refused.
+type routeError struct {
+	status    int
+	code, msg string
+}
+
+func (e *routeError) Error() string { return e.code + ": " + e.msg }
+
+// routeLocked sends writes and all reads to backend. The caller holds
+// controlMu and rt.mu (lockControl) and saves on success; routeLocked
+// releases rt.mu and leaves controlMu to the caller. Requests already sent
+// finish on the backend they were sent to. Shared by handleRoute and the AI
+// follower.
+func (rt *router) routeLocked(backend string) (prev string, held bool, err *routeError) {
+	if _, ok := rt.byName[backend]; !ok {
+		names := rt.namesLocked()
+		rt.mu.Unlock()
+		return "", false, &routeError{http.StatusBadRequest, "unknown_backend",
+			fmt.Sprintf("unknown backend %q (configured: %s)", backend, strings.Join(names, ", "))}
+	}
+	if rt.readExclusions[backend] != "" {
+		rt.mu.Unlock()
+		return "", false, &routeError{http.StatusConflict, readExclusionCode, readExclusionMsg}
+	}
+	prev, held = rt.writeBackend, rt.held
+	if held && rt.inflightWrites > 0 && prev != backend {
+		rt.mu.Unlock()
+		return "", false, &routeError{http.StatusConflict, "writes_draining", "wait for existing writes to drain before changing the write backend"}
+	}
+	rt.writeBackend = backend
+	rt.readWeights = rt.weightsAllToLocked(backend)
+	rt.mu.Unlock()
+	return prev, held, nil
 }
 
 func (rt *router) handleWeights(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +318,7 @@ func (rt *router) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 		window = d
 	}
-	writeJSON(w, http.StatusOK, rt.state(window))
+	writeJSON(w, http.StatusOK, rt.stateView(window))
 }
 
 // state builds the TrafficState with stats over window (whole seconds).

@@ -110,3 +110,28 @@ lease는 한 실행이 생성한 고유한 1–128자 영숫자·`._:-` 식별�
 증명이며 HA 전체 drain이나 HTTP 밖 쓰기 차단 자체의 증명이 아니다.
 
 설계와 호출 순서는 [ADR 0049](../../docs/adr/0049-exclude-source-reads-before-database-fence.md)에 기록한다.
+
+## AI 경로가 앱 위치를 따라가기
+
+`-ai-app`으로 띄운 AI 데모 게이트웨이는 다른 트래픽 게이트웨이에 있는 앱의 쓰기 위치를
+따라 AI 경로(`gcp`|`laptop`)를 바꿀 수 있다. 아래 값이 모두 없으면 기능은 꺼지고 동작은 전과 같다.
+
+| 실행 옵션 / 환경 변수 | 의미 |
+|---|---|
+| `-ai-follow-app` / `AI_FOLLOW_APP` | 따라갈 앱 (예: `moimroom-mig`). 트래픽 게이트웨이에 `PUT /apps/{app}`로 등록된 앱이어야 한다(기본 앱은 지표에 `app` 라벨이 없어 따라갈 수 없음) |
+| `-ai-follow-url` / `AI_FOLLOW_URL` | 트래픽 게이트웨이 관리 주소 (http(s), 예: `http://hopcharlie-gateway.charlie-platform.svc.cluster.local:9901`) |
+| `-ai-follow-map` / `AI_FOLLOW_MAP` | 앱 backend → AI backend (예: `onprem=laptop,gke=gcp,eks=gcp`), 값은 `gcp`·`laptop`만 |
+| `-ai-follow-interval` / `AI_FOLLOW_INTERVAL` | 읽는 주기 (기본 2s, 500ms 이상) |
+
+- 토큰을 쓰지 않는다. 토큰 없이 열린 `GET {url}/metrics?name[]=charlie_gateway_app_write_backend&name[]=charlie_gateway_app_writes_held`
+  (1 MiB 제한)에서 그 앱의 `write_backend`(값이 1인 backend가 정확히 하나)와 `writes_held`를 읽는다.
+- 시작하자마자 한 번, 그 뒤 주기마다 읽어 바뀌었을 때만 `POST /v1/route`와 같은
+  경로(같은 잠금, 진행 중 요청은 원래 backend에서 끝남)로 바꾸고 `AI route follows app` 로그를 남긴다.
+- 앱의 `writes_held`가 1이면 `appBackend`·`lastSync`만 갱신하고 바꾸지 않는다. 읽기 실패·200 아님·
+  지표 형식 오류·앱 시계열 없음·1인 backend가 0개 또는 2개 이상·맵에 없는 backend면
+  경로를 유지하고 `charlie_gateway_ai_follow_errors_total{reason}`을 올린다.
+- 대상 AI backend가 unhealthy면 다른 쪽이 healthy일 때 그쪽으로 보낸다(`fallback=true`,
+  `charlie_gateway_ai_follow_fallback`). 둘 다 unhealthy면 유지한다.
+- 수동 `POST /v1/route`는 따라가기를 멈춘다. `POST /v1/follow {"enabled":true}`(또는
+  `/apps/{app}/v1/follow`)로 다시 켜면 바로 한 번 맞추고, `false`로 끌 수 있다. 멈춤은 저장하지 않으므로 재시작하면 다시 따라간다.
+- `GET /v1/state`에 `follow: {enabled, app, appBackend, target, fallback, lastSync, lastError}`가 붙는다.

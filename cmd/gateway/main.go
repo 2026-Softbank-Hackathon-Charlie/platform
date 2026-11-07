@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -49,6 +50,10 @@ func main() {
 	connRecycle := flag.Duration("conn-recycle", gateway.DefaultConnRecycle, "how often idle backend connections are closed, so the next request resolves the backend's name again")
 	insecure := flag.Bool("insecure-no-auth", false, "run the admin API without GATEWAY_ADMIN_TOKEN (local development only)")
 	aiApp := flag.String("ai-app", "", "enable bounded AI demo on this dedicated default app (requires AI_GATEWAY_TOKEN)")
+	aiFollowApp := flag.String("ai-follow-app", os.Getenv("AI_FOLLOW_APP"), "make the -ai-app route follow this app's write backend on a traffic gateway (with -ai-follow-url and -ai-follow-map; reads the traffic gateway's unauthenticated /metrics)")
+	aiFollowURL := flag.String("ai-follow-url", os.Getenv("AI_FOLLOW_URL"), "traffic gateway admin base URL for -ai-follow-app, e.g. http://hopcharlie-gateway.charlie-platform.svc.cluster.local:9901")
+	aiFollowMap := flag.String("ai-follow-map", os.Getenv("AI_FOLLOW_MAP"), "followed app backend to AI backend, e.g. onprem=laptop,gke=gcp,eks=gcp")
+	aiFollowInterval := flag.Duration("ai-follow-interval", gateway.DefaultAIFollowInterval, "how often -ai-follow-app's state is read (AI_FOLLOW_INTERVAL; at least 500ms)")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -66,8 +71,14 @@ func main() {
 	if *aiApp != "" {
 		aiCfg = &gateway.AIDemoConfig{App: *aiApp, Token: os.Getenv("AI_GATEWAY_TOKEN")}
 	}
+	followCfg, err := aiFollowConfig(*aiFollowApp, *aiFollowURL, *aiFollowMap, *aiFollowInterval)
+	if err != nil {
+		log.Error("invalid AI follow configuration", "err", err)
+		os.Exit(2)
+	}
 	gw, err := gateway.New(gateway.Config{
 		AIDemo:               aiCfg,
+		AIFollow:             followCfg,
 		Backends:             bs,
 		InitialBackend:       *initial,
 		StateFile:            *stateFile,
@@ -138,6 +149,28 @@ func shutdown(log *slog.Logger, gw *gateway.Gateway, public, admin *http.Server,
 		}
 		cancel()
 	}
+}
+
+// aiFollowConfig builds the AI follow config. Everything unset turns the
+// feature off; gateway.New validates the rest.
+func aiFollowConfig(app, rawURL, rawMap string, interval time.Duration) (*gateway.AIFollowConfig, error) {
+	if app == "" && rawURL == "" && rawMap == "" {
+		return nil, nil
+	}
+	explicit := false
+	flag.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "ai-follow-interval" })
+	if v := os.Getenv("AI_FOLLOW_INTERVAL"); v != "" && !explicit {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("AI_FOLLOW_INTERVAL: %w", err)
+		}
+		interval = d
+	}
+	m, err := gateway.ParseAIFollowMap(rawMap)
+	if err != nil {
+		return nil, fmt.Errorf("-ai-follow-map / AI_FOLLOW_MAP: %w", err)
+	}
+	return &gateway.AIFollowConfig{App: app, URL: rawURL, Map: m, Interval: interval}, nil
 }
 
 func envOr(k, def string) string {

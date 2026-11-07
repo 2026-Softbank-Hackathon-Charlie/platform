@@ -96,7 +96,8 @@ type holdGen struct {
 // router is one app: its backends, routing, hold and stats. Apps share
 // nothing else, so holding one app's writes never delays another's.
 type router struct {
-	ai      *aiState // guarded by mu
+	ai      *aiState    // guarded by mu
+	follow  *aiFollower // the AI demo app with AIFollow; nil otherwise
 	g       *Gateway
 	name    string
 	log     *slog.Logger
@@ -173,6 +174,9 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, err
 	}
 	g.router = def
+	if cfg.AIFollow != nil {
+		def.follow = newAIFollower(def, *cfg.AIFollow)
+	}
 	g.admin = g.adminMux()
 	if err := g.restore(); err != nil {
 		return nil, err
@@ -1070,6 +1074,12 @@ func (w *statusWriter) status() int {
 // the time of each round, and closes idle proxy connections every
 // ConnRecycle, until ctx ends.
 func (g *Gateway) Run(ctx context.Context) {
+	if f := g.router.follow; f != nil {
+		go func() {
+			f.run(ctx)
+			f.stopOnce.Do(func() { close(f.stopped) })
+		}()
+	}
 	go func() {
 		t := time.NewTicker(g.cfg.ConnRecycle)
 		defer t.Stop()
