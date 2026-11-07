@@ -117,15 +117,27 @@ func ClusterName(app, resource string) string { return app + "-" + resource }
 // DATABASE_URL, PGHOST and the others come from it (the chart's
 // platformEnv).
 func pgAppSecret(cluster, ns, password string) map[string]string {
+	return pgAppSecretFor(cluster, ns, password, "", "")
+}
+
+// pgAppSecretFor is pgAppSecret for the database and owner of an onboarded
+// app's row (ADR 0042); empty is app, as for every other pair.
+func pgAppSecretFor(cluster, ns, password, database, owner string) map[string]string {
+	if database == "" {
+		database = "app"
+	}
+	if owner == "" {
+		owner = "app"
+	}
 	host := cluster + "-rw"
 	addr := host + "." + ns + ":" + AppDBPort
 	return map[string]string{
-		"username": "app",
+		"username": owner,
 		"password": password,
-		"dbname":   "app",
+		"dbname":   database,
 		"host":     host,
 		"port":     AppDBPort,
-		"uri":      "postgresql://app:" + password + "@" + addr + "/app",
-		"jdbc-uri": "jdbc:postgresql://" + addr + "/app?password=" + password + "&user=app",
+		"uri":      "postgresql://" + owner + ":" + password + "@" + addr + "/" + database,
+		"jdbc-uri": "jdbc:postgresql://" + addr + "/" + database + "?password=" + password + "&user=" + owner,
 	}
 }

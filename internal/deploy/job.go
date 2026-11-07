@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
@@ -351,6 +352,17 @@ func (j *job) commit(ctx context.Context, app store.App, spec appspec.Spec) (str
 		if err := j.followEnvironments(ctx, app); err != nil {
 			return err
 		}
+		if j.e.cfg.CuttingOver != nil {
+			// The engine scaled the cold app up with the kube API; a file
+			// with replicas 0 now could take it down again (ADR 0042).
+			busy, err := j.e.cfg.CuttingOver(ctx, app.Name)
+			if err != nil {
+				return fmt.Errorf("read the onboarding of %s: %w", app.Name, err)
+			}
+			if busy {
+				return fmt.Errorf("app %s is cutting over from its onboarding source, so it is not deployed now; deploy again once the cutover is done", app.Name)
+			}
+		}
 		for _, e := range j.d.Environments {
 			if !slices.Contains(app.Environments, e.Env) {
 				return fmt.Errorf("environment %s was removed from app %s; deploy again", e.Env, app.Name)
@@ -663,7 +675,9 @@ func (j *job) includes(ctx context.Context, rev, commit string) bool {
 // a password fails the deployment (see hiddenPasswords).
 func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([]string, error) {
 	svc, ok := publicService(spec)
-	if !ok || j.e.cfg.Gateway == nil {
+	// An onboarding's test app (onb-<hex>, ADR 0042) is never routed: it
+	// runs the PR branch with test secrets, and only Argo's health counts.
+	if !ok || j.e.cfg.Gateway == nil || onboard.ID.MatchString(app.Name) {
 		return nil, nil
 	}
 	instance := j.d.Instance
@@ -751,7 +765,7 @@ func (j *job) register(ctx context.Context, app store.App, spec appspec.Spec) ([
 				return fmt.Errorf("it now sends requests to %s, where the public service did not answer, so it was not changed", env)
 			}
 		}
-		if cur != nil && maps.Equal(cur.Backends, routed.Backends) && cur.WriteBackend == routed.WriteBackend && sameWeights(cur.ReadWeights, routed.ReadWeights) {
+		if cur != nil && maps.Equal(cur.Backends, routed.Backends) && maps.Equal(cur.Dial, routed.Dial) && cur.WriteBackend == routed.WriteBackend && sameWeights(cur.ReadWeights, routed.ReadWeights) {
 			unchanged = true
 			return nil
 		}
@@ -921,6 +935,17 @@ func gatewaySpec(cur *gateway.AppInfo, appEnvs []string, urls map[string]string)
 		maps.Copy(out.Backends, cur.Backends)
 	}
 	maps.Copy(out.Backends, urls)
+	// The dial address of a backend the deployment does not set (the
+	// legacy backend of an onboarding, ADR 0042) goes with it; a backend it
+	// sets dials its new URL.
+	for name, addr := range appDial(cur) {
+		if _, set := urls[name]; !set {
+			if out.Dial == nil {
+				out.Dial = map[string]string{}
+			}
+			out.Dial[name] = addr
+		}
+	}
 	if cur != nil && out.Backends[cur.WriteBackend] != "" {
 		out.WriteBackend = cur.WriteBackend
 		weights := positive(cur.ReadWeights)
@@ -987,4 +1012,12 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// appDial is a's dial addresses, nil without an app.
+func appDial(a *gateway.AppInfo) map[string]string {
+	if a == nil {
+		return nil
+	}
+	return a.Dial
 }

@@ -148,6 +148,9 @@ type Config struct {
 	// Secrets decrypts the app secrets (PLATFORM_SECRETS_KEY); nil fails
 	// the deployments of an app that has secrets.
 	Secrets *secrets.Cipher
+	// CuttingOver reports whether the app's onboarding is cutting over
+	// (ADR 0042), when a deployment must not write its files. Nil: never.
+	CuttingOver func(ctx context.Context, app string) (bool, error)
 	// Sealer returns the sealer of an environment's cluster; nil (or an
 	// error) fails a deployment that has something to seal there.
 	Sealer func(env string) (*sealing.Sealer, error)

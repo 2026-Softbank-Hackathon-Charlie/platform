@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
@@ -199,6 +201,15 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 				if sealed.PGCA, err = sl.SealAll(ns, sealing.PGCASecret, db.ca); err != nil {
 					return nil, fmt.Errorf("seal the database CA of %s for %s: %w", j.d.Instance, env.Env, err)
 				}
+				if db.legacy != nil && env.Env == db.row.PrimaryEnv {
+					if sealed.PGLegacy, err = sl.SealAll(ns, db.cluster+"-"+onboard.SourceName, db.legacy); err != nil {
+						return nil, fmt.Errorf("seal the source's replication account of %s for %s: %w", j.d.Instance, env.Env, err)
+					}
+				}
+				if topology != nil && db.row.SourceKind == store.DBSourceExternal && env.Env == db.row.PrimaryEnv {
+					topology.External = &ExternalSource{Name: onboard.SourceName, Host: db.row.ExternalHost,
+						User: onboard.ReplicationUser, PasswordSecret: db.cluster + "-" + onboard.SourceName, SSLMode: "prefer"}
+				}
 			}
 		}
 		envImages := images
@@ -212,7 +223,11 @@ func (j *job) sealedFiles(ctx context.Context, app store.App, spec appspec.Spec,
 				envImages[service] = j.e.cfg.GKEImageRegistry + "/" + app.Name + "/" + service + "@" + digest
 			}
 		}
-		b, err := Render(File{App: app.Name, Instance: j.d.Instance, Env: env.Env, Commit: j.d.Commit, Deployment: j.d.ID, Spec: spec, Images: envImages, Sealed: sealed, DBTopology: topology})
+		file := File{App: app.Name, Instance: j.d.Instance, Env: env.Env, Commit: j.d.Commit, Deployment: j.d.ID, Spec: spec, Images: envImages, Sealed: sealed, DBTopology: topology}
+		if db != nil {
+			file.Postgres, file.OnboardingCold = db.postgres(), db.row.SourceKind == store.DBSourceExternal
+		}
+		b, err := Render(file)
 		if err != nil {
 			return nil, err
 		}
@@ -231,6 +246,23 @@ type sealedDatabase struct {
 	cluster string
 	app     map[string]string // Secret <cluster>-app
 	ca      map[string]string // Secret app-pg-ca
+	// legacy is Secret <cluster>-legacy, the source's replication account
+	// of an onboarded app (ADR 0042); nil for every other app.
+	legacy map[string]string
+}
+
+// postgres is values.postgres of the app's every file (ADR 0042): from the
+// row, nil when the row has none of it, so the files of a pair born on the
+// platform stay as they were. The onboarding values are taken from the row
+// on every deployment, not from the deployment that asked: a push while
+// the onboarding is syncing still renders cold (the row's source_kind is
+// external until the cutover succeeded).
+func (d *sealedDatabase) postgres() *PostgresValues {
+	v := PostgresValues{Image: d.row.Image, Database: d.row.Database, Owner: d.row.Owner, StorageSize: d.row.StorageSize}
+	if v == (PostgresValues{}) {
+		return nil
+	}
+	return &v
 }
 
 // topology is values.dbTopology of the file of env, for an app in appEnvs:
@@ -277,12 +309,20 @@ func (j *job) appDatabase(ctx context.Context, app store.App, spec appspec.Spec)
 		return nil, fmt.Errorf("decrypt the database pair of %s: %w", app.Name, err)
 	}
 	cluster := ClusterName(app.Name, spec.Resources[i].Name)
-	return &sealedDatabase{
+	d := &sealedDatabase{
 		row:     row,
 		cluster: cluster,
-		app:     pgAppSecret(cluster, Namespace(j.d.Instance), password),
+		app:     pgAppSecretFor(cluster, Namespace(j.d.Instance), password, row.Database, row.Owner),
 		ca:      map[string]string{"ca.crt": row.CACert, "ca.key": caKey},
-	}, nil
+	}
+	if row.ReplicationPasswordCiphertext != nil {
+		pw, err := j.e.cfg.Secrets.OpenDatabaseField(row, secrets.DatabaseReplicationPassword, row.ReplicationPasswordNonce, row.ReplicationPasswordCiphertext)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt the source's replication account of %s: %w", app.Name, err)
+		}
+		d.legacy = map[string]string{"username": onboard.ReplicationUser, "password": pw}
+	}
+	return d, nil
 }
 
 // appSecretValues returns the secrets the deployment's instance gets,

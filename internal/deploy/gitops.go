@@ -89,9 +89,8 @@ type File struct {
 }
 
 // The gitops values of an onboarded app (ADR 0042), the contract with the
-// app chart's infra side. Render refuses them until the implementation
-// renders them (errOnboardingValues); every key below is left out when
-// unset, so the files of every other app stay byte for byte as they are.
+// app chart's infra side. Every key below is left out when unset, so the
+// files of every other app stay byte for byte as they are.
 // The shape, in Render's key order (values elided are as before):
 //
 //	values:
@@ -169,10 +168,6 @@ type ExternalSource struct {
 	SSLMode        string // "prefer"
 }
 
-// errOnboardingValues is Render's refusal of the values of ADR 0042 until
-// it renders them.
-var errOnboardingValues = errors.New("the gitops values of an onboarding (ADR 0042) are not rendered yet")
-
 // DBTopology is where an app's database pair is born (ADR 0030): Primary
 // is the environment where it is born primary, Peer the other one, where it
 // is born a replica. Both environments' files have the same values; the
@@ -215,10 +210,6 @@ func Render(f File) ([]byte, error) {
 	if f.Instance == "" {
 		return nil, fmt.Errorf("render the gitops file of %s in %s: no instance", f.App, f.Env)
 	}
-	if f.Postgres != nil || f.OnboardingCold || (f.DBTopology != nil && f.DBTopology.External != nil) ||
-		(f.Sealed != nil && len(f.Sealed.PGLegacy) > 0) {
-		return nil, fmt.Errorf("render %s: %w", FilePath(f.Instance, f.Env), errOnboardingValues)
-	}
 	b.WriteString(fileHeader)
 	fmt.Fprintf(&b, "app: %s\n", q(f.App))
 	fmt.Fprintf(&b, "env: %s\n", q(f.Env))
@@ -242,7 +233,11 @@ func Render(f File) ([]byte, error) {
 			fmt.Fprintf(&b, "      healthCheck: %s\n", q(sv.HealthCheck))
 		}
 		fmt.Fprintf(&b, "      public: %t\n", sv.Public)
-		fmt.Fprintf(&b, "      replicas: %d\n", max(sv.Replicas, 1))
+		replicas := max(sv.Replicas, 1)
+		if f.OnboardingCold {
+			replicas = 0 // the cutover starts it (ADR 0042)
+		}
+		fmt.Fprintf(&b, "      replicas: %d\n", replicas)
 		memory, cpu, err := sv.Quantities()
 		if err != nil {
 			return nil, fmt.Errorf("render %s: service %s: %w", FilePath(f.Instance, f.Env), sv.Name, err)
@@ -275,6 +270,14 @@ func Render(f File) ([]byte, error) {
 			fmt.Fprintf(&b, "      type: %s\n", q(r.Type))
 		}
 	}
+	if pg := f.Postgres; pg != nil && *pg != (PostgresValues{}) {
+		b.WriteString("  postgres:\n")
+		for _, kv := range [][2]string{{"image", pg.Image}, {"database", pg.Database}, {"owner", pg.Owner}, {"storageSize", pg.StorageSize}} {
+			if kv[1] != "" {
+				fmt.Fprintf(&b, "    %s: %s\n", kv[0], q(kv[1]))
+			}
+		}
+	}
 	if t := f.DBTopology; t != nil {
 		members := t.Members
 		if len(members) == 0 {
@@ -305,6 +308,20 @@ func Render(f File) ([]byte, error) {
 		if t.PeerAbsent {
 			b.WriteString("    peerPresent: false\n")
 		}
+		if x := t.External; x != nil {
+			if f.Env != t.Primary || x.Name == "" || x.Host == "" || x.User == "" || x.PasswordSecret == "" || x.SSLMode == "" {
+				return nil, fmt.Errorf("render %s: the external source of the database is only in the primary's file, with every field", FilePath(f.Instance, f.Env))
+			}
+			b.WriteString("    external:\n")
+			fmt.Fprintf(&b, "      name: %s\n", q(x.Name))
+			fmt.Fprintf(&b, "      host: %s\n", q(x.Host))
+			fmt.Fprintf(&b, "      user: %s\n", q(x.User))
+			fmt.Fprintf(&b, "      passwordSecret: %s\n", q(x.PasswordSecret))
+			fmt.Fprintf(&b, "      sslmode: %s\n", q(x.SSLMode))
+		}
+	}
+	if f.OnboardingCold {
+		b.WriteString("  onboardingCold: true\n")
 	}
 	if !f.Sealed.empty() {
 		b.WriteString("  sealedSecrets:\n")
@@ -324,7 +341,7 @@ func Render(f File) ([]byte, error) {
 		for _, m := range []struct {
 			key    string
 			values map[string]string
-		}{{"pgApp", f.Sealed.PGApp}, {"pgCA", f.Sealed.PGCA}} {
+		}{{"pgApp", f.Sealed.PGApp}, {"pgCA", f.Sealed.PGCA}, {"pgLegacy", f.Sealed.PGLegacy}} {
 			if len(m.values) == 0 {
 				continue
 			}
