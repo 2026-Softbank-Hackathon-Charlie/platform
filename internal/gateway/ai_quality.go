@@ -204,6 +204,14 @@ func (rt *router) handleAdvanceAI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "canary_version_conflict", "another transition changed the canary")
 		return
 	}
+	// A watcher may revoke evidence without changing a 0% stage/version. An
+	// earlier, slower passing fetch must not overwrite that newer revocation.
+	if req.TargetPercent > 0 && rt.canary.Verdict.Status != "pass" && rt.canary.Verdict.CheckedAt.After(verdict.CheckedAt) {
+		latest := rt.canary.Verdict
+		rt.mu.Unlock()
+		writeJSON(w, http.StatusPreconditionFailed, latest)
+		return
+	}
 	if req.TargetPercent > 0 && rt.held || rt.g.shuttingDown() {
 		rt.mu.Unlock()
 		writeError(w, 409, "ai_routing_held", "finish the existing write hold before a canary transition")

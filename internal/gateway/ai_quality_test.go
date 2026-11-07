@@ -246,3 +246,41 @@ func TestAIQualityPolicyLoaderAndRestartCannotDisableGuard(t *testing.T) {
 		t.Fatal("another app's scores can govern this gateway")
 	}
 }
+
+func TestAIQualityLatePassingAdvanceCannotOverwriteNewerRevocationAtZero(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	provider := qualityProviderFunc(func(c context.Context, p llmquality.Policy, n, b time.Time) llmquality.Verdict {
+		if calls.Add(1) == 1 {
+			close(started)
+			select {
+			case <-release:
+			case <-c.Done():
+				return llmquality.Unknown(n, "cancelled")
+			}
+			return passQuality(c, p, n, b)
+		}
+		return llmquality.Verdict{Status: "regressed", Reason: "target_quality_regressed", CheckedAt: n}
+	})
+	g := qualityGW(t, "", provider)
+	admin := httptest.NewServer(g.Admin())
+	defer admin.Close()
+	result := make(chan aiReply, 1)
+	go func() {
+		result <- canaryCall(admin.Client(), "POST", admin.URL+"/v1/ai/canary/advance", "admin-secret", "advance-old", `{"expectedVersion":0,"targetPercent":5}`)
+	}()
+	<-started
+	g.refreshAIQuality(context.Background())
+	close(release)
+	select {
+	case reply := <-result:
+		requireAIStatus(t, reply, 412)
+	case <-time.After(time.Second):
+		t.Fatal("advance did not finish")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.canary.TargetPercent != 0 || g.canary.Verdict.Status != "regressed" {
+		t.Fatalf("older pass overwrote newer revocation: %+v", g.canary)
+	}
+}
