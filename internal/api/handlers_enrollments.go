@@ -26,12 +26,20 @@ func (s *Server) decodeEnrollment(w http.ResponseWriter, r *http.Request, v any)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	err := d.Decode(v)
+	if err == nil {
+		if next := d.Decode(&struct{}{}); next != io.EOF {
+			err = next
+			if err == nil {
+				err = errors.New("multiple JSON values")
+			}
+		}
+	}
 	var tooBig *http.MaxBytesError
 	if errors.As(err, &tooBig) {
 		s.fail(w, r, 413, "too_large", "enrollment body exceeds 4096 bytes")
 		return false
 	}
-	if err != nil || d.Decode(&struct{}{}) != io.EOF {
+	if err != nil {
 		s.fail(w, r, 400, "invalid_request", "invalid enrollment JSON body")
 		return false
 	}
@@ -81,7 +89,9 @@ func (s *Server) createOnpremEnrollment(w http.ResponseWriter, r *http.Request) 
 		status = http.StatusCreated
 	}
 	if err = s.auditBeforeAnswer(r, "POST /v1/onprem/enrollments", status); err != nil {
-		_, _ = s.enrollments.Revoke(r.Context(), out.Enrollment.ID)
+		if created {
+			_, _ = s.enrollments.Revoke(r.Context(), out.Enrollment.ID)
+		}
 		s.fail(w, r, 503, "audit_unavailable", "bootstrap grant not returned because the audit log could not be written")
 		return
 	}
