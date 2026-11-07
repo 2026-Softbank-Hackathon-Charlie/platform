@@ -32,7 +32,7 @@ func TestRealStagingDiskFull(t *testing.T) {
 	}
 	authorized := false
 	sawCapacityError := false
-	syncer := New(source, destination, nil, func(context.Context) error { return nil }, func(context.Context, Report) error { authorized = true; return nil })
+	syncer := New(source, destination, nil, "", func(context.Context) error { return nil }, func(context.Context, Report) error { authorized = true; return nil })
 	syncer.execute = func(ctx context.Context, out io.Writer, args ...string) error {
 		if args[0] != "copy" {
 			return run(ctx, out, args...)
