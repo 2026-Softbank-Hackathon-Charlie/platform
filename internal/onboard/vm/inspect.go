@@ -113,6 +113,13 @@ type DBResult struct {
 	Container string   `json:"container"`
 	Facts     *DBFacts `json:"facts"`
 	Error     string   `json:"error"`
+	// Others are the same facts read in each other database of the
+	// server (only their indexes and collationDependent matter), and
+	// OthersError the databases that could not be read.
+	Others      []DBFacts `json:"others"`
+	OthersError []string  `json:"othersError"`
+	// ConfigWritable says the hba and config files are writable.
+	ConfigWritable bool `json:"configWritable"`
 }
 
 // DBFacts is the psql query's object (inspect.sh db_sql).
@@ -145,6 +152,11 @@ type DBFacts struct {
 	WALBytesPerSecond    int64        `json:"walBytesPerSecond"`
 	Connections          int          `json:"connections"`
 	MaxConnections       int          `json:"maxConnections"`
+	MaxWorkerProcesses   int          `json:"maxWorkerProcesses"`
+	MaxPreparedXacts     int          `json:"maxPreparedTransactions"`
+	MaxLocksPerXact      int          `json:"maxLocksPerTransaction"`
+	WALSendersUsed       int          `json:"walSendersUsed"`
+	PendingConfig        []string     `json:"pendingConfig"`
 	Indexes              []DBIndex    `json:"indexes"`
 	CollationDependent   []string     `json:"collationDependent"`
 	Tables               []DBTable    `json:"tables"`

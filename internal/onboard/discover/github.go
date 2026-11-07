@@ -47,10 +47,13 @@ var (
 	proxyConfig = regexp.MustCompile(`(?i)(^|/)(caddyfile[^/]*|[^/]*nginx[^/]*\.conf|conf\.d/[^/]+\.conf|default\.conf)$`)
 	proxyTarget = regexp.MustCompile(`(?m)(?:reverse_proxy|proxy_pass\s+https?://|server)\s+([a-z0-9][a-z0-9_.-]*):([0-9]{2,5})\b`)
 
-	// A workflow deploys to the VM when it reaches a host over ssh (a
-	// command, an ssh or scp action, rsync, or a secret named like a host
-	// or an ssh key), or runs docker compose on a self-hosted runner.
-	remoteStep = regexp.MustCompile(`(?i)(\bssh\s|\bscp\s|\brsync\b|appleboy/(ssh|scp)-action|ssh-agent|secrets\.[A-Z0-9_]*(HOST|SSH|SERVER)[A-Z0-9_]*)`)
+	// A workflow deploys to the VM when it reaches a host: ssh, scp or
+	// rsync (a command or an action), a docker context or DOCKER_HOST over
+	// ssh, SSM send-command, gcloud compute ssh, or a secret named like a
+	// host or an ssh key; or runs docker compose on a self-hosted runner;
+	// or calls a reusable workflow of the repository that does.
+	remoteStep = regexp.MustCompile(`(?i)(\bssh\s|\bscp\s|\brsync\b|ssh-agent|DOCKER_HOST:\s*["']?ssh://|docker\s+context\b|aws\s+ssm\s+send-command|gcloud\s+compute\s+(ssh|scp)|uses:\s*["']?[^\s"']*(ssh|scp|rsync)[^\s"']*|secrets\.[A-Z0-9_]*(HOST|SSH|SERVER)[A-Z0-9_]*)`)
+	localCall  = regexp.MustCompile(`uses:\s*["']?\./(\.github/workflows/[^\s"'@]+)`)
 	composeRun = regexp.MustCompile(`docker[ -]compose`)
 	selfHosted = regexp.MustCompile(`(?m)runs-on:.*self-hosted`)
 )
@@ -112,6 +115,7 @@ func readRepo(ctx context.Context, g GitHub, repo string) (Repo, error) {
 	} else if !isForbidden(err) {
 		return out, err
 	}
+	texts := map[string]string{}
 	for _, p := range workflowFiles {
 		w := facts.Workflow{Path: p, Name: path.Base(p)}
 		if a, ok := byPath[p]; ok {
@@ -122,6 +126,7 @@ func readRepo(ctx context.Context, g GitHub, repo string) (Repo, error) {
 			return out, err
 		}
 		w.DeploysToVM = DeploysToVM(string(text))
+		texts[p] = string(text)
 		if w.ID != 0 {
 			run, err := g.WorkflowLastSuccess(ctx, repo, w.ID)
 			if err != nil && !isForbidden(err) {
@@ -133,6 +138,7 @@ func readRepo(ctx context.Context, g GitHub, repo string) (Repo, error) {
 		}
 		out.Facts.Workflows = append(out.Facts.Workflows, w)
 	}
+	markCallers(out.Facts.Workflows, texts)
 	for _, p := range configs[:min(len(configs), maxConfigFiles)] {
 		text, err := g.ReadFile(ctx, repo, head, p)
 		if err != nil {
@@ -146,6 +152,29 @@ func readRepo(ctx context.Context, g GitHub, repo string) (Repo, error) {
 		}
 	}
 	return out, nil
+}
+
+// markCallers marks the workflows that call a deploying reusable workflow
+// of the repository (uses: ./.github/workflows/x.yml), transitively.
+func markCallers(wfs []facts.Workflow, texts map[string]string) {
+	deploys := map[string]bool{}
+	for _, w := range wfs {
+		deploys[w.Path] = w.DeploysToVM
+	}
+	for changed := true; changed; {
+		changed = false
+		for i, w := range wfs {
+			if w.DeploysToVM {
+				continue
+			}
+			for _, m := range localCall.FindAllStringSubmatch(texts[w.Path], -1) {
+				if deploys[m[1]] {
+					wfs[i].DeploysToVM, deploys[w.Path], changed = true, true, true
+					break
+				}
+			}
+		}
+	}
 }
 
 func isForbidden(err error) bool {

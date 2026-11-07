@@ -40,8 +40,11 @@ type Change struct {
 type Connected struct {
 	Changes []Change
 	// ReplicationPassword is hopcharlie_replicator's new password, in
-	// clear: the caller seals it and drops it.
+	// clear: the caller seals it and drops it. Every run sets a new one;
+	// PasswordRotated says the role existed, so whatever holds the old
+	// password (the target's Secret) must take the new one.
 	ReplicationPassword string
+	PasswordRotated     bool
 }
 
 // lines reads the scripts' JSON lines: changes, and the result object.
@@ -59,6 +62,9 @@ func lines(stdout string) (changes []Change, result map[string]any, err error) {
 		}
 		if _, ok := probe["result"]; ok {
 			result = probe
+			continue
+		}
+		if _, ok := probe["kind"]; !ok { // "info": not a change
 			continue
 		}
 		var c Change
@@ -106,6 +112,7 @@ func (r *Runner) Connect(ctx context.Context, instance string, p ConnectParams) 
 		return out, err
 	}
 	out.ReplicationPassword = string(pw)
+	out.PasswordRotated, _ = result["passwordRotated"].(bool)
 	return out, nil
 }
 
@@ -120,7 +127,7 @@ func (r *Runner) Disconnect(ctx context.Context, instance, dbContainer, app stri
 	if err != nil {
 		return nil, err
 	}
-	changes, _, perr := lines(res.Stdout)
+	changes, result, perr := lines(res.Stdout)
 	out := make([]apiv1.OnboardingLegacyChange, 0, len(changes))
 	for _, c := range changes {
 		if c.UndoneAt == nil {
@@ -131,6 +138,9 @@ func (r *Runner) Disconnect(ctx context.Context, instance, dbContainer, app stri
 	}
 	if res.Failed() {
 		return out, stepError(DisconnectDocument, res)
+	}
+	if perr == nil && result["result"] != "ok" {
+		perr = fmt.Errorf("%s did not finish: %v", DisconnectDocument, result["database"])
 	}
 	return out, perr
 }

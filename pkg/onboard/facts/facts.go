@@ -345,6 +345,25 @@ type DB struct {
 	WALBytesPerSecond int64 `json:"walBytesPerSecond"`
 	Connections       int   `json:"connections"`
 	MaxConnections    int   `json:"maxConnections"`
+	// MaxWorkerProcesses, MaxPreparedTransactions and
+	// MaxLocksPerTransaction, with MaxConnections and MaxWALSenders, are
+	// the settings a hot standby may not have lower than its primary: the
+	// target Cluster's parameters are at least these (the chart takes them
+	// from postgres.parameters; the onboarding job renders them).
+	MaxWorkerProcesses      int `json:"maxWorkerProcesses"`
+	MaxPreparedTransactions int `json:"maxPreparedTransactions"`
+	MaxLocksPerTransaction  int `json:"maxLocksPerTransaction"`
+	// WALSendersUsed are the WAL senders in use: fewer than 3 free of
+	// MaxWALSenders is blocker max_wal_senders_zero (pg_basebackup takes
+	// two, streaming one).
+	WALSendersUsed int `json:"walSendersUsed"`
+	// PendingConfig are settings waiting for a restart and configuration
+	// file errors (blocker pending_config): the reload connecting does
+	// would apply them too, or fail.
+	PendingConfig []string `json:"pendingConfig"`
+	// ConfigWritable says HBAFile and ConfigFile are writable in the
+	// container (blocker config_not_writable).
+	ConfigWritable bool `json:"configWritable"`
 	// Indexes are the indexes whose collation is not C-like
 	// (pg_index.indcollation, oid 100 read as the database's), the
 	// REINDEX candidates when the source is musl with a libc locale.
@@ -510,7 +529,12 @@ const (
 	BlockWALLevelMinimal     = "wal_level_minimal"
 	BlockNoWALSenders        = "max_wal_senders_zero"
 	BlockPasswordMD5         = "password_encryption_md5"
-	BlockNameTooLong         = "name_too_long" // <cluster>-to-legacy over 63 characters
+	BlockNameTooLong         = "name_too_long"            // <cluster>-to-legacy over 63 characters
+	BlockDBUnreadable        = "db_unreadable"            // psql could not read the database container
+	BlockPendingConfig       = "pending_config"           // settings wait for a restart, or config errors
+	BlockConfigNotWritable   = "config_not_writable"      // pg_hba.conf or postgresql.conf is read-only
+	BlockOtherDBCollation    = "collation_other_database" // another database has indexes REINDEX would miss
+	BlockVMImagePull         = "vm_image_pull_failed"     // the VM cannot pull the pinned openssl image
 )
 
 // BlockerCodes are every Block* code, in the order above; the OpenAPI enum
@@ -521,7 +545,8 @@ var BlockerCodes = []string{
 	BlockDomainOutOfScope, BlockNotHTTPS, BlockNoImage, BlockICUVersion, BlockCollationConstraint,
 	BlockAutoConf, BlockRoleReadOnly, BlockWALKeepSizeCmdLine, BlockNoSuperuser, BlockDiskTooSmall,
 	BlockHoldBudget, BlockAppCodeChange, BlockCheckFailed, BlockAlterSystemOff, BlockWALLevelMinimal,
-	BlockNoWALSenders, BlockPasswordMD5, BlockNameTooLong,
+	BlockNoWALSenders, BlockPasswordMD5, BlockNameTooLong, BlockDBUnreadable, BlockPendingConfig,
+	BlockConfigNotWritable, BlockOtherDBCollation, BlockVMImagePull,
 }
 
 // Warning codes.

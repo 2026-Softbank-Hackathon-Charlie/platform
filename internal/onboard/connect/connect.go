@@ -55,15 +55,29 @@ type Input struct {
 
 // Result is what Connect did.
 type Result struct {
-	// Changes are in the order done, for the row's legacyChanges; on an
-	// error they are what was done before it.
-	Changes []apiv1.OnboardingLegacyChange
+	// Changes are in the order done, once per kind and target, for the
+	// row's legacyChanges; on an error they are what was done before it.
+	// New false is a change an earlier run made (the row has it already,
+	// unless that run's output was lost).
+	Changes []vm.Change
 	// ReplicationPassword is hopcharlie_replicator's password sealed for
 	// the row (secrets.OnboardingReplicationPassword), with KeyVersion and
-	// KeyCheck.
+	// KeyCheck. Every run sets a new one; PasswordRotated says the role
+	// existed, so a Secret made from the old password must be replaced.
 	ReplicationPassword *Sealed
+	PasswordRotated     bool
 	KeyVersion          int
 	KeyCheck            string
+}
+
+// add appends a change unless one of the same kind and target is there.
+func (r *Result) add(c vm.Change) {
+	for _, x := range r.Changes {
+		if x.Kind == c.Kind && x.Target == c.Target {
+			return
+		}
+	}
+	r.Changes = append(r.Changes, c)
 }
 
 // Sealed is a nonce and ciphertext pair.
@@ -128,14 +142,14 @@ func (c *Connector) Connect(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return res, fmt.Errorf("connect: tag %s: %w", instance, err)
 	}
-	res.Changes = append(res.Changes, apiv1.OnboardingLegacyChange{Kind: apiv1.OnboardingLegacyChangeKindInstanceTagged, Target: instance, At: c.now()})
+	res.add(vm.Change{OnboardingLegacyChange: apiv1.OnboardingLegacyChange{Kind: apiv1.OnboardingLegacyChangeKindInstanceTagged, Target: instance, At: c.now()}, New: true})
 
 	if p.TailscaleAuthKey, err = c.Tailscale.AuthKey(ctx, "hopcharlie onboarding "+in.ID); err != nil {
 		return res, err
 	}
 	out, err := c.VM(region).Connect(ctx, instance, p)
 	for _, ch := range out.Changes {
-		res.Changes = append(res.Changes, ch.OnboardingLegacyChange)
+		res.add(ch)
 	}
 	if err != nil {
 		return res, err
@@ -145,6 +159,7 @@ func (c *Connector) Connect(ctx context.Context, in Input) (Result, error) {
 		return res, err
 	}
 	res.ReplicationPassword = &Sealed{Nonce: nonce, Ciphertext: ct}
+	res.PasswordRotated = out.PasswordRotated
 	res.KeyVersion, res.KeyCheck = secrets.KeyVersion, c.Cipher.KeyCheck()
 	return res, nil
 }

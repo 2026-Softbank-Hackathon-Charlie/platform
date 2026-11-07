@@ -51,11 +51,12 @@ func (f fakeGitHub) WorkflowLastSuccess(context.Context, string, int64) (*gh.Wor
 
 type fakeWeb struct{}
 
-func (fakeWeb) Resolve(_ context.Context, name string) ([]string, int, error) {
+func (fakeWeb) Resolve(_ context.Context, name string) (DNSAnswer, error) {
 	if strings.HasPrefix(name, "hc-probe-") {
-		return []string{"198.51.100.1"}, 300, nil // the wildcard: the gateway
+		// the wildcard: the gateway's load balancer
+		return DNSAnswer{Addrs: []string{"198.51.100.1"}, CNAMEs: []string{"gw.elb.amazonaws.com"}, TTL: 300}, nil
 	}
-	return []string{"203.0.113.10"}, 60, nil
+	return DNSAnswer{Addrs: []string{"203.0.113.10"}, TTL: 60}, nil
 }
 func (fakeWeb) Probe(_ context.Context, host, ip string, paths []string) (facts.HTTPS, error) {
 	return facts.HTTPS{Responds: true, Status: 200, CertNames: []string{host}, HealthCandidates: []string{"/healthz", "/"}}, nil
@@ -171,12 +172,13 @@ func TestDiscoverRecordedVM(t *testing.T) {
 	if !slices.Contains(tg.Reindex, "public.users_email_idx") || slices.Contains(tg.Reindex, "public.users_email_c_idx") {
 		t.Fatalf("reindex %v", tg.Reindex)
 	}
-	// The recorded database has CHECK (name > 'a') on a libc-collated column.
-	if !slices.Contains(codes(f.Report.Blockers), facts.BlockCollationConstraint) {
+	// The recorded database has CHECK (name > 'a') on a libc-collated
+	// column, and database "other" an index on a libc collation.
+	if !slices.Contains(codes(f.Report.Blockers), facts.BlockCollationConstraint) || !slices.Contains(codes(f.Report.Blockers), facts.BlockOtherDBCollation) {
 		t.Fatalf("blockers %v", codes(f.Report.Blockers))
 	}
 	for _, c := range codes(f.Report.Blockers) {
-		if c != facts.BlockCollationConstraint {
+		if c != facts.BlockCollationConstraint && c != facts.BlockOtherDBCollation { // the recorded server has database "other" with a libc index
 			t.Errorf("unexpected blocker %s", c)
 		}
 	}
@@ -317,7 +319,7 @@ func TestImageRules(t *testing.T) {
 		warn    string
 	}{
 		"bookworm glibc": {mk("PostgreSQL 17.6 (Debian 17.6-1.pgdg120+1) on x86_64-pc-linux-gnu", 170006, "en_US.utf8"), "17.6-standard-bookworm", false, ""},
-		"bullseye glibc": {mk("PostgreSQL 16.4 (Debian 16.4-1.pgdg110+1) on x86_64-pc-linux-gnu", 160004, "en_US.utf8"), "16.4", false, ""},
+		"bullseye glibc": {mk("PostgreSQL 16.4 (Debian 16.4-1.pgdg110+1) on x86_64-pc-linux-gnu", 160004, "en_US.utf8"), "16.4-standard-bullseye", false, ""},
 		"musl C":         {mk("PostgreSQL 17.11 on x86_64-pc-linux-musl", 170011, "C"), "17.11-standard-bookworm", false, ""},
 		"musl en_US":     {mk("PostgreSQL 17.11 on x86_64-pc-linux-musl", 170011, "en_US.utf8"), "17.11-standard-bookworm", true, facts.WarnReindex},
 		"unknown glibc":  {mk("PostgreSQL 17.2 on x86_64-pc-linux-gnu", 170002, "en_US.UTF-8"), "17.2-standard-bookworm", true, facts.WarnGlibcRelease},

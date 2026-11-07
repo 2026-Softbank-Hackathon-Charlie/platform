@@ -208,7 +208,14 @@ func fromInspection(f *facts.Facts, doc vm.Document, values vm.Values, proxyTarg
 			pg = append(pg, c)
 		}
 	}
-	dbc, dbFacts := pickDB(pg, cs, doc, values)
+	dbc, dbRes := pickDB(pg, cs, doc, values)
+	if dbc != nil && (dbRes == nil || dbRes.Facts == nil) {
+		why := "inspect.sh has no result for it"
+		if dbRes != nil && dbRes.Error != "" {
+			why = cleanError(dbRes.Error)
+		}
+		r.block(facts.BlockDBUnreadable, containerName(*dbc), "psql could not read the database in %s: %s", containerName(*dbc), why)
+	}
 	if dbc == nil {
 		code, msg := facts.BlockDBNotContainer, "no PostgreSQL container runs in the compose project"
 		for _, c := range cs {
@@ -252,7 +259,7 @@ func fromInspection(f *facts.Facts, doc vm.Document, values vm.Values, proxyTarg
 			volUsers[m.Name] = append(volUsers[m.Name], name)
 			role := facts.VolumeData
 			switch {
-			case isDB && dbFacts != nil && (strings.HasPrefix(dbFacts.DataDirectory+"/", strings.TrimSuffix(m.Destination, "/")+"/")):
+			case isDB && dbRes != nil && dbRes.Facts != nil && (strings.HasPrefix(dbRes.Facts.DataDirectory+"/", strings.TrimSuffix(m.Destination, "/")+"/")):
 				role = facts.VolumeDatabase
 			case isDB && strings.HasPrefix(m.Destination, "/var/lib/postgresql"):
 				role = facts.VolumeDatabase
@@ -314,8 +321,8 @@ func fromInspection(f *facts.Facts, doc vm.Document, values vm.Values, proxyTarg
 
 	if dbc != nil {
 		out.dbContainer = containerName(*dbc)
-		if dbFacts != nil {
-			f.DB = dbFromFacts(*dbc, *dbFacts, values[out.dbContainer], r)
+		if dbRes != nil && dbRes.Facts != nil {
+			f.DB = dbFromFacts(*dbc, *dbRes, values[out.dbContainer], r)
 			if f.DB.FenceUser != "" {
 				out.superuserPassword = values[out.dbContainer]["POSTGRES_PASSWORD"]
 			}
@@ -347,7 +354,7 @@ func rank(role string) int {
 
 // pickDB returns the postgres container the app uses and its facts: the
 // one whose service name the app's values name, else the first.
-func pickDB(pg, all []vm.Container, doc vm.Document, values vm.Values) (*vm.Container, *vm.DBFacts) {
+func pickDB(pg, all []vm.Container, doc vm.Document, values vm.Values) (*vm.Container, *vm.DBResult) {
 	if len(pg) == 0 {
 		return nil, nil
 	}
@@ -368,9 +375,9 @@ func pickDB(pg, all []vm.Container, doc vm.Document, values vm.Values) (*vm.Cont
 			}
 		}
 	}
-	for _, d := range doc.DB {
+	for i, d := range doc.DB {
 		if d.Container == containerName(chosen) {
-			return &chosen, d.Facts
+			return &chosen, &doc.DB[i]
 		}
 	}
 	return &chosen, nil
@@ -425,7 +432,8 @@ var pgdg = regexp.MustCompile(`pgdg(11|12|13)0`)
 
 // dbFromFacts maps psql's facts and checks the settings of ADR 0042's
 // table.
-func dbFromFacts(c vm.Container, d vm.DBFacts, env map[string]string, r report) *facts.DB {
+func dbFromFacts(c vm.Container, res vm.DBResult, env map[string]string, r report) *facts.DB {
+	d := *res.Facts
 	db := &facts.DB{Container: containerName(c), Service: c.Service, Port: cmp.Or(d.Port, 5432),
 		ServerVersionNum: d.ServerVersionNum, Version: d.Version, EnvDatabase: d.Database, EnvUser: d.User,
 		Database: d.Database, Owner: d.Owner, Databases: []facts.Database{},
@@ -436,6 +444,9 @@ func dbFromFacts(c vm.Container, d vm.DBFacts, env map[string]string, r report) 
 		WALKeepSizeSource: deref(d.WALKeepSizeSource), Superusers: nonNil(d.Superusers), PostgresRole: d.PostgresRole,
 		HBAFile: d.HBAFile, ConfigFile: d.ConfigFile, DataDirectory: d.DataDirectory,
 		WALBytesPerSecond: d.WALBytesPerSecond, Connections: d.Connections, MaxConnections: d.MaxConnections,
+		MaxWorkerProcesses: d.MaxWorkerProcesses, MaxPreparedTransactions: d.MaxPreparedXacts,
+		MaxLocksPerTransaction: d.MaxLocksPerXact, WALSendersUsed: d.WALSendersUsed,
+		PendingConfig: nonNil(d.PendingConfig), ConfigWritable: res.ConfigWritable,
 		Indexes: []facts.Index{}, CollationDependent: nonNil(d.CollationDependent), Tables: []facts.Table{}}
 	if strings.Contains(d.Version, "musl") {
 		db.Libc = facts.LibcMusl
@@ -475,8 +486,35 @@ func dbFromFacts(c vm.Container, d vm.DBFacts, env map[string]string, r report) 
 	if db.WALLevel == "minimal" {
 		r.block(facts.BlockWALLevelMinimal, "wal_level", "wal_level is minimal; streaming replication needs replica")
 	}
-	if db.MaxWALSenders == 0 {
-		r.block(facts.BlockNoWALSenders, "max_wal_senders", "max_wal_senders is 0; streaming replication needs a WAL sender")
+	if free := db.MaxWALSenders - db.WALSendersUsed; free < 3 {
+		r.block(facts.BlockNoWALSenders, "max_wal_senders", "%d of max_wal_senders %d are free; pg_basebackup and streaming need 3", max(free, 0), db.MaxWALSenders)
+	}
+	if len(db.PendingConfig) > 0 {
+		r.block(facts.BlockPendingConfig, strings.Join(db.PendingConfig, ","), "settings wait for a restart or the configuration has errors (%s); connecting's reload would apply them", strings.Join(db.PendingConfig, ", "))
+	}
+	if !db.ConfigWritable {
+		r.block(facts.BlockConfigNotWritable, db.HBAFile, "pg_hba.conf or postgresql.conf is not writable in the container")
+	}
+	// Other databases: REINDEX runs only in the app's database, so on a
+	// path where collation order changes their libc or ICU indexes and
+	// collation-dependent constraints cannot be fixed.
+	if libcBreaks(db) {
+		for _, o := range res.Others {
+			var hit []string
+			for _, i := range o.Indexes {
+				if !cLike(i.Collation) {
+					hit = append(hit, i.Name)
+				}
+			}
+			hit = append(hit, o.CollationDependent...)
+			if len(hit) > 0 {
+				r.block(facts.BlockOtherDBCollation, o.Database, "database %s has %s, which depend on a collation that sorts differently on the target; only the app's database is reindexed", o.Database, strings.Join(hit, ", "))
+			}
+		}
+		for _, e := range res.OthersError {
+			name, _, _ := strings.Cut(e, ":")
+			r.block(facts.BlockOtherDBCollation, name, "database %s could not be read to check its collations", name)
+		}
 	}
 	if db.PasswordEncryption == "md5" {
 		r.block(facts.BlockPasswordMD5, "password_encryption", "password_encryption is md5; the replication account's scram hba line would refuse it")
@@ -507,15 +545,16 @@ func storageFrom(v *facts.VM, cs []vm.Container, values vm.Values, services map[
 			continue
 		}
 		vals := values[containerName(c)]
-		bucketEnv := firstName(vals, `(?i)bucket`)
-		if bucketEnv == "" {
+		bucketEnv := firstName(vals, `^(S3_BUCKET|AWS_S3_BUCKET|AWS_BUCKET|BUCKET|BUCKET_NAME)$`, `(?i)bucket`)
+		if bucketEnv == "" || !bucketName.MatchString(vals[bucketEnv]) {
 			continue
 		}
 		s := &facts.Storage{Container: containerName(c), BucketEnv: bucketEnv, Bucket: vals[bucketEnv],
-			EndpointEnv:  firstName(vals, `(?i)^(AWS_ENDPOINT_URL_S3|AWS_ENDPOINT_URL|S3_ENDPOINT(_URL)?|.*(S3|STORAGE|MINIO|BUCKET|OBJECT)[A-Z0-9_]*ENDPOINT[A-Z0-9_]*|.*ENDPOINT.*)$`),
-			AccessKeyEnv: firstName(vals, `(?i)^(AWS_ACCESS_KEY_ID|.*ACCESS_KEY.*)$`),
-			SecretKeyEnv: firstName(vals, `(?i)^(AWS_SECRET_ACCESS_KEY|.*SECRET_ACCESS.*|.*SECRET_KEY.*)$`),
-			RegionEnv:    firstName(vals, `(?i)^(AWS_REGION|AWS_DEFAULT_REGION|.*S3[A-Z0-9_]*REGION|.*STORAGE[A-Z0-9_]*REGION)$`)}
+			EndpointEnv: firstName(vals, `^(AWS_ENDPOINT_URL_S3|S3_ENDPOINT|S3_ENDPOINT_URL|AWS_ENDPOINT_URL|AWS_S3_ENDPOINT)$`,
+				`(?i)^.*(S3|STORAGE|MINIO|BUCKET|OBJECT)[A-Z0-9_]*ENDPOINT[A-Z0-9_]*$`, `(?i)ENDPOINT`),
+			AccessKeyEnv: firstName(vals, `^(AWS_ACCESS_KEY_ID|S3_ACCESS_KEY_ID|S3_ACCESS_KEY)$`, `(?i)ACCESS_KEY`),
+			SecretKeyEnv: firstName(vals, `^(AWS_SECRET_ACCESS_KEY|S3_SECRET_ACCESS_KEY|S3_SECRET_KEY)$`, `(?i)(SECRET_ACCESS|SECRET_KEY)`),
+			RegionEnv:    firstName(vals, `^(AWS_REGION|AWS_DEFAULT_REGION|S3_REGION)$`, `(?i)(S3|STORAGE)[A-Z0-9_]*REGION`)}
 		s.Region = vals[s.RegionEnv]
 		raw := vals[s.EndpointEnv]
 		host := ""
@@ -557,21 +596,41 @@ func storageFrom(v *facts.VM, cs []vm.Container, values vm.Values, services map[
 	return nil
 }
 
-// firstName returns the first variable name (in name order) matching re
-// with a value.
-func firstName(vals map[string]string, re string) string {
-	rx := regexp.MustCompile(re)
-	var names []string
-	for n, v := range vals {
-		if v != "" && rx.MatchString(n) {
-			names = append(names, n)
+// bucketName is an S3 bucket name.
+var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
+// firstName returns the variable name with a value that matches the first
+// of res that any matches, the first in name order among those.
+func firstName(vals map[string]string, res ...string) string {
+	for _, re := range res {
+		rx := regexp.MustCompile(re)
+		var names []string
+		for n, v := range vals {
+			if v != "" && rx.MatchString(n) {
+				names = append(names, n)
+			}
+		}
+		if len(names) > 0 {
+			slices.Sort(names)
+			return names[0]
 		}
 	}
-	slices.Sort(names)
-	if len(names) == 0 {
-		return ""
+	return ""
+}
+
+// cleanError keeps a psql error to one short line of printable text.
+func cleanError(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 200 {
+		s = s[:200]
 	}
-	return names[0]
+	return s
 }
 
 // publicService picks the service the reverse proxy sends to: the
@@ -656,8 +715,8 @@ func chooseTarget(ctx context.Context, images Images, f *facts.Facts, env string
 	t.StorageSize = storageSize(size)
 
 	major, minor := db.ServerVersionNum/10000, db.ServerVersionNum%10000
-	if major < 10 {
-		r.block(facts.BlockNoImage, strconv.Itoa(db.ServerVersionNum), "PostgreSQL %d is older than any CNPG image", db.ServerVersionNum)
+	if major < 13 {
+		r.block(facts.BlockNoImage, strconv.Itoa(db.ServerVersionNum), "PostgreSQL %d is older than the CNPG images (13 and later)", db.ServerVersionNum)
 		return nil
 	}
 	icu := appDB != nil && appDB.LocProvider == "i"
@@ -677,6 +736,9 @@ func chooseTarget(ctx context.Context, images Images, f *facts.Facts, env string
 		debian = "bookworm"
 		t.ImageReason = "glibc source of unknown release: -standard-bookworm"
 		r.warn(facts.WarnGlibcRelease, db.Version, "the source's glibc release is not known; collation version warnings may remain (ALTER DATABASE ... REFRESH COLLATION VERSION after the cutover)")
+	}
+	for _, i := range db.Indexes {
+		icu = icu || strings.HasPrefix(i.Collation, "icu:")
 	}
 	if icu && libcBreaks(db) {
 		r.block(facts.BlockICUVersion, db.Database, "the database uses the ICU provider and no CNPG image is known to have the source's ICU version")
@@ -726,10 +788,11 @@ func chooseTarget(ctx context.Context, images Images, f *facts.Facts, env string
 // exact minor first.
 func imageTags(major, minor int, debian string) []string {
 	suffix := "-standard-" + debian
-	if debian == "bullseye" { // the default tags are bullseye
-		suffix = ""
+	tags := []string{fmt.Sprintf("%d.%d%s", major, minor, suffix), fmt.Sprintf("%d%s", major, suffix)}
+	if debian == "bullseye" { // the default tags are bullseye too
+		tags = append(tags, fmt.Sprintf("%d.%d", major, minor), strconv.Itoa(major))
 	}
-	return []string{fmt.Sprintf("%d.%d%s", major, minor, suffix), fmt.Sprintf("%d%s", major, suffix)}
+	return tags
 }
 
 // storageSize is twice the size, at least 1Gi, in whole Gi.

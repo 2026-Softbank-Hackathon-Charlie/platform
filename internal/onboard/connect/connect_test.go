@@ -42,6 +42,9 @@ func (f *fakeVM) Connect(_ context.Context, _ string, p vm.ConnectParams) (vm.Co
 		return out, errors.New("HopCharlie-Connect exited 6")
 	}
 	out.ReplicationPassword = "pw-replicator"
+	out.PasswordRotated = true
+	// A rerun's report of the same change is kept once.
+	out.Changes = append(out.Changes, out.Changes[0])
 	return out, nil
 }
 func (f *fakeVM) Disconnect(context.Context, string, string, string) ([]apiv1.OnboardingLegacyChange, error) {
@@ -81,7 +84,7 @@ func TestConnect(t *testing.T) {
 	if v.got != want {
 		t.Fatalf("params %+v", v.got)
 	}
-	if len(res.Changes) != 2 || res.Changes[0].Kind != apiv1.OnboardingLegacyChangeKindInstanceTagged {
+	if len(res.Changes) != 2 || res.Changes[0].Kind != apiv1.OnboardingLegacyChangeKindInstanceTagged || !res.Changes[1].New || !res.PasswordRotated {
 		t.Fatalf("changes %+v", res.Changes)
 	}
 	o := store.Onboarding{ID: "onb-0123456789ab", KeyVersion: res.KeyVersion, KeyCheck: res.KeyCheck}

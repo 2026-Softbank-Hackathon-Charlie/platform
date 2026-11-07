@@ -21,12 +21,37 @@ import (
 
 // Web resolves and probes the service address.
 type Web interface {
-	// Resolve returns the name's IPv4 addresses and the smallest TTL of
-	// their records. A name without A records returns none and no error.
-	Resolve(ctx context.Context, name string) (addrs []string, ttl int, err error)
+	// Resolve returns the name's IPv4 addresses, the CNAME chain to them
+	// and the smallest TTL of the records. A name without records returns
+	// none and no error.
+	Resolve(ctx context.Context, name string) (DNSAnswer, error)
 	// Probe connects to ip:443 with SNI host and asks for paths; it fills
 	// Responds, Status, CertNames, CertNotAfter and HealthCandidates.
 	Probe(ctx context.Context, host, ip string, paths []string) (facts.HTTPS, error)
+}
+
+// DNSAnswer is a name's A records and the CNAMEs that led to them, in
+// order, lowercase without the final dot.
+type DNSAnswer struct {
+	Addrs  []string
+	CNAMEs []string
+	TTL    int
+}
+
+// individual says host's answer is its own record, not the zone's
+// wildcard (which a random label also gets): a different CNAME target,
+// or, without CNAMEs, no address in common (a load balancer's addresses
+// rotate, so equal sets are not required).
+func individual(host, wild DNSAnswer) bool {
+	if len(host.CNAMEs) > 0 || len(wild.CNAMEs) > 0 {
+		return len(host.CNAMEs) == 0 || len(wild.CNAMEs) == 0 || host.CNAMEs[0] != wild.CNAMEs[0]
+	}
+	for _, a := range host.Addrs {
+		if slices.Contains(wild.Addrs, a) {
+			return false
+		}
+	}
+	return true
 }
 
 // HealthPaths are the paths probed for platform.yaml's health check, best
@@ -37,10 +62,11 @@ var HealthPaths = []string{"/healthz", "/health", "/readyz", "/api/health", "/ac
 // individual record (not the zone's wildcard, which a random label also
 // gets) and the probe of the first address.
 func probeHTTPS(ctx context.Context, w Web, host, zone string) (facts.HTTPS, error) {
-	addrs, ttl, err := w.Resolve(ctx, host)
+	ans, err := w.Resolve(ctx, host)
 	if err != nil {
 		return facts.HTTPS{}, err
 	}
+	addrs, ttl := ans.Addrs, ans.TTL
 	out := facts.HTTPS{Host: host, Addresses: addrs, TTLSeconds: ttl, CertNames: []string{}, HealthCandidates: []string{}}
 	if out.Addresses == nil {
 		out.Addresses = []string{}
@@ -51,11 +77,11 @@ func probeHTTPS(ctx context.Context, w Web, host, zone string) (facts.HTTPS, err
 	if zone != "" {
 		b := make([]byte, 6)
 		_, _ = rand.Read(b)
-		wild, _, err := w.Resolve(ctx, "hc-probe-"+hex.EncodeToString(b)+"."+zone)
+		wild, err := w.Resolve(ctx, "hc-probe-"+hex.EncodeToString(b)+"."+zone)
 		if err != nil {
 			return out, err
 		}
-		if !sameSet(wild, addrs) {
+		if individual(ans, wild) {
 			out.Record = &facts.DNSRecord{Name: host, Type: "A", Value: addrs[0]}
 		}
 	}
@@ -65,16 +91,6 @@ func probeHTTPS(ctx context.Context, w Web, host, zone string) (facts.HTTPS, err
 	}
 	out.Responds, out.Status, out.CertNames, out.CertNotAfter, out.HealthCandidates = p.Responds, p.Status, p.CertNames, p.CertNotAfter, p.HealthCandidates
 	return out, nil
-}
-
-func sameSet(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	a, b = slices.Clone(a), slices.Clone(b)
-	slices.Sort(a)
-	slices.Sort(b)
-	return slices.Equal(a, b)
 }
 
 // NetWeb is Web over DNS-over-HTTPS (Cloudflare's JSON API, as the API
@@ -93,23 +109,23 @@ func (n NetWeb) client() *http.Client {
 }
 
 // Resolve asks the DoH endpoint for A records.
-func (n NetWeb) Resolve(ctx context.Context, name string) ([]string, int, error) {
+func (n NetWeb) Resolve(ctx context.Context, name string) (DNSAnswer, error) {
 	doh := n.DoH
 	if doh == "" {
 		doh = "https://cloudflare-dns.com/dns-query"
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, doh+"?type=A&name="+url.QueryEscape(name), nil)
 	if err != nil {
-		return nil, 0, err
+		return DNSAnswer{}, err
 	}
 	req.Header.Set("Accept", "application/dns-json")
 	res, err := n.client().Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("dns: resolve %s: %w", name, err)
+		return DNSAnswer{}, fmt.Errorf("dns: resolve %s: %w", name, err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, 0, fmt.Errorf("dns: resolve %s: HTTP %d", name, res.StatusCode)
+		return DNSAnswer{}, fmt.Errorf("dns: resolve %s: HTTP %d", name, res.StatusCode)
 	}
 	var ans struct {
 		Status int `json:"Status"`
@@ -120,23 +136,26 @@ func (n NetWeb) Resolve(ctx context.Context, name string) ([]string, int, error)
 		} `json:"Answer"`
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&ans); err != nil {
-		return nil, 0, fmt.Errorf("dns: resolve %s: %w", name, err)
+		return DNSAnswer{}, fmt.Errorf("dns: resolve %s: %w", name, err)
 	}
 	if ans.Status != 0 && ans.Status != 3 { // NOERROR, NXDOMAIN
-		return nil, 0, fmt.Errorf("dns: resolve %s: rcode %d", name, ans.Status)
+		return DNSAnswer{}, fmt.Errorf("dns: resolve %s: rcode %d", name, ans.Status)
 	}
-	var addrs []string
-	ttl := 0
+	var out DNSAnswer
 	for _, a := range ans.Answer {
-		if a.Type != 1 || net.ParseIP(a.Data).To4() == nil {
+		switch {
+		case a.Type == 5:
+			out.CNAMEs = append(out.CNAMEs, strings.TrimSuffix(strings.ToLower(a.Data), "."))
+		case a.Type == 1 && net.ParseIP(a.Data).To4() != nil:
+			out.Addrs = append(out.Addrs, a.Data)
+		default:
 			continue
 		}
-		addrs = append(addrs, a.Data)
-		if ttl == 0 || a.TTL < ttl {
-			ttl = a.TTL
+		if out.TTL == 0 || a.TTL < out.TTL {
+			out.TTL = a.TTL
 		}
 	}
-	return addrs, ttl, nil
+	return out, nil
 }
 
 // Probe dials ip:443 with SNI host, verifying the certificate for host.

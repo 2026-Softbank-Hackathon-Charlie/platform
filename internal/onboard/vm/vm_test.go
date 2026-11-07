@@ -135,3 +135,15 @@ func TestConnectLines(t *testing.T) {
 		t.Fatal("unknown kind accepted")
 	}
 }
+
+func TestInfoLinesAndIncompleteDisconnect(t *testing.T) {
+	changes, result, err := lines("{\"info\":\"wal_keep_size is already 2048MB\"}\n{\"result\":\"ok\",\"replicationPassword\":\"x\",\"passwordRotated\":true}\n")
+	if err != nil || len(changes) != 0 || result["passwordRotated"] != true {
+		t.Fatalf("%v %v %v", changes, result, err)
+	}
+	f := &fakeSSM{steps: map[string]string{"": `{"result":"incomplete","database":"not running"}`}}
+	r := &Runner{SSM: f, Poll: time.Millisecond}
+	if _, err := r.Disconnect(context.Background(), "i-1", "db", "a"); err == nil {
+		t.Fatal("an incomplete disconnect is done")
+	}
+}

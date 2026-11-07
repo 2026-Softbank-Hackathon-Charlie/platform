@@ -202,7 +202,14 @@ func (d *Discoverer) Discover(ctx context.Context, in Input) (Result, error) {
 				r.block(facts.BlockNotSSMManaged, inst.ID, "instance %s is not managed by SSM (it needs the SSM agent and an instance profile with AmazonSSMManagedInstanceCore)", inst.ID)
 			}
 			if inst.SSMManaged && inst.AutoScalingGroup == "" && inst.EKSCluster == "" {
-				if inspection, err = d.Inspector.Inspect(ctx, inst.Region, inst.ID); err != nil {
+				inspection, err = d.Inspector.Inspect(ctx, inst.Region, inst.ID)
+				var se *vm.StepError
+				switch {
+				case errors.As(err, &se) && se.ExitCode == vm.InspectExitImagePull:
+					r.block(facts.BlockVMImagePull, inst.ID, "the VM cannot pull the pinned openssl image (is Docker Hub reachable from it?): %s", se.Message)
+				case errors.As(err, &se) && se.ExitCode == vm.InspectExitNoDocker:
+					r.block(facts.BlockNoCompose, inst.ID, "docker cannot be used on the VM: %s", se.Message)
+				case err != nil:
 					return res, fmt.Errorf("inspect %s: %w", inst.ID, err)
 				}
 			}
@@ -223,7 +230,9 @@ func (d *Discoverer) Discover(ctx context.Context, in Input) (Result, error) {
 			return res, fmt.Errorf("choose the database image: %w", err)
 		}
 		if f.App != "" && f.DB != nil {
-			cluster := f.App + "-" + f.DB.Service
+			// The postgres resource is named after the compose service, as
+			// a Kubernetes name.
+			cluster := f.App + "-" + K8sName(f.DB.Service)
 			if n := len(onboard.EgressService(cluster)); n > onboard.MaxNameLen {
 				r.block(facts.BlockNameTooLong, onboard.EgressService(cluster), "%s is %d characters; a Service name has at most %d", onboard.EgressService(cluster), n, onboard.MaxNameLen)
 			}
@@ -271,7 +280,16 @@ func (d *Discoverer) Discover(ctx context.Context, in Input) (Result, error) {
 		if d.Cipher == nil {
 			return res, errors.New("discover: the secrets key (PLATFORM_SECRETS_KEY) is not set")
 		}
-		b, err := json.Marshal(inspection.Values)
+		// Only the chosen project's containers' values.
+		values := vm.Values{}
+		if f.VM != nil {
+			for _, c := range f.VM.Containers {
+				if v, ok := inspection.Values[c.Name]; ok {
+					values[c.Name] = v
+				}
+			}
+		}
+		b, err := json.Marshal(values)
 		if err != nil {
 			return res, err
 		}
@@ -290,6 +308,23 @@ func (d *Discoverer) Discover(ctx context.Context, in Input) (Result, error) {
 		res.KeyVersion, res.KeyCheck = secrets.KeyVersion, d.Cipher.KeyCheck()
 	}
 	return res, nil
+}
+
+// K8sName maps a compose service name to a Kubernetes name: lowercase,
+// with "-" for "_" and ".", and no leading or trailing "-".
+func K8sName(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + 'a' - 'A'
+		case r == '_' || r == '.':
+			return '-'
+		}
+		return -1
+	}, s)
+	return strings.Trim(s, "-")
 }
 
 func short(sha string) string { return sha[:min(len(sha), 12)] }

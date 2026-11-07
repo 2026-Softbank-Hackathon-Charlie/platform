@@ -144,11 +144,31 @@ func apiErrorCode(err error) string {
 	return "request failed"
 }
 
+// StepError is a document step that did not succeed: its exit code (the
+// scripts' header comments list them) and the script's message.
+type StepError struct {
+	Document string
+	ExitCode int32
+	Status   string
+	Message  string
+}
+
+func (e *StepError) Error() string {
+	return fmt.Sprintf("%s exited %d (%s): %s", e.Document, e.ExitCode, e.Status, e.Message)
+}
+
+// Exit codes of inspect.sh the platform reads as a finding, not a
+// failure to retry.
+const (
+	InspectExitNoDocker  = 3 // docker or bash is not usable
+	InspectExitImagePull = 7 // the openssl image cannot be pulled
+)
+
 // stepError describes a failed step for the onboarding's failure.
 func stepError(document string, r StepResult) error {
 	msg := strings.TrimSpace(r.Stderr)
 	if len(msg) > 500 {
 		msg = msg[:500]
 	}
-	return fmt.Errorf("%s exited %d (%s): %s", document, r.ExitCode, r.Status, msg)
+	return &StepError{Document: document, ExitCode: r.ExitCode, Status: r.Status, Message: msg}
 }
