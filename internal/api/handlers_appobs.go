@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -40,7 +43,12 @@ func (s *Server) getAppObservability(w http.ResponseWriter, r *http.Request) {
 		minutes = n
 	}
 	since := s.now().Add(-time.Duration(minutes) * time.Minute)
-	o, err := s.d.AppObs.App(r.Context(), name, since)
+	exclude, err := s.longerAppNames(r.Context(), name)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	o, err := s.d.AppObs.App(r.Context(), name, since, exclude...)
 	if err != nil {
 		s.cfg.Log.Warn("app observability: ClickHouse query failed", "app", name, "err", err)
 		s.fail(w, r, http.StatusBadGateway, "observability_unavailable", "the app's logs could not be read")
@@ -63,4 +71,31 @@ func (s *Server) getAppObservability(w http.ResponseWriter, r *http.Request) {
 	}
 	noteAudit(r, "app", name)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// longerAppNames lists the other registered apps whose names start with
+// <name>-. Their services match the app's prefix too (moimroom-mig-web for
+// moimroom), so the summary leaves them out.
+func (s *Server) longerAppNames(ctx context.Context, name string) ([]string, error) {
+	var names []string
+	if s.d.Apps != nil {
+		for _, a := range s.d.Apps.List() {
+			names = append(names, a.Name)
+		}
+	}
+	registered, err := s.d.Store.ListApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range registered {
+		names = append(names, a.Name)
+	}
+	var out []string
+	for _, n := range names {
+		if strings.HasPrefix(n, name+"-") && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
 }

@@ -2126,6 +2126,7 @@ type AppObservationBucket struct {
 
 // AppObservationPattern defines model for AppObservationPattern.
 type AppObservationPattern struct {
+	// Count how many of the newest 500 error and warning lines of the window have this pattern, not a count over the whole window
 	Count    int                           `json:"count"`
 	LastSeen time.Time                     `json:"lastSeen"`
 	Service  string                        `json:"service"`

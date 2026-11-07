@@ -1469,7 +1469,9 @@ paths:
         never returned. Redaction cannot know every secret.
 
         A service belongs to the app when its name is the app's or starts with
-        `<app>-`. Without PLATFORM_AIOBS_CLICKHOUSE_URL the server answers 503
+        `<app>-`, unless it belongs to another registered app whose name starts
+        with `<app>-` (the services of `moimroom-mig` are not `moimroom`'s).
+        Without PLATFORM_AIOBS_CLICKHOUSE_URL the server answers 503
         `observability_not_configured`; if ClickHouse cannot be read, 502
         `observability_unavailable`.
 
@@ -2776,7 +2778,7 @@ components:
         severity: { type: string, enum: [error, warning] }
         service: { type: string }
         text: { type: string, description: "redacted, numbers and ids folded to # and «id», at most 160 characters" }
-        count: { type: integer }
+        count: { type: integer, description: "how many of the newest 500 error and warning lines of the window have this pattern, not a count over the whole window" }
         lastSeen: { type: string, format: date-time }
 
     AppObservation:

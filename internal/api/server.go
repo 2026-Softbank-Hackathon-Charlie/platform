@@ -232,7 +232,7 @@ type AIActivityReader interface {
 
 // AppObserver summarises one app's logs since a time (aiobs.Client).
 type AppObserver interface {
-	App(ctx context.Context, app string, since time.Time) (aiobs.AppObservation, error)
+	App(ctx context.Context, app string, since time.Time, exclude ...string) (aiobs.AppObservation, error)
 }
 
 // AIRunner starts and lists AI runner Jobs (airun.Runner).

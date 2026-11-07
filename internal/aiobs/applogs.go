@@ -66,15 +66,27 @@ const (
 )
 
 // appFilter selects the app's services: the one named like the app and those
-// named <app>-<anything> (docker-doom-web, moimroom-mig-db).
-const appFilter = "(ServiceName = {app:String} OR startsWith(ServiceName, {prefix:String}))" +
-	" AND Timestamp >= fromUnixTimestamp64Milli({since:Int64})"
+// named <app>-<anything> (docker-doom-web, moimroom-mig-db), less those of each
+// excluded app (another registered app whose name starts with <app>-, such as
+// moimroom-mig for moimroom).
+func appFilter(exclude []string) string {
+	f := "(ServiceName = {app:String} OR startsWith(ServiceName, {prefix:String}))" +
+		" AND Timestamp >= fromUnixTimestamp64Milli({since:Int64})"
+	for i := range exclude {
+		f += fmt.Sprintf(" AND NOT (ServiceName = {x%d:String} OR startsWith(ServiceName, {xp%d:String}))", i, i)
+	}
+	return f
+}
 
-func appParams(app string, since time.Time) url.Values {
+func appParams(app string, since time.Time, exclude []string) url.Values {
 	v := url.Values{}
 	v.Set("param_app", app)
 	v.Set("param_prefix", app+"-")
 	v.Set("param_since", strconv.FormatInt(since.UnixMilli(), 10))
+	for i, x := range exclude {
+		v.Set(fmt.Sprintf("param_x%d", i), x)
+		v.Set(fmt.Sprintf("param_xp%d", i), x+"-")
+	}
 	return v
 }
 
@@ -83,17 +95,25 @@ var appName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 // App summarises the app's logs since the given time. The app name must be a
 // registered app's: the caller checks that, and the name is matched against
 // service names as a prefix, so only a valid DNS-label-like name is accepted.
-func (c *Client) App(ctx context.Context, app string, since time.Time) (AppObservation, error) {
+// exclude names the other registered apps whose names start with <app>-: their
+// services would match the prefix too and are left out.
+func (c *Client) App(ctx context.Context, app string, since time.Time, exclude ...string) (AppObservation, error) {
 	if !appName.MatchString(app) {
 		return AppObservation{}, fmt.Errorf("aiobs: %q is not an app name", app)
 	}
+	for _, x := range exclude {
+		if !appName.MatchString(x) {
+			return AppObservation{}, fmt.Errorf("aiobs: %q is not an app name", x)
+		}
+	}
+	where := appFilter(exclude)
 	out := AppObservation{Since: since.UTC(), Buckets: []AppBucket{}, Services: []AppService{}, Patterns: []AppPattern{}}
 	counts := "toString(count()) AS total, toString(countIf(lower(SeverityText) IN " + errorSeverities + ")) AS errors," +
 		" toString(countIf(lower(SeverityText) IN " + warningSeverities + ")) AS warnings"
 
 	// per service
 	body, err := c.do(ctx, "SELECT ServiceName AS name, "+counts+", toString(toUnixTimestamp64Milli(max(Timestamp))) AS last FROM "+c.Table+
-		" WHERE "+appFilter+" GROUP BY ServiceName ORDER BY count() DESC LIMIT 20 FORMAT JSONEachRow", appParams(app, since))
+		" WHERE "+where+" GROUP BY ServiceName ORDER BY count() DESC LIMIT 20 FORMAT JSONEachRow", appParams(app, since, exclude))
 	if err != nil {
 		return out, err
 	}
@@ -111,16 +131,12 @@ func (c *Client) App(ctx context.Context, app string, since time.Time) (AppObser
 		return out, err
 	}
 	for _, r := range rows {
-		x := AppService{Name: r.Name, Total: atoi(r.Total), Errors: atoi(r.Errors), Warnings: atoi(r.Warnings), LastSeen: millis(r.Last)}
-		out.Services = append(out.Services, x)
-		out.Total += x.Total
-		out.Errors += x.Errors
-		out.Warnings += x.Warnings
+		out.Services = append(out.Services, AppService{Name: r.Name, Total: atoi(r.Total), Errors: atoi(r.Errors), Warnings: atoi(r.Warnings), LastSeen: millis(r.Last)})
 	}
 
 	// per five minutes
 	body, err = c.do(ctx, "SELECT toString(toUnixTimestamp(toStartOfInterval(Timestamp, INTERVAL 5 MINUTE))) AS t, "+counts+" FROM "+c.Table+
-		" WHERE "+appFilter+" GROUP BY t ORDER BY t FORMAT JSONEachRow", appParams(app, since))
+		" WHERE "+where+" GROUP BY t ORDER BY t FORMAT JSONEachRow", appParams(app, since, exclude))
 	if err != nil {
 		return out, err
 	}
@@ -133,7 +149,13 @@ func (c *Client) App(ctx context.Context, app string, since time.Time) (AppObser
 		if err != nil {
 			return fmt.Errorf("aiobs: bad bucket time %q", r.T)
 		}
-		out.Buckets = append(out.Buckets, AppBucket{Time: time.Unix(secs, 0).UTC(), Total: atoi(r.Total), Errors: atoi(r.Errors), Warnings: atoi(r.Warnings)})
+		b := AppBucket{Time: time.Unix(secs, 0).UTC(), Total: atoi(r.Total), Errors: atoi(r.Errors), Warnings: atoi(r.Warnings)}
+		out.Buckets = append(out.Buckets, b)
+		// The totals come from the buckets, which count every service; the
+		// service list stops at 20.
+		out.Total += b.Total
+		out.Errors += b.Errors
+		out.Warnings += b.Warnings
 		return nil
 	}); err != nil {
 		return out, err
@@ -143,10 +165,10 @@ func (c *Client) App(ctx context.Context, app string, since time.Time) (AppObser
 	if out.Errors+out.Warnings == 0 {
 		return out, nil
 	}
-	v := appParams(app, since)
+	v := appParams(app, since, exclude)
 	v.Set("param_limit", strconv.Itoa(patternLines))
 	body, err = c.do(ctx, "SELECT toString(toUnixTimestamp64Milli(Timestamp)) AS ts, ServiceName AS svc, lower(SeverityText) AS sev, substring(Body, 1, 600) AS body FROM "+c.Table+
-		" WHERE "+appFilter+" AND lower(SeverityText) IN "+errorSeverities[:len(errorSeverities)-1]+","+warningSeverities[1:]+
+		" WHERE "+where+" AND lower(SeverityText) IN "+errorSeverities[:len(errorSeverities)-1]+","+warningSeverities[1:]+
 		" ORDER BY Timestamp DESC LIMIT {limit:UInt32} FORMAT JSONEachRow", v)
 	if err != nil {
 		return out, err

@@ -135,6 +135,9 @@ func TestAppSkipsThePatternQueryWhenThereAreNoErrors(t *testing.T) {
 		if strings.Contains(string(b), "GROUP BY ServiceName") {
 			io.WriteString(w, `{"name":"pxls-web","total":"50","errors":"0","warnings":"0","last":"1794037095000"}`+"\n")
 		}
+		if strings.Contains(string(b), "GROUP BY t") {
+			io.WriteString(w, `{"t":"1794036900","total":"50","errors":"0","warnings":"0"}`+"\n")
+		}
 	}))
 	defer srv.Close()
 	c, _ := New(srv.URL, "", "", "")
@@ -160,5 +163,45 @@ func TestAppRefusesOtherNamesAndHidesErrors(t *testing.T) {
 	_, err := c.App(context.Background(), "pxls", time.Now())
 	if err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAppLeavesOutExcludedAppsAndTotalsEveryService(t *testing.T) {
+	var params map[string]string
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		queries = append(queries, string(b))
+		params = map[string]string{}
+		for k := range r.URL.Query() {
+			params[k] = r.URL.Query().Get(k)
+		}
+		switch {
+		case strings.Contains(string(b), "GROUP BY ServiceName"):
+			// the service list stops at 20; say only one of the services came back
+			io.WriteString(w, `{"name":"moimroom-web","total":"900","errors":"0","warnings":"0","last":"1794037095000"}`+"\n")
+		case strings.Contains(string(b), "GROUP BY t"):
+			io.WriteString(w, `{"t":"1794036900","total":"1000","errors":"0","warnings":"1"}`+"\n"+`{"t":"1794037200","total":"500","errors":"0","warnings":"0"}`+"\n")
+		}
+	}))
+	defer srv.Close()
+	c, _ := New(srv.URL, "", "", "")
+	o, err := c.App(context.Background(), "moimroom", time.UnixMilli(1794030000000), "moimroom-mig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Total != 1500 || o.Warnings != 1 {
+		t.Fatalf("totals must count every service, from the buckets: %+v", o)
+	}
+	if params["param_x0"] != "moimroom-mig" || params["param_xp0"] != "moimroom-mig-" {
+		t.Fatalf("params: %v", params)
+	}
+	for _, q := range queries {
+		if !strings.Contains(q, "NOT (ServiceName = {x0:String} OR startsWith(ServiceName, {xp0:String}))") || strings.Contains(q, "moimroom") {
+			t.Fatalf("the excluded app must be bound as a parameter: %s", q)
+		}
+	}
+	if _, err := c.App(context.Background(), "moimroom", time.Now(), "Bad Name"); err == nil {
+		t.Fatal("a bad excluded name was accepted")
 	}
 }
