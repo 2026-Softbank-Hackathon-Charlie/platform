@@ -34,9 +34,9 @@ type EnvOptions struct {
 	// Secrets, Sealer, Storage and StorageDriver are Config's: the app
 	// secrets' cipher, each environment's sealer and storage driver, and the
 	// driver its configuration names.
-	Secrets       *secrets.Cipher
+	Secrets *secrets.Cipher
 	// CuttingOver is Config.CuttingOver (ADR 0042).
-	CuttingOver func(ctx context.Context, app string) (bool, error)
+	CuttingOver   func(ctx context.Context, app string) (bool, error)
 	Sealer        func(env string) (*sealing.Sealer, error)
 	Storage       func(env string) (storage.Driver, error)
 	StorageDriver func(env string) string

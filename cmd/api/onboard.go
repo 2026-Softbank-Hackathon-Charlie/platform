@@ -35,7 +35,7 @@ import (
 func onboardingConfig(ctx context.Context, log *slog.Logger, envSvc *envs.Service, cipher *secrets.Cipher, gh *github.Client, ai *airun.Runner,
 	gw *gateway.Client, routes *dbroute.Manager, planSvc *plans.Service, runner *runs.Runner, workloads func(string) (dynamic.Interface, error)) *job.Config {
 	cfg := &job.Config{Secrets: cipher, Envs: envSvc.Names(), Log: log, SourceDB: job.PG{}, Files: job.Rclone{},
-		DNS: job.Resolver{Domain: envOr("PLATFORM_APP_DOMAIN", "hopcharlie.dev")},
+		DNS:     job.Resolver{Domain: envOr("PLATFORM_APP_DOMAIN", "hopcharlie.dev")},
 		Cutover: cutover{planSvc, runner}, Kube: kubeOps{clients: workloads, engine: engineClients(envSvc)}}
 	if gh != nil {
 		cfg.GitHub = gh
@@ -114,8 +114,10 @@ type cutover struct {
 func (c cutover) ReserveOnboarding(ctx context.Context, raw []byte, actor string, scope plans.OnboardingScope) (plans.Reserved, string, error) {
 	return c.plans.ReserveOnboarding(ctx, raw, actor, scope)
 }
-func (c cutover) Started(ctx context.Context, ref, runID string) error { return c.plans.Started(ctx, ref, runID) }
-func (c cutover) Release(ctx context.Context, ref string)              { c.plans.Release(ctx, ref) }
+func (c cutover) Started(ctx context.Context, ref, runID string) error {
+	return c.plans.Started(ctx, ref, runID)
+}
+func (c cutover) Release(ctx context.Context, ref string) { c.plans.Release(ctx, ref) }
 func (c cutover) Start(ctx context.Context, o runs.StartOptions) (apiv1.Run, error) {
 	return c.runs.Start(ctx, o)
 }

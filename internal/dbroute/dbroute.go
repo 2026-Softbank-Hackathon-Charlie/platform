@@ -130,7 +130,7 @@ type Config struct {
 	// LegacyNamespace is where onboardings' routes to their sources go
 	// (legacy.go); empty is the environments' routes' namespace.
 	LegacyNamespace string
-	Log        *slog.Logger
+	Log             *slog.Logger
 }
 
 // Manager creates and deletes the routes.

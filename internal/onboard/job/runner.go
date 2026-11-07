@@ -21,13 +21,13 @@ import (
 
 // Errors of the operations; the API maps them to its codes.
 var (
-	ErrNotFound      = errors.New("onboarding not found")                     // 404 onboarding_not_found
-	ErrExists        = errors.New("the app has an onboarding")                // 409 onboarding_exists
-	ErrAppExists     = errors.New("an app of that name is registered")        // 409 app_exists
-	ErrState         = errors.New("not in a state that allows it")            // 409 onboarding_state_conflict
-	ErrDeleting      = errors.New("the onboarding is being deleted")          // 409 onboarding_deleting
-	ErrHeadMismatch  = errors.New("the PR head is not the commit approved")   // 409 pr_head_mismatch
-	ErrInvalid       = errors.New("invalid onboarding request")               // 400 invalid_request
+	ErrNotFound      = errors.New("onboarding not found")                          // 404 onboarding_not_found
+	ErrExists        = errors.New("the app has an onboarding")                     // 409 onboarding_exists
+	ErrAppExists     = errors.New("an app of that name is registered")             // 409 app_exists
+	ErrState         = errors.New("not in a state that allows it")                 // 409 onboarding_state_conflict
+	ErrDeleting      = errors.New("the onboarding is being deleted")               // 409 onboarding_deleting
+	ErrHeadMismatch  = errors.New("the PR head is not the commit approved")        // 409 pr_head_mismatch
+	ErrInvalid       = errors.New("invalid onboarding request")                    // 400 invalid_request
 	ErrNotConfigured = errors.New("this server cannot do that step of onboarding") // 503
 )
 

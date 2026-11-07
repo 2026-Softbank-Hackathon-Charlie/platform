@@ -57,7 +57,7 @@ type world struct {
 	noPostgres bool // the registered platform.yaml has no postgres resource
 	rotated    bool // connect says the replication password changed
 
-	runStatus apiv1.RunStatus
+	runStatus  apiv1.RunStatus
 	reserveErr error
 }
 
@@ -155,7 +155,10 @@ func (w *world) Disconnect(_ context.Context, _ ConnectRequest, ch []apiv1.Onboa
 	return out, nil
 }
 
-func (w *world) StopInstance(context.Context, ConnectRequest) error { w.did("stop instance"); return nil }
+func (w *world) StopInstance(context.Context, ConnectRequest) error {
+	w.did("stop instance")
+	return nil
+}
 
 // GitHub
 func (w *world) ResolveRef(context.Context, string, string) (string, error) { return headSHA, nil }
@@ -170,13 +173,16 @@ func (w *world) MergePR(_ context.Context, _ string, _ int, sha string) error {
 	w.did("merge " + sha[:7])
 	return nil
 }
-func (w *world) ClosePR(context.Context, string, int) error             { w.did("close pr"); return nil }
+func (w *world) ClosePR(context.Context, string, int) error                    { w.did("close pr"); return nil }
 func (w *world) BehindBy(context.Context, string, string, string) (int, error) { return 0, nil }
 func (w *world) DisableWorkflow(_ context.Context, _ string, id int64) error {
 	w.did("disable workflow")
 	return nil
 }
-func (w *world) EnableWorkflow(context.Context, string, int64) error { w.did("enable workflow"); return nil }
+func (w *world) EnableWorkflow(context.Context, string, int64) error {
+	w.did("enable workflow")
+	return nil
+}
 func (w *world) ActiveRuns(context.Context, string, int64) ([]github.WorkflowRun, error) {
 	return nil, nil
 }
@@ -309,7 +315,7 @@ func (w *world) ReserveOnboarding(_ context.Context, raw []byte, _ string, scope
 	return plans.Reserved{Plan: &plan.Plan{ID: p["id"].(string)}}, "pln_1", nil
 }
 func (w *world) Started(context.Context, string, string) error { return nil }
-func (w *world) Release(context.Context, string)                { w.did("release") }
+func (w *world) Release(context.Context, string)               { w.did("release") }
 func (w *world) Start(context.Context, runs.StartOptions) (apiv1.Run, error) {
 	w.did("run")
 	return apiv1.Run{RunId: "run1"}, nil

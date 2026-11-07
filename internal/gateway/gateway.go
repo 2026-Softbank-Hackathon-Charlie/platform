@@ -79,7 +79,7 @@ type backend struct {
 	dial      string
 	transport *http.Transport
 	health    *http.Client
-	stats backendStats
+	stats     backendStats
 
 	healthy   atomic.Bool
 	hmu       sync.Mutex

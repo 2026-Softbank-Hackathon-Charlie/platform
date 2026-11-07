@@ -93,9 +93,9 @@ func (r *Runner) discovering(ctx context.Context, x *rec) (bool, error) {
 		x.row.KeyVersion, x.row.KeyCheck = d.KeyVersion, d.KeyCheck
 		if d.KeyCheck == "" {
 			x.row.KeyVersion, x.row.KeyCheck = d.KeyVersion, d.KeyCheck
-		if d.KeyCheck == "" {
-			x.row.KeyVersion, x.row.KeyCheck = secrets.KeyVersion, r.keyCheck()
-		}
+			if d.KeyCheck == "" {
+				x.row.KeyVersion, x.row.KeyCheck = secrets.KeyVersion, r.keyCheck()
+			}
 		}
 		x.row.SecretsNonce, x.row.SecretsCiphertext = d.Secrets.Nonce, d.Secrets.Ciphertext
 		x.row.SuperuserPasswordNonce, x.row.SuperuserPasswordCiphertext = d.SuperuserPassword.Nonce, d.SuperuserPassword.Ciphertext

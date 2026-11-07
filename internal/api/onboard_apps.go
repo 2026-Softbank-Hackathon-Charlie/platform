@@ -188,7 +188,6 @@ func (a onboardApps) Redeploy(ctx context.Context, name, by string) (string, err
 	return "", fmt.Errorf("app %s has no healthy deployment to redeploy", name)
 }
 
-
 func (a onboardApps) Deployment(ctx context.Context, id string) (string, string, error) {
 	d, err := a.s.d.Store.GetDeployment(ctx, id)
 	if err != nil {

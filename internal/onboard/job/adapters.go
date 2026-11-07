@@ -8,8 +8,8 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/connect"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/discover"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/vm"
-	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/onboard/facts"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/onboard/facts"
 )
 
 // FromDiscoverer is the Discoverer of internal/onboard/discover.

@@ -170,7 +170,6 @@ func (r *Runner) StopOnboard(ctx context.Context, id string) error {
 	return nil
 }
 
-
 // OnboardOutcome is how an onboarding's hopai Job ended (ai-sandbox hopai
 // onboard): its container's exit code (0 done, 1 failed, 2 usage, 3 no
 // contract can be added, or the default branch has platform.yaml already)
