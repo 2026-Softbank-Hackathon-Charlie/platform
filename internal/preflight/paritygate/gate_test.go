@@ -16,7 +16,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/rest"
-	"sigs.k8s.io/yaml"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 
@@ -27,7 +26,7 @@ const config = `
 version: 1
 mode: audit
 environments:
-  eks: {prometheus: {url: PROM, maxAge: 1m}}
+  eks: {prometheus: {url: "PROM", maxAge: 1m}}
 apps:
   - name: shop
     namespace: shop
@@ -92,10 +91,13 @@ func newGate(t *testing.T, promURL string, sar SARFactory) *Gate {
 	t.Helper()
 	cfg, err := ParseConfig([]byte(strings.Replace(config, "PROM", promURL, 1)), []string{"gke", "eks"})
 	if err != nil {
-		var diagnostic Config
-		t.Fatalf("%v: fixture decoding: %v URL %q", err, yaml.UnmarshalStrict([]byte(strings.Replace(config, "PROM", promURL, 1)), &diagnostic), promURL)
+		t.Fatal(err)
 	}
 	return New(cfg, sar, nil)
+}
+
+func TestProbeFixtureAcceptsIPv6LoopbackURL(t *testing.T) {
+	newGate(t, "http://[::1]:9090", nil)
 }
 
 func result(r parity.Report, c parity.Capability) parity.Result {
