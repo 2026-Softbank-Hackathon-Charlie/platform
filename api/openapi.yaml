@@ -1702,6 +1702,135 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "503": { $ref: "#/components/responses/Unavailable" }
         default: { $ref: "#/components/responses/Internal" }
+  /v1/apps/{name}/environments:
+    parameters:
+      - $ref: "#/components/parameters/AppName"
+    post:
+      tags: [apps]
+      operationId: addAppEnvironment
+      description: |
+        Add an environment to a registered app (ADR 0037) and queue a
+        deployment of the default instance (trigger `environment`) to all of
+        the app's environments, the new one included. The deployment repeats
+        the default instance's last healthy deployment: its commit, images and
+        platform.yaml, with the secrets as they are now. Nothing is built and
+        GitHub is not read. Images are pinned by digest; an image that was
+        deleted from its registry since makes the new environment Degraded and
+        the deployment fail, and a branch deployment builds it again.
+
+        A postgres app is added an environment only when it has a database
+        pair (ADR 0030) whose peer is that environment: the pair is made at
+        registration, also for an app registered in one environment while
+        exactly one other environment has a database host template. After the
+        deployment the database of the new environment is a streaming replica
+        of the app's database, and `POST /v1/migrations` can move the app
+        there once `deploy.dbTopology.readiness.ready` of `GET
+        /v1/apps/{name}` is true. Without such a pair the environment is
+        refused, as its database would be an independent primary that can
+        never be migrated. An app without a postgres resource is just added
+        the environment.
+
+        Branch instances (ADR 0015) go to the new environment at their next
+        deployment; this request queues none for them.
+
+        Sending the same request again: while the environment is in the app
+        and the default instance's newest deployment that lists it ended
+        healthy, 409 environment_exists. While it is in the app but that
+        deployment failed or was superseded, and nothing is in progress, a new
+        deployment is queued and the answer is 202 again, so a failed add is
+        retried by sending the request again.
+
+        Checked in this order. Error codes: invalid_request (400: no
+        `environment`), app_not_found (404), app_not_registered (409: the app
+        is only in PLATFORM_APPS_FILE), env_not_found (404: not an
+        environment of this server), environment_exists (409), deployment_in_progress
+        (409: a deployment of the default instance is not finished, an earlier
+        add included), migration_in_progress (409: a migration run of the app
+        is running, awaiting its switch, halted or interrupted, or the traffic
+        gateway holds the app's writes), nothing_to_redeploy (409: the default
+        instance has no healthy deployment; deploy the branch first),
+        db_pair_unavailable (409: platform.yaml has a postgres resource and the
+        app has no database pair whose peer is the environment, or the app is
+        also in PLATFORM_APPS_FILE), storage_not_configured (503: an s3
+        resource and the environment has no storage driver),
+        sealing_not_configured (503: the deployment seals values and the
+        environment has no sealed-secrets certificate). Role operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppEnvironmentAddRequest" }
+      responses:
+        "202":
+          description: Added; the deployment to the app's environments is queued.
+          headers:
+            Location: { schema: { type: string }, description: "/v1/apps/{name}" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppEnvironmentAdded" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/apps/{name}/environments/{env}:
+    parameters:
+      - $ref: "#/components/parameters/AppName"
+      - name: env
+        in: path
+        required: true
+        description: An environment of the app.
+        schema: { type: string }
+    delete:
+      tags: [apps]
+      operationId: removeAppEnvironment
+      description: |
+        Take an environment back out of a registered app (ADR 0037), for an
+        environment added by mistake or whose deployment cannot get healthy.
+        The platform removes the environment from the app, commits the removal
+        of `apps/<instance>/<env>.yaml` of every instance from the gitops
+        repository, takes the environment's backend out of every instance's
+        traffic gateway app and removes the management cluster's database
+        route to it. Argo CD then deletes the Applications `<instance>-<env>`
+        with their namespaces, as when the app is deleted, so the instances'
+        data in that environment goes with them; their buckets and keys there
+        are deleted by the storage cleanup. The database pair stays, so the
+        environment can be added again. Then a deployment of the default
+        instance (trigger `environment`) to the remaining environments is
+        queued when it has a healthy deployment to repeat, so the primary's
+        gitops file gets `dbTopology.peerPresent: false` again.
+
+        Refused for the app's first environment, where its database was born
+        primary, and for an environment that is or ever was the write backend:
+        the traffic gateway sends an instance's writes there, or a migration
+        run of the app that was not failed or aborted had it as source or
+        target.
+
+        Checked in this order. Error codes: app_not_found (404),
+        app_not_registered (409), env_not_found (404: not an environment of
+        the app), primary_environment
+        (409: the app's first environment; the app keeps at least one),
+        write_backend (409), deployment_in_progress (409: a deployment of any
+        instance of the app is not finished), migration_in_progress (409: a
+        migration run of the app is running, awaiting its switch, halted or
+        interrupted, or the gateway holds an instance's writes),
+        github_unreachable (502: the gitops repository), gateway_unreachable
+        (502), github_not_configured (503: no deployer). Role operator.
+      responses:
+        "202":
+          description: Removed; Argo CD is removing the workloads of the environment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppEnvironmentRemoved" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        default: { $ref: "#/components/responses/Internal" }
   /v1/apps/{name}/instances:
     parameters:
       - $ref: "#/components/parameters/AppName"
@@ -4254,7 +4383,7 @@ components:
         repo: { type: string, example: 2026-Softbank-Hackathon-Charlie/moimroom }
         branch: { type: string, example: main }
         environments:
-          description: The environments the app is deployed to, in PLATFORM_ENVS_FILE order.
+          description: The environments the app is deployed to. Those it was registered with come first, in PLATFORM_ENVS_FILE order, then the ones added with POST /v1/apps/{name}/environments, in the order they were added; the first is never removed.
           type: array
           items: { type: string }
           example: [gke, eks]
@@ -4280,19 +4409,100 @@ components:
 
     AppDBTopology:
       description: |
-        The database pair of the app's default instance (ADR 0030), present
-        only for an app registered in exactly two environments while the
-        server sets PLATFORM_APP_DB_TOPOLOGY. Its postgres database is born
-        primary in `primary` and a streaming replica of it in `replica`, so
-        a migration can move it between the two. These are the roles the
-        databases were created with; a migration swaps them in the clusters
-        and does not change these fields. Branch instances keep their own
-        database in each environment.
+        The database pair of the app's default instance (ADR 0030, ADR 0037),
+        present only while the server sets PLATFORM_APP_DB_TOPOLOGY for an app
+        with a postgres resource registered in exactly two environments, or in
+        one environment while exactly one other environment has a database
+        host template. Its postgres database is born primary in `primary` and
+        a streaming replica of it in `replica`, so a migration can move it
+        between the two. These are the roles the databases were created with;
+        a migration swaps them in the clusters and does not change these
+        fields. `replicaPresent` is false while `replica` is not one of the
+        app's environments (`POST /v1/apps/{name}/environments` adds it).
+        Branch instances keep their own database in each environment.
       type: object
-      required: [primary, replica]
+      required: [primary, replica, replicaPresent]
       properties:
         primary: { type: string, example: gke, description: the environment where the database is born primary (the app's first environment) }
         replica: { type: string, example: eks, description: the environment where the database is born a replica of primary }
+        replicaPresent: { type: boolean, description: "`replica` is one of the app's environments" }
+        readiness: { $ref: "#/components/schemas/AppDBReadiness" }
+
+    AppDBReadiness:
+      description: |
+        Whether `POST /v1/migrations` can move the app between the two
+        environments of its pair now (ADR 0037). Only `GET /v1/apps/{name}`
+        has it; it reads both environments' CNPG Clusters, each within 3
+        seconds. `ready` is true only when both environments are the app's,
+        the default instance's newest deployment that lists each of them ended
+        healthy, the traffic gateway has a backend for both (when the app has
+        a public service), both Clusters are healthy and their
+        `spec.replica` fit the migration engine's topology check (one is
+        primary, the other follows it). WAL lag is not looked at; the
+        migration's prepare and presync check it again.
+
+        `reason` is the first check that failed, or `ready`:
+        replica_missing (an environment of the pair is not the app's),
+        deploy_pending (no finished healthy deployment lists an environment),
+        app_degraded (that deployment failed with the environment Degraded:
+        the app probably writes to the database when it starts, which a
+        replica refuses; migrate it with the engine's cold mode),
+        deploy_failed (that deployment failed otherwise),
+        gateway_unreachable, gateway_backend_missing, cluster_unreadable,
+        cluster_not_healthy, topology_mismatch. `message` says the same in a
+        sentence.
+      type: object
+      required: [ready, reason, message, environments]
+      properties:
+        ready: { type: boolean }
+        reason: { type: string, example: ready }
+        message: { type: string, example: both databases are healthy and the replica follows the primary }
+        environments:
+          description: The pair's two environments, primary first.
+          type: array
+          items: { $ref: "#/components/schemas/AppDBReadinessEnvironment" }
+
+    AppDBReadinessEnvironment:
+      type: object
+      required: [env, inApp, deployed, gatewayBackend, role, healthy]
+      properties:
+        env: { type: string, example: gke }
+        inApp: { type: boolean, description: the environment is one of the app's }
+        deployed: { type: boolean, description: "the default instance's newest deployment that lists the environment ended healthy" }
+        gatewayBackend: { type: boolean, description: "the traffic gateway has a backend for it (true when the app has no public service)" }
+        role:
+          type: string
+          enum: [primary, replica, unknown]
+          description: "from the Cluster's spec.replica: primary when replica.primary is the Cluster itself or absent; unknown when it could not be read"
+        healthy: { type: boolean, description: the Cluster is in healthy state with every instance ready }
+        phase: { type: string, example: Cluster in healthy state, description: "the Cluster's status.phase, when it was read" }
+
+    AppEnvironmentAddRequest:
+      type: object
+      additionalProperties: false
+      required: [environment]
+      properties:
+        environment:
+          type: string
+          minLength: 1
+          example: gke
+          description: An environment of this server (GET /v1/envs) that the app is not in yet.
+
+    AppEnvironmentAdded:
+      description: The app with the new environment, and the deployment that takes it there (trigger environment), queued.
+      type: object
+      required: [app, deployment]
+      properties:
+        app: { $ref: "#/components/schemas/App" }
+        deployment: { $ref: "#/components/schemas/Deployment" }
+
+    AppEnvironmentRemoved:
+      description: The app without the environment, and the deployment to its remaining environments (trigger environment) when one was queued.
+      type: object
+      required: [app]
+      properties:
+        app: { $ref: "#/components/schemas/App" }
+        deployment: { $ref: "#/components/schemas/Deployment" }
 
     AppInstance:
       description: |
@@ -4536,7 +4746,8 @@ components:
         push: a push to a branch the app deploys (the GitHub webhook).
         manual: POST /v1/apps/{name}/deployments.
         redeploy: POST /v1/apps/{name}/deployments with `redeploy`: the last healthy deployment's commit and images again, without a build, to apply changed secrets.
-      enum: [push, manual, register, redeploy]
+        environment: POST /v1/apps/{name}/environments or DELETE /v1/apps/{name}/environments/{env}: the default instance's last healthy deployment's commit and images again, without a build, to all of the app's environments after one was added or removed.
+      enum: [push, manual, register, redeploy, environment]
 
     DeploymentStatus:
       type: string

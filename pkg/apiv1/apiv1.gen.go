@@ -136,6 +136,27 @@ func (e AgentSessionStatus) Valid() bool {
 	}
 }
 
+// Defines values for AppDBReadinessEnvironmentRole.
+const (
+	AppDBReadinessEnvironmentRolePrimary AppDBReadinessEnvironmentRole = "primary"
+	AppDBReadinessEnvironmentRoleReplica AppDBReadinessEnvironmentRole = "replica"
+	AppDBReadinessEnvironmentRoleUnknown AppDBReadinessEnvironmentRole = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the AppDBReadinessEnvironmentRole enum.
+func (e AppDBReadinessEnvironmentRole) Valid() bool {
+	switch e {
+	case AppDBReadinessEnvironmentRolePrimary:
+		return true
+	case AppDBReadinessEnvironmentRoleReplica:
+		return true
+	case AppDBReadinessEnvironmentRoleUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for BucketInspectionLabel.
 const (
 	BucketInspectionLabelApac   BucketInspectionLabel = "apac"
@@ -324,15 +345,18 @@ func (e DeploymentStatus) Valid() bool {
 
 // Defines values for DeploymentTrigger.
 const (
-	DeploymentTriggerManual   DeploymentTrigger = "manual"
-	DeploymentTriggerPush     DeploymentTrigger = "push"
-	DeploymentTriggerRedeploy DeploymentTrigger = "redeploy"
-	DeploymentTriggerRegister DeploymentTrigger = "register"
+	DeploymentTriggerEnvironment DeploymentTrigger = "environment"
+	DeploymentTriggerManual      DeploymentTrigger = "manual"
+	DeploymentTriggerPush        DeploymentTrigger = "push"
+	DeploymentTriggerRedeploy    DeploymentTrigger = "redeploy"
+	DeploymentTriggerRegister    DeploymentTrigger = "register"
 )
 
 // Valid indicates whether the value is a known member of the DeploymentTrigger enum.
 func (e DeploymentTrigger) Valid() bool {
 	switch e {
+	case DeploymentTriggerEnvironment:
+		return true
 	case DeploymentTriggerManual:
 		return true
 	case DeploymentTriggerPush:
@@ -1611,24 +1635,115 @@ type AppCreated struct {
 	Deployment Deployment `json:"deployment"`
 }
 
-// AppDBTopology The database pair of the app's default instance (ADR 0030), present
-// only for an app registered in exactly two environments while the
-// server sets PLATFORM_APP_DB_TOPOLOGY. Its postgres database is born
-// primary in `primary` and a streaming replica of it in `replica`, so
-// a migration can move it between the two. These are the roles the
-// databases were created with; a migration swaps them in the clusters
-// and does not change these fields. Branch instances keep their own
-// database in each environment.
+// AppDBReadiness Whether `POST /v1/migrations` can move the app between the two
+// environments of its pair now (ADR 0037). Only `GET /v1/apps/{name}`
+// has it; it reads both environments' CNPG Clusters, each within 3
+// seconds. `ready` is true only when both environments are the app's,
+// the default instance's newest deployment that lists each of them ended
+// healthy, the traffic gateway has a backend for both (when the app has
+// a public service), both Clusters are healthy and their
+// `spec.replica` fit the migration engine's topology check (one is
+// primary, the other follows it). WAL lag is not looked at; the
+// migration's prepare and presync check it again.
+//
+// `reason` is the first check that failed, or `ready`:
+// replica_missing (an environment of the pair is not the app's),
+// deploy_pending (no finished healthy deployment lists an environment),
+// app_degraded (that deployment failed with the environment Degraded:
+// the app probably writes to the database when it starts, which a
+// replica refuses; migrate it with the engine's cold mode),
+// deploy_failed (that deployment failed otherwise),
+// gateway_unreachable, gateway_backend_missing, cluster_unreadable,
+// cluster_not_healthy, topology_mismatch. `message` says the same in a
+// sentence.
+type AppDBReadiness struct {
+	// Environments The pair's two environments, primary first.
+	Environments []AppDBReadinessEnvironment `json:"environments"`
+
+	// Message Example: both databases are healthy and the replica follows the primary
+	Message string `json:"message"`
+	Ready   bool   `json:"ready"`
+
+	// Reason Example: ready
+	Reason string `json:"reason"`
+}
+
+// AppDBReadinessEnvironment defines model for AppDBReadinessEnvironment.
+type AppDBReadinessEnvironment struct {
+	// Deployed the default instance's newest deployment that lists the environment ended healthy
+	Deployed bool `json:"deployed"`
+
+	// Env Example: gke
+	Env string `json:"env"`
+
+	// GatewayBackend the traffic gateway has a backend for it (true when the app has no public service)
+	GatewayBackend bool `json:"gatewayBackend"`
+
+	// Healthy the Cluster is in healthy state with every instance ready
+	Healthy bool `json:"healthy"`
+
+	// InApp the environment is one of the app's
+	InApp bool `json:"inApp"`
+
+	// Phase the Cluster's status.phase, when it was read
+	//
+	// Example: Cluster in healthy state
+	Phase *string `json:"phase,omitempty"`
+
+	// Role from the Cluster's spec.replica: primary when replica.primary is the Cluster itself or absent; unknown when it could not be read
+	Role AppDBReadinessEnvironmentRole `json:"role"`
+}
+
+// AppDBReadinessEnvironmentRole from the Cluster's spec.replica: primary when replica.primary is the Cluster itself or absent; unknown when it could not be read
+type AppDBReadinessEnvironmentRole string
+
+// AppDBTopology The database pair of the app's default instance (ADR 0030, ADR 0037),
+// present only while the server sets PLATFORM_APP_DB_TOPOLOGY for an app
+// with a postgres resource registered in exactly two environments, or in
+// one environment while exactly one other environment has a database
+// host template. Its postgres database is born primary in `primary` and
+// a streaming replica of it in `replica`, so a migration can move it
+// between the two. These are the roles the databases were created with;
+// a migration swaps them in the clusters and does not change these
+// fields. `replicaPresent` is false while `replica` is not one of the
+// app's environments (`POST /v1/apps/{name}/environments` adds it).
+// Branch instances keep their own database in each environment.
 type AppDBTopology struct {
 	// Primary the environment where the database is born primary (the app's first environment)
 	//
 	// Example: gke
 	Primary string `json:"primary"`
 
+	// Readiness Whether `POST /v1/migrations` can move the app between the two
+	// environments of its pair now (ADR 0037). Only `GET /v1/apps/{name}`
+	// has it; it reads both environments' CNPG Clusters, each within 3
+	// seconds. `ready` is true only when both environments are the app's,
+	// the default instance's newest deployment that lists each of them ended
+	// healthy, the traffic gateway has a backend for both (when the app has
+	// a public service), both Clusters are healthy and their
+	// `spec.replica` fit the migration engine's topology check (one is
+	// primary, the other follows it). WAL lag is not looked at; the
+	// migration's prepare and presync check it again.
+	//
+	// `reason` is the first check that failed, or `ready`:
+	// replica_missing (an environment of the pair is not the app's),
+	// deploy_pending (no finished healthy deployment lists an environment),
+	// app_degraded (that deployment failed with the environment Degraded:
+	// the app probably writes to the database when it starts, which a
+	// replica refuses; migrate it with the engine's cold mode),
+	// deploy_failed (that deployment failed otherwise),
+	// gateway_unreachable, gateway_backend_missing, cluster_unreadable,
+	// cluster_not_healthy, topology_mismatch. `message` says the same in a
+	// sentence.
+	Readiness *AppDBReadiness `json:"readiness,omitempty"`
+
 	// Replica the environment where the database is born a replica of primary
 	//
 	// Example: eks
 	Replica string `json:"replica"`
+
+	// ReplicaPresent `replica` is one of the app's environments
+	ReplicaPresent bool `json:"replicaPresent"`
 }
 
 // AppDatabase defines model for AppDatabase.
@@ -1663,17 +1778,20 @@ type AppDeploy struct {
 	// CreatedBy the token name that registered the app
 	CreatedBy string `json:"createdBy"`
 
-	// DbTopology The database pair of the app's default instance (ADR 0030), present
-	// only for an app registered in exactly two environments while the
-	// server sets PLATFORM_APP_DB_TOPOLOGY. Its postgres database is born
-	// primary in `primary` and a streaming replica of it in `replica`, so
-	// a migration can move it between the two. These are the roles the
-	// databases were created with; a migration swaps them in the clusters
-	// and does not change these fields. Branch instances keep their own
-	// database in each environment.
+	// DbTopology The database pair of the app's default instance (ADR 0030, ADR 0037),
+	// present only while the server sets PLATFORM_APP_DB_TOPOLOGY for an app
+	// with a postgres resource registered in exactly two environments, or in
+	// one environment while exactly one other environment has a database
+	// host template. Its postgres database is born primary in `primary` and
+	// a streaming replica of it in `replica`, so a migration can move it
+	// between the two. These are the roles the databases were created with;
+	// a migration swaps them in the clusters and does not change these
+	// fields. `replicaPresent` is false while `replica` is not one of the
+	// app's environments (`POST /v1/apps/{name}/environments` adds it).
+	// Branch instances keep their own database in each environment.
 	DbTopology *AppDBTopology `json:"dbTopology,omitempty"`
 
-	// Environments The environments the app is deployed to, in PLATFORM_ENVS_FILE order.
+	// Environments The environments the app is deployed to. Those it was registered with come first, in PLATFORM_ENVS_FILE order, then the ones added with POST /v1/apps/{name}/environments, in the order they were added; the first is never removed.
 	//
 	// Example: ["gke","eks"]
 	Environments []string `json:"environments"`
@@ -1758,6 +1876,42 @@ type AppEnvironment struct {
 
 	// Env Example: gke
 	Env string `json:"env"`
+}
+
+// AppEnvironmentAddRequest defines model for AppEnvironmentAddRequest.
+type AppEnvironmentAddRequest struct {
+	// Environment An environment of this server (GET /v1/envs) that the app is not in yet.
+	//
+	// Example: gke
+	Environment string `json:"environment"`
+}
+
+// AppEnvironmentAdded The app with the new environment, and the deployment that takes it there (trigger environment), queued.
+type AppEnvironmentAdded struct {
+	// App An application from PLATFORM_APPS_FILE, registered from GitHub, or
+	// both under one name. `namespace`, `database` and `environments` are
+	// what migrations use; `deploy` is set for registered apps. A
+	// registered app that is not in the file has `namespace` = name,
+	// `database` = `{name: app, user: app, schemas: []}` and no
+	// `environments`.
+	App App `json:"app"`
+
+	// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
+	Deployment Deployment `json:"deployment"`
+}
+
+// AppEnvironmentRemoved The app without the environment, and the deployment to its remaining environments (trigger environment) when one was queued.
+type AppEnvironmentRemoved struct {
+	// App An application from PLATFORM_APPS_FILE, registered from GitHub, or
+	// both under one name. `namespace`, `database` and `environments` are
+	// what migrations use; `deploy` is set for registered apps. A
+	// registered app that is not in the file has `namespace` = name,
+	// `database` = `{name: app, user: app, schemas: []}` and no
+	// `environments`.
+	App App `json:"app"`
+
+	// Deployment One deployment of an app's commit into one of its instances, in one or more environments.
+	Deployment *Deployment `json:"deployment,omitempty"`
 }
 
 // AppEnvironmentStatus An instance's live state in one environment, from the Argo CD
@@ -2486,6 +2640,7 @@ type Deployment struct {
 	// push: a push to a branch the app deploys (the GitHub webhook).
 	// manual: POST /v1/apps/{name}/deployments.
 	// redeploy: POST /v1/apps/{name}/deployments with `redeploy`: the last healthy deployment's commit and images again, without a build, to apply changed secrets.
+	// environment: POST /v1/apps/{name}/environments or DELETE /v1/apps/{name}/environments/{env}: the default instance's last healthy deployment's commit and images again, without a build, to all of the app's environments after one was added or removed.
 	Trigger DeploymentTrigger `json:"trigger"`
 
 	// TriggeredBy the token name (register, manual), or github:<login> of the pusher (push)
@@ -2620,6 +2775,7 @@ type DeploymentStatus string
 // push: a push to a branch the app deploys (the GitHub webhook).
 // manual: POST /v1/apps/{name}/deployments.
 // redeploy: POST /v1/apps/{name}/deployments with `redeploy`: the last healthy deployment's commit and images again, without a build, to apply changed secrets.
+// environment: POST /v1/apps/{name}/environments or DELETE /v1/apps/{name}/environments/{env}: the default instance's last healthy deployment's commit and images again, without a build, to all of the app's environments after one was added or removed.
 type DeploymentTrigger string
 
 // DeviceLogin A device login as the console shows it to an administrator. It never contains the device code. `role` is the role the CLI token gets, set once approved.
@@ -4709,6 +4865,9 @@ type ValidateAppSpecJSONRequestBody = AppSpecValidateRequest
 
 // CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
 type CreateDeploymentJSONRequestBody = DeploymentCreateRequest
+
+// AddAppEnvironmentJSONRequestBody defines body for AddAppEnvironment for application/json ContentType.
+type AddAppEnvironmentJSONRequestBody = AppEnvironmentAddRequest
 
 // CreateAppInstanceJSONRequestBody defines body for CreateAppInstance for application/json ContentType.
 type CreateAppInstanceJSONRequestBody = AppInstanceCreateRequest
