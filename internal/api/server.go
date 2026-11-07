@@ -29,6 +29,8 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/recommend"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
@@ -84,6 +86,8 @@ type GitHub interface {
 
 // Config configures the API.
 type Config struct {
+	RecommendationCosts     *recommend.CostBook
+	RecommendationResidency *residency.Config
 	// OnpremPublicURL is a trusted HTTPS origin used in bootstrap commands.
 	// It never comes from Host or X-Forwarded-* request headers.
 	OnpremPublicURL string
@@ -133,6 +137,8 @@ const DefaultConsoleURL = "https://console.hopcharlie.dev"
 
 // Deps are the services behind the API.
 type Deps struct {
+	// Recommendations optionally overrides the bounded recommendation service.
+	Recommendations *recommend.Service
 	// OnpremConnector performs device-bound registration and server-side checks.
 	// Nil disables issuing grants that could not complete a real connection.
 	OnpremConnector *onprem.Connector
@@ -270,6 +276,8 @@ type SourceMeasurer interface {
 
 // Server is the HTTP handler.
 type Server struct {
+	recommendations                *recommend.Service
+	recommendationPrices           *recommend.Prices
 	enrollments                    *onprem.Service
 	enrollmentIP, enrollmentGlobal *auth.LoginLimiter
 	enrollmentSlots                chan struct{}
@@ -311,6 +319,15 @@ func New(cfg Config, d Deps) *Server {
 	s := &Server{cfg: cfg, d: d, mux: http.NewServeMux(), now: storeTime,
 		logins:     auth.NewLoginLimiter(loginMaxFailures, loginWindow, loginMaxUsernames),
 		loginSlots: make(chan struct{}, loginConcurrency)}
+	s.recommendationPrices = recommend.NewPrices()
+	s.recommendations = d.Recommendations
+	if s.recommendations == nil {
+		var starter recommend.Starter
+		if runner, ok := d.AIRuns.(*airun.Runner); ok && runner != nil && runner.SupportsRecommendations() {
+			starter = runner
+		}
+		s.recommendations = recommend.New(s.loadRecommendationCandidates, starter, func() time.Time { return s.now() })
+	}
 	if s.cfg.OnpremPublicURL == "" {
 		s.cfg.OnpremPublicURL = "https://api.hopcharlie.dev"
 	}
@@ -390,6 +407,9 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/apps/{name}/ai-services", viewer, s.getAIServices)
 	s.route("GET /v1/apps/{name}/llm-observability", viewer, s.getLLMObservability)
 	s.route("GET /v1/ai-runs", viewer, s.listAIRuns)
+	s.route("GET /v1/migration-recommendations", viewer, s.getMigrationRecommendations)
+	s.route("GET /v1/migration-recommendations/status", viewer, s.getMigrationRecommendationStatus)
+	s.route("POST /v1/migration-recommendations/{id}/result", agent, s.completeMigrationRecommendation)
 	s.route("POST /v1/ai-runs", operator, s.startAIRun)
 	s.route("POST /v1/residency/buckets/inspect", agent, s.inspectBucket)
 	s.route("POST /v1/migrations/{runId}/rollback", operator, s.rollbackMigration)

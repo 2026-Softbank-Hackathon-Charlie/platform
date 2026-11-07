@@ -566,6 +566,7 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 | `PLATFORM_GKE_IMAGE_CREDENTIAL_CONFIG` | 위 prefix와 함께 필요한 공개 AWS WIF ADC JSON 문자열. `type=external_account`, `credential_source.environment_id=aws1`. API의 GCS용 `GOOGLE_APPLICATION_CREDENTIALS`와 별개 |
 | `PLATFORM_DOCKER_CLONE_URL` | `docker`일 때 저장소 주소의 틀. `{repo}`와 `{token}`을 바꿈 (기본 `https://x-access-token:{token}@github.com/{repo}.git`). 로컬 경로도 됨 |
 | `PLATFORM_DEPLOY_WORKERS` | 동시에 실행하는 배포 수 (기본 2, 최대 32) |
+| `PLATFORM_RECOMMENDATION_COST_FILE` | 선택적인 앱 전체 비용 견적 JSON 파일. 정확한 스펙 commit·환경·지역·동일 운영시간과 24시간 이내의 스토리지·반출·운영·용량·정책 검토가 모두 필요. 없으면 비용 절감을 추정하지 않음. [추천 설정](docs/migration-recommendations.md) |
 | `PLATFORM_GITOPS_MODE` | `github`(기본, GitHub Git Data API) 또는 `git`(git CLI) |
 | `PLATFORM_GITOPS_REPO` | `github` 모드의 gitops 저장소 (기본 `2026-Softbank-Hackathon-Charlie/gitops`). App 설치 토큰으로 쓰고, API 주소는 `PLATFORM_GITHUB_API_URL`. 이 저장소에는 push 토큰을 발급하지 않음(ADR 0023) |
 | `PLATFORM_GITOPS_BRANCH` | gitops 브랜치 (기본 `main`, 두 모드 모두) |

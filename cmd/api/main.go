@@ -46,6 +46,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/reach"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/recommend"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
@@ -617,17 +618,39 @@ func main() {
 		}
 		deps.Deployer, deps.Remover = deployer, deployer
 	}
+	var recommendationCosts *recommend.CostBook
+	if path := os.Getenv("PLATFORM_RECOMMENDATION_COST_FILE"); path != "" {
+		var err error
+		recommendationCosts, err = recommend.LoadCosts(path)
+		if err != nil {
+			fatal("PLATFORM_RECOMMENDATION_COST_FILE", "err", err)
+		}
+	}
+	var recommendationResidency *residency.Config
+	if path := os.Getenv("PLATFORM_RESIDENCY_POLICY_FILE"); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			fatal("cannot read recommendation policy")
+		}
+		parsed, err := residency.ParseConfig(raw)
+		if err != nil {
+			fatal("invalid recommendation policy")
+		}
+		recommendationResidency = &parsed
+	}
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(api.Config{
-			WrittenTokens:   writtenTokens,
-			Tokens:          tokens,
-			Insecure:        *insecure,
-			Admins:          admins,
-			ConsoleURL:      os.Getenv("PLATFORM_CONSOLE_URL"),
-			OnpremPublicURL: os.Getenv("PLATFORM_ONPREM_PUBLIC_URL"),
-			CORSOrigins:     splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
-			Log:             log,
+			RecommendationCosts:     recommendationCosts,
+			RecommendationResidency: recommendationResidency,
+			WrittenTokens:           writtenTokens,
+			Tokens:                  tokens,
+			Insecure:                *insecure,
+			Admins:                  admins,
+			ConsoleURL:              os.Getenv("PLATFORM_CONSOLE_URL"),
+			OnpremPublicURL:         os.Getenv("PLATFORM_ONPREM_PUBLIC_URL"),
+			CORSOrigins:             splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
+			Log:                     log,
 
 			GitHubWebhookSecret: webhookSecret,
 			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
