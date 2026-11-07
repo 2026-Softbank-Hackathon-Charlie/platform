@@ -15,8 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/kube"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/connect"
@@ -30,11 +32,11 @@ import (
 
 // onboardingConfig is the onboarding runner's ports (ADR 0042) from what
 // the server has; a missing one fails only the steps that need it.
-func onboardingConfig(ctx context.Context, log *slog.Logger, envNames []string, cipher *secrets.Cipher, gh *github.Client, ai *airun.Runner,
+func onboardingConfig(ctx context.Context, log *slog.Logger, envSvc *envs.Service, cipher *secrets.Cipher, gh *github.Client, ai *airun.Runner,
 	gw *gateway.Client, routes *dbroute.Manager, planSvc *plans.Service, runner *runs.Runner, workloads func(string) (dynamic.Interface, error)) *job.Config {
-	cfg := &job.Config{Secrets: cipher, Envs: envNames, Log: log, SourceDB: job.PG{}, Files: job.Rclone{},
+	cfg := &job.Config{Secrets: cipher, Envs: envSvc.Names(), Log: log, SourceDB: job.PG{}, Files: job.Rclone{},
 		DNS: job.Resolver{Domain: envOr("PLATFORM_APP_DOMAIN", "hopcharlie.dev")},
-		Cutover: cutover{planSvc, runner}, Kube: kubeOps{workloads}}
+		Cutover: cutover{planSvc, runner}, Kube: kubeOps{clients: workloads, engine: engineClients(envSvc)}}
 	if gh != nil {
 		cfg.GitHub = gh
 	}
@@ -91,6 +93,18 @@ func onboardingConfig(ctx context.Context, log *slog.Logger, envNames []string, 
 	return cfg
 }
 
+// engineClients are the migration engine's own clients of the environments
+// (kube.Dynamic with the server's kubeconfig at the env's context).
+func engineClients(envSvc *envs.Service) func(string) (dynamic.Interface, error) {
+	return func(env string) (dynamic.Interface, error) {
+		c, ok := envSvc.Config(env)
+		if !ok {
+			return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
+		}
+		return kube.Dynamic("", c.KubeContext)
+	}
+}
+
 // cutover is job.Cutover over the plan service and the runner.
 type cutover struct {
 	plans *plans.Service
@@ -107,9 +121,14 @@ func (c cutover) Start(ctx context.Context, o runs.StartOptions) (apiv1.Run, err
 }
 func (c cutover) Get(ctx context.Context, id string) (apiv1.Run, error) { return c.runs.Get(ctx, id) }
 
-// kubeOps is job.Kube with the workload clusters' clients.
+// kubeOps is job.Kube with the workload clusters' clients: clients reads,
+// engine is the identity a migration run patches replica.primary with
+// (the server's kubeconfig at the environment's context, as the engine
+// builds it from a plan's target.context), which the workload admission
+// policy lets change replica.source from legacy to the peer (infra #149).
 type kubeOps struct {
 	clients func(string) (dynamic.Interface, error)
+	engine  func(string) (dynamic.Interface, error)
 }
 
 var (
@@ -152,7 +171,7 @@ func (k kubeOps) StartSeconds(ctx context.Context, env, namespace, name string) 
 
 // SetReplicaSource merge-patches the Cluster's spec.replica.source.
 func (k kubeOps) SetReplicaSource(ctx context.Context, env, namespace, cluster, source string) error {
-	dyn, err := k.clients(env)
+	dyn, err := k.engine(env)
 	if err != nil {
 		return err
 	}

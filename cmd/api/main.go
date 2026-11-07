@@ -569,7 +569,7 @@ func main() {
 		deps.Backends = deployer.BackendURLs()
 	}
 	if onboarding {
-		deps.Onboarding = onboardingConfig(ctx, log, envSvc.Names(), secretsKey, gh, aiRuns, gw, dbRoutes, planSvc, runner, workloads)
+		deps.Onboarding = onboardingConfig(ctx, log, envSvc, secretsKey, gh, aiRuns, gw, dbRoutes, planSvc, runner, workloads)
 	}
 	apiServer := api.New(api.Config{
 		WrittenTokens:   writtenTokens,
