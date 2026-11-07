@@ -483,7 +483,7 @@ func (s *Server) appViewAfter(ctx context.Context, app store.App) apiv1.App {
 	}
 	s.cfg.Log.Warn("read the app for an answer; answering with less", "app", app.Name, "err", err)
 	deploy := s.appDeploy(app, nil, nil, nil)
-	return registeredOnly(app.Name, &deploy)
+	return registeredOnly(app.Name, s.specResources(app), &deploy)
 }
 
 // newestTo is the newest deployment of list (newest first) that is going
@@ -529,7 +529,8 @@ func (s *Server) instanceNames(ctx context.Context, app store.App) ([]string, er
 }
 
 // appRuns returns the migration runs whose source or target is the
-// namespace of one of instances, newest first.
+// namespace of one of instances, or that move one of them without a
+// database (Run.app, ADR 0049), newest first.
 func (s *Server) appRuns(ctx context.Context, instances []string) ([]apiv1.Run, error) {
 	rows, err := s.d.Store.ListRuns(ctx)
 	if err != nil {
@@ -544,7 +545,8 @@ func (s *Server) appRuns(ctx context.Context, instances []string) ([]apiv1.Run, 
 			s.cfg.Log.Warn("skip a migration run whose document cannot be read", "run", row.RunID, "err", err)
 			continue
 		}
-		if slices.Contains(instances, run.Source.Namespace) || slices.Contains(instances, run.Target.Namespace) {
+		if slices.Contains(instances, run.Source.Namespace) || slices.Contains(instances, run.Target.Namespace) ||
+			(run.App != nil && slices.Contains(instances, *run.App)) {
 			out = append(out, run)
 		}
 	}

@@ -306,7 +306,34 @@ func (s *Syncer) prepare(ctx context.Context, src, dst string) (*snapshot, error
 	return shot, nil
 }
 
-func (s *Syncer) Sync(ctx context.Context, src, dst string) (result files.SyncResult, err error) {
+// Sync mirrors the inspected snapshot onto dst: objects dst has and the
+// snapshot does not are deleted.
+func (s *Syncer) Sync(ctx context.Context, src, dst string) (files.SyncResult, error) {
+	return s.transfer(ctx, "sync", src, dst)
+}
+
+// Copy is Sync without deleting from dst (engine ADR 0018): an app without a
+// database keeps what its target already holds.
+func (s *Syncer) Copy(ctx context.Context, src, dst string) (files.SyncResult, error) {
+	return s.transfer(ctx, "copy", src, dst)
+}
+
+// Readable lists remote's top level, for one of the guard's two buckets
+// only, to show the engine can read it before anything moves.
+func (s *Syncer) Readable(ctx context.Context, remote string) error {
+	if s == nil || (remote != s.source && remote != s.target) {
+		return ErrDenied
+	}
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	if err := s.execute(ctx, io.Discard, "lsf", remote, "--max-depth", "1"); err != nil {
+		return ErrTransfer
+	}
+	return nil
+}
+
+// transfer runs rclone op ("sync" or "copy") from a new inspected snapshot.
+func (s *Syncer) transfer(ctx context.Context, op, src, dst string) (result files.SyncResult, err error) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
@@ -324,7 +351,7 @@ func (s *Syncer) Sync(ctx context.Context, src, dst string) (result files.SyncRe
 		}
 	}()
 	// Ignore size/mtime shortcuts: every object sent comes from inspected bytes.
-	if err = s.execute(ctx, io.Discard, "sync", shot.dir, dst, "--ignore-times"); err != nil {
+	if err = s.execute(ctx, io.Discard, op, shot.dir, dst, "--ignore-times"); err != nil {
 		return result, ErrTransfer
 	}
 	if err = s.execute(ctx, io.Discard, "check", shot.dir, dst, "--download", "--one-way"); err != nil {

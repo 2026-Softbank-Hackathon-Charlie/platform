@@ -29,6 +29,9 @@ const (
 	// CapacityError: the measurement itself failed; the run starts and the
 	// engine's own lag gate still applies.
 	CapacityError = "error"
+	// CapacityNoDatabase: the plan moves an app without a database (ADR
+	// 0049); there is nothing to measure ("DB 없음").
+	CapacityNoDatabase = "no_database"
 )
 
 // CapacityCheck is what the gate decided for a reservation, for the audit log.
@@ -62,6 +65,8 @@ func (s *Service) checkCapacity(ctx context.Context, rollbackOf string, p *plan.
 	switch {
 	case s.capacity == nil:
 		return CapacityCheck{Outcome: CapacityNotConfigured}, nil
+	case NoDatabase(p):
+		return CapacityCheck{Outcome: CapacityNoDatabase}, nil
 	case rollbackOf != "":
 		return CapacityCheck{Outcome: CapacityRollbackExempt}, nil
 	}

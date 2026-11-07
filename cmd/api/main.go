@@ -286,31 +286,34 @@ func main() {
 	}
 	// Plans for those apps: drafted from the store, their database hosts and
 	// password variables allowed and their passwords put into the
-	// environment on every parse, so a new app needs no restart.
+	// environment on every parse, so a new app needs no restart. Apps
+	// without a database (ADR 0049) need no host templates, so the registry
+	// is always there; without templates no app has a database endpoint.
 	var appDBEnvs []string
+	var tmpls map[string]string
 	if v := os.Getenv("PLATFORM_APP_DB_HOST_TEMPLATES"); v != "" {
 		if secretsKey == nil {
 			fatal("PLATFORM_APP_DB_HOST_TEMPLATES needs PLATFORM_SECRETS_KEY to read the database passwords")
 		}
-		tmpls, err := apps.ParseHostTemplates(v, envSvc.Names())
+		tmpls, err = apps.ParseHostTemplates(v, envSvc.Names())
 		if err != nil {
 			fatal("PLATFORM_APP_DB_HOST_TEMPLATES", "err", err)
 		}
-		if appCat == nil {
-			appCat = apps.Empty(envCfg.Environments, policy.GatewayURL)
-		}
-		reg := &apps.Registry{Store: st, Secrets: secretsKey, HostTemplates: tmpls}
-		if appFiles != nil {
-			reg.BucketPrefixes = appFiles.BucketPrefixes
-			log.Info("registered apps' files enabled", "remotesSet", appFiles.Set, "remotesKept", appFiles.Kept)
-		}
-		appCat = appCat.WithRegistry(reg)
-		planSvc.SetAppDatabases(appCat)
 		for env := range tmpls {
 			appDBEnvs = append(appDBEnvs, env)
 		}
 		log.Info("plans for registered apps with a database pair enabled", "hostTemplates", tmpls)
 	}
+	if appCat == nil {
+		appCat = apps.Empty(envCfg.Environments, policy.GatewayURL)
+	}
+	reg := &apps.Registry{Store: st, Secrets: secretsKey, HostTemplates: tmpls}
+	if appFiles != nil {
+		reg.BucketPrefixes = appFiles.BucketPrefixes
+		log.Info("registered apps' files enabled", "remotesSet", appFiles.Set, "remotesKept", appFiles.Kept)
+	}
+	appCat = appCat.WithRegistry(reg)
+	planSvc.SetAppDatabases(appCat)
 
 	// Optional: the residency policy. With it every new run (not a rollback)
 	// starts only if the source's live inventory may be copied to the target.

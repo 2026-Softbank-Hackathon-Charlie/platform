@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
@@ -589,11 +590,25 @@ func (s *Server) appView(ctx context.Context, a store.App, branches []store.AppB
 		out.Deploy = &deploy
 		return out, nil
 	}
-	return registeredOnly(a.Name, &deploy), nil
+	return registeredOnly(a.Name, s.specResources(a), &deploy), nil
+}
+
+// specResources is what a registered app's stored spec declares. A spec
+// that does not decode (or is NULL) must not fail the app list: it is
+// logged and shown as declaring both, so the console hides nothing, and the
+// catalog does not take it as an app without a database.
+func (s *Server) specResources(a store.App) apiv1.AppResources {
+	res, err := apps.SpecResources(a)
+	if err != nil {
+		s.cfg.Log.Error("stored app spec does not decode; its resources are unknown", "app", a.Name, "err", err)
+		return apiv1.AppResources{Postgres: true, S3: true}
+	}
+	return res
 }
 
 // catalogApp is the app plans can be drafted for (apps.Catalog.Lookup):
-// the apps file's entry or a registered app with a database pair.
+// the apps file's entry, a registered app with a database pair, or one
+// without a database in two or more environments (ADR 0049).
 func (s *Server) catalogApp(ctx context.Context, name string) (apiv1.App, bool, error) {
 	if s.d.Apps == nil {
 		return apiv1.App{}, false, nil
@@ -601,13 +616,15 @@ func (s *Server) catalogApp(ctx context.Context, name string) (apiv1.App, bool, 
 	return s.d.Apps.Lookup(ctx, name)
 }
 
-// registeredOnly is a registered app that is not in the apps file: its
-// namespace is its name and its database the CNPG defaults of the app chart.
-func registeredOnly(name string, deploy *apiv1.AppDeploy) apiv1.App {
+// registeredOnly is a registered app that is not in the apps file and
+// plans cannot be drafted for: its namespace is its name and its database
+// the CNPG defaults of the app chart. res is what its spec declares.
+func registeredOnly(name string, res apiv1.AppResources, deploy *apiv1.AppDeploy) apiv1.App {
 	return apiv1.App{
 		Name: name, Namespace: name,
 		Database:     apiv1.AppDatabase{Name: "app", User: "app", Schemas: []string{}},
 		Environments: []apiv1.AppEnvironment{},
+		Resources:    res,
 		Deploy:       deploy,
 	}
 }

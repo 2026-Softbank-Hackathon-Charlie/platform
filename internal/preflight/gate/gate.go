@@ -11,6 +11,7 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 
@@ -168,14 +169,26 @@ func (g *Gate) check(ctx context.Context, p *plan.Plan, labels []string) (prefli
 	if p == nil {
 		return deny(CodeInvalidInput), residency.ErrInvalidInput
 	}
+	kind := preflight.PhysicalReplication
 	scope := preflight.ClusterScope{Environment: p.Source.Env, Namespace: p.Source.Namespace, Cluster: p.Source.Cluster}
-	inv, res := g.collector.Collect(ctx, p.Source.DSN, scope)
-	if !inv.Complete || res.Code != "" {
-		code := res.Code
-		if code == "" {
-			code = "unknown"
+	var inv preflight.Inventory
+	if plans.NoDatabase(p) {
+		// Only files move (ADR 0049): no database to list, so the movement
+		// is the object copy alone and the files rules decide.
+		if p.Files == nil {
+			return deny(CodeInvalidInput), residency.ErrInvalidInput
 		}
-		return deny(CodeInventoryIncomplete, "inventory:"+code), nil
+		kind, scope = preflight.ObjectCopy, preflight.ClusterScope{Environment: p.Source.Env}
+	} else {
+		var res inventory.Result
+		inv, res = g.collector.Collect(ctx, p.Source.DSN, scope)
+		if !inv.Complete || res.Code != "" {
+			code := res.Code
+			if code == "" {
+				code = "unknown"
+			}
+			return deny(CodeInventoryIncomplete, "inventory:"+code), nil
+		}
 	}
 	// The source's prefixes decide what the copy carries; the target's
 	// replication decides where it goes next.
@@ -227,7 +240,7 @@ func (g *Gate) check(ctx context.Context, p *plan.Plan, labels []string) (prefli
 	}
 	v, err := g.evaluator.Evaluate(ctx, preflight.Request{Movements: []preflight.Movement{{
 		ID:          p.ID,
-		Kind:        preflight.PhysicalReplication,
+		Kind:        kind,
 		Source:      scope,
 		Destination: p.Target.Env,
 		Inventory:   inv,

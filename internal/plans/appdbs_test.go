@@ -12,14 +12,19 @@ import (
 // fakeAppDBs is AppDatabases over maps; set records what it was asked to
 // put into the environment.
 type fakeAppDBs struct {
-	pw, apps map[string][]string
-	buckets  []string
-	err      error
-	set      [][]string
+	pw, apps  map[string][]string
+	stateless map[string]map[string]StatelessEnv
+	buckets   []string
+	err       error
+	set       [][]string
 }
 
 func (f *fakeAppDBs) RegistryBuckets(context.Context) ([]string, error) {
 	return f.buckets, f.err
+}
+
+func (f *fakeAppDBs) RegistryStateless(context.Context) (map[string]map[string]StatelessEnv, error) {
+	return f.stateless, f.err
 }
 
 func (f *fakeAppDBs) RegistryHosts(context.Context) (map[string][]string, map[string][]string, error) {
@@ -36,6 +41,7 @@ func TestWithRegisteredKeepsThePolicysEntries(t *testing.T) {
 	got := p.withRegistered(
 		map[string][]string{"A_PGPASSWORD": {"evil:5432"}, "B_PGPASSWORD": {"b:5432"}},
 		map[string][]string{"moimroom": {"evil:5432"}, "mig": {"b:5432"}},
+		nil,
 		[]string{"eks:hopcharlie-eks-mig", ":local:/etc", "s3:shop"})
 	if want := map[string][]string{"A_PGPASSWORD": {"a:5432"}, "B_PGPASSWORD": {"b:5432"}}; !reflect.DeepEqual(got.HostPasswordEnvs, want) {
 		t.Errorf("HostPasswordEnvs = %v", got.HostPasswordEnvs)

@@ -2,7 +2,10 @@ package hopcharlie.residency
 
 import rego.v1
 
-# Inputs/configuration are structurally validated by Go. Geography decisions
+# Inputs/configuration are structurally validated by Go. An "object-copy"
+# movement (an app without a database, ADR 0049) carries only files, so the
+# cluster and dataset rules below apply to "physical-replication" alone.
+# Geography decisions
 # live only here. A verdict covers residency, never parity or permission to run.
 default allow := false
 
@@ -55,11 +58,13 @@ deny contains {"code": "unknown_destination", "movementId": m.id} if {
 
 deny contains {"code": "unclassified_cluster", "movementId": m.id} if {
 	some m in input.movements
+	m.kind == "physical-replication"
 	not catalog_for(m.source)
 }
 
 deny contains {"code": "unclassified_dataset", "movementId": m.id, "dataset": dataset} if {
 	some m in input.movements
+	m.kind == "physical-replication"
 	entry := catalog_for(m.source)
 	some dataset in m.inventory.datasets
 	not classified(entry, dataset)
@@ -69,6 +74,7 @@ deny contains {"code": "unclassified_dataset", "movementId": m.id, "dataset": da
 # The collector still has to discover newly-created, uncataloged relations.
 deny contains {"code": "inventory_catalog_mismatch", "movementId": m.id, "dataset": row.dataset} if {
 	some m in input.movements
+	m.kind == "physical-replication"
 	entry := catalog_for(m.source)
 	some row in entry.datasets
 	not row.dataset in m.inventory.datasets
@@ -278,6 +284,7 @@ deny contains {"code": "bucket_replica_country_not_allowed", "movementId": c.id,
 
 deny contains {"code": "country_not_allowed", "movementId": m.id, "dataset": row.dataset} if {
 	some m in input.movements
+	m.kind == "physical-replication"
 	entry := catalog_for(m.source)
 	some row in entry.datasets
 	some env in data.policy.environments

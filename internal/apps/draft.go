@@ -31,7 +31,8 @@ var ErrInvalid = errors.New("invalid draft request")
 // host templates, its files move like an apps file app's when the server
 // moves registered apps' files (Registry.BucketPrefixes, ADR 0032), and its
 // password is put into the server's environment now, for the draft's
-// source measurement.
+// source measurement. A registered app without a database (ADR 0049) gets
+// a plan whose endpoints are {kind: none, env} (draftStateless).
 func (c *Catalog) Draft(ctx context.Context, req apiv1.PlanDraftRequest) (apiv1.EnginePlan, error) {
 	a, ok := c.app(req.App)
 	var pair *store.AppDatabase
@@ -40,13 +41,16 @@ func (c *Catalog) Draft(ctx context.Context, req apiv1.PlanDraftRequest) (apiv1.
 		if err != nil {
 			return apiv1.EnginePlan{}, err
 		}
-		a, ok, pair = ra, found, &d
+		a, ok, pair = ra, found, d
 	}
 	if !ok {
 		return apiv1.EnginePlan{}, fmt.Errorf("%w: unknown app %q", ErrInvalid, req.App)
 	}
 	if req.Source == req.Target {
 		return apiv1.EnginePlan{}, fmt.Errorf("%w: source and target are both %q", ErrInvalid, req.Source)
+	}
+	if a.noDatabase() {
+		return c.draftStateless(a, req)
 	}
 	src, srcApp, err := c.endpoint(a, req.Source, "source")
 	if err != nil {
@@ -109,6 +113,55 @@ func (c *Catalog) Draft(ctx context.Context, req apiv1.PlanDraftRequest) (apiv1.
 			}
 		}
 	}
+	return p, nil
+}
+
+// draftStateless is Draft for an app without a database (ADR 0049): both
+// endpoints are only the environment with kind none, the gateway is the
+// app's scope (required: switching its traffic is the whole migration),
+// files move as for any app, and the target app is warm (target.app is
+// left out). Nothing measures or verifies a database, so sourceStats and
+// writtenRecordsStream are refused.
+func (c *Catalog) draftStateless(a App, req apiv1.PlanDraftRequest) (apiv1.EnginePlan, error) {
+	switch {
+	case req.SourceStats != nil && *req.SourceStats:
+		return apiv1.EnginePlan{}, fmt.Errorf("%w: app %s has no database, so there is no source to measure (sourceStats)", ErrInvalid, a.Name)
+	case req.WrittenRecordsStream != nil:
+		return apiv1.EnginePlan{}, fmt.Errorf("%w: app %s has no database, so there are no written records to verify (writtenRecordsStream)", ErrInvalid, a.Name)
+	case c.gatewayURL == "":
+		return apiv1.EnginePlan{}, fmt.Errorf("%w: app %s has no database, so it moves only through the platform gateway, and this server has none (PLATFORM_GATEWAY_URL)", ErrInvalid, a.Name)
+	}
+	var ends [2]apiv1.EnginePlanEndpoint
+	var buckets, backends [2]string
+	for i, name := range []string{req.Source, req.Target} {
+		env, ok := c.env(name)
+		if !ok {
+			return apiv1.EnginePlan{}, fmt.Errorf("%w: unknown %s environment %q", ErrInvalid, []string{"source", "target"}[i], name)
+		}
+		e, ok := a.Environments[name]
+		if !ok {
+			return apiv1.EnginePlan{}, fmt.Errorf("%w: app %q is not configured in environment %q", ErrInvalid, a.Name, name)
+		}
+		ends[i] = apiv1.EnginePlanEndpoint{Kind: ptr(apiv1.EnginePlanEndpointKindNone), Env: name}
+		buckets[i], backends[i] = e.Bucket, env.GatewayBackend
+	}
+	id := fmt.Sprintf("%s-%s-to-%s", a.Name, req.Source, req.Target)
+	if len(id) > 63 {
+		return apiv1.EnginePlan{}, fmt.Errorf("%w: plan id %q is longer than 63 characters", ErrInvalid, id)
+	}
+	p := apiv1.EnginePlan{Id: id, Source: ends[0], Target: ends[1]}
+	wantFiles := req.Files == nil || *req.Files
+	switch {
+	case wantFiles && buckets[0] != "" && buckets[1] != "":
+		f := alloc(&p.Files)
+		f.Source, f.Target = buckets[0], buckets[1]
+	case req.Files != nil && *req.Files:
+		return apiv1.EnginePlan{}, fmt.Errorf("%w: files needs a bucket for %s in both %s and %s", ErrInvalid, a.Name, req.Source, req.Target)
+	}
+	g := alloc(&p.Gateway)
+	g.Mode = ptr(apiv1.EnginePlanGatewayModeHttp)
+	g.Url, g.Token = ptr(plans.GatewayAppURL(c.gatewayURL, a.Name)), ptr("${GATEWAY_TOKEN}")
+	g.SourceBackend, g.TargetBackend = ptr(backends[0]), ptr(backends[1])
 	return p, nil
 }
 
