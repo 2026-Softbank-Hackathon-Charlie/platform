@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -145,7 +146,7 @@ func runExclusive(ctx context.Context, cfg gateway.Config, publicAddr, adminAddr
 	var accepting atomic.Bool
 	var admission sync.Mutex
 	var active sync.WaitGroup
-	guard := func(next http.Handler) http.Handler {
+	guard := func(next http.Handler, admin bool) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			admission.Lock()
 			if !accepting.Load() {
@@ -158,7 +159,13 @@ func runExclusive(ctx context.Context, cfg gateway.Config, publicAddr, adminAddr
 			defer active.Done()
 			if unclean {
 				w.Header().Set("X-Hopcharlie-Recovery", "required")
-				if !readMethod(r.Method) || r.URL.Path == "/readyz" {
+				// A GET Upgrade is a bidirectional write channel. Admin state and
+				// metrics also cannot attest that reset totals mean zero losses.
+				blocked := hasUpgrade(r) || !readMethod(r.Method)
+				if admin {
+					blocked = blocked || r.URL.Path != "/healthz"
+				}
+				if blocked {
 					w.Header().Set("Content-Type", "application/json")
 					w.Header().Set("Retry-After", "1")
 					w.WriteHeader(http.StatusServiceUnavailable)
@@ -169,12 +176,12 @@ func runExclusive(ctx context.Context, cfg gateway.Config, publicAddr, adminAddr
 			next.ServeHTTP(w, r)
 		})
 	}
-	ownerPublic, err := start("unix", publicSocket, guard(gw.Proxy()))
+	ownerPublic, err := start("unix", publicSocket, guard(gw.Proxy(), false))
 	if err != nil {
 		return err
 	}
 	defer ownerPublic.Close()
-	ownerAdmin, err := start("unix", adminSocket, guard(gw.Admin()))
+	ownerAdmin, err := start("unix", adminSocket, guard(gw.Admin(), true))
 	if err != nil {
 		return err
 	}
@@ -228,6 +235,20 @@ func runExclusive(ctx context.Context, cfg gateway.Config, publicAddr, adminAddr
 
 func readMethod(method string) bool {
 	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
+}
+
+func hasUpgrade(r *http.Request) bool {
+	if r.Header.Get("Upgrade") != "" {
+		return true
+	}
+	for _, line := range r.Header.Values("Connection") {
+		for _, token := range strings.Split(line, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // The marker precedes ANY serving. Removing it is allowed only after a clean

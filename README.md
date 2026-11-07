@@ -273,7 +273,7 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 
 `-exclusive-state`는 같은 노드의 파드 장애 대응만 제공합니다. 두 파드가 상태를 각각 실행하지 않고, `<state-file>.lock`의 Linux flock 소유자만 상태를 복원하고 `<state-file>.public.sock`/`.admin.sock`으로 요청을 받습니다. 소유자가 없으면 릴레이는 503으로 답하고 쓰기를 재전송하지 않습니다. 잠금 파일은 상태 파일의 atomic rename과 별개이며 삭제하면 안 됩니다. 전용 AI gateway와 조합하는 설정은 거부합니다.
 
-소유자가 SIGKILL 등으로 끝나면 이미 원격 DB에 보낸 쓰기는 여전히 진행 중일 수 있습니다. `.running` 표식이 남은 다음 소유자는 모든 앱의 hold를 저장하고 읽기만 복구합니다. 쓰기와 관리 변경은 `owner_recovery_required` 503, 응답에는 `X-Hopcharlie-Recovery: required`가 붙습니다. 이 상태의 로컬 inflight=0은 원격 작업 완료 증거가 아닙니다. 자동 release/DB 롤백을 하지 않습니다.
+소유자가 SIGKILL 등으로 끝나면 이미 원격 DB에 보낸 쓰기는 여전히 진행 중일 수 있습니다. `.running` 표식이 남은 다음 소유자는 모든 앱의 hold를 저장하고 일반 HTTP 읽기만 복구합니다. 쓰기·WebSocket/Upgrade와 관리 API의 `/healthz` 이외 경로는 `owner_recovery_required` 503, 응답에는 `X-Hopcharlie-Recovery: required`가 붙습니다. `/healthz`의 200은 읽기 제공이 가능하다는 뜻이며 쓰기나 이전 준비가 완료됐다는 뜻이 아닙니다. 상태·metrics를 차단하여 초기화된 통계를 이전 구간의 0건으로 제시하지 않습니다. 자동 release/DB 롤백을 하지 않습니다.
 
 복구는 운영자가 이전 진행 상태·실제 DB primary·기존 쓰기 결과와 DB fence를 확인한 뒤 수행합니다. 모든 공유 PVC gateway 프로세스를 먼저 중지하고, `.running` 표식만 제거한 뒤 재시작합니다. `.lock`과 상태 JSON은 보존합니다. 저장된 앱별 hold는 계속 남으므로 확인한 경로에 대해서만 기존 인증된 release를 실행합니다. 중단·파일 수정·재시작은 운영 변경 승인이 필요한 작업입니다. 노드/EBS/AZ/AWS 진입점 장애와 메모리 쓰기 기록·inflight 요청의 결과 보존은 이 모드로 해결되지 않습니다.
 

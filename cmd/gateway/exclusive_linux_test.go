@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -197,19 +198,38 @@ func TestExclusiveProcessFailover(t *testing.T) {
 	}
 	// Wait on health/state, never POST retries: unknown writes must remain unknown.
 	waitReady(adminB)
-	deadline := time.Now().Add(8 * time.Second)
-	for {
-		code, body := request("GET", adminB+"/v1/state", "")
-		if code == 200 && strings.Contains(body, `"writeBackend":"onprem"`) && strings.Contains(body, `"writesHeld":true`) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("hold/route not recovered: %d %s", code, body)
-		}
-		time.Sleep(20 * time.Millisecond)
+	data, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if code, body := request("GET", adminB+"/apps/shop/v1/state", ""); code != 200 {
-		t.Fatalf("app registry lost: %d %s", code, body)
+	var snapshot struct {
+		WriteBackend string
+		WritesHeld   bool
+		Apps         map[string]json.RawMessage
+	}
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.WriteBackend != "onprem" || !snapshot.WritesHeld || snapshot.Apps["shop"] == nil {
+		t.Fatalf("hold/route/registry not recovered: %s", data)
+	}
+	for _, path := range []string{"/v1/state", "/apps", "/apps/shop/v1/state", "/metrics", "/readyz"} {
+		if code, body := request("GET", adminB+path, ""); code != 503 || !strings.Contains(body, "owner_recovery_required") {
+			t.Fatalf("reset stats presented as measured %s: %d %s", path, code, body)
+		}
+	}
+	for _, connection := range []string{"Upgrade", "keep-alive, UpGrAdE"} {
+		req, _ := http.NewRequest("GET", publicB+"/upgrade", nil)
+		req.Header.Set("Connection", connection)
+		req.Header.Set("Upgrade", "websocket")
+		res, err := (&http.Client{Timeout: time.Second}).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != 503 {
+			t.Fatalf("recovery opened bidirectional write channel: %d", res.StatusCode)
+		}
 	}
 	if code, _ := request("POST", publicB+"/orders", "two"); code != 503 {
 		t.Fatalf("hold lost on failover: %d", code)
@@ -232,6 +252,9 @@ func TestExclusiveProcessFailover(t *testing.T) {
 	}
 	_, recoveredPublic, recoveredAdmin := start()
 	waitReady(recoveredAdmin)
+	if code, body := request("GET", recoveredAdmin+"/apps/shop/v1/state", ""); code != 200 || !strings.Contains(body, `"writesHeld":true`) {
+		t.Fatalf("registered app recovery hold lost: %d %s", code, body)
+	}
 	if code, body := request("POST", recoveredAdmin+"/v1/writes/release", ""); code != 200 {
 		t.Fatalf("explicit recovery release: %d %s", code, body)
 	}

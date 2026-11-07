@@ -16,7 +16,7 @@
 - 소유자만 gateway.New/복원을 실행한다. 모든 TCP 진입점은 공유 Unix socket의 소유자에게 전달한다. public/admin 소켓을 분리하고 권한 0600을 적용한다. 두 파드 모두 소유자의 health를 제공하여 정상 시 Ready가 된다. 상태가 없는 standby가 초기 환경으로 쓰기를 받는 경로는 없다.
 - 소유자 부재·연결 실패는 503/Retry-After다. relay transport는 keepalive를 꺼서 재사용 연결 오류에 대한 자동 재시도를 막는다. 스트림은 즉시 flush하며 Host/Authorization과 기존 owner의 body/인증 제한을 보존한다. 이미 전달한 요청이 연결 오류로 끝나면 결과는 unknown이다.
 - 요청을 받기 전에 `.running` 표식을 파일/디렉터리에 fsync한다. 정상 종료는 신규 owner 입장을 막고 모든 TCP/Unix HTTP 요청 drain, 최종 상태 저장 성공 뒤에만 표식을 지운다. drain 실패는 프로세스가 실제 종료될 때까지 잠금을 유지한다.
-- 이전 표식이 남으면 소유자 승계가 모든 앱 hold를 저장한다. 읽기는 제공하지만 모든 쓰기·관리 mutation과 `/readyz`는 `owner_recovery_required` 503이다. 상태 조회에 보이는 새 inflight=0으로 원격 commit 완료를 추정하지 않는다. 전용 AI gateway와 이 모드의 조합은 거부하여 기존 AI 품질/CAS 경계를 변경하지 않는다.
+- 이전 표식이 남으면 소유자 승계가 모든 앱 hold를 저장한다. 일반 HTTP 읽기는 제공하지만 쓰기·WebSocket/Upgrade와 관리 API의 `/healthz` 이외 경로는 `owner_recovery_required` 503이다. health의 200은 읽기 가용성만 뜻하며 쓰기 준비 완료를 뜻하지 않는다. 상태/metrics를 차단하여 초기화된 inflight/totals를 원격 작업 완료나 이전 구간 0건으로 제시하지 않는다. 전용 AI gateway와 이 모드의 조합은 거부하여 기존 AI 품질/CAS 경계를 변경하지 않는다.
 
 ## 복구와 한계
 
