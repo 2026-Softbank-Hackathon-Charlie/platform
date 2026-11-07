@@ -133,10 +133,13 @@ const DefaultConsoleURL = "https://console.hopcharlie.dev"
 
 // Deps are the services behind the API.
 type Deps struct {
-	Plans *plans.Service
-	Runs  *runs.Runner
-	Store store.Store // audit log, idempotency keys, apps from GitHub and their deployments
-	Envs  Envs
+	// OnpremConnector performs device-bound registration and server-side checks.
+	// Nil disables issuing grants that could not complete a real connection.
+	OnpremConnector *onprem.Connector
+	Plans           *plans.Service
+	Runs            *runs.Runner
+	Store           store.Store // audit log, idempotency keys, apps from GitHub and their deployments
+	Envs            Envs
 	// Traffic is nil when no gateway is configured.
 	Traffic Traffic
 	// TrafficApp returns the gateway client of one app's scope
@@ -307,6 +310,9 @@ func New(cfg Config, d Deps) *Server {
 		s.cfg.OnpremPublicURL = "https://api.hopcharlie.dev"
 	}
 	s.enrollments = &onprem.Service{Store: d.Store, Origin: s.cfg.OnpremPublicURL, Now: func() time.Time { return s.now() }}
+	if d.OnpremConnector != nil {
+		s.enrollments.Registrar = d.OnpremConnector
+	}
 	s.enrollmentIP = auth.NewLoginLimiter(20, time.Minute, 1024)
 	s.enrollmentGlobal = auth.NewLoginLimiter(120, time.Minute, 1)
 	s.enrollmentSlots = make(chan struct{}, 16)
@@ -319,6 +325,10 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/onprem/enrollments/{id}", operator, s.getOnpremEnrollment)
 	s.route("POST /v1/onprem/enrollments/{id}/revoke", operator, s.revokeOnpremEnrollment)
 	s.route("POST /v1/onprem/enrollments/{id}/claim", "", s.claimOnpremEnrollment)
+	s.route("GET /v1/onprem/enrollments/{id}/bootstrap.yaml", "", s.onpremBootstrap)
+	s.route("GET /v1/onprem/enrollments/{id}/connection/status", "", s.onpremConnectionStatus)
+	s.route("POST /v1/onprem/enrollments/{id}/connection", "", s.onpremConnection)
+	s.route("GET /v1/onprem/agent.bin", "", s.onpremAgentBinary)
 	s.route("GET /v1/onprem/installer.sh", "", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")

@@ -100,6 +100,13 @@ jobs:
           go generate ./pkg/apiv1/...
           git diff --exit-code -- pkg/apiv1
 
+      - name: Preserve generated API contract for review when generation differs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-api-contract
+          path: pkg/apiv1
+
       # test/charts runs helm lint and helm template on deploy/charts and
       # deploy/argocd; pinned so its results do not change with the runner.
       - uses: azure/setup-helm@v4

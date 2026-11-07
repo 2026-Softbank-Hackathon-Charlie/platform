@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"encoding/pem"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -13,6 +16,12 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem"
 )
+
+type installerRegistrationConfiguration struct{}
+
+func (installerRegistrationConfiguration) CheckConfiguration(context.Context, string) error {
+	return nil
+}
 
 // The issuer and claim are real HTTP handlers over TLS. Only host commands
 // with installation side effects and the upstream download are test doubles.
@@ -40,9 +49,10 @@ func TestInstallerAuthenticatesBeforeInstallation(t *testing.T) {
 	if err != nil {
 		missingPrerequisite("curl is not installed")
 	}
-	for _, scenario := range []string{"wrong-code", "expired", "revoked", "accepted", "checksum-failed"} {
+	for _, scenario := range []string{"wrong-code", "expired", "revoked", "accepted", "checksum-failed", "admission-failed"} {
 		t.Run(scenario, func(t *testing.T) {
 			h := newHarness(t)
+			h.api.enrollments.Registrar = installerRegistrationConfiguration{}
 			now := time.Now().UTC()
 			h.api.now = func() time.Time { return now }
 			status, b := h.do("POST", "/v1/onprem/enrollments", opToken, map[string]any{"environment": "onprem", "installK3s": true}, "Idempotency-Key", "installer-test")
@@ -61,7 +71,32 @@ func TestInstallerAuthenticatesBeforeInstallation(t *testing.T) {
 					t.Fatal("revoke failed")
 				}
 			}
-			tlsServer := httptest.NewTLSServer(h.api)
+			// The claim is the real handler. These two responses stand in for
+			// the separate local-device/registration checks, not live evidence.
+			wrapper := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/bootstrap.yaml") || strings.HasSuffix(r.URL.Path, "/connection/status") {
+					token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+					if _, err := h.api.enrollments.AuthenticateConnection(r.Context(), issued.Enrollment.ID, token); err != nil {
+						http.Error(w, "invalid session", 401)
+						return
+					}
+					if strings.HasSuffix(r.URL.Path, "/bootstrap.yaml") {
+						_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": "v1", "kind": "List", "items": []any{
+							map[string]any{"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingAdmissionPolicy", "metadata": map[string]any{"name": "fixture-access"}},
+							map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "fixture-connector", "labels": map[string]string{"hopcharlie.dev/enrollment": issued.Enrollment.ID}}},
+						}})
+						return
+					}
+					checks := []map[string]string{}
+					for _, id := range []string{"k3s", "network", "permissions", "image_pull", "hello_world"} {
+						checks = append(checks, map[string]string{"id": id, "status": "passed"})
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"enrollment": map[string]any{"id": issued.Enrollment.ID, "status": "ready", "checks": checks}})
+					return
+				}
+				h.api.ServeHTTP(w, r)
+			})
+			tlsServer := httptest.NewTLSServer(wrapper)
 			defer tlsServer.Close()
 			dir := t.TempDir()
 			bin := filepath.Join(dir, "bin")
@@ -82,12 +117,24 @@ func TestInstallerAuthenticatesBeforeInstallation(t *testing.T) {
 			write(installer, onprem.Installer)
 			trace := filepath.Join(dir, "trace")
 			argsFile := filepath.Join(dir, "curl-args")
-			write(filepath.Join(bin, "uname"), "#!/bin/sh\nprintf 'Linux\\n'\n")
+			write(filepath.Join(bin, "uname"), "#!/bin/sh\ncase \"$*\" in -m) printf 'x86_64\\n';; *) printf 'Linux\\n';; esac\n")
 			write(filepath.Join(bin, "id"), "#!/bin/sh\nprintf '0\\n'\n")
 			write(filepath.Join(bin, "rc-service"), "#!/bin/sh\nexit 0\n")
 			write(filepath.Join(bin, "sha256sum"), "#!/bin/sh\nprintf 'checksum\\n' >> \"$TRACE\"\n[ \"$SCENARIO\" != checksum-failed ]\n")
 			upstream := filepath.Join(dir, "fake-k3s-install.sh")
-			write(upstream, "#!/bin/sh\nprintf 'install\\n' >> \"$TRACE\"\nprintf '#!/bin/sh\\nexit 0\\n' > \"$FAKE_BIN/k3s\"\nchmod 700 \"$FAKE_BIN/k3s\"\n")
+			write(upstream, `#!/bin/sh
+printf 'install\n' >> "$TRACE"
+cat > "$FAKE_BIN/k3s" <<'K3S'
+#!/bin/sh
+case "$*" in
+  *get\ --raw=/readyz*) printf 'api-ready\n' >> "$TRACE";;
+  *access.json*) printf 'access\n' >> "$TRACE"; [ "$SCENARIO" != admission-failed ] || exit 1;;
+  *connector.json*) printf 'connector\n' >> "$TRACE";;
+esac
+exit 0
+K3S
+chmod 700 "$FAKE_BIN/k3s"
+`)
 			write(filepath.Join(bin, "curl"), `#!/bin/sh
 printf '%s\n' "$*" >> "$CURL_ARGS"
 case "$*" in
@@ -98,6 +145,8 @@ case "$*" in
       shift
     done
     exit 2;;
+  */bootstrap.yaml*) printf 'bootstrap\n' >> "$TRACE"; exec "$REAL_CURL" "$@";;
+  */connection/status*) printf 'status\n' >> "$TRACE"; exec "$REAL_CURL" "$@";;
   *) printf 'claim\n' >> "$TRACE"; exec "$REAL_CURL" "$@";;
 esac
 `)
@@ -106,8 +155,12 @@ esac
 			out, runErr := cmd.CombinedOutput()
 			events, _ := os.ReadFile(trace)
 			if scenario == "accepted" {
-				if runErr != nil || string(events) != "claim\ndownload\nchecksum\ninstall\n" || !strings.Contains(string(out), "not a ready environment") {
+				if runErr != nil || string(events) != "claim\ndownload\nchecksum\ninstall\napi-ready\nbootstrap\naccess\nconnector\nstatus\n" || !strings.Contains(string(out), "All server-side registration checks passed") {
 					t.Fatalf("bootstrap sequence failed: %v, events=%q, output=%s", runErr, events, out)
+				}
+			} else if scenario == "admission-failed" {
+				if runErr == nil || strings.Contains(string(events), "connector\n") || !strings.HasSuffix(string(events), "access\n") {
+					t.Fatalf("connector started without admission: %v events=%q", runErr, events)
 				}
 			} else {
 				if runErr == nil || strings.Contains(string(events), "install\n") {

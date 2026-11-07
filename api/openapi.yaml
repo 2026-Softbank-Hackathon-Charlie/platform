@@ -66,8 +66,8 @@ paths:
         Operator-only issuance of a 256-bit, 15-minute, one-use bootstrap grant.
         Only its hash is persisted. Idempotency-Key is scoped to the actor:
         the first response includes code and installCommand; a replay returns
-        the same enrollment without either secret. This authenticates a host
-        bootstrap attempt, not registration or deployment readiness.
+        the same enrollment without either secret. Issuance is disabled unless
+        the real registration worker, shipped binaries and network are configured.
       parameters:
         - in: header
           name: Idempotency-Key
@@ -141,9 +141,8 @@ paths:
         Public installer handshake, authenticated by the one-use code in JSON
         (never a URL/query parameter). Atomically consumes only the matching
         enrollment, environment and install choice before expiry. Rate/body/
-        concurrency bounded. No platform operator credential is issued. Without
-        a registration adapter status stays claimed and all checks unknown;
-        self-report can never make it ready.
+        concurrency bounded. Returns a device-scoped connection token, never
+        an operator credential. Only server observations can make it ready.
       requestBody:
         required: true
         content:
@@ -151,23 +150,121 @@ paths:
             schema: { $ref: "#/components/schemas/OnpremEnrollmentClaimRequest" }
       responses:
         "200":
-          description: Bootstrap grant consumed; registration remains pending.
+          description: Bootstrap grant consumed and device connection session created.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/OnpremEnrollmentResponse" }
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/OnpremEnrollmentResponse" }
+                  - type: object
+                    required: [connectionToken]
+                    properties:
+                      connectionToken: { type: string, description: Device-scoped secret returned only on successful claim. }
         default: { $ref: "#/components/responses/Internal" }
   /v1/onprem/installer.sh:
     get:
       tags: [environments]
       operationId: getOnpremInstaller
       security: []
-      description: Embedded Linux/WSL2 bootstrap installer. Does not upload cluster credentials or register a cluster.
+      description: Linux/WSL2 installer that installs a local connector and waits for server-verified registration. Never uploads administrator kubeconfig.
       responses:
         "200":
           description: The actual installer served by this API version.
           content:
             text/plain:
               schema: { type: string }
+  /v1/onprem/agent.bin:
+    get:
+      tags: [environments]
+      operationId: getOnpremAgentBinary
+      security: []
+      parameters:
+        - in: query
+          name: arch
+          required: true
+          schema: { type: string, enum: [amd64, arm64] }
+      responses:
+        "200":
+          description: Shipped connector binary; the bootstrap manifest pins its SHA-256.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onprem/enrollments/{id}/bootstrap.yaml:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      tags: [environments]
+      operationId: getOnpremBootstrap
+      description: Device-session Bearer only. Contains scoped secrets; Cache-Control no-store.
+      parameters:
+        - in: query
+          name: arch
+          required: true
+          schema: { type: string, enum: [amd64, arm64] }
+      responses:
+        "200":
+          description: Server-generated local connector resources.
+          content:
+            text/plain:
+              schema: { type: string }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onprem/enrollments/{id}/connection/status:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      tags: [environments]
+      operationId: getOnpremConnectionStatus
+      description: Device-session Bearer only; no operator token is accepted.
+      responses:
+        "200":
+          description: Registration state without connection secrets.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnpremEnrollmentResponse" }
+        default: { $ref: "#/components/responses/Internal" }
+  /v1/onprem/enrollments/{id}/connection:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    post:
+      tags: [environments]
+      operationId: registerOnpremConnection
+      description: Device-session Bearer only. Enroll or renew the same cluster identity; the server constructs the endpoint and runs every check.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [clusterUID, caData, platformToken, argoToken, tokenExpiresAt]
+              properties:
+                clusterUID: { type: string, minLength: 8, maxLength: 128 }
+                caData: { type: string, maxLength: 32768, description: Base64 encoded PEM CA. }
+                platformToken: { type: string, minLength: 20, maxLength: 16384 }
+                argoToken: { type: string, minLength: 20, maxLength: 16384 }
+                tokenExpiresAt: { type: string, format: date-time }
+      responses:
+        "200":
+          description: All five checks passed and environment registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnpremEnrollmentResponse" }
+        "202":
+          description: Device authenticated; registration or checks still pending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnpremEnrollmentResponse" }
+        default: { $ref: "#/components/responses/Internal" }
   /healthz:
     get:
       tags: [system]
@@ -2984,6 +3081,7 @@ components:
         id: { type: string }
         environment: { type: string }
         status: { type: string, pattern: '^(pending|claimed|verifying|ready|failed|expired|revoked)$' }
+        stage: { type: string, description: Last persisted registration phase. }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time }

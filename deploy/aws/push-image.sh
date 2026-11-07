@@ -19,6 +19,10 @@ fi
 mkdir -p deploy/docker/bin
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o deploy/docker/bin/hopcharlie-api ./cmd/api
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o deploy/docker/bin/hopcharlie-gateway ./cmd/gateway
+for arch in amd64 arm64; do
+  mkdir -p deploy/docker/bin/onprem-agent
+  GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "deploy/docker/bin/onprem-agent/$arch" ./cmd/onprem-agent
+done
 
 docker build --platform linux/amd64 -t "${repo}:${tag}" -t "${repo}:latest" deploy/docker
 aws ecr get-login-password --profile "$profile" --region "$region" | docker login --username AWS --password-stdin "$registry"

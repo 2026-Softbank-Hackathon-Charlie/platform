@@ -1,11 +1,13 @@
 package envs
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -13,10 +15,12 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
+	"k8s.io/client-go/rest"
 )
 
 // ErrNotFound means no environment has the requested name.
 var ErrNotFound = errors.New("environment not found")
+var ErrConnectionConflict = errors.New("environment connection ownership or identity conflict")
 
 // Errors of Sealer and Storage for an environment that lacks the setting.
 var (
@@ -56,19 +60,21 @@ type Options struct {
 
 // Service is the environment registry. It is safe for concurrent use.
 type Service struct {
-	envs      []*env
-	byName    map[string]*env
-	timeout   time.Duration
-	ttl       time.Duration
-	now       func() time.Time
-	newProber func(EnvConfig) (Prober, error)
+	registryMu sync.RWMutex
+	envs       []*env
+	byName     map[string]*env
+	timeout    time.Duration
+	ttl        time.Duration
+	now        func() time.Time
+	newProber  func(EnvConfig) (Prober, error)
 }
 
 // env is one environment and its cached status.
 type env struct {
-	cfg        EnvConfig
-	storage    storage.Driver // nil without a storage block or when it could not be built
-	storageErr error          // why the storage block's driver could not be built
+	owner, clusterUID string
+	cfg               EnvConfig
+	storage           storage.Driver // nil without a storage block or when it could not be built
+	storageErr        error          // why the storage block's driver could not be built
 
 	sealMu   sync.Mutex
 	sealer   *sealing.Sealer // nil until the certificate is read
@@ -153,7 +159,7 @@ func New(cfg Config, opt Options) (*Service, error) {
 // ErrSealingNotConfigured when it has no sealedSecretsCert; an error
 // wrapping fs.ErrNotExist when the file is not there.
 func (s *Service) Sealer(name string) (*sealing.Sealer, error) {
-	e, ok := s.byName[name]
+	e, ok := s.entry(name)
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrNotFound, name)
 	}
@@ -197,7 +203,7 @@ func (s *Service) Sealer(name string) (*sealing.Sealer, error) {
 // unknown environment; ErrStorageNotConfigured when it has no storage
 // block; the error of New when its driver could not be built.
 func (s *Service) Storage(name string) (storage.Driver, error) {
-	e, ok := s.byName[name]
+	e, ok := s.entry(name)
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrNotFound, name)
 	}
@@ -214,9 +220,10 @@ func (s *Service) Storage(name string) (storage.Driver, error) {
 // probed concurrently, so a slow one delays the list by at most ProbeTimeout.
 // Live is always false; the API layer sets it from the gateway.
 func (s *Service) List(ctx context.Context) []apiv1.Environment {
-	out := make([]apiv1.Environment, len(s.envs))
+	entries := s.entries()
+	out := make([]apiv1.Environment, len(entries))
 	var wg sync.WaitGroup
-	for i, e := range s.envs {
+	for i, e := range entries {
 		wg.Go(func() { out[i] = e.environment(s.status(ctx, e)) })
 	}
 	wg.Wait()
@@ -225,7 +232,7 @@ func (s *Service) List(ctx context.Context) []apiv1.Environment {
 
 // Get returns one environment with its status, or ErrNotFound.
 func (s *Service) Get(ctx context.Context, name string) (apiv1.Environment, error) {
-	e, ok := s.byName[name]
+	e, ok := s.entry(name)
 	if !ok {
 		return apiv1.Environment{}, fmt.Errorf("%w: %q", ErrNotFound, name)
 	}
@@ -234,8 +241,9 @@ func (s *Service) Get(ctx context.Context, name string) (apiv1.Environment, erro
 
 // Names returns the environment names in configuration order.
 func (s *Service) Names() []string {
-	out := make([]string, len(s.envs))
-	for i, e := range s.envs {
+	entries := s.entries()
+	out := make([]string, len(entries))
+	for i, e := range entries {
 		out[i] = e.cfg.Name
 	}
 	return out
@@ -243,11 +251,114 @@ func (s *Service) Names() []string {
 
 // Config returns an environment's configuration with defaults applied.
 func (s *Service) Config(name string) (EnvConfig, bool) {
-	e, ok := s.byName[name]
+	e, ok := s.entry(name)
 	if !ok {
 		return EnvConfig{}, false
 	}
-	return e.cfg, true
+	return cloneEnvConfig(e.cfg), true
+}
+
+func (s *Service) entry(name string) (*env, bool) {
+	s.registryMu.RLock()
+	defer s.registryMu.RUnlock()
+	e, ok := s.byName[name]
+	return e, ok
+}
+func (s *Service) entries() []*env {
+	s.registryMu.RLock()
+	defer s.registryMu.RUnlock()
+	return append([]*env(nil), s.envs...)
+}
+
+func cloneEnvConfig(c EnvConfig) EnvConfig {
+	if c.RESTConfig != nil {
+		c.RESTConfig = rest.CopyConfig(c.RESTConfig)
+		c.RESTConfig.CAData = bytes.Clone(c.RESTConfig.CAData)
+		c.RESTConfig.CertData = bytes.Clone(c.RESTConfig.CertData)
+		c.RESTConfig.KeyData = bytes.Clone(c.RESTConfig.KeyData)
+	}
+	if c.Storage != nil {
+		v := *c.Storage
+		c.Storage = &v
+	}
+	return c
+}
+
+// Configs is an immutable credential snapshot for trusted server consumers only.
+func (s *Service) Configs() []EnvConfig {
+	entries := s.entries()
+	out := make([]EnvConfig, len(entries))
+	for i, e := range entries {
+		out[i] = cloneEnvConfig(e.cfg)
+	}
+	return out
+}
+
+// ConnectionIdentity exposes only ownership, never credentials.
+func (s *Service) ConnectionIdentity(name string) (owner, clusterUID string, found bool) {
+	e, ok := s.entry(name)
+	if !ok {
+		return "", "", false
+	}
+	return e.owner, e.clusterUID, true
+}
+
+// RegisterConnection creates an environment once, or refreshes the credentials
+// of the same owner/UID without changing its host or CA. Entries are immutable;
+// replacing one also evicts the old prober and status cache atomically.
+func (s *Service) RegisterConnection(name, owner, clusterUID string, rc *rest.Config) error {
+	if !namePattern.MatchString(name) || len(name) > 32 || owner == "" || clusterUID == "" || rc == nil {
+		return ErrConnectionConflict
+	}
+	u, err := url.Parse(rc.Host)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || rc.Insecure || len(rc.CAData) == 0 || rc.BearerToken == "" || rc.ExecProvider != nil || rc.AuthProvider != nil || rc.Transport != nil || rc.WrapTransport != nil || rc.Dial != nil || rc.Proxy != nil {
+		return ErrConnectionConflict
+	}
+	cfg := cloneEnvConfig(EnvConfig{Name: name, Provider: "onprem", DisplayName: name, KubeContext: "onprem-" + name, GatewayBackend: name, RESTConfig: rc})
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	if old, ok := s.byName[name]; ok {
+		if old.owner != owner || old.clusterUID != clusterUID || old.cfg.RESTConfig == nil {
+			return ErrConnectionConflict
+		}
+		a := old.cfg.RESTConfig
+		if a.Host != rc.Host || a.ServerName != rc.ServerName || !bytes.Equal(a.CAData, rc.CAData) {
+			return ErrConnectionConflict
+		}
+		next := &env{cfg: cfg, owner: owner, clusterUID: clusterUID}
+		s.byName[name] = next
+		for i, e := range s.envs {
+			if e == old {
+				s.envs[i] = next
+				break
+			}
+		}
+		return nil
+	}
+	next := &env{cfg: cfg, owner: owner, clusterUID: clusterUID}
+	s.byName[name] = next
+	s.envs = append(s.envs, next)
+	return nil
+}
+
+func (s *Service) RemoveConnection(name, owner string) error {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	old, ok := s.byName[name]
+	if !ok {
+		return nil
+	}
+	if owner == "" || old.owner != owner {
+		return ErrConnectionConflict
+	}
+	delete(s.byName, name)
+	for i, e := range s.envs {
+		if e == old {
+			s.envs = append(s.envs[:i], s.envs[i+1:]...)
+			break
+		}
+	}
+	return nil
 }
 
 // status returns the cached status, or joins (or starts) the probe in

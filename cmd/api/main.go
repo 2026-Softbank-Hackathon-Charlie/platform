@@ -35,6 +35,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy"
@@ -148,6 +149,17 @@ func main() {
 	envSvc, err := envs.New(envCfg, envs.Options{})
 	if err != nil {
 		fatal("environments", "err", err)
+	}
+	onpremConnector, err := onprem.FromEnv(ctx, os.Getenv, st, secretsKey, envSvc)
+	if err != nil {
+		fatal("onprem registration", "err", err)
+	}
+	if onpremConnector != nil {
+		restoreCtx, cancelRestore := context.WithTimeout(ctx, 60*time.Second)
+		if err := onpremConnector.Restore(restoreCtx); err != nil {
+			log.Warn("onprem environment restore is pending; device registration will retry", "err", err)
+		}
+		cancelRestore()
 	}
 	// What each environment can take: sealing needs the cluster's
 	// sealed-secrets certificate, buckets need a storage driver (ADR 0016).
@@ -422,6 +434,10 @@ func main() {
 		go runner.RunRetention(retentionCtx)
 	}
 	deps.Apps = appCat
+	deps.OnpremConnector = onpremConnector
+	if appCat != nil {
+		appCat.SetEnvironmentSource(envSvc.Configs)
+	}
 	deps.Buckets = bucketInspector
 	// Draft plans can carry the source's numbers (POST /v1/plans/draft with
 	// sourceStats), measured like the capacity gate does, on request only.
