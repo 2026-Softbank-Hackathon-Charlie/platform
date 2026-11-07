@@ -3315,6 +3315,9 @@ type PlanSummary struct {
 
 	// Target The non-secret view of a plan endpoint.
 	Target PlanEndpoint `json:"target"`
+
+	// WrittenRecordsConfigured Whether this submitted plan configures verify.writtenRecords. Does not prove collection or verification succeeded. Absent for historical summaries and older servers; absence means unknown, not false.
+	WrittenRecordsConfigured *bool `json:"writtenRecordsConfigured,omitempty"`
 }
 
 // Principal defines model for Principal.

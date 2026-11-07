@@ -2665,6 +2665,9 @@ components:
         gatewayMode: { type: string }
         fenceGate: { type: boolean }
         maxDowntime: { type: string }
+        writtenRecordsConfigured:
+          type: boolean
+          description: "Whether this submitted plan configures verify.writtenRecords. Does not prove collection or verification succeeded. Absent for historical summaries and older servers; absence means unknown, not false."
 
     PlanRecord:
       type: object

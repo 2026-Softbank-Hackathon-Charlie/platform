@@ -397,14 +397,16 @@ func (s *Service) transition(ctx context.Context, ref string, from []string, to 
 // submitted (Policy.checkRefs), so an approver sees where each password would
 // be sent and nothing expanded from the environment.
 func summarize(p *plan.Plan, hosts dbHosts) apiv1.PlanSummary {
+	writtenConfigured := p.Verify.WrittenRecords != ""
 	return apiv1.PlanSummary{
-		PlanId:      p.ID,
-		Source:      endpoint(p.Source, hosts.source),
-		Target:      endpoint(p.Target, hosts.target),
-		Files:       p.Files != nil,
-		GatewayMode: p.Gateway.Mode,
-		FenceGate:   *p.Verify.FenceGate,
-		MaxDowntime: p.Thresholds.MaxDowntime.String(),
+		PlanId:                   p.ID,
+		Source:                   endpoint(p.Source, hosts.source),
+		Target:                   endpoint(p.Target, hosts.target),
+		Files:                    p.Files != nil,
+		GatewayMode:              p.Gateway.Mode,
+		FenceGate:                *p.Verify.FenceGate,
+		MaxDowntime:              p.Thresholds.MaxDowntime.String(),
+		WrittenRecordsConfigured: &writtenConfigured,
 	}
 }
 

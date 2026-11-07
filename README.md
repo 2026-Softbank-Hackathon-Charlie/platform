@@ -356,6 +356,11 @@ Plan은 서버의 파일을 경로 대신 이름으로 가리킵니다. 정책�
 - 앞선 롤백의 시작이 실패했으면(예: `cluster_busy`) 그 Plan은 `approved`로 남고, 다음 롤백 요청은 새 Plan을 만들지 않고 그 Plan을 다시 시작합니다. 그 Plan을 `POST /v1/migrations`로 직접 시작해도 run에 `rollbackOf`가 붙으므로, 그 뒤의 롤백 요청은 409 `run_state_conflict`로 그 run을 알려 줍니다.
 
 CLI로는 `charlie apps`, `charlie plan new --app moimroom --from gke --to eks --stream moimroom-demo --submit`, `charlie plan attach REF --name target.yaml -f target.yaml`, `charlie written-records moimroom-demo`, `charlie migrate rollback RUNID --watch`를 씁니다.
+
+Plan 요약의 `writtenRecordsConfigured`는 승인 전에 쓰기 기록 연결 여부를 알려 줍니다.
+`false`인 Plan은 그대로 시작하면 쓰기 누락이 미측정으로 남고, 필드가 없는 과거 요약은
+설정 미확인입니다. `true`도 수집·검증 성공을 의미하지 않습니다.
+[ADR 0046](docs/adr/0046-show-written-record-configuration-before-approval.md)에 진단 근거와 활성화 순서를 기록했습니다.
 ## 보안 거버넌스 뷰와 에이전트 활동 기록
 
 ### `GET /v1/security` (viewer)
