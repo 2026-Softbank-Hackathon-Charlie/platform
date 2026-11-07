@@ -152,14 +152,17 @@ func main() {
 	}
 	onpremConnector, err := onprem.FromEnv(ctx, os.Getenv, st, secretsKey, envSvc)
 	if err != nil {
-		fatal("onprem registration", "err", err)
+		log.Error("onprem registration is disabled until its configuration is corrected", "err", err)
+		onpremConnector = nil
 	}
 	if onpremConnector != nil {
-		restoreCtx, cancelRestore := context.WithTimeout(ctx, 60*time.Second)
-		if err := onpremConnector.Restore(restoreCtx); err != nil {
-			log.Warn("onprem environment restore is pending; device registration will retry", "err", err)
-		}
-		cancelRestore()
+		go func() {
+			restoreCtx, cancelRestore := context.WithTimeout(ctx, 60*time.Second)
+			if err := onpremConnector.Restore(restoreCtx); err != nil {
+				log.Warn("onprem environment restore is pending; device registration will retry", "err", err)
+			}
+			cancelRestore()
+		}()
 	}
 	// What each environment can take: sealing needs the cluster's
 	// sealed-secrets certificate, buckets need a storage driver (ADR 0016).

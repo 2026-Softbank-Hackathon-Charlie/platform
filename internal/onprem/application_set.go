@@ -73,6 +73,10 @@ func environmentApplications(namespace string, state RegistrationState, profile 
 	}
 	p["podSecurity"] = "restricted"
 	p["onpremRegistration"] = map[string]any{"enrollmentID": state.EnrollmentID, "clusterUID": state.Connection.ClusterUID}
+	profileJSON, err := json.Marshal(map[string]any{"profile": p})
+	if err != nil {
+		return nil, nil, err
+	}
 	name := registrationResourceName(state.EnrollmentID)
 	meta := func() map[string]any {
 		return map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{enrollmentOwnerLabel: state.EnrollmentID, "hopcharlie.dev/env": state.Environment, "hopcharlie.dev/onprem-cluster-uid": state.Connection.ClusterUID}}
@@ -89,7 +93,7 @@ func environmentApplications(namespace string, state RegistrationState, profile 
 		"namespaceResourceBlacklist": []any{map[string]any{"group": "rbac.authorization.k8s.io", "kind": "*"}, map[string]any{"group": "", "kind": "Secret"}},
 	}}}
 	sources := []any{
-		map[string]any{"repoURL": "https://github.com/2026-Softbank-Hackathon-Charlie/infra.git", "targetRevision": "main", "path": "helm/charts/hopcharlie-app", "helm": map[string]any{"releaseName": "{{ .namespace }}", "valueFiles": []any{"$gitops/{{ .path.path }}/{{ .path.filename }}"}, "valuesObject": map[string]any{"profile": p}}},
+		map[string]any{"repoURL": "https://github.com/2026-Softbank-Hackathon-Charlie/infra.git", "targetRevision": "main", "path": "helm/charts/hopcharlie-app", "helm": map[string]any{"releaseName": "{{ .namespace }}", "valueFiles": []any{"$gitops/{{ .path.path }}/{{ .path.filename }}"}, "values": string(profileJSON)}},
 		map[string]any{"repoURL": "https://github.com/2026-Softbank-Hackathon-Charlie/gitops.git", "targetRevision": "main", "ref": "gitops"},
 	}
 	set := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "argoproj.io/v1alpha1", "kind": "ApplicationSet", "metadata": meta(), "spec": map[string]any{

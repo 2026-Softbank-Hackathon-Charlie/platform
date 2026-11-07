@@ -156,7 +156,6 @@ jobs:
         run: docker rm -f -v "$PG_CONTAINER" >/dev/null 2>&1 || true
 
   onprem-cluster:
-    needs: go
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:

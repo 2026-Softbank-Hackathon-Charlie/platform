@@ -1,6 +1,7 @@
 package onprem
 
 import (
+	"encoding/json"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"testing"
 )
@@ -22,7 +23,11 @@ func TestEnvironmentApplicationsAreScopedAndRestricted(t *testing.T) {
 	sources, _, _ := unstructured.NestedSlice(set.Object, "spec", "template", "spec", "sources")
 	chart := sources[0].(map[string]any)
 	helm := chart["helm"].(map[string]any)
-	if helm["valuesObject"].(map[string]any)["profile"].(map[string]any)["podSecurity"] != "restricted" {
+	var rendered map[string]any
+	if err := json.Unmarshal([]byte(helm["values"].(string)), &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if rendered["profile"].(map[string]any)["podSecurity"] != "restricted" {
 		t.Fatal("unsafe pod security")
 	}
 	allowed, _, _ := unstructured.NestedSlice(project.Object, "spec", "clusterResourceWhitelist")

@@ -58,8 +58,7 @@ func FromEnv(ctx context.Context, getenv func(string) string, st store.Enrollmen
 	}
 	connector := &Connector{Store: st, Cipher: cipher, Tailnet: tailnet, Origin: base, AgentDirectory: getenv("PLATFORM_ONPREM_AGENT_DIRECTORY"), AgentImage: getenv("PLATFORM_ONPREM_AGENT_IMAGE"), TailscaleImage: getenv("PLATFORM_ONPREM_TAILSCALE_IMAGE")}
 	connector.Runtime = NewKubeRuntime(KubeRuntimeConfig{Kube: k, Dynamic: dyn, Envs: registry, TailnetDomain: tailnet.Domain, RouteNamespace: "hopcharlie-db-network", ArgoNamespace: "argocd", ProxyClass: "hopcharlie-onprem-api-egress-management", HelloImage: getenv("PLATFORM_ONPREM_HELLO_IMAGE"), Profile: profile})
-	if err = connector.CheckConfiguration(ctx, "onprem-setup"); err != nil {
-		return nil, errors.New("onprem connector configuration is incomplete")
-	}
+	// Live RBAC/admission may still be propagating during a rollout. Each
+	// issuance and registration checks it; do not take the whole API down.
 	return connector, nil
 }

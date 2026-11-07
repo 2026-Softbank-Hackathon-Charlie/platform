@@ -89,7 +89,7 @@ func BootstrapManifest(c BootstrapConfig) ([]byte, error) {
 	// policy or RBAC, and cannot access the connector's credential namespace.
 	policy := obj("admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicy", argo, map[string]any{"spec": map[string]any{
 		"failurePolicy":    "Fail",
-		"matchConstraints": map[string]any{"resourceRules": []any{map[string]any{"apiGroups": []string{"*"}, "apiVersions": []string{"*"}, "operations": []string{"CREATE", "UPDATE", "DELETE", "CONNECT"}, "resources": []string{"*", "*/*"}}}},
+		"matchConstraints": map[string]any{"resourceRules": []any{map[string]any{"apiGroups": []string{"*"}, "apiVersions": []string{"*"}, "operations": []string{"CREATE", "UPDATE", "DELETE", "CONNECT"}, "resources": []string{"*/*"}}}},
 		"matchConditions":  []any{map[string]any{"name": "delegated-identity", "expression": "request.userInfo.username == '" + user + "'"}},
 		"validations": []any{
 			map[string]any{"expression": "!(request.namespace in " + protected + ") && !request.namespace.startsWith('kube-') && (request.resource.resource != 'namespaces' || (object != null && !(object.metadata.name in " + protected + ") && !object.metadata.name.startsWith('kube-')))", "message": "the delegated installer identity cannot change protected namespaces"},

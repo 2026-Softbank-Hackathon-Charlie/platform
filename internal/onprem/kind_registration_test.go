@@ -228,6 +228,7 @@ func TestRealBootstrapOnDisposableKind(t *testing.T) {
 	}
 	foreignPod := basePod(foreignNamespace)
 	foreignPod.Spec.ServiceAccountName = "strong"
+	foreignDefaultPod := basePod(foreignNamespace)
 	ownedStrongPod := basePod(probeNamespace)
 	ownedStrongPod.Spec.ServiceAccountName = "strong"
 	projectedPod := basePod(probeNamespace)
@@ -235,13 +236,20 @@ func TestRealBootstrapOnDisposableKind(t *testing.T) {
 	automountPod := basePod(probeNamespace)
 	automountPod.Spec.AutomountServiceAccountToken = nil
 	for _, entry := range []struct {
-		name string
-		pod  *corev1.Pod
-	}{{"foreign restricted namespace with strong identity", foreignPod}, {"owned namespace with non-default identity", ownedStrongPod}, {"explicit projected token", projectedPod}, {"implicit token automount", automountPod}} {
+		name   string
+		pod    *corev1.Pod
+		policy string
+	}{{"foreign restricted namespace with default identity", foreignDefaultPod, "hop-" + suffix + "-argo"}, {"foreign restricted namespace with strong identity", foreignPod, "hop-" + suffix + "-argo"}, {"owned namespace with non-default identity", ownedStrongPod, "hop-" + suffix + "-argo-workloads"}, {"explicit projected token", projectedPod, "hop-" + suffix + "-argo-workloads"}, {"implicit token automount", automountPod, "hop-" + suffix + "-argo-workloads"}} {
+		// Prove that RBAC permits this operation first. A generic Forbidden
+		// would not prove the owner/credential admission policy was installed.
+		access, accessErr := deployer.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authzv1.SelfSubjectAccessReview{Spec: authzv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authzv1.ResourceAttributes{Verb: "create", Resource: "pods", Namespace: entry.pod.Namespace}}}, metav1.CreateOptions{})
+		if accessErr != nil || !access.Status.Allowed || access.Status.EvaluationError != "" {
+			t.Fatal("negative admission fixture does not have Pod-create RBAC")
+		}
 		deadline := time.Now().Add(30 * time.Second)
 		for {
 			_, denyErr := deployer.CoreV1().Pods(entry.pod.Namespace).Create(ctx, entry.pod, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
-			if denyErr != nil && (apierrors.IsForbidden(denyErr) || apierrors.IsInvalid(denyErr)) && strings.Contains(denyErr.Error(), "hop-"+suffix+"-argo") {
+			if denyErr != nil && (apierrors.IsForbidden(denyErr) || apierrors.IsInvalid(denyErr)) && (strings.Contains(denyErr.Error(), "'"+entry.policy+"'") || strings.Contains(denyErr.Error(), "\""+entry.policy+"\"")) {
 				break
 			}
 			if time.Now().After(deadline) || ctx.Err() != nil {

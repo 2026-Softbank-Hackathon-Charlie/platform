@@ -21,6 +21,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -83,7 +86,83 @@ func (k *KubeRuntime) Configured(ctx context.Context) error {
 			}
 		}
 	}
+	return k.verifyManagementAdmission(ctx)
+}
+
+// verifyManagementAdmission closes the RBAC-before-policy rollout race. Each
+// dry-run starts from the owned golden shape and changes one forbidden field.
+// An RBAC denial, missing CRD, transport error or missing policy is not proof.
+func (k *KubeRuntime) verifyManagementAdmission(ctx context.Context) error {
+	const id = "enr_000000000000000000000000"
+	const uid = "00000000-0000-0000-0000-000000000000"
+	labels := map[string]string{registrationOwnerLabel: id, registrationUIDLabel: uid}
+	hostname := RegistrationHostname(id)
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: hostname, Namespace: k.cfg.RouteNamespace, Labels: labels, Annotations: map[string]string{"tailscale.com/tailnet-fqdn": hostname + "." + k.cfg.TailnetDomain, "tailscale.com/proxy-class": k.cfg.ProxyClass, "tailscale.com/tags": "tag:hop-onprem-api-client"}}, Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeExternalName, ExternalName: hostname + "." + k.cfg.TailnetDomain, Ports: []corev1.ServicePort{{Name: "kubernetes", Protocol: corev1.ProtocolTCP, Port: 6443, TargetPort: intstr.FromInt32(6443)}}}}
+	if _, err := k.cfg.Kube.CoreV1().Services(k.cfg.RouteNamespace).Create(ctx, service, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+		return ErrUnavailable
+	}
+	service.Spec.Ports[0].Port = 22
+	_, err := k.cfg.Kube.CoreV1().Services(k.cfg.RouteNamespace).Create(ctx, service, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+	if !admissionDeniedBy(err, "hopcharlie-onprem-api-route") {
+		return ErrUnavailable
+	}
+	name := registrationResourceName(id)
+	config, err := json.Marshal(map[string]any{"bearerToken": "readiness-probe-only", "tlsClientConfig": map[string]any{"caData": base64.StdEncoding.EncodeToString([]byte("readiness-probe-ca")), "insecure": false, "serverName": "kubernetes.default.svc"}})
+	if err != nil {
+		return ErrUnavailable
+	}
+	secretLabels := map[string]string{registrationOwnerLabel: id, registrationUIDLabel: uid, "argocd.argoproj.io/secret-type": "cluster"}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: k.cfg.ArgoNamespace, Labels: secretLabels, Annotations: map[string]string{"hopcharlie.dev/registration-version": "1", "hopcharlie.dev/token-expires-at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339)}}, Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"name": []byte(name), "server": []byte(k.endpoint(id)), "config": config, "clusterResources": []byte("true")}}
+	if _, err = k.cfg.Kube.CoreV1().Secrets(k.cfg.ArgoNamespace).Create(ctx, secret, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+		return ErrUnavailable
+	}
+	secret.Data["config"] = []byte(strings.Replace(string(config), `"serverName":"kubernetes.default.svc"`, `"serverName":"attacker.invalid"`, 1))
+	_, err = k.cfg.Kube.CoreV1().Secrets(k.cfg.ArgoNamespace).Create(ctx, secret, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+	if !admissionDeniedBy(err, "hopcharlie-onprem-secret") {
+		return ErrUnavailable
+	}
+	state := RegistrationState{EnrollmentID: id, Environment: "onprem-policy-probe", Connection: ConnectionRequest{ClusterUID: uid}}
+	project, set, err := environmentApplications(k.cfg.ArgoNamespace, state, k.cfg.Profile)
+	if err != nil {
+		return ErrUnavailable
+	}
+	for _, probe := range []struct {
+		resource string
+		object   *unstructured.Unstructured
+	}{{"appprojects", project}, {"applicationsets", set}} {
+		if _, err = k.cfg.Dynamic.Resource(schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: probe.resource}).Namespace(k.cfg.ArgoNamespace).Create(ctx, probe.object, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+			return ErrUnavailable
+		}
+	}
+	if err = unstructured.SetNestedSlice(project.Object, []any{"https://attacker.invalid/repo.git", "https://github.com/2026-Softbank-Hackathon-Charlie/gitops.git"}, "spec", "sourceRepos"); err != nil {
+		return ErrUnavailable
+	}
+	sources, ok, err := unstructured.NestedSlice(set.Object, "spec", "template", "spec", "sources")
+	if err != nil || !ok || len(sources) == 0 {
+		return ErrUnavailable
+	}
+	first, ok := sources[0].(map[string]any)
+	if !ok {
+		return ErrUnavailable
+	}
+	first["repoURL"] = "https://attacker.invalid/repo.git"
+	if err = unstructured.SetNestedSlice(set.Object, sources, "spec", "template", "spec", "sources"); err != nil {
+		return ErrUnavailable
+	}
+	for _, probe := range []struct {
+		resource string
+		object   *unstructured.Unstructured
+	}{{"appprojects", project}, {"applicationsets", set}} {
+		_, err = k.cfg.Dynamic.Resource(schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: probe.resource}).Namespace(k.cfg.ArgoNamespace).Create(ctx, probe.object, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+		if !admissionDeniedBy(err, "hopcharlie-onprem-argo") {
+			return ErrUnavailable
+		}
+	}
 	return nil
+}
+
+func admissionDeniedBy(err error, policy string) bool {
+	return err != nil && (apierrors.IsForbidden(err) || apierrors.IsInvalid(err)) && regexp.MustCompile(`(^|[^A-Za-z0-9_.-])`+regexp.QuoteMeta(policy)+`([^A-Za-z0-9_.-]|$)`).MatchString(err.Error())
 }
 func (k *KubeRuntime) endpoint(id string) string {
 	return "https://" + RegistrationHostname(id) + "." + k.cfg.RouteNamespace + ".svc.cluster.local:6443"

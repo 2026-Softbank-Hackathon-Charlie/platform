@@ -38,6 +38,35 @@ func testKubeRuntime(t *testing.T) *KubeRuntime {
 		t.Fatal(err)
 	}
 	kube := kubefake.NewSimpleClientset()
+	kube.PrependReactor("create", "services", func(a ktesting.Action) (bool, runtime.Object, error) {
+		if !dryRunCreate(a) {
+			return false, nil, nil
+		}
+		obj := a.(ktesting.CreateAction).GetObject().(*corev1.Service)
+		if len(obj.Spec.Ports) == 1 && obj.Spec.Ports[0].Port == 6443 {
+			return true, obj.DeepCopy(), nil
+		}
+		if len(obj.Spec.Ports) != 1 || obj.Spec.Ports[0].Port != 22 {
+			t.Fatal("management route readiness probe changed unexpected fields")
+		}
+		return true, nil, apierrors.NewForbidden(corev1.Resource("services"), obj.Name, errors.New("ValidatingAdmissionPolicy hopcharlie-onprem-api-route denied forbidden port"))
+	})
+	kube.PrependReactor("create", "secrets", func(a ktesting.Action) (bool, runtime.Object, error) {
+		if !dryRunCreate(a) {
+			return false, nil, nil
+		}
+		obj := a.(ktesting.CreateAction).GetObject().(*corev1.Secret)
+		if obj.Annotations["hopcharlie.dev/registration-version"] != "1" || obj.Type != corev1.SecretTypeOpaque {
+			t.Fatal("management credential probe is not the expected TLS mutation")
+		}
+		if strings.Contains(string(obj.Data["config"]), `"serverName":"kubernetes.default.svc"`) {
+			return true, obj.DeepCopy(), nil
+		}
+		if !strings.Contains(string(obj.Data["config"]), `"serverName":"attacker.invalid"`) {
+			t.Fatal("unexpected TLS mutation")
+		}
+		return true, nil, apierrors.NewForbidden(corev1.Resource("secrets"), obj.Name, errors.New("ValidatingAdmissionPolicy hopcharlie-onprem-secret denied invalid TLS name"))
+	})
 	kube.PrependReactor("create", "selfsubjectaccessreviews", func(a ktesting.Action) (bool, runtime.Object, error) {
 		review := a.(ktesting.CreateAction).GetObject().(*authv1.SelfSubjectAccessReview).DeepCopy()
 		r := review.Spec.ResourceAttributes
@@ -69,7 +98,104 @@ func testKubeRuntime(t *testing.T) *KubeRuntime {
 		}
 		return false, nil, nil
 	})
-	return NewKubeRuntime(KubeRuntimeConfig{Kube: kube, Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), Envs: registry, TailnetDomain: "tailtest.ts.net", RouteNamespace: "hopcharlie-db-network", ArgoNamespace: "argocd", ProxyClass: "hopcharlie-onprem-api-egress-management", HelloImage: "docker.io/library/python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca", Profile: map[string]any{"podSecurity": "restricted"}})
+	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	for _, resource := range []string{"appprojects", "applicationsets"} {
+		dc.PrependReactor("create", resource, func(a ktesting.Action) (bool, runtime.Object, error) {
+			if !dryRunCreate(a) {
+				return false, nil, nil
+			}
+			obj := a.(ktesting.CreateAction).GetObject()
+			body, err := json.Marshal(obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(body), "attacker.invalid") {
+				return true, obj.DeepCopyObject(), nil
+			}
+			return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "argoproj.io", Resource: a.GetResource().Resource}, "management-readiness-probe", errors.New("ValidatingAdmissionPolicy hopcharlie-onprem-argo denied untrusted repo"))
+		})
+	}
+	return NewKubeRuntime(KubeRuntimeConfig{Kube: kube, Dynamic: dc, Envs: registry, TailnetDomain: "tailtest.ts.net", RouteNamespace: "hopcharlie-db-network", ArgoNamespace: "argocd", ProxyClass: "hopcharlie-onprem-api-egress-management", HelloImage: "docker.io/library/python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca", Profile: map[string]any{"podSecurity": "restricted"}})
+}
+
+func dryRunCreate(a ktesting.Action) bool {
+	opts, ok := a.(interface{ GetCreateOptions() metav1.CreateOptions })
+	if !ok {
+		return false
+	}
+	for _, mode := range opts.GetCreateOptions().DryRun {
+		if mode == metav1.DryRunAll {
+			return true
+		}
+	}
+	return false
+}
+
+func TestManagementAdmissionReadinessRequiresEveryPolicy(t *testing.T) {
+	resources := []string{"services", "secrets", "appprojects", "applicationsets"}
+	for _, resource := range resources {
+		for _, mode := range []string{"missing", "rbac-only", "wrong-policy", "always-deny"} {
+			t.Run(resource+"/"+mode, func(t *testing.T) {
+				k := testKubeRuntime(t)
+				reactor := func(a ktesting.Action) (bool, runtime.Object, error) {
+					if !dryRunCreate(a) {
+						return false, nil, nil
+					}
+					obj := a.(ktesting.CreateAction).GetObject()
+					if mode == "missing" {
+						return true, obj.DeepCopyObject(), nil
+					}
+					message := "User cannot create this resource"
+					if mode == "wrong-policy" || mode == "always-deny" {
+						policy := "hopcharlie-onprem-argo"
+						if resource == "services" {
+							policy = "hopcharlie-onprem-api-route"
+						}
+						if resource == "secrets" {
+							policy = "hopcharlie-onprem-secret"
+						}
+						message = policy + "-disabled denied"
+						if mode == "always-deny" {
+							message = policy + " denied every object"
+						}
+					}
+					return true, nil, apierrors.NewForbidden(a.GetResource().GroupResource(), "readiness-probe", errors.New(message))
+				}
+				if resource == "services" || resource == "secrets" {
+					k.cfg.Kube.(*kubefake.Clientset).PrependReactor("create", resource, reactor)
+				} else {
+					k.cfg.Dynamic.(*dynamicfake.FakeDynamicClient).PrependReactor("create", resource, reactor)
+				}
+				if err := k.Configured(t.Context()); !errors.Is(err, ErrUnavailable) {
+					t.Fatalf("%s accepted %s admission state: %v", resource, mode, err)
+				}
+			})
+		}
+	}
+	if err := testKubeRuntime(t).Configured(t.Context()); err != nil {
+		t.Fatal("all four exact-policy denials rejected", err)
+	}
+}
+
+func TestManagementAdmissionReadinessUsesOnlyDryRuns(t *testing.T) {
+	k := testKubeRuntime(t)
+	if err := k.Configured(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	actions := append(k.cfg.Kube.(*kubefake.Clientset).Actions(), k.cfg.Dynamic.(*dynamicfake.FakeDynamicClient).Actions()...)
+	count := 0
+	for _, a := range actions {
+		resource := a.GetResource().Resource
+		if resource == "services" || resource == "secrets" || resource == "appprojects" || resource == "applicationsets" {
+			if a.GetVerb() != "create" || !dryRunCreate(a) {
+				t.Fatalf("readiness performed a real resource mutation: %s %s", a.GetVerb(), resource)
+			}
+			count++
+		}
+	}
+	if count != 8 {
+		t.Fatalf("expected four valid and four invalid dry runs, got %d", count)
+	}
 }
 
 func TestKubeRuntimeNeverReadsArgoCredentials(t *testing.T) {
