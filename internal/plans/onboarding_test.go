@@ -64,7 +64,7 @@ func TestReserveOnboarding(t *testing.T) {
 	if err != nil || row.Status != store.PlanStarting || row.SubmittedRole != OnboardingRole {
 		t.Fatalf("stored %+v %v", row, err)
 	}
-	if v, set := os.LookupEnv(LegacyPasswordEnv); set || v != "" {
+	if os.Getenv(LegacyPasswordEnv) != "" {
 		t.Fatal("the fence password stayed in the process environment")
 	}
 	if strings.Contains(string(row.Raw), "fence-pw") {
@@ -155,5 +155,13 @@ func TestReserveOnboardingSkipsResidency(t *testing.T) {
 	res, _, err := s.ReserveOnboarding(context.Background(), onbPlan(nil), "op", onbScope)
 	if err != nil || res.Residency.Outcome != OutcomeExternalSource {
 		t.Fatalf("residency %+v %v", res.Residency, err)
+	}
+}
+
+func TestExpandLegacy(t *testing.T) {
+	raw := []byte(`{"dsn":"postgres://u:${LEGACY_PGPASSWORD}@h:5432/d"}`)
+	got := string(expandLegacy(raw, `p@ss:w/"rd\`))
+	if got != `{"dsn":"postgres://u:p%40ss%3Aw%2F%22rd%5C@h:5432/d"}` {
+		t.Fatalf("got %s", got)
 	}
 }

@@ -533,7 +533,7 @@ func TestCutoverRunLostAtRestart(t *testing.T) {
 		r := w.runner()
 		id := toReady(t, w, r)
 		if _, err := r.update(ctx, id, nil, func(x *rec) (string, error) {
-			x.doc.Internal.Attempt = 1
+			x.doc.Internal.Attempt, x.doc.Internal.PlanRef = 1, "pln_1"
 			return store.OnboardingCuttingOver, nil
 		}); err != nil {
 			t.Fatal(err)

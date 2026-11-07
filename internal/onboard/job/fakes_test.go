@@ -351,11 +351,11 @@ func (w *world) Start(context.Context, runs.StartOptions) (apiv1.Run, error) {
 	w.did("run")
 	return apiv1.Run{RunId: "run1"}, nil
 }
-func (w *world) FindRun(_ context.Context, planID string) (apiv1.Run, bool, error) {
-	if w.lostRun {
+func (w *world) FindRun(_ context.Context, planRef string) (apiv1.Run, bool, error) {
+	if w.lostRun || planRef != "pln_1" {
 		return apiv1.Run{}, false, nil
 	}
-	return apiv1.Run{RunId: "run1", PlanId: planID}, true, nil
+	return apiv1.Run{RunId: "run1", PlanRef: planRef}, true, nil
 }
 func (w *world) Get(context.Context, string) (apiv1.Run, error) {
 	return apiv1.Run{RunId: "run1", Status: w.runStatus}, nil

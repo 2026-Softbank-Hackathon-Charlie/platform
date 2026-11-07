@@ -126,7 +126,17 @@ func stopInstance(ctx context.Context, ec2For func(string) *ec2.Client, req job.
 			}
 		}
 	}
+	now := time.Now().UTC()
+	done := []apiv1.OnboardingLegacyChange{{Kind: apiv1.OnboardingLegacyChangeKindInstanceTagged, Target: in.ID, UndoneAt: &now}}
 	if !tagged {
+		// Stopped and untagged by an earlier call that did not record it.
+		for _, res := range out.Reservations {
+			for _, i := range res.Instances {
+				if i.State != nil && (i.State.Name == ec2types.InstanceStateNameStopped || i.State.Name == ec2types.InstanceStateNameStopping) {
+					return done, nil
+				}
+			}
+		}
 		return nil, fmt.Errorf("instance %s does not carry %s=%s, so it is not stopped", in.ID, onboard.InstanceTag, req.ID)
 	}
 	if _, err := c.StopInstances(ctx, &ec2.StopInstancesInput{InstanceIds: []string{in.ID}}); err != nil {
@@ -136,8 +146,7 @@ func stopInstance(ctx context.Context, ec2For func(string) *ec2.Client, req job.
 	if _, err := c.DeleteTags(ctx, &ec2.DeleteTagsInput{Resources: []string{in.ID}, Tags: []ec2types.Tag{{Key: &key}}}); err != nil {
 		return nil, fmt.Errorf("stopped %s, but its tag stays: %w", in.ID, err)
 	}
-	now := time.Now().UTC()
-	return []apiv1.OnboardingLegacyChange{{Kind: apiv1.OnboardingLegacyChangeKindInstanceTagged, Target: in.ID, UndoneAt: &now}}, nil
+	return done, nil
 }
 
 // cutover is job.Cutover over the plan service and the runner.
@@ -159,13 +168,13 @@ func (c cutover) Start(ctx context.Context, o runs.StartOptions) (apiv1.Run, err
 	return c.runs.Start(ctx, o)
 }
 func (c cutover) Get(ctx context.Context, id string) (apiv1.Run, error) { return c.runs.Get(ctx, id) }
-func (c cutover) FindRun(ctx context.Context, planID string) (apiv1.Run, bool, error) {
+func (c cutover) FindRun(ctx context.Context, planRef string) (apiv1.Run, bool, error) {
 	list, err := c.runs.List(ctx)
 	if err != nil {
 		return apiv1.Run{}, false, err
 	}
 	for _, r := range list { // newest first
-		if r.PlanId == planID {
+		if r.PlanRef == planRef && r.RollbackOf == nil {
 			return r, true, nil
 		}
 	}

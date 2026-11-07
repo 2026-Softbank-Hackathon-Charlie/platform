@@ -851,6 +851,9 @@ func (r *Runner) syncing(ctx context.Context, x *rec) (bool, error) {
 		return false, fmt.Errorf("%w: source database or DNS", ErrNotConfigured)
 	}
 	f := x.facts
+	if f == nil || f.DB == nil {
+		return false, errors.New("the facts have no database")
+	}
 	su, err := r.open(x, secrets.OnboardingSuperuserPassword, x.row.SuperuserPasswordNonce, x.row.SuperuserPasswordCiphertext)
 	if err != nil {
 		return false, err
@@ -871,17 +874,15 @@ func (r *Runner) syncing(ctx context.Context, x *rec) (bool, error) {
 			return false, err
 		}
 		if target.Bucket == "" {
-			r.event(ctx, x, apiv1.OnboardingEventKindLog, "the source has files in "+f.Storage.Bucket+", but the app has no bucket in "+x.doc.TargetEnv+" (an s3 resource in platform.yaml) to copy them to; it does not get ready", nil)
-			return false, nil
+			return false, r.noteOnce(ctx, x, "the source has files in "+f.Storage.Bucket+", but the app has no bucket in "+x.doc.TargetEnv+" (an s3 resource in platform.yaml) to copy them to; it does not get ready")
 		}
 		copied, pending, err = r.cfg.Files.Copy(ctx, env, onboard.SourceName+":"+f.Storage.Bucket, target.Bucket)
 		if err != nil {
 			r.event(ctx, x, apiv1.OnboardingEventKindLog, "file copy: "+err.Error(), nil)
 			pending = onboard.MaxFileDiff + 1
 		}
-	} else if f != nil && f.Storage != nil {
-		r.event(ctx, x, apiv1.OnboardingEventKindLog, "the source has files, but this server cannot copy them (no rclone); it does not get ready", nil)
-		return false, nil
+	} else if f.Storage != nil {
+		return false, r.noteOnce(ctx, x, "the source has files, but this server cannot copy them (no rclone); it does not get ready")
 	}
 	host := strings.TrimPrefix(x.doc.ServiceUrl, "https://")
 	vmIP := ""
@@ -1044,6 +1045,19 @@ func (r *Runner) decommissioning(ctx context.Context, x *rec) (bool, error) {
 		r.event(ctx, x, apiv1.OnboardingEventKindHuman, "the source is no longer routed; confirm stopping the instance (decommission)", nil)
 	}
 	return false, nil
+}
+
+// noteOnce appends a log event once while the onboarding stays in its state.
+func (r *Runner) noteOnce(ctx context.Context, x *rec, msg string) error {
+	if x.doc.Internal.Noted == x.row.State+": "+msg {
+		return nil
+	}
+	r.event(ctx, x, apiv1.OnboardingEventKindLog, msg, nil)
+	_, err := r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
+		x.doc.Internal.Noted = x.row.State + ": " + msg
+		return "", nil
+	})
+	return err
 }
 
 // markUndone copies UndoneAt of undone onto the row's changes.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -143,6 +144,9 @@ func (r *Runner) kick(id string) {
 		defer func() {
 			if p := recover(); p != nil {
 				r.cfg.Log.Error("onboarding step panicked", "onboarding", id, "panic", fmt.Sprint(p))
+				if x, err := r.load(ctx, id); err == nil && x.row.State != store.OnboardingFailed && x.row.State != store.OnboardingDone {
+					_ = r.fail(ctx, id, x.row.State, fmt.Errorf("the %s step failed unexpectedly: %v", x.row.State, p))
+				}
 			}
 		}()
 		r.Advance(ctx, id)
@@ -400,10 +404,15 @@ func (r *Runner) Decommission(ctx context.Context, id, actor string) (apiv1.Onbo
 	if r.cfg.Connect == nil {
 		return apiv1.Onboarding{}, ErrNotConfigured
 	}
-	undone, err := r.cfg.Connect.StopInstance(ctx, r.connectReq(x))
-	r.markUndone(ctx, id, undone)
-	if err != nil {
-		return apiv1.Onboarding{}, err
+	// Stopped already (the tag came off with it): only the state is left.
+	if !slices.ContainsFunc(x.doc.LegacyChanges, func(c apiv1.OnboardingLegacyChange) bool {
+		return c.Kind == apiv1.OnboardingLegacyChangeKindInstanceTagged && c.UndoneAt != nil
+	}) {
+		undone, err := r.cfg.Connect.StopInstance(ctx, r.connectReq(x))
+		r.markUndone(ctx, id, undone)
+		if err != nil {
+			return apiv1.Onboarding{}, err
+		}
 	}
 	x, err = r.update(ctx, id, []string{store.OnboardingDecommissioning}, func(x *rec) (string, error) {
 		return store.OnboardingDone, nil

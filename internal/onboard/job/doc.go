@@ -51,6 +51,8 @@ type internal struct {
 
 	// syncing
 	DNSAt *time.Time `json:"dnsAt,omitempty"`
+	// Noted is the last noteOnce event, with the state it was noted in.
+	Noted string `json:"noted,omitempty"`
 
 	// cutting_over
 	Attempt int    `json:"attempt,omitempty"`

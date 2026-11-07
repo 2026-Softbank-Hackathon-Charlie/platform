@@ -41,6 +41,14 @@ func (r *Runner) Cutover(ctx context.Context, id, actor string) (apiv1.Onboardin
 	}
 	// The state first: nothing deploys the app from here (CuttingOver).
 	attempt := x.doc.Internal.Attempt + 1
+	r.mu.Lock()
+	r.starting[id] = true
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.starting, id)
+		r.mu.Unlock()
+	}()
 	x, err = r.update(ctx, id, []string{store.OnboardingReady}, func(x *rec) (string, error) {
 		if x.doc.Deleting {
 			return "", ErrDeleting
@@ -52,13 +60,7 @@ func (r *Runner) Cutover(ctx context.Context, id, actor string) (apiv1.Onboardin
 	if err != nil {
 		return apiv1.Onboarding{}, err
 	}
-	r.mu.Lock()
-	r.starting[id] = true
-	r.mu.Unlock()
 	run, err := r.startRun(ctx, x, actor)
-	r.mu.Lock()
-	delete(r.starting, id)
-	r.mu.Unlock()
 	if err != nil {
 		_ = r.fail(ctx, id, store.OnboardingCuttingOver, fmt.Errorf("the cutover did not start: %w", err))
 		o, _ := r.Get(ctx, id)
@@ -295,7 +297,10 @@ func (r *Runner) cuttingOver(ctx context.Context, x *rec) (bool, error) {
 			return false, nil // Cutover is starting it
 		}
 		// The server stopped between the reservation and storing the run.
-		run, ok, err := r.cfg.Cutover.FindRun(ctx, onboard.PlanID(x.row.ID, x.doc.Internal.Attempt))
+		if x.doc.Internal.PlanRef == "" {
+			return false, errors.New("the cutover's plan was not reserved; resume goes back to ready")
+		}
+		run, ok, err := r.cfg.Cutover.FindRun(ctx, x.doc.Internal.PlanRef)
 		if err != nil {
 			return false, err
 		}

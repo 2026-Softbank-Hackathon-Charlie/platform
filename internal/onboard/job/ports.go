@@ -234,8 +234,8 @@ type Cutover interface {
 	RejectOnboarding(ctx context.Context, ref, reason string)
 	Start(ctx context.Context, o runs.StartOptions) (apiv1.Run, error)
 	Get(ctx context.Context, runID string) (apiv1.Run, error)
-	// FindRun is the newest run of the plan id, if any.
-	FindRun(ctx context.Context, planID string) (apiv1.Run, bool, error)
+	// FindRun is the newest run of the plan ref that rolls back nothing.
+	FindRun(ctx context.Context, planRef string) (apiv1.Run, bool, error)
 }
 
 // SourceDB checks the route to the source and changes the new primary.

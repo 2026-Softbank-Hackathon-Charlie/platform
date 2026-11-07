@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -42,22 +40,32 @@ type OnboardingScope struct {
 	// only target.app.smokeUrl the plan may have (the engine needs one for
 	// a cold app); its smoke requests must be GET or HEAD.
 	SmokeURL string
-	// Password is the fence user's password: LegacyPasswordEnv is set to
-	// it only while the plan is parsed, under a lock, and unset right after.
+	// Password is the fence user's password, put into source.dsn in place
+	// of ${LegacyPasswordEnv} only for plan.Parse (expandLegacy).
 	Password string
 }
 
-// legacyEnvMu serializes setting LegacyPasswordEnv for a parse.
-var legacyEnvMu sync.Mutex
-
-// parseOnboarding parses raw with the onboarding's policy, with
-// LegacyPasswordEnv in the process environment for plan.Parse only.
+// parseOnboarding parses raw with the onboarding's policy. The fence
+// password never enters the process environment: once the policy checked
+// the plan as submitted, the one ${LegacyPasswordEnv} of source.dsn is
+// replaced with the password itself (expandLegacy) before plan.Parse.
 func (s *Service) parseOnboarding(ctx context.Context, policy Policy, raw []byte, scope OnboardingScope) (*plan.Plan, apiv1.PlanSummary, error) {
-	legacyEnvMu.Lock()
-	defer legacyEnvMu.Unlock()
-	_ = os.Setenv(LegacyPasswordEnv, scope.Password)
-	defer os.Unsetenv(LegacyPasswordEnv)
 	return s.parseWith(ctx, policy.withOnboarding(scope), raw)
+}
+
+// expandLegacy is raw with ${LegacyPasswordEnv} replaced by password,
+// escaped for a URL's userinfo and then for a JSON string.
+func expandLegacy(raw []byte, password string) []byte {
+	var b strings.Builder
+	for i := 0; i < len(password); i++ {
+		c := password[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("-._~", c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return bytes.ReplaceAll(raw, []byte("${"+LegacyPasswordEnv+"}"), []byte(b.String())) // percent-encoded: nothing to escape in JSON
 }
 
 // OnboardingScopes finds the scope of an onboarding's plan by its id, for

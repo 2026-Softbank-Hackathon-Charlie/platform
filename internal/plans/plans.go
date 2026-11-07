@@ -126,6 +126,9 @@ func (s *Service) parseWith(ctx context.Context, policy Policy, raw []byte) (*pl
 			return nil, apiv1.PlanSummary{}, fmt.Errorf("provide the database passwords: %w", err)
 		}
 	}
+	if o := policy.onboarding; o != nil {
+		raw = expandLegacy(raw, o.Password)
+	}
 	// The engine's errors name fields, never expanded values.
 	p, err := plan.Parse(raw)
 	if err != nil {
