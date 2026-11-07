@@ -127,6 +127,9 @@ type Config struct {
 	Tailnet    string
 	ProxyClass string // the operator ProxyClass of the proxies
 	Tag        string // the proxies' tailnet tag
+	// LegacyNamespace is where onboardings' routes to their sources go
+	// (legacy.go); empty is the environments' routes' namespace.
+	LegacyNamespace string
 	Log        *slog.Logger
 }
 
