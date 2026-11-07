@@ -94,6 +94,8 @@ type File struct {
 type DBTopology struct {
 	Primary, Peer string
 	PeerAbsent    bool
+	// Members extends the original pair; nil preserves the legacy values.
+	Members []string
 }
 
 // fileHeader starts every gitops file.
@@ -176,20 +178,32 @@ func Render(f File) ([]byte, error) {
 		}
 	}
 	if t := f.DBTopology; t != nil {
+		members := t.Members
+		if len(members) == 0 {
+			members = []string{t.Primary, t.Peer}
+		}
 		hasPG := slices.ContainsFunc(f.Spec.Resources, func(r appspec.Resource) bool { return r.Type == appspec.TypePostgres })
 		switch {
 		case !hasPG:
 			return nil, fmt.Errorf("render %s: a database topology needs a postgres resource", FilePath(f.Instance, f.Env))
 		case f.Sealed == nil || len(f.Sealed.PGApp) == 0 || len(f.Sealed.PGCA) == 0:
 			return nil, fmt.Errorf("render %s: a database topology needs the sealed app account and CA", FilePath(f.Instance, f.Env))
-		case t.Primary == t.Peer || (f.Env != t.Primary && f.Env != t.Peer):
+		case t.Primary == t.Peer || !slices.Contains(members, f.Env):
 			return nil, fmt.Errorf("render %s: database topology %s/%s does not fit environment %s", FilePath(f.Instance, f.Env), t.Primary, t.Peer, f.Env)
+		case len(t.Members) > 0 && (len(members) < 2 || len(members) > 3 || t.PeerAbsent || !slices.Contains(members, t.Primary) || !slices.Contains(members, t.Peer) || slices.Contains(members, "") || len(slices.Compact(slices.Sorted(slices.Values(members)))) != len(members)):
+			return nil, fmt.Errorf("render %s: invalid database group membership", FilePath(f.Instance, f.Env))
 		case t.PeerAbsent && f.Env != t.Primary:
 			return nil, fmt.Errorf("render %s: the peer %s of the database topology is not one of the app's environments, so only the primary's file is rendered", FilePath(f.Instance, f.Env), t.Peer)
 		}
 		b.WriteString("  dbTopology:\n")
 		fmt.Fprintf(&b, "    primary: %s\n", q(t.Primary))
 		fmt.Fprintf(&b, "    peer: %s\n", q(t.Peer))
+		if len(t.Members) > 0 {
+			b.WriteString("    members:\n")
+			for _, member := range t.Members {
+				fmt.Fprintf(&b, "      - %s\n", q(member))
+			}
+		}
 		if t.PeerAbsent {
 			b.WriteString("    peerPresent: false\n")
 		}

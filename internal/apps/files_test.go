@@ -22,7 +22,6 @@ import (
 var fileEnvs = []envs.EnvConfig{
 	{Name: "gke", Storage: &storage.Config{Driver: storage.DriverGCS, BucketPrefix: "hopcharlie-gke-", Region: "asia-northeast3", Project: "my-project-1"}},
 	{Name: "eks", Storage: &storage.Config{Driver: storage.DriverAWS, BucketPrefix: "hopcharlie-eks-", Region: "ap-northeast-2"}},
-	{Name: "onprem", Storage: &storage.Config{Driver: storage.DriverMinIO, BucketPrefix: "hopcharlie-op-"}},
 	{Name: "bare"},
 }
 
@@ -41,7 +40,7 @@ func TestEnableFiles(t *testing.T) {
 		t.Fatal("yes: no error")
 	}
 	if _, err := EnableFiles("1", fileEnvs[2:], lookup, setenv); err == nil {
-		t.Fatal("no aws or gcs environment: no error")
+		t.Fatal("no supported storage environment: no error")
 	}
 
 	f, err := EnableFiles("1", fileEnvs, lookup, setenv)
@@ -87,6 +86,117 @@ func TestEnableFiles(t *testing.T) {
 
 	if _, err := EnableFiles("1", fileEnvs, lookup, func(string, string) error { return errors.New("no") }); err == nil {
 		t.Error("setenv failure: no error")
+	}
+}
+
+func minioFileEnv() envs.EnvConfig {
+	return envs.EnvConfig{Name: "onprem", Storage: &storage.Config{
+		Driver: storage.DriverMinIO, BucketPrefix: "hopcharlie-op-", Endpoint: "https://minio.internal:9000",
+		Region: "onprem-1", AdminAccessKeyEnv: "MINIO_ADMIN_ACCESS", AdminSecretKeyEnv: "MINIO_ADMIN_SECRET",
+	}}
+}
+
+func TestEnableFilesMinIO(t *testing.T) {
+	e := minioFileEnv()
+	have := map[string]string{"MINIO_ADMIN_ACCESS": "test-access", "MINIO_ADMIN_SECRET": "test-secret"}
+	lookup := func(k string) (string, bool) { v, ok := have[k]; return v, ok }
+	set := map[string]string{}
+	f, err := EnableFiles("1", append(fileEnvs, e), lookup, func(k, v string) error { set[k] = v; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"TYPE": "s3", "PROVIDER": "Minio", "ENV_AUTH": "false", "REGION": "onprem-1",
+		"ENDPOINT": "https://minio.internal:9000", "FORCE_PATH_STYLE": "true", "NO_CHECK_BUCKET": "true",
+		"ACCESS_KEY_ID": "test-access", "SECRET_ACCESS_KEY": "test-secret",
+	}
+	for k, v := range want {
+		if set["RCLONE_CONFIG_ONPREM_"+k] != v {
+			t.Errorf("wrong MinIO variable %s", k)
+		}
+	}
+	for k := range set {
+		if !strings.HasPrefix(k, "RCLONE_CONFIG_") {
+			t.Errorf("unexpected global variable %s", k)
+		}
+	}
+	if f.BucketPrefixes["onprem"] != e.Storage.BucketPrefix || !reflect.DeepEqual(f.Set, []string{"gke", "eks", "onprem"}) {
+		t.Fatalf("files metadata %+v", f)
+	}
+	// Public metadata and the returned Files struct contain no key values.
+	for _, v := range RemoteEnv(e) {
+		if v == "test-access" || v == "test-secret" {
+			t.Fatal("RemoteEnv contains a key")
+		}
+	}
+	raw, _ := json.Marshal(f)
+	if strings.Contains(string(raw), "test-secret") || strings.Contains(string(raw), "test-access") {
+		t.Fatal("Files metadata contains a key")
+	}
+	r := &Registry{BucketPrefixes: f.BucketPrefixes}
+	if got := r.fileBucket("onprem", "mig"); got != "onprem:hopcharlie-op-mig" {
+		t.Fatalf("onprem bucket %q", got)
+	}
+}
+
+func TestEnableFilesMinIOInvalidConfigFailsBeforeAnySet(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*envs.EnvConfig, map[string]string)
+	}{
+		{"missing endpoint", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.Endpoint = "" }},
+		{"bad endpoint", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.Endpoint = "https://test-secret@[bad" }},
+		{"userinfo", func(e *envs.EnvConfig, _ map[string]string) {
+			e.Storage.Endpoint = "https://test-secret@minio.internal"
+		}},
+		{"query", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.Endpoint += "?token=test-secret" }},
+		{"fragment", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.Endpoint += "#test-secret" }},
+		{"path", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.Endpoint += "/test-secret" }},
+		{"bad scheme", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.Endpoint = "file:///test-secret" }},
+		{"missing prefix", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.BucketPrefix = "" }},
+		{"path prefix", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.BucketPrefix = "a/path-" }},
+		{"uppercase prefix", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.BucketPrefix = "Bad-" }},
+		{"bad reference", func(e *envs.EnvConfig, _ map[string]string) { e.Storage.AdminSecretKeyEnv = "test-secret" }},
+		{"missing credential", func(_ *envs.EnvConfig, have map[string]string) { delete(have, "MINIO_ADMIN_ACCESS") }},
+		{"blank credential", func(_ *envs.EnvConfig, have map[string]string) { have["MINIO_ADMIN_SECRET"] = " \t" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := minioFileEnv()
+			have := map[string]string{"MINIO_ADMIN_ACCESS": "test-access", "MINIO_ADMIN_SECRET": "test-secret"}
+			tc.change(&e, have)
+			sets := 0
+			f, err := EnableFiles("1", append(fileEnvs, e), func(k string) (string, bool) { v, ok := have[k]; return v, ok }, func(string, string) error { sets++; return nil })
+			if f != nil || err == nil || sets != 0 {
+				t.Fatalf("f=%v err=%v sets=%d", f, err, sets)
+			}
+			if strings.Contains(err.Error(), "test-secret") || strings.Contains(err.Error(), "test-access") {
+				t.Fatal("error exposed input credentials")
+			}
+		})
+	}
+}
+
+func TestEnableFilesPreservesExistingMinIORemote(t *testing.T) {
+	e := minioFileEnv()
+	e.Storage.Endpoint, e.Storage.AdminAccessKeyEnv, e.Storage.AdminSecretKeyEnv = "", "", ""
+	lookups := []string{}
+	f, err := EnableFiles("1", []envs.EnvConfig{e}, func(k string) (string, bool) {
+		lookups = append(lookups, k)
+		return "s3", k == "RCLONE_CONFIG_ONPREM_TYPE"
+	}, func(string, string) error { t.Fatal("overwrote existing remote"); return nil })
+	if err != nil || !reflect.DeepEqual(f.Kept, []string{"onprem"}) || !reflect.DeepEqual(lookups, []string{"RCLONE_CONFIG_ONPREM_TYPE"}) {
+		t.Fatalf("f=%+v err=%v lookups=%v", f, err, lookups)
+	}
+}
+
+func TestEnableFilesSetterErrorDoesNotExposeSecret(t *testing.T) {
+	sets := 0
+	_, err := EnableFiles("1", []envs.EnvConfig{minioFileEnv()}, func(k string) (string, bool) { return "test-secret", k != "RCLONE_CONFIG_ONPREM_TYPE" }, func(_, v string) error { sets++; return errors.New(v) })
+	if err == nil || strings.Contains(err.Error(), "test-secret") {
+		t.Fatalf("credential error was not redacted: %v", err)
+	}
+	if sets != 1 {
+		t.Fatalf("setter was not tested: %d calls", sets)
 	}
 }
 

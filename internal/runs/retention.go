@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
 )
 
 func (r *Runner) retirementJob(ctx context.Context, id string) (*retention.Job, error) {
@@ -59,6 +61,70 @@ func (r *Runner) saveRetirement(ctx context.Context, j retention.Job) error {
 	}
 	_, err = r.cfg.Store.AppendEvent(ctx, store.Event{RunID: j.RunID, Time: r.now(), Kind: retention.Event, Message: j.Status, Data: b})
 	return err
+}
+
+// A third member can still stream through the old source after cutover.
+// Until deletion reconciles every member's replication path, retain the source
+// even when a manually submitted plan omitted AllowSourceRewire. Store errors
+// are unknown membership, never permission to delete. File apps with no
+// registered row and the existing two-member path remain unchanged.
+func (r *Runner) retirementDatabaseGroupBlock(ctx context.Context, p *plan.Plan) string {
+	if p == nil {
+		return "database_group_identity_unavailable"
+	}
+	if p.AllowSourceRewire {
+		return "three_environment_group_requires_reconciliation"
+	}
+	a, err := r.cfg.Store.GetApp(ctx, p.Source.Namespace)
+	if errors.Is(err, store.ErrNotFound) {
+		return ""
+	}
+	if err != nil {
+		return "database_group_membership_unavailable"
+	}
+	if len(a.Environments) < 3 {
+		return ""
+	}
+	db, err := r.cfg.Store.GetAppDatabase(ctx, a.Name)
+	if err != nil {
+		return "database_group_identity_unavailable"
+	}
+	if a.Name != p.Source.Namespace || db.App != a.Name {
+		return "database_group_identity_unavailable"
+	}
+	var spec appspec.Spec
+	if json.Unmarshal(a.Spec, &spec) != nil {
+		return "database_group_spec_invalid"
+	}
+	matched, hasPostgres := false, false
+	for _, res := range spec.Resources {
+		if res.Type == appspec.TypePostgres {
+			hasPostgres = true
+			matched = matched || (res.Name != "" && p.Source.Cluster == a.Name+"-"+res.Name)
+		}
+	}
+	if !hasPostgres {
+		return "database_group_spec_invalid"
+	}
+	// A static app may share a namespace with another registered app; only
+	// match the registered default instance's actual database resource.
+	if !matched {
+		return ""
+	}
+	if !slices.Contains(a.Environments, p.Source.Env) || !slices.Contains(a.Environments, db.PrimaryEnv) || !slices.Contains(a.Environments, db.PeerEnv) || p.Target.Env == p.Source.Env || !slices.Contains(a.Environments, p.Target.Env) || p.Target.Namespace != a.Name || p.Target.Cluster != p.Source.Cluster {
+		return "database_group_endpoint_mismatch"
+	}
+	return "three_environment_group_requires_reconciliation"
+}
+
+func (r *Runner) blockRetirement(ctx context.Context, j *retention.Job, reason string) error {
+	if j.Status != "deleting" {
+		j.Status = "blocked"
+	}
+	// Keep an interrupted deletion quarantined; changing it back to blocked
+	// would permit a new migration to reuse an object already being removed.
+	j.Reason = reason
+	return r.saveRetirement(ctx, *j)
 }
 
 // retirementGuard runs while r.mu is held, before any engine action. It shares
@@ -199,6 +265,9 @@ func (r *Runner) retireSource(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if reason := r.retirementDatabaseGroupBlock(ctx, p); reason != "" {
+		return r.blockRetirement(ctx, j, reason)
+	}
 	if doc.Status != apiv1.RunStatusSucceeded || doc.EndedAt == nil || doc.Result.Verified == nil || !*doc.Result.Verified || (doc.Observe != nil && (doc.Observe.Passed == nil || !*doc.Observe.Passed)) {
 		if j.Status != "deleting" {
 			j.Status = "blocked"
@@ -279,6 +348,11 @@ func (r *Runner) retireSource(ctx context.Context, id string) error {
 	}
 	if err := lease.Check(ctx); err != nil {
 		return err
+	}
+	// Re-read membership after the live backend checks and immediately before
+	// removal, including when resuming a persisted deleting job.
+	if reason := r.retirementDatabaseGroupBlock(ctx, p); reason != "" {
+		return r.blockRetirement(ctx, j, reason)
 	}
 	done, err := r.cfg.Retention.Remove(ctx, p, *j)
 	if err != nil {

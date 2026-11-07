@@ -25,10 +25,14 @@ func TestNewAppDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
-	for _, envs := range [][]string{nil, {"gke"}, {"gke", "gke"}, {"gke", "eks", "onprem"}} {
+	for _, envs := range [][]string{nil, {"gke"}, {"gke", "gke"}, {"gke", "eks", "gke"}, {"gke", "eks", "onprem", "fourth"}} {
 		if _, err := NewAppDatabase(c, "shop", envs, now); err == nil {
 			t.Errorf("environments %q: no error", envs)
 		}
+	}
+	third, err := NewAppDatabase(c, "three", []string{"gke", "eks", "onprem"}, now)
+	if err != nil || third.PrimaryEnv != "gke" || third.PeerEnv != "eks" {
+		t.Fatalf("three-member group did not preserve its birth anchors: %v", err)
 	}
 	row, err := NewAppDatabase(c, "shop", []string{"gke", "eks"}, now)
 	if err != nil {

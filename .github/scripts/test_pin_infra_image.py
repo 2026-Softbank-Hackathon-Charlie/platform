@@ -63,6 +63,53 @@ class FakeAPI:
 
 
 class PinTests(unittest.TestCase):
+    def test_flavor_change_never_writes_infra(self):
+        for old, new in [(OLD.replace(":7654321@", ":7654321-minio@"), IMAGE),
+                         (OLD, IMAGE.replace(":1234567@", ":1234567-minio@"))]:
+            with self.subTest(old=old):
+                api = FakeAPI(old)
+                with self.assertRaises(MODULE.FlavorPreserved):
+                    MODULE.pin({**ENV, "IMAGE": new}, api)
+                self.assertEqual(api.writes, [])
+
+    def test_same_minio_flavor_can_be_pinned_without_changing_flavor(self):
+        api = FakeAPI(OLD.replace(":7654321@", ":7654321-minio@"))
+        image = IMAGE.replace(":1234567@", ":1234567-minio@")
+        self.assertEqual(MODULE.pin({**ENV, "IMAGE": image}, api), "created-sha")
+        changes = {item["path"]: json.loads(item["content"]) for item in api.writes[0][2]["tree"]}
+        self.assertEqual(changes[MODULE.VALUES_PATH]["images"]["platform"], image)
+        self.assertEqual(changes[MODULE.LOCK_PATH]["images"][image.split("@")[0]], image.split("@")[1])
+
+    def test_unknown_flavor_and_wrong_source_tag_fail_before_api(self):
+        for tag in ("1234567-gpu", "7654321-minio", "1234567-minio-minio"):
+            api = FakeAPI()
+            with self.assertRaises(ValueError):
+                MODULE.pin({**ENV, "IMAGE": IMAGE.replace(":1234567@", f":{tag}@")}, api)
+            self.assertEqual(api.calls, [])
+
+    def test_flavor_is_rechecked_when_infra_moves(self):
+        api = FakeAPI(rejections=1)
+        def request(method, endpoint, payload=None):
+            try:
+                return api(method, endpoint, payload)
+            except MODULE.NotFastForward:
+                api.values["images"]["platform"] = OLD.replace(":7654321@", ":7654321-minio@")
+                api.lock["images"] = {api.values["images"]["platform"].split("@")[0]: OLD.split("@")[1]}
+                raise
+        with self.assertRaises(MODULE.FlavorPreserved):
+            MODULE.pin(ENV, request)
+        self.assertEqual(len([call for call in api.writes if call[0] == "PATCH"]), 1)
+
+    def test_skipped_summary_does_not_claim_current_or_deployed(self):
+        with unittest.mock.patch.dict(MODULE.os.environ, ENV, clear=True), \
+             unittest.mock.patch.object(MODULE, "pin", side_effect=MODULE.FlavorPreserved("preserved")), \
+             unittest.mock.patch.object(MODULE, "write_summary") as write:
+            MODULE.main()
+        summary = write.call_args.args[0]
+        self.assertIn("infra pin skipped", summary)
+        self.assertIn("No infra pin was applied", summary)
+        self.assertNotIn("already pins", summary)
+
     def test_commits_only_the_platform_pin_to_main_fast_forward(self):
         api = FakeAPI()
         original_values, original_lock = copy.deepcopy(api.values), copy.deepcopy(api.lock)

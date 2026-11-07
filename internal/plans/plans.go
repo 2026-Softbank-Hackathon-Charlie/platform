@@ -109,6 +109,21 @@ func (s *Service) parse(ctx context.Context, raw []byte) (*plan.Plan, apiv1.Plan
 	if err := policy.checkParsed(p, hosts); err != nil {
 		return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
+	if p.AllowSourceRewire {
+		guard, ok := s.appDBs.(interface {
+			SourceRewireAllowed(context.Context, *plan.Plan) (bool, error)
+		})
+		if !ok {
+			return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: source rewiring requires a registered three-environment database group", ErrInvalid)
+		}
+		allowed, err := guard.SourceRewireAllowed(ctx, p)
+		if err != nil {
+			return nil, apiv1.PlanSummary{}, fmt.Errorf("read the source rewire authorization: %w", err)
+		}
+		if !allowed {
+			return nil, apiv1.PlanSummary{}, fmt.Errorf("%w: source rewiring does not match a registered three-environment database group", ErrInvalid)
+		}
+	}
 	return p, summarize(p, hosts), nil
 }
 

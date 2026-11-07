@@ -1,5 +1,5 @@
 {{- /*
-The tailnet path between the two environments' databases of a
+The tailnet paths between the environments' databases of a
 values.dbTopology app (infra ADR 0063). The Tailscale operator in
 profile.dbNetwork.proxyNamespace runs a proxy for each Service; the
 hopcharlie-db-network release's ProxyClasses label those proxies and its
@@ -16,6 +16,7 @@ shared NetworkPolicies admit them.
 {{- /* No peer yet (peerPresent false, infra ADR 0074): the tailnet objects come when the peer environment is added. */}}
 {{- if $topo.peerPresent }}
 {{- $ns := .Release.Namespace }}
+{{- $root := . }}
 # This database's primary on the tailnet, for the peer's replica. Drawn on
 # both sides: after a migration this side is the one the peer follows.
 apiVersion: v1
@@ -36,6 +37,7 @@ spec:
     cnpg.io/instanceRole: primary
   ports:
     - {name: postgres, port: 5432, targetPort: 5432, protocol: TCP}
+{{- range $topo.peers }}
 ---
 # The peer's database, the externalCluster this side replicates from. The
 # operator replaces externalName with its proxy's address; the
@@ -43,12 +45,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $topo.egressService }}
+  name: {{ .egressService }}
   labels:
-    {{- include "hopcharlie-app.namespaceLabels" . | nindent 4 }}
+    {{- include "hopcharlie-app.namespaceLabels" $root | nindent 4 }}
   annotations:
-    tailscale.com/tailnet-fqdn: {{ printf "%s.%s" $topo.peerHost $net.tailnetDomain | quote }}
-    tailscale.com/hostname: {{ $topo.egressHost | quote }}
+    tailscale.com/tailnet-fqdn: {{ printf "%s.%s" .peerHost $net.tailnetDomain | quote }}
+    tailscale.com/hostname: {{ .egressHost | quote }}
     tailscale.com/tags: {{ $net.egressTag | quote }}
     tailscale.com/proxy-class: {{ $net.egressProxyClass | quote }}
 spec:
@@ -56,6 +58,7 @@ spec:
   externalName: placeholder
   ports:
     - {name: postgres, port: 5432, targetPort: 5432, protocol: TCP}
+{{- end }}
 {{- if .Values.profile.networkPolicy.enabled }}
 ---
 # Replication through the two proxies, which run in the operator's
@@ -84,16 +87,18 @@ spec:
       ports:
         - {protocol: TCP, port: 5432}
   egress:
+    {{- range $topo.peers }}
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $net.proxyNamespace }}
           podSelector:
             matchLabels:
-              tailscale.com/parent-resource: {{ $topo.egressService | quote }}
+              tailscale.com/parent-resource: {{ .egressService | quote }}
               tailscale.com/parent-resource-ns: {{ $ns | quote }}
       ports:
         - {protocol: TCP, port: 5432}
+    {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

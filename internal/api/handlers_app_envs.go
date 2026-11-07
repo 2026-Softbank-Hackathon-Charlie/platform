@@ -108,12 +108,37 @@ func (s *Server) addAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		case err != nil:
 			s.internal(w, r, err)
 			return
-		case db.PeerEnv != env && db.PrimaryEnv != env:
-			s.fail(w, r, http.StatusConflict, "db_pair_unavailable", fmt.Sprintf("the database pair of %s is between %s and %s, so its database in %s would be a primary of its own that can never be migrated to", app.Name, db.PrimaryEnv, db.PeerEnv, env))
+		case !slices.Contains(s.cfg.AppDBEnvs, env):
+			s.fail(w, r, http.StatusConflict, "db_pair_unavailable", fmt.Sprintf("environment %s has no registered database host template", env))
+			return
+		case !present && len(app.Environments) >= 3:
+			s.fail(w, r, http.StatusConflict, "db_group_full", "a registered database group supports at most three environments")
 			return
 		case s.isFileApp(app.Name):
 			s.fail(w, r, http.StatusConflict, "db_pair_unavailable", fmt.Sprintf("app %s is also in PLATFORM_APPS_FILE, whose entry is what migrations use, so its database pair cannot be migrated", app.Name))
 			return
+		}
+		if db.PrimaryEnv != env && db.PeerEnv != env {
+			if (!present && len(app.Environments) != 2) || !slices.Contains(app.Environments, db.PrimaryEnv) || !slices.Contains(app.Environments, db.PeerEnv) {
+				s.fail(w, r, http.StatusConflict, "db_pair_unavailable", "add the original database peer before extending the group")
+				return
+			}
+			// A new member bootstraps from the birth primary. Never create it
+			// with a stale primary identity after a previous migration.
+			if s.d.DBCluster == nil {
+				s.fail(w, r, http.StatusServiceUnavailable, "db_primary_unknown", "cannot confirm the bootstrap primary without workload cluster reads")
+				return
+			}
+			i := slices.IndexFunc(spec.Resources, func(res appspec.Resource) bool { return res.Type == appspec.TypePostgres })
+			cluster := deploy.ClusterName(app.Name, spec.Resources[i].Name)
+			cctx, cancel := context.WithTimeout(ctx, DBClusterTimeout)
+			st, readErr := s.d.DBCluster(cctx, db.PrimaryEnv, deploy.Namespace(app.Name), cluster)
+			cancel()
+			self := cluster + "-" + db.PrimaryEnv
+			if readErr != nil || st == nil || !st.Healthy() || st.Self != self || st.ReplicaPrimary != self {
+				s.fail(w, r, http.StatusConflict, "db_bootstrap_primary_required", fmt.Sprintf("migrate to %s and verify its primary before adding %s", db.PrimaryEnv, env))
+				return
+			}
 		}
 	}
 	if !s.storageReady(w, r, spec, []string{env}) {
@@ -262,6 +287,10 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	if app.Environments[0] == env || db.PrimaryEnv == env {
 		s.primaryEnvironment(w, r, app, env)
+		return
+	}
+	if db.App != "" && len(app.Environments) > 2 {
+		s.fail(w, r, http.StatusConflict, "db_group_removal_unsupported", "removing a member of a three-environment database group requires replica topology and backup generation reconciliation; no resources were removed")
 		return
 	}
 	instances, err := s.instanceNames(ctx, app)
