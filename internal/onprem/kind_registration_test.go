@@ -236,10 +236,10 @@ func TestRealBootstrapOnDisposableKind(t *testing.T) {
 	automountPod := basePod(probeNamespace)
 	automountPod.Spec.AutomountServiceAccountToken = nil
 	for _, entry := range []struct {
-		name   string
-		pod    *corev1.Pod
-		policy string
-	}{{"foreign restricted namespace with default identity", foreignDefaultPod, "hop-" + suffix + "-argo"}, {"foreign restricted namespace with strong identity", foreignPod, "hop-" + suffix + "-argo"}, {"owned namespace with non-default identity", ownedStrongPod, "hop-" + suffix + "-argo-workloads"}, {"explicit projected token", projectedPod, "hop-" + suffix + "-argo-workloads"}, {"implicit token automount", automountPod, "hop-" + suffix + "-argo-workloads"}} {
+		name     string
+		pod      *corev1.Pod
+		policies []string
+	}{{"foreign restricted namespace with default identity", foreignDefaultPod, []string{"hop-" + suffix + "-argo"}}, {"foreign restricted namespace with strong identity", foreignPod, []string{"hop-" + suffix + "-argo", "hop-" + suffix + "-argo-workloads"}}, {"owned namespace with non-default identity", ownedStrongPod, []string{"hop-" + suffix + "-argo-workloads"}}, {"explicit projected token", projectedPod, []string{"hop-" + suffix + "-argo-workloads"}}, {"implicit token automount", automountPod, []string{"hop-" + suffix + "-argo-workloads"}}} {
 		// Prove that RBAC permits this operation first. A generic Forbidden
 		// would not prove the owner/credential admission policy was installed.
 		access, accessErr := deployer.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authzv1.SelfSubjectAccessReview{Spec: authzv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authzv1.ResourceAttributes{Verb: "create", Resource: "pods", Namespace: entry.pod.Namespace}}}, metav1.CreateOptions{})
@@ -247,13 +247,38 @@ func TestRealBootstrapOnDisposableKind(t *testing.T) {
 			t.Fatal("negative admission fixture does not have Pod-create RBAC")
 		}
 		deadline := time.Now().Add(30 * time.Second)
+		lastReason, matchedPolicy, lastPolicy := "none", "", "none"
 		for {
 			_, denyErr := deployer.CoreV1().Pods(entry.pod.Namespace).Create(ctx, entry.pod, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
-			if denyErr != nil && (apierrors.IsForbidden(denyErr) || apierrors.IsInvalid(denyErr)) && (strings.Contains(denyErr.Error(), "'"+entry.policy+"'") || strings.Contains(denyErr.Error(), "\""+entry.policy+"\"")) {
+			lastReason = "Allowed"
+			if denyErr != nil {
+				lastReason = string(apierrors.ReasonForError(denyErr))
+				lastPolicy = "none"
+				for _, known := range []string{"hop-" + suffix + "-argo", "hop-" + suffix + "-argo-workloads"} {
+					if strings.Contains(denyErr.Error(), "'"+known+"'") || strings.Contains(denyErr.Error(), "\""+known+"\"") {
+						lastPolicy = known
+						break
+					}
+				}
+			}
+			if denyErr != nil && (apierrors.IsForbidden(denyErr) || apierrors.IsInvalid(denyErr)) {
+				// A foreign strong-SA Pod violates both independently tested
+				// policies. API-server evaluation order must not choose which
+				// denial is considered valid; generic RBAC denial still fails.
+				for _, policy := range entry.policies {
+					if strings.Contains(denyErr.Error(), "'"+policy+"'") || strings.Contains(denyErr.Error(), "\""+policy+"\"") {
+						matchedPolicy = policy
+						break
+					}
+				}
+			}
+			if matchedPolicy != "" {
 				break
 			}
 			if time.Now().After(deadline) || ctx.Err() != nil {
-				t.Fatalf("admission did not reject %s with the enrollment policy", entry.name)
+				// Report only status classification and known expected policy
+				// identifiers, never a raw API response or submitted object.
+				t.Fatalf("admission did not reject %s with expected enrollment policies %v; last API reason=%s, known policy=%s", entry.name, entry.policies, lastReason, lastPolicy)
 			}
 			select {
 			case <-ctx.Done():
@@ -261,7 +286,7 @@ func TestRealBootstrapOnDisposableKind(t *testing.T) {
 			case <-time.After(time.Second):
 			}
 		}
-		t.Log("real admission rejected " + entry.name)
+		t.Log("real admission rejected " + entry.name + " with policy " + matchedPolicy)
 	}
 	for {
 		observed, inspectErr := r.Inspect(ctx, state)
