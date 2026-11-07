@@ -74,6 +74,7 @@ type snapshot struct {
 	reviews   []Review
 	binary    string
 	report    Report
+	memo      *classificationMemo
 }
 
 func (s *snapshot) close() error {
@@ -84,12 +85,16 @@ func (s *snapshot) close() error {
 }
 
 func take(ctx context.Context, source string, reviews []Review, binary string, execute command) (_ *snapshot, err error) {
+	return takeCached(ctx, source, reviews, binary, execute, nil)
+}
+
+func takeCached(ctx context.Context, source string, reviews []Review, binary string, execute command, memo *classificationMemo) (_ *snapshot, err error) {
 	root, err := os.MkdirTemp("", "hopcharlie-inspect-")
 	if err != nil {
 		return nil, ErrRead
 	}
 	dir := filepath.Join(root, "data")
-	s := &snapshot{root: root, dir: dir, reviews: slices.Clone(reviews), binary: binary}
+	s := &snapshot{root: root, dir: dir, reviews: slices.Clone(reviews), binary: binary, memo: memo}
 	defer func() {
 		if err != nil {
 			if e := s.close(); e != nil {
@@ -132,7 +137,7 @@ func take(ctx context.Context, source string, reviews []Review, binary string, e
 	if openErr != nil {
 		return nil, ErrRead
 	}
-	s.report, err = scanEach(ctx, dir, s.inventory.walk, reviews, binary, &boundedWriter{manifest, 16 << 20})
+	s.report, err = scanEachCached(ctx, dir, s.inventory.walk, reviews, binary, memo, &boundedWriter{manifest, 16 << 20})
 	closeErr := manifest.Close()
 	if err != nil {
 		return nil, err
@@ -227,12 +232,20 @@ func (s *snapshot) verify(ctx context.Context) error {
 
 // Inspector downloads and scans without sending anything to a destination.
 // A start-time report is not reused as permission for later changed bytes.
-type Inspector struct{}
+type Inspector struct{ cache *ClassificationCache }
 
-func (Inspector) Inspect(ctx context.Context, source string, reviews []Review, binary string) (Report, error) {
+func NewInspector(cache *ClassificationCache) Inspector { return Inspector{cache: cache} }
+
+func (i Inspector) Inspect(ctx context.Context, source string, reviews []Review, binary string) (Report, error) {
+	return i.InspectBound(ctx, source, reviews, binary, "")
+}
+
+// InspectBound is for a server-owned Gate binding. An unbound Inspector never
+// reuses classifications. No approval report or remote inventory is cached.
+func (i Inspector) InspectBound(ctx context.Context, source string, reviews []Review, binary, binding string) (Report, error) {
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
-	s, err := take(ctx, source, reviews, binary, run)
+	s, err := takeCached(ctx, source, reviews, binary, run, newClassificationMemo(i.cache, binding, reviews, binary))
 	if err != nil {
 		return Report{}, err
 	}
@@ -253,10 +266,24 @@ type Syncer struct {
 	before         func(context.Context) error
 	authorize      func(context.Context, Report) error
 	execute        command
+	cache          *ClassificationCache
+	cacheBinding   string
 }
 
 func New(source, target string, reviews []Review, binary string, before func(context.Context) error, authorize func(context.Context, Report) error) *Syncer {
 	return &Syncer{source: source, target: target, reviews: slices.Clone(reviews), binary: binary, before: before, authorize: authorize, execute: run}
+}
+
+// WithClassificationCache returns a construction-time copy. Runtime calls have
+// their own counters and scanner budgets; only immutable classifications share
+// the Gate's bounded, synchronized cache.
+func (s *Syncer) WithClassificationCache(cache *ClassificationCache, binding string) *Syncer {
+	if s == nil {
+		return nil
+	}
+	scoped := *s
+	scoped.cache, scoped.cacheBinding = cache, binding
+	return &scoped
 }
 
 func (s *Syncer) Available() error {
@@ -276,7 +303,7 @@ func (s *Syncer) prepare(ctx context.Context, src, dst string) (*snapshot, error
 	if err := s.before(ctx); err != nil {
 		return nil, ErrDenied
 	}
-	shot, err := take(ctx, src, s.reviews, s.binary, s.execute)
+	shot, err := takeCached(ctx, src, s.reviews, s.binary, s.execute, newClassificationMemo(s.cache, s.cacheBinding, s.reviews, s.binary))
 	if err != nil {
 		return nil, err
 	}
