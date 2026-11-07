@@ -14,6 +14,7 @@ import (
 	"time"
 
 	authnv1 "k8s.io/api/authentication/v1"
+	authzv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -178,9 +179,15 @@ func TestRealBootstrapOnDisposableKind(t *testing.T) {
 	// identities in both a foreign namespace and this enrollment's namespace.
 	foreignNamespace := probeNamespace + "-foreign"
 	for _, entry := range []struct{ name, owner string }{{probeNamespace, id}, {foreignNamespace, "enr_foreign"}} {
-		ns, err := admin.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: entry.name, Labels: map[string]string{registrationOwnerLabel: entry.owner, registrationUIDLabel: string(system.UID), "pod-security.kubernetes.io/enforce": "restricted"}}}, metav1.CreateOptions{})
+		ns, err := admin.CoreV1().Namespaces().Get(ctx, entry.name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			ns, err = admin.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: entry.name, Labels: map[string]string{registrationOwnerLabel: entry.owner, registrationUIDLabel: string(system.UID), "pod-security.kubernetes.io/enforce": "restricted"}}}, metav1.CreateOptions{})
+		}
 		if err != nil {
 			t.Fatal("restricted namespace fixture failed")
+		}
+		if ns.Labels[registrationOwnerLabel] != entry.owner || ns.Labels["pod-security.kubernetes.io/enforce"] != "restricted" {
+			t.Fatal("bootstrap namespace owner or security labels differ")
 		}
 		if entry.name == foreignNamespace {
 			t.Cleanup(func() {
@@ -205,6 +212,16 @@ func TestRealBootstrapOnDisposableKind(t *testing.T) {
 		_ = admin.RbacV1().ClusterRoleBindings().Delete(stopCtx, strong.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
 	})
 	deployer := clientForToken(argoToken)
+	for _, entry := range []struct {
+		namespace, name string
+		allowed         bool
+	}{{probeNamespace, "hello:8080", true}, {probeNamespace, "other:8080", false}, {"kube-system", "hello:8080", false}, {foreignNamespace, "hello:8080", false}} {
+		review, err := deployer.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authzv1.SelfSubjectAccessReview{Spec: authzv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authzv1.ResourceAttributes{Verb: "get", Resource: "pods", Subresource: "proxy", Namespace: entry.namespace, Name: entry.name}}}, metav1.CreateOptions{})
+		if err != nil || review.Status.EvaluationError != "" || review.Status.Allowed != entry.allowed {
+			t.Fatal("Pod proxy access is not limited to this enrollment's named hello Pod")
+		}
+	}
+	t.Log("real RBAC allowed only the enrollment's hello Pod proxy; other Pod, foreign namespace and kube-system proxy were denied")
 	no, yes, uid := false, true, int64(10001)
 	basePod := func(namespace string) *corev1.Pod {
 		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "denied-check", Namespace: namespace}, Spec: corev1.PodSpec{AutomountServiceAccountToken: &no, SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: &yes, RunAsUser: &uid, SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}}, Containers: []corev1.Container{{Name: "check", Image: r.cfg.HelloImage, SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &no, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}}}}}}

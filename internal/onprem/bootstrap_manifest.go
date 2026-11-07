@@ -51,6 +51,8 @@ func BootstrapManifest(c BootstrapConfig) ([]byte, error) {
 		return obj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", n, map[string]any{"roleRef": map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": n}, "subjects": []any{map[string]any{"kind": "ServiceAccount", "name": sa, "namespace": ns}}})
 	}
 	items := []any{map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": ns}}}
+	probeNamespace := "hop-check-" + strings.TrimPrefix(c.EnrollmentID, "enr_")
+	items = append(items, map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": probeNamespace, "labels": map[string]string{"hopcharlie.dev/onprem-enrollment": c.EnrollmentID, "pod-security.kubernetes.io/enforce": "restricted", "pod-security.kubernetes.io/audit": "restricted", "pod-security.kubernetes.io/warn": "restricted"}}})
 	for _, sa := range []string{agent, platform, argo} {
 		items = append(items, namespaced("v1", "ServiceAccount", sa, map[string]any{"automountServiceAccountToken": false}))
 	}
@@ -69,8 +71,17 @@ func BootstrapManifest(c BootstrapConfig) ([]byte, error) {
 	observerRules := []any{namespaceRule, rule("", []string{"nodes", "pods", "services"}, []string{"get", "list"}), rule("postgresql.cnpg.io", []string{"clusters"}, []string{"get", "list"}), rule("barmancloud.cnpg.io", []string{"objectstores"}, []string{"list"}), rule("networking.k8s.io", []string{"networkpolicies"}, []string{"list"}), rule("rbac.authorization.k8s.io", []string{"clusterrolebindings"}, []string{"list"})}
 	// Agent gets only the cluster's immutable identifier, never workload Secrets.
 	items = append(items, role(agent, []any{namespaceRule}), binding(agent, agent), role(platform, observerRules), binding(platform, platform))
-	argoRules := []any{rule("", []string{"namespaces"}, []string{"get", "list", "watch", "create"}), rule("", []string{"pods/proxy"}, []string{"get"}), rule("", []string{"pods", "pods/log", "services", "persistentvolumeclaims", "resourcequotas", "limitranges", "configmaps"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("apps", []string{"deployments", "replicasets", "statefulsets"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("batch", []string{"jobs", "cronjobs"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("networking.k8s.io", []string{"networkpolicies", "ingresses"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("bitnami.com", []string{"sealedsecrets"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("postgresql.cnpg.io", []string{"clusters"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"})}
+	argoRules := []any{rule("", []string{"namespaces"}, []string{"get", "list", "watch", "create"}), rule("", []string{"pods", "pods/log", "services", "persistentvolumeclaims", "resourcequotas", "limitranges", "configmaps"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("apps", []string{"deployments", "replicasets", "statefulsets"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("batch", []string{"jobs", "cronjobs"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("networking.k8s.io", []string{"networkpolicies", "ingresses"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("bitnami.com", []string{"sealedsecrets"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"}), rule("postgresql.cnpg.io", []string{"clusters"}, []string{"get", "list", "watch", "create", "update", "patch", "delete"})}
 	items = append(items, role(argo, argoRules), binding(argo, argo))
+	// The server's HTTP probe may proxy only this enrollment's hello Pod.
+	// Proxy GET is not covered by write admission, so it must not be global.
+	proxyRule := rule("", []string{"pods/proxy"}, []string{"get"})
+	proxyRule["resourceNames"] = []string{"hello", "hello:8080"}
+	proxyRole := namespaced("rbac.authorization.k8s.io/v1", "Role", name+"-hello-proxy", map[string]any{"rules": []any{proxyRule}})
+	proxyRole["metadata"].(map[string]any)["namespace"] = probeNamespace
+	proxyBinding := namespaced("rbac.authorization.k8s.io/v1", "RoleBinding", name+"-hello-proxy", map[string]any{"roleRef": map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": name + "-hello-proxy"}, "subjects": []any{map[string]any{"kind": "ServiceAccount", "name": argo, "namespace": ns}}})
+	proxyBinding["metadata"].(map[string]any)["namespace"] = probeNamespace
+	items = append(items, proxyRole, proxyBinding)
 	protected := `['kube-system','kube-public','kube-node-lease','default','charlie-system','argocd','hopcharlie-db-network','observability','minio']`
 	user := "system:serviceaccount:" + ns + ":" + argo
 	ownerLabel := "hopcharlie.dev/onprem-enrollment"

@@ -216,7 +216,8 @@ func (k *KubeRuntime) Inspect(ctx context.Context, s RegistrationState) ([]store
 		{authv1.ResourceAttributes{Verb: "create", Resource: "namespaces"}, true},
 		{authv1.ResourceAttributes{Verb: "create", Group: "apps", Resource: "deployments", Namespace: probeNS}, true},
 		{authv1.ResourceAttributes{Verb: "create", Resource: "pods", Namespace: probeNS}, true},
-		{authv1.ResourceAttributes{Verb: "get", Resource: "pods", Subresource: "proxy", Namespace: probeNS}, true},
+		{authv1.ResourceAttributes{Verb: "get", Resource: "pods", Subresource: "proxy", Namespace: probeNS, Name: "hello:8080"}, true},
+		{authv1.ResourceAttributes{Verb: "get", Resource: "pods", Subresource: "proxy", Namespace: "kube-system", Name: "hello:8080"}, false},
 		{authv1.ResourceAttributes{Verb: "get", Resource: "secrets", Namespace: "kube-system"}, false},
 		{authv1.ResourceAttributes{Verb: "create", Group: "rbac.authorization.k8s.io", Resource: "clusterrolebindings"}, false},
 	} {
@@ -286,7 +287,7 @@ func (k *KubeRuntime) ensureProbe(ctx context.Context, client kubernetes.Interfa
 	if err != nil {
 		return errors.New("probe namespace unavailable")
 	}
-	if ns.Labels[registrationOwnerLabel] != s.EnrollmentID || ns.Labels[registrationUIDLabel] != s.Connection.ClusterUID {
+	if ns.Labels[registrationOwnerLabel] != s.EnrollmentID || (ns.Labels[registrationUIDLabel] != "" && ns.Labels[registrationUIDLabel] != s.Connection.ClusterUID) {
 		return store.ErrConflict
 	}
 	old, err := client.CoreV1().Pods(namespace).Get(ctx, "hello", metav1.GetOptions{})

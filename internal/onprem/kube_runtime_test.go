@@ -192,14 +192,17 @@ func TestKubeRuntimeObservesAdmissionAndHTTPProof(t *testing.T) {
 					var review struct {
 						Spec struct {
 							ResourceAttributes struct {
-								Resource string `json:"resource"`
+								Resource    string `json:"resource"`
+								Namespace   string `json:"namespace"`
+								Subresource string `json:"subresource"`
 							} `json:"resourceAttributes"`
 						} `json:"spec"`
 					}
 					if err := json.NewDecoder(r.Body).Decode(&review); err != nil {
 						t.Error(err)
 					}
-					allowed := review.Spec.ResourceAttributes.Resource != "secrets" && review.Spec.ResourceAttributes.Resource != "clusterrolebindings"
+					attributes := review.Spec.ResourceAttributes
+					allowed := attributes.Resource != "secrets" && attributes.Resource != "clusterrolebindings" && !(attributes.Resource == "pods" && attributes.Subresource == "proxy" && attributes.Namespace == "kube-system")
 					write(map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview", "status": map[string]bool{"allowed": allowed}})
 				case r.URL.Path == "/api/v1/namespaces/default/configmaps":
 					if r.URL.Query().Get("dryRun") != "All" {

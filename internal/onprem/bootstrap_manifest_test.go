@@ -24,12 +24,19 @@ func TestBootstrapManifestScopesCredentialsAndPreservesKubernetesTLS(t *testing.
 	}
 	var deployment map[string]any
 	var tokenRule, admission bool
+	var scopedProxy bool
 	for _, o := range list.Items {
 		if o["kind"] == "Deployment" {
 			deployment = o
 		}
 		if o["kind"] == "ValidatingAdmissionPolicy" {
 			admission = true
+		}
+		if strings.Contains(string(mustJSON(o)), `"pods/proxy"`) {
+			if o["kind"] != "Role" || o["metadata"].(map[string]any)["namespace"] != "hop-check-0123456789abcdef01234567" || !strings.Contains(string(mustJSON(o)), `"resourceNames":["hello","hello:8080"]`) {
+				t.Fatal("Pod proxy permissions are not scoped to this enrollment's hello Pod")
+			}
+			scopedProxy = true
 		}
 		if o["kind"] == "Role" && strings.Contains(string(mustJSON(o)), "serviceaccounts/token") {
 			tokenRule = true
@@ -38,7 +45,7 @@ func TestBootstrapManifestScopesCredentialsAndPreservesKubernetesTLS(t *testing.
 			}
 		}
 	}
-	if deployment == nil || !tokenRule || !admission {
+	if deployment == nil || !tokenRule || !admission || !scopedProxy {
 		t.Fatal("missing connector, scoped renewal, or protected-namespace admission")
 	}
 	encoded := string(mustJSON(deployment))
