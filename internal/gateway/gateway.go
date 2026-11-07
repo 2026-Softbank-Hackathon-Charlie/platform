@@ -377,8 +377,29 @@ func (g *Gateway) shuttingDown() bool {
 
 // Close persists the final state. Call it after the servers have stopped; a
 // hold in progress stays recorded as held.
-func (g *Gateway) Close() {
-	g.save()
+func (g *Gateway) Close() error {
+	err := g.trySave()
+	if err != nil {
+		g.log.Error("persist gateway state", "file", g.cfg.StateFile, "err", err)
+	}
+	return err
+}
+
+// HoldAfterOwnerLoss is called before serving requests after an unclean
+// exclusive owner exit. Persist holds for EVERY app. This does not prove old
+// backend writes have finished; the host must also reject control mutations
+// until an operator verifies/fences that unknown work.
+func (g *Gateway) HoldAfterOwnerLoss() error {
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
+	for _, rt := range g.routers() {
+		rt.mu.Lock()
+		if !rt.held {
+			rt.startHoldLocked(time.Now())
+		}
+		rt.mu.Unlock()
+	}
+	return g.trySave()
 }
 
 // serveProxy sends a request to the app its Host names (see routerFor).

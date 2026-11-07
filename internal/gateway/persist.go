@@ -146,5 +146,8 @@ func writeFileAtomic(path string, st persistedState) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncStateDirectory(dir)
 }
