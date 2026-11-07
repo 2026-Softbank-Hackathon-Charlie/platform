@@ -122,7 +122,7 @@ npx openapi-typescript ../platform/api/openapi.yaml -o src/api/types.ts
 
 현재 등록 worker는 없으므로 인증 후에는 claimed/검증 미관측으로 남습니다. 자동 Argo·SSM
 등록이나 신규 환경의 배포 가능 상태를 뜻하지 않습니다. 설계·권한·검증 경계는
-[ADR 0048](docs/adr/0048-one-use-onprem-bootstrap-enrollments.md)을 확인하세요.
+[ADR 0049](docs/adr/0049-one-use-onprem-bootstrap-enrollments.md)을 확인하세요.
 
 ## 실행
 
