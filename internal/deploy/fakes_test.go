@@ -320,7 +320,7 @@ func (f *fakeGateway) PutApp(_ context.Context, name string, spec gateway.AppSpe
 	} else {
 		maps.Copy(weights, spec.ReadWeights)
 	}
-	f.apps[name] = gateway.AppInfo{Name: name, Backends: maps.Clone(spec.Backends), WriteBackend: spec.WriteBackend, ReadWeights: weights}
+	f.apps[name] = gateway.AppInfo{Name: name, Backends: maps.Clone(spec.Backends), WriteBackend: spec.WriteBackend, ReadWeights: weights, HealthPath: spec.HealthPath}
 	return nil
 }
 

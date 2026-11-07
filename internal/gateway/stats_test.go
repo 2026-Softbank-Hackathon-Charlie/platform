@@ -50,8 +50,8 @@ func TestStatsRingAndEdges(t *testing.T) {
 		t.Fatalf("stale bucket leaked: %+v", st)
 	}
 	// Above the largest bound there is nothing to interpolate towards.
-	s.record(now, time.Minute, false, false)
-	if st := s.window(now, 1); st.P99Millis != 30000 {
+	s.record(now, time.Hour, false, false)
+	if st := s.window(now, 1); st.P99Millis != float32(latencyBoundsMs[len(latencyBoundsMs)-1]) {
 		t.Fatalf("overflow p99 = %v", st.P99Millis)
 	}
 	// Exactly on a bound belongs to that bound's bucket.
