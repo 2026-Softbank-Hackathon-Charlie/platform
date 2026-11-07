@@ -3,6 +3,8 @@
 package llmquality
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"math"
 	"regexp"
@@ -59,7 +61,7 @@ func (p Policy) Validate() error {
 		return errors.New("invalid quality score source")
 	}
 	if p.MaxAgeSeconds < 60 || p.MaxAgeSeconds > 86400 || p.MinSoakSeconds < 30 || p.MinSoakSeconds > 86400 || len(p.Items) < 20 || len(p.Items) > 100 || len(p.Metrics) < 2 || len(p.Metrics) > 4 {
-		return errors.New("quality policy requires 20-100 paired items, 1-4 metrics and bounded age/soak")
+		return errors.New("quality policy requires 20-100 paired items, 2-4 metrics and bounded age/soak")
 	}
 	seen := map[string]bool{}
 	for _, item := range p.Items {
@@ -109,7 +111,7 @@ type Verdict struct {
 	Reason     string         `json:"reason"`
 	CheckedAt  time.Time      `json:"checkedAt"`
 	ValidUntil time.Time      `json:"validUntil"`
-	Batch      string         `json:"batch,omitempty"`
+	Batch      string         `json:"batchDigest,omitempty"`
 	Pairs      int            `json:"pairs"`
 	Metrics    []MetricResult `json:"metrics"`
 }
@@ -190,7 +192,8 @@ func Evaluate(p Policy, rows []Score, now, notBefore time.Time) Verdict {
 			validUntil = expiry
 		}
 	}
-	v.Status, v.Reason, v.ValidUntil, v.Batch, v.Pairs = "pass", "paired_quality_within_policy", validUntil.UTC(), batch, len(p.Items)
+	batchHash := sha256.Sum256([]byte(batch))
+	v.Status, v.Reason, v.ValidUntil, v.Batch, v.Pairs = "pass", "paired_quality_within_policy", validUntil.UTC(), "sha256-"+hex.EncodeToString(batchHash[:]), len(p.Items)
 	for _, m := range p.Metrics {
 		var a, b, sum, sumSquares float64
 		for _, item := range p.Items {

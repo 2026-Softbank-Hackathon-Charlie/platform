@@ -58,7 +58,7 @@ API caller가 URL, project, judge, score 필터나 자격증명을 전달할 수
 `GET /v1/ai/canary`는 `version`, `targetPercent`(의도한 비율), `effectiveTargetPercent`
 (현재 admission에서 허용한 비율), `sourceBackend`, `targetBackend`, `lastAdvanceAt`,
 `policyDigest`, `verdict`를 반환한다. 시각은 RFC3339, 비율은 정수 0~100이다.
-`verdict`에는 status/reason/checkedAt/validUntil/batch/pairs 및 지표 평균·paired 구간만 있다.
+`verdict`에는 status/reason/checkedAt/validUntil/batchDigest/pairs 및 지표 평균·paired 구간만 있다.
 원문, 점수 comment, 전체 metadata, 자격증명은 반환하지 않는다.
 
 `POST /v1/ai/canary/advance`:

@@ -1,7 +1,9 @@
 package llmquality
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,5 +103,23 @@ func TestQualityUncertaintyDoesNotClaimProvenRegression(t *testing.T) {
 	}
 	if got := Evaluate(p, rows, now, time.Time{}); got.Status != "regressed" {
 		t.Fatalf("hard safety failure accepted: %+v", got)
+	}
+}
+
+func TestQualityDoesNotEchoScoreMetadata(t *testing.T) {
+	p, rows, now := fixture()
+	for i := range rows {
+		rows[i].Batch = "sk-lf-metadata-must-not-be-echoed"
+	}
+	v := Evaluate(p, rows, now, time.Time{})
+	if v.Status != "pass" {
+		t.Fatal(v)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), rows[0].Batch) || !strings.HasPrefix(v.Batch, "sha256-") {
+		t.Fatalf("score metadata exposed: %s", b)
 	}
 }

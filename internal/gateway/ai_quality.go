@@ -219,7 +219,7 @@ func (rt *router) handleAdvanceAI(w http.ResponseWriter, r *http.Request) {
 	}
 	rt.canary = &next
 	rt.mu.Unlock()
-	rt.log.Info("admin action", "action", "ai_canary_advance", "command", id, "version", next.Version, "previousPercent", prev.TargetPercent, "targetPercent", next.TargetPercent, "quality", verdict.Status, "batch", verdict.Batch)
+	rt.log.Info("admin action", "action", "ai_canary_advance", "command", id, "version", next.Version, "previousPercent", prev.TargetPercent, "targetPercent", next.TargetPercent, "quality", verdict.Status, "batchDigest", verdict.Batch)
 	writeJSON(w, 200, rt.canaryView(next))
 }
 
@@ -267,7 +267,7 @@ func (g *Gateway) refreshAIQuality(ctx context.Context) {
 	next := *g.canary
 	next.Verdict = v
 	if next.Verdict.Status != g.canary.Verdict.Status || next.Verdict.Reason != g.canary.Verdict.Reason {
-		g.log.Info("AI quality verdict", "status", v.Status, "reason", v.Reason, "version", version, "batch", v.Batch)
+		g.log.Info("AI quality verdict", "status", v.Status, "reason", v.Reason, "version", version, "batchDigest", v.Batch)
 	}
 	rolledBack := false
 	if v.Status == "regressed" && next.TargetPercent > 0 {
@@ -276,7 +276,7 @@ func (g *Gateway) refreshAIQuality(ctx context.Context) {
 		next.TargetPercent = 0
 		next.LastCommand = ""
 		next.LastAdvanceAt = now
-		g.log.Warn("AI quality rollback", "version", next.Version, "reason", v.Reason, "batch", v.Batch, "databaseRouteChanged", false)
+		g.log.Warn("AI quality rollback", "version", next.Version, "reason", v.Reason, "batchDigest", v.Batch, "databaseRouteChanged", false)
 	}
 	// Revocation takes effect immediately even if disk fails. On restart the
 	// stored evidence is unknown, so stale durable weights cannot enable target.
