@@ -1637,25 +1637,35 @@ type AppCreated struct {
 
 // AppDBReadiness Whether `POST /v1/migrations` can move the app between the two
 // environments of its pair now (ADR 0037). Only `GET /v1/apps/{name}`
-// has it; it reads both environments' CNPG Clusters, each within 3
-// seconds. `ready` is true only when both environments are the app's,
-// the default instance's newest deployment that lists each of them ended
-// healthy, the traffic gateway has a backend for both (when the app has
-// a public service), both Clusters are healthy and their
-// `spec.replica` fit the migration engine's topology check (one is
-// primary, the other follows it). WAL lag is not looked at; the
-// migration's prepare and presync check it again.
+// has it; it reads the traffic gateway and both environments' CNPG
+// Clusters in parallel, each within 3 seconds, and reuses what it read
+// for the app for 10 seconds (the deployments and migration runs are
+// read every time). `ready` is true only when both environments are the
+// app's, no migration of the app is in progress, the default instance's
+// newest deployment that got to each of them is healthy there, the
+// traffic gateway has a backend for both (when the app has a public
+// service), both Clusters are healthy, their `spec.replica` fit the
+// migration engine's topology check (one is primary, the other follows
+// it) and the gateway writes to the environment whose Cluster is the
+// primary. WAL lag is not looked at; the migration's prepare and
+// presync check it again.
 //
 // `reason` is the first check that failed, or `ready`:
 // replica_missing (an environment of the pair is not the app's),
-// deploy_pending (no finished healthy deployment lists an environment),
-// app_degraded (that deployment failed with the environment Degraded:
-// the app probably writes to the database when it starts, which a
-// replica refuses; migrate it with the engine's cold mode),
-// deploy_failed (that deployment failed otherwise),
-// gateway_unreachable, gateway_backend_missing, cluster_unreadable,
-// cluster_not_healthy, topology_mismatch. `message` says the same in a
-// sentence.
+// migration_in_progress (a migration run of the app is running,
+// awaiting its switch, halted or interrupted, or the gateway holds its
+// writes), deploy_pending (a deployment to an environment is not
+// finished, or none got there healthy and none is going: the message
+// says to send `POST /v1/apps/{name}/environments` again),
+// app_degraded (that deployment left the environment Degraded: the app
+// probably writes to the database when it starts, which a replica
+// refuses; migrate it with the engine's cold mode), deploy_failed (that
+// deployment failed there otherwise), gateway_unreachable,
+// gateway_backend_missing, cluster_unreadable, cluster_not_healthy,
+// topology_mismatch, write_backend_mismatch (the gateway's write
+// backend is not the environment whose Cluster is primary). A
+// deployment that stopped before it got to an environment, such as a
+// failed build, is passed over. `message` says the same in a sentence.
 type AppDBReadiness struct {
 	// Environments The pair's two environments, primary first.
 	Environments []AppDBReadinessEnvironment `json:"environments"`
@@ -1670,7 +1680,7 @@ type AppDBReadiness struct {
 
 // AppDBReadinessEnvironment defines model for AppDBReadinessEnvironment.
 type AppDBReadinessEnvironment struct {
-	// Deployed the default instance's newest deployment that lists the environment ended healthy
+	// Deployed the default instance's newest deployment that got to the environment is healthy there
 	Deployed bool `json:"deployed"`
 
 	// Env Example: gke
@@ -1716,25 +1726,35 @@ type AppDBTopology struct {
 
 	// Readiness Whether `POST /v1/migrations` can move the app between the two
 	// environments of its pair now (ADR 0037). Only `GET /v1/apps/{name}`
-	// has it; it reads both environments' CNPG Clusters, each within 3
-	// seconds. `ready` is true only when both environments are the app's,
-	// the default instance's newest deployment that lists each of them ended
-	// healthy, the traffic gateway has a backend for both (when the app has
-	// a public service), both Clusters are healthy and their
-	// `spec.replica` fit the migration engine's topology check (one is
-	// primary, the other follows it). WAL lag is not looked at; the
-	// migration's prepare and presync check it again.
+	// has it; it reads the traffic gateway and both environments' CNPG
+	// Clusters in parallel, each within 3 seconds, and reuses what it read
+	// for the app for 10 seconds (the deployments and migration runs are
+	// read every time). `ready` is true only when both environments are the
+	// app's, no migration of the app is in progress, the default instance's
+	// newest deployment that got to each of them is healthy there, the
+	// traffic gateway has a backend for both (when the app has a public
+	// service), both Clusters are healthy, their `spec.replica` fit the
+	// migration engine's topology check (one is primary, the other follows
+	// it) and the gateway writes to the environment whose Cluster is the
+	// primary. WAL lag is not looked at; the migration's prepare and
+	// presync check it again.
 	//
 	// `reason` is the first check that failed, or `ready`:
 	// replica_missing (an environment of the pair is not the app's),
-	// deploy_pending (no finished healthy deployment lists an environment),
-	// app_degraded (that deployment failed with the environment Degraded:
-	// the app probably writes to the database when it starts, which a
-	// replica refuses; migrate it with the engine's cold mode),
-	// deploy_failed (that deployment failed otherwise),
-	// gateway_unreachable, gateway_backend_missing, cluster_unreadable,
-	// cluster_not_healthy, topology_mismatch. `message` says the same in a
-	// sentence.
+	// migration_in_progress (a migration run of the app is running,
+	// awaiting its switch, halted or interrupted, or the gateway holds its
+	// writes), deploy_pending (a deployment to an environment is not
+	// finished, or none got there healthy and none is going: the message
+	// says to send `POST /v1/apps/{name}/environments` again),
+	// app_degraded (that deployment left the environment Degraded: the app
+	// probably writes to the database when it starts, which a replica
+	// refuses; migrate it with the engine's cold mode), deploy_failed (that
+	// deployment failed there otherwise), gateway_unreachable,
+	// gateway_backend_missing, cluster_unreadable, cluster_not_healthy,
+	// topology_mismatch, write_backend_mismatch (the gateway's write
+	// backend is not the environment whose Cluster is primary). A
+	// deployment that stopped before it got to an environment, such as a
+	// failed build, is passed over. `message` says the same in a sentence.
 	Readiness *AppDBReadiness `json:"readiness,omitempty"`
 
 	// Replica the environment where the database is born a replica of primary

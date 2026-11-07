@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -59,7 +60,8 @@ func TestCreateAppWithoutDatabasePair(t *testing.T) {
 		envs []string
 		opts []option
 	}{
-		"one environment of three templates": {[]string{"gke"}, []option{withSecrets(testCipher(t)), withAppDBTopology(), withAppDBEnvs("gke", "eks", "onprem")}},
+		"one environment of three templates": {[]string{"gke"}, []option{withSecrets(testCipher(t)), withAppDBTopology(), withAppDBEnvs("gke", "eks", "onprem"), withSealing("gke")}},
+		"one environment without sealing":    {[]string{"gke"}, []option{withSecrets(testCipher(t)), withAppDBTopology(), withSealing("eks")}},
 		"one environment without a template": {[]string{"onprem"}, []option{withSecrets(testCipher(t)), withAppDBTopology()}},
 		"one environment, the only template": {[]string{"gke"}, []option{withSecrets(testCipher(t)), withAppDBTopology(), withAppDBEnvs("gke")}},
 		"three environments":                 {[]string{"gke", "eks", "onprem"}, []option{withSecrets(testCipher(t)), withAppDBTopology()}},
@@ -84,6 +86,14 @@ func TestCreateAppWithoutDatabasePair(t *testing.T) {
 	}
 }
 
+// withSealing makes envs the environments with a usable sealed-secrets
+// certificate.
+func withSealing(envs ...string) option {
+	return func(_ *harness, _ *runs.Config, d *Deps) {
+		d.SealingConfigured = func(env string) bool { return slices.Contains(envs, env) }
+	}
+}
+
 func withAppDBEnvs(envs ...string) option {
 	return func(h *harness, _ *runs.Config, _ *Deps) { h.appDBEnvs = envs }
 }
@@ -95,7 +105,7 @@ func TestCreateAppInOneEnvironmentMakesDatabasePair(t *testing.T) {
 	for _, tc := range []struct{ env, peer string }{{"gke", "eks"}, {"eks", "gke"}} {
 		t.Run(tc.env, func(t *testing.T) {
 			routes := &fakeDBRoutes{}
-			h := newHarness(t, withApps(""), withGitHub(shopGitHub(), &fakeDeployer{}), withSecrets(testCipher(t)), withAppDBTopology(), withDBRoutes(routes))
+			h := newHarness(t, withApps(""), withGitHub(shopGitHub(), &fakeDeployer{}), withSecrets(testCipher(t)), withAppDBTopology(), withDBRoutes(routes), withSealing(tc.env))
 			code, b := h.do("POST", "/v1/apps", opToken, map[string]any{"repo": shopRepo, "environments": []string{tc.env}})
 			if code != 201 {
 				t.Fatalf("create: %d %s", code, b)

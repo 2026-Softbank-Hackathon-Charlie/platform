@@ -194,7 +194,16 @@ type Deps struct {
 	// for the readiness of a database pair (ADR 0037); nil leaves the
 	// readiness at cluster_unreadable.
 	DBCluster DBClusterReader
+	// WorkloadResidue says what is left in a namespace of an environment's
+	// workload cluster, for whether an environment removed from an app is
+	// gone before it is added again (ADR 0037); nil means it cannot tell.
+	WorkloadResidue WorkloadResidue
 }
+
+// WorkloadResidue returns one object still in namespace in env's workload
+// cluster (a Service or a Pod, as "Service name"), or "" when there is
+// none.
+type WorkloadResidue func(ctx context.Context, env, namespace string) (string, error)
 
 // GatewayApps lists the traffic gateway's apps (gateway.Client).
 type GatewayApps interface {
@@ -246,6 +255,8 @@ type Server struct {
 	now        func() time.Time   // the clock for sessions, device logins and the login limiter
 	logins     *auth.LoginLimiter // failed logins per username
 	loginSlots chan struct{}      // one token per bcrypt comparison in progress
+
+	ready readinessCache // what the readiness of database pairs read (ADR 0037)
 }
 
 // New wires the routes.

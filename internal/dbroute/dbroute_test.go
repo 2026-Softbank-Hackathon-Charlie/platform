@@ -347,8 +347,8 @@ func TestFromEnv(t *testing.T) {
 }
 
 // TestRoutesFollowTheAppsEnvironments: a pair whose peer is not one of the
-// app's environments (registered in one, or taken out again, ADR 0037)
-// routes only to its primary, and the peer's route goes.
+// app's environments (registered in one, or taken out again, ADR 0037) has
+// no routes, as they are for migrating between the two, and its routes go.
 func TestRoutesFollowTheAppsEnvironments(t *testing.T) {
 	ctx := context.Background()
 	alone := &pairs{list: []store.AppDatabase{pair("shop")}, envs: map[string][]string{"shop": {"gke"}}}
@@ -358,24 +358,20 @@ func TestRoutesFollowTheAppsEnvironments(t *testing.T) {
 		if err := m.Ensure(ctx, pair("shop"), store.App{Name: "shop", Environments: []string{"gke"}}); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := get(t, cs, "db-gke-shop"); !ok {
-			t.Fatal("the primary's route is missing")
-		}
-		if _, ok := get(t, cs, "db-eks-shop"); ok {
-			t.Fatal("a route to a peer that is not the app's")
+		if v := verbs(cs); len(v) != 0 {
+			t.Fatalf("routes for a pair whose peer is not the app's: %v", v)
 		}
 	})
 
-	t.Run("reconcile deletes the route of a removed environment", func(t *testing.T) {
+	t.Run("reconcile deletes the routes after an environment is removed", func(t *testing.T) {
 		m, cs := newManager(t, alone, service("db-eks-shop", ourLabels("shop", "eks")), service("db-gke-shop", ourLabels("shop", "gke")))
 		if err := m.Reconcile(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := get(t, cs, "db-eks-shop"); ok {
-			t.Fatal("db-eks-shop not deleted")
-		}
-		if _, ok := get(t, cs, "db-gke-shop"); !ok {
-			t.Fatal("db-gke-shop deleted")
+		for _, name := range []string{"db-eks-shop", "db-gke-shop"} {
+			if _, ok := get(t, cs, name); ok {
+				t.Fatalf("%s not deleted", name)
+			}
 		}
 	})
 
@@ -396,27 +392,34 @@ func TestRoutesFollowTheAppsEnvironments(t *testing.T) {
 		if err := m.Sync(ctx, "shop"); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := get(t, cs, "db-eks-shop"); ok {
-			t.Fatal("route to eks before it was added")
+		for _, name := range []string{"db-eks-shop", "db-gke-shop"} {
+			if _, ok := get(t, cs, name); ok {
+				t.Fatalf("%s before eks was added", name)
+			}
 		}
 		p.envs["shop"] = []string{"gke", "eks"}
 		if err := m.Sync(ctx, "shop"); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := get(t, cs, "db-eks-shop"); !ok {
-			t.Fatal("no route to eks once it was added")
+		for _, name := range []string{"db-eks-shop", "db-gke-shop"} {
+			if _, ok := get(t, cs, name); !ok {
+				t.Fatalf("no %s once eks was added", name)
+			}
 		}
 		p.envs["shop"] = []string{"gke"}
 		if err := m.Sync(ctx, "shop"); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := get(t, cs, "db-eks-shop"); ok {
-			t.Fatal("route to eks kept after it was removed")
-		}
-		if _, ok := get(t, cs, "db-gke-shop"); !ok {
-			t.Fatal("route to gke deleted")
+		for _, name := range []string{"db-eks-shop", "db-gke-shop"} {
+			if _, ok := get(t, cs, name); ok {
+				t.Fatalf("%s kept after eks was removed", name)
+			}
 		}
 		// No pair: every route of the app goes.
+		p.envs["shop"] = []string{"gke", "eks"}
+		if err := m.Sync(ctx, "shop"); err != nil {
+			t.Fatal(err)
+		}
 		p.list = nil
 		if err := m.Sync(ctx, "shop"); err != nil {
 			t.Fatal(err)

@@ -183,7 +183,12 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 // newAppDatabase makes the database pair of an app being registered (ADR
 // 0030, ADR 0037), or returns nil when it gets none: the setting is off,
 // pairEnvs finds no pair for the app's environments, its platform.yaml has
-// no postgres resource, or there is no secrets key to store the pair with.
+// no postgres resource, there is no secrets key to store the pair with, or
+// the app is registered in one environment that cannot seal the pair's
+// values (no usable sealed-secrets certificate). The pair of one
+// environment is the platform's own choice, so without sealing there the
+// app registers as before, without it, rather than with a first deployment
+// that cannot succeed.
 func (s *Server) newAppDatabase(app store.App, spec appspec.Spec) (*store.AppDatabase, error) {
 	envs := s.pairEnvs(app.Environments)
 	if !s.cfg.AppDBTopology || envs == nil ||
@@ -192,6 +197,10 @@ func (s *Server) newAppDatabase(app store.App, spec appspec.Spec) (*store.AppDat
 	}
 	if s.d.Secrets == nil {
 		s.cfg.Log.Warn("PLATFORM_APP_DB_TOPOLOGY is on, but there is no PLATFORM_SECRETS_KEY: registering the app without a database pair", "app", app.Name)
+		return nil, nil
+	}
+	if len(app.Environments) == 1 && (s.d.SealingConfigured == nil || !s.d.SealingConfigured(app.Environments[0])) {
+		s.cfg.Log.Warn("environment has no usable sealed-secrets certificate: registering the app in one environment without a database pair, so it cannot be added to another environment later", "app", app.Name, "env", app.Environments[0])
 		return nil, nil
 	}
 	db, err := deploy.NewAppDatabase(s.d.Secrets, app.Name, envs, app.CreatedAt)

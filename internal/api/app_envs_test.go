@@ -74,6 +74,17 @@ type envFixture struct {
 	clusters *fakeClusters
 	sealing  map[string]bool
 	first    store.Deployment
+	// residue is what is left in a namespace of an environment, by
+	// "env/namespace"; residueErr fails the read.
+	residueMu  sync.Mutex
+	residue    map[string]string
+	residueErr error
+}
+
+func (f *envFixture) readResidue(_ context.Context, env, namespace string) (string, error) {
+	f.residueMu.Lock()
+	defer f.residueMu.Unlock()
+	return f.residue[env+"/"+namespace], f.residueErr
 }
 
 func newEnvFixture(t *testing.T, opts ...option) *envFixture {
@@ -86,6 +97,7 @@ func newEnvFixture(t *testing.T, opts ...option) *envFixture {
 			d.Gateway = f.gw
 			d.DBCluster = f.clusters.read
 			d.SealingConfigured = func(env string) bool { return f.sealing[env] }
+			d.WorkloadResidue = f.readResidue
 		}}
 	f.harness = newHarness(t, append(base, opts...)...)
 	// What RemoveEnvironment does to the store.
@@ -373,9 +385,9 @@ func withS3Spec() option {
 }
 
 // addedFixture is an envFixture where eks was added and deployed.
-func addedFixture(t *testing.T) *envFixture {
+func addedFixture(t *testing.T, opts ...option) *envFixture {
 	t.Helper()
-	f := newEnvFixture(t)
+	f := newEnvFixture(t, opts...)
 	f.register("gke")
 	code, b := f.add("eks")
 	if code != 202 {
@@ -439,6 +451,12 @@ func TestRemoveAppEnvironmentErrors(t *testing.T) {
 		"held under the lock": {prep: func(f *envFixture) { f.rm.err = fmt.Errorf("%w: held", deploy.ErrWritesHeld) }, status: 409, code: "migration_in_progress"},
 		"deploying under the lock": {prep: func(f *envFixture) { f.rm.err = fmt.Errorf("%w: dep_1", deploy.ErrDeploymentInProgress) },
 			status: 409, code: "deployment_in_progress"},
+		"changed under the lock": {prep: func(f *envFixture) { f.rm.err = fmt.Errorf("%w: branches", deploy.ErrAppChanged) }, status: 409, code: "app_changed"},
+		"environments changed when stored": {prep: func(f *envFixture) { f.rm.err = fmt.Errorf("store: %w", store.ErrConflict) },
+			status: 409, code: "app_changed"},
+		"gone under the lock": {prep: func(f *envFixture) { f.rm.err = fmt.Errorf("%w: eks", deploy.ErrNotInEnvironment) }, status: 404, code: "env_not_found"},
+		"first under the lock": {prep: func(f *envFixture) { f.rm.err = fmt.Errorf("%w: eks", deploy.ErrPrimaryEnvironment) },
+			status: 409, code: "primary_environment"},
 		"gitops":  {prep: func(f *envFixture) { f.rm.err = fmt.Errorf("%w: down", deploy.ErrGitOps) }, status: 502, code: "github_unreachable"},
 		"gateway": {prep: func(f *envFixture) { f.rm.err = fmt.Errorf("%w: down", deploy.ErrGateway) }, status: 502, code: "gateway_unreachable"},
 		"other":   {prep: func(f *envFixture) { f.rm.err = errors.New("boom") }, status: 500, code: "internal"},
@@ -517,7 +535,9 @@ func TestDBReadiness(t *testing.T) {
 
 	t.Run("after a migration", func(t *testing.T) {
 		f := addedFixture(t)
-		f.gw.set(bothBackends)
+		migrated := bothBackends
+		migrated.WriteBackend = "eks"
+		f.gw.set(migrated)
 		st := healthyPair()
 		st["gke"].ReplicaPrimary, st["gke"].ReplicaSource = "shop-db-eks", "shop-db-eks"
 		st["eks"].ReplicaPrimary = "shop-db-eks"

@@ -26,6 +26,16 @@ type fakeRemover struct {
 	removed []string
 	// removeEnv, when set, does what RemoveEnvironment does to the store.
 	removeEnv func(app, env string) error
+	// applications are the Argo CD Applications that exist; applicationsErr
+	// fails ApplicationExists.
+	applications    map[string]bool
+	applicationsErr error
+}
+
+func (f *fakeRemover) ApplicationExists(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.applications[name], f.applicationsErr
 }
 
 func (f *fakeRemover) RemoveApp(_ context.Context, name string) error {

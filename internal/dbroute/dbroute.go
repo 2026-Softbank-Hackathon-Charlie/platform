@@ -1,9 +1,9 @@
 // Package dbroute keeps the management cluster's routes to the databases of
 // registered apps (ADR 0030, "관리 쪽 DB 경로"): for each app with a database
 // pair it creates, in the cluster the API runs in, one Tailscale egress
-// Service per environment of the pair that is one of the app's environments
+// Service per environment of the pair while both are the app's environments
 // (ADR 0037), named after the environment's database host template, and
-// deletes them when the app or the environment goes. The Tailscale operator
+// deletes them when the app or one of the environments goes. The Tailscale operator
 // turns each Service into a proxy to the app's database in that environment.
 //
 // It only creates and deletes Services, never updates them: the operator
@@ -68,13 +68,18 @@ type Pairs interface {
 	ListApps(ctx context.Context) ([]store.App, error)
 }
 
-// envs are the environments of pair d that get a route: those with a route
-// that are environments of app a too. A pair whose peer was never added, or
-// was removed again, routes only to its primary.
+// envs are the environments of pair d that get a route: those with a route,
+// and only while both environments of the pair are environments of app a.
+// The routes are for migrating between the two, so a pair whose peer was
+// never added, or was removed again, has none, and no egress proxy stands
+// for it (ADR 0037).
 func (m *Manager) envs(d store.AppDatabase, a store.App) []string {
+	if !slices.Contains(a.Environments, d.PrimaryEnv) || !slices.Contains(a.Environments, d.PeerEnv) {
+		return nil
+	}
 	var out []string
 	for _, env := range []string{d.PrimaryEnv, d.PeerEnv} {
-		if _, ok := m.cfg.Routes[env]; ok && slices.Contains(a.Environments, env) {
+		if _, ok := m.cfg.Routes[env]; ok {
 			out = append(out, env)
 		}
 	}

@@ -120,4 +120,4 @@ values:
 
 ## 추가: 한 환경 앱과 나중에 더하는 환경 (2026-11-07)
 
-ADR 0037이 "대상"을 넓힌다. 한 환경으로 등록한 postgres 앱도 템플릿이 있는 다른 환경이 정확히 하나면 그 환경을 peer로 짝을 만들고, primary 파일에 `dbTopology.peerPresent: false`를 쓴다. "등록한 환경 목록은 바뀌지 않는다"는 더 이상 맞지 않는다. `POST /v1/apps/{name}/environments`가 peer를 더하고 `DELETE /v1/apps/{name}/environments/{env}`가 뺀다. DB 경로, 초안, 정책은 짝의 환경 중 앱의 환경에 있는 쪽만 쓴다.
+ADR 0037이 "대상"을 넓힌다. 한 환경으로 등록한 postgres 앱도 템플릿이 있는 다른 환경이 정확히 하나이고 등록한 환경에 sealed-secrets 인증서가 있으면 그 환경을 peer로 짝을 만들고, primary 파일에 `dbTopology.peerPresent: false`를 쓴다. "등록한 환경 목록은 바뀌지 않는다"는 더 이상 맞지 않는다. `POST /v1/apps/{name}/environments`가 peer를 더하고 `DELETE /v1/apps/{name}/environments/{env}`가 뺀다. DB 경로는 짝의 두 환경이 모두 앱의 환경일 때만 만들고, 초안과 정책은 짝의 환경 중 앱의 환경에 있는 쪽만 쓴다.

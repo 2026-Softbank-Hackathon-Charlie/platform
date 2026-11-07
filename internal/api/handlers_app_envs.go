@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -21,6 +22,10 @@ import (
 // the app's traffic or database: running, waiting for its switch, halted
 // after the target was asked to promote, or interrupted by a restart.
 var activeRunStatuses = []apiv1.RunStatus{apiv1.RunStatusRunning, apiv1.RunStatusAwaitingSwitch, apiv1.RunStatusHalted, apiv1.RunStatusInterrupted}
+
+// CleanupCheckTimeout bounds the reads that tell whether what an earlier
+// removal of an environment deletes is gone (ADR 0037).
+var CleanupCheckTimeout = 5 * time.Second
 
 // POST /v1/apps/{name}/environments
 func (s *Server) addAppEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +58,7 @@ func (s *Server) addAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	present := slices.Contains(app.Environments, env)
-	if d := newestTo(list, env); present && d != nil && d.Status == store.DeployHealthy {
+	if d := newestTo(list, env); present && d != nil && envStatus(*d, env) == deploy.EnvHealthy {
 		s.fail(w, r, http.StatusConflict, "environment_exists", fmt.Sprintf("app %s is already in %s, and deployment %s went there healthy", app.Name, env, d.ID))
 		return
 	}
@@ -119,6 +124,12 @@ func (s *Server) addAppEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !present {
+		// An environment removed before must be gone there first: the new
+		// Application would otherwise meet the old namespace, database and
+		// tailnet devices while Argo CD deletes them.
+		if !s.environmentCleanedUp(ctx, w, r, app, env) {
+			return
+		}
 		// After the ones it has: the first stays the one the app was
 		// registered in first, where its database is born primary and
 		// which is never removed.
@@ -128,7 +139,7 @@ func (s *Server) addAppEnvironment(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, store.ErrNotFound):
 				s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
 			case errors.Is(err, store.ErrConflict):
-				s.fail(w, r, http.StatusConflict, "environment_exists", fmt.Sprintf("the environments of %s changed meanwhile; read the app and try again", app.Name))
+				s.appChanged(w, r, app.Name)
 			default:
 				s.internal(w, r, err)
 			}
@@ -137,19 +148,79 @@ func (s *Server) addAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		app.Environments = to
 	}
 	noteAudit(r, "environments", app.Environments)
-	d, ok := s.environmentDeployment(ctx, w, r, app, *last, specJSON)
-	if !ok {
+	d, err := s.queueEnvironmentDeployment(ctx, r, app, *last, specJSON)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
+		return
+	case err != nil:
+		s.internal(w, r, err)
 		return
 	}
 	if hasPG && s.d.DBRoutes != nil {
 		s.d.DBRoutes.Changed(app.Name)
 	}
-	view, ok := s.appViewNow(ctx, w, r, app)
-	if !ok {
-		return
-	}
 	w.Header().Set("Location", "/v1/apps/"+app.Name)
-	writeJSON(w, http.StatusAccepted, apiv1.AppEnvironmentAdded{App: view, Deployment: deploymentJSON(d)})
+	writeJSON(w, http.StatusAccepted, apiv1.AppEnvironmentAdded{App: s.appViewAfter(ctx, app), Deployment: deploymentJSON(d)})
+}
+
+// environmentCleanedUp answers 409 environment_cleanup_pending, and returns
+// false, while what an earlier removal of env from app deletes is still
+// there: for each of the app's instances the Argo CD Application
+// <instance>-<env> in the management cluster, and any Service or Pod in the
+// instance's namespace in env. The Application keeps its finalizer until
+// Argo CD deleted the namespace, and a Service of the Tailscale operator
+// keeps its own until the operator deleted the proxy and its tailnet device,
+// so with neither left the new database gets the old hostname on the
+// tailnet again (ADR 0037). An app never deployed to env has nothing to
+// wait for. When it cannot tell, it answers 503 or 502
+// environment_cleanup_unknown.
+func (s *Server) environmentCleanedUp(ctx context.Context, w http.ResponseWriter, r *http.Request, app store.App, env string) bool {
+	all, err := s.d.Store.ListDeployments(ctx, app.Name, 0)
+	if err != nil {
+		s.internal(w, r, err)
+		return false
+	}
+	if !slices.ContainsFunc(all, func(d store.Deployment) bool { return envStatus(d, env) != "" }) {
+		return true // never deployed there
+	}
+	if s.d.Remover == nil || s.d.WorkloadResidue == nil {
+		s.fail(w, r, http.StatusServiceUnavailable, "environment_cleanup_unknown", fmt.Sprintf("app %s was in %s before, and this server cannot read whether Argo CD finished deleting it there (no deployer or no workload cluster reads)", app.Name, env))
+		return false
+	}
+	instances, err := s.instanceNames(ctx, app)
+	if err != nil {
+		s.internal(w, r, err)
+		return false
+	}
+	cctx, cancel := context.WithTimeout(ctx, CleanupCheckTimeout)
+	defer cancel()
+	unknown := func(what string, err error) bool {
+		s.cfg.Log.Warn("environment cleanup check", "app", app.Name, "env", env, "what", what, "err", err)
+		s.fail(w, r, http.StatusBadGateway, "environment_cleanup_unknown", fmt.Sprintf("could not read whether %s is gone, which the earlier removal of %s from %s deletes; try again", what, env, app.Name))
+		return false
+	}
+	for _, in := range instances {
+		ns := deploy.Namespace(in)
+		appName := deploy.ApplicationName(ns, env)
+		exists, err := s.d.Remover.ApplicationExists(cctx, appName)
+		if err != nil {
+			return unknown("Argo CD Application "+appName, err)
+		}
+		if exists {
+			s.fail(w, r, http.StatusConflict, "environment_cleanup_pending", fmt.Sprintf("Argo CD is still deleting Application %s of the earlier removal of %s; add the environment once it is gone", appName, env))
+			return false
+		}
+		left, err := s.d.WorkloadResidue(cctx, env, ns)
+		if err != nil {
+			return unknown("namespace "+ns+" in "+env, err)
+		}
+		if left != "" {
+			s.fail(w, r, http.StatusConflict, "environment_cleanup_pending", fmt.Sprintf("%s is still in namespace %s in %s, which the earlier removal of %s deletes; add the environment once it is gone", left, ns, env, env))
+			return false
+		}
+	}
+	return true
 }
 
 // DELETE /v1/apps/{name}/environments/{env}
@@ -162,7 +233,7 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !slices.Contains(app.Environments, env) {
-		s.fail(w, r, http.StatusNotFound, "env_not_found", fmt.Sprintf("app %s is not in environment %q (it is in %s)", name, env, strings.Join(app.Environments, ", ")))
+		s.envNotInApp(w, r, app, env)
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
@@ -174,7 +245,7 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if app.Environments[0] == env || db.PrimaryEnv == env {
-		s.fail(w, r, http.StatusConflict, "primary_environment", fmt.Sprintf("%s is app %s's first environment, where its database was born primary; it goes only with the app (DELETE /v1/apps/%s)", env, name, name))
+		s.primaryEnvironment(w, r, app, env)
 		return
 	}
 	instances, err := s.instanceNames(ctx, app)
@@ -205,6 +276,10 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusConflict, "deployment_in_progress", fmt.Sprintf("deployment %s of %s is %s; remove the environment once it is done", all[i].ID, all[i].Instance, all[i].Status))
 		return
 	}
+	if d := filesWithoutGateway(app, all, env); d != nil {
+		s.fail(w, r, http.StatusConflict, "environment_has_files", fmt.Sprintf("deployment %s of %s went to %s healthy with an s3 resource and no public service, so nothing tells whether the app wrote files to its bucket there, which removing the environment deletes; delete the app instead", d.ID, d.Instance, env))
+		return
+	}
 	busy, err := s.migrationBusy(ctx, app.Name, instances)
 	if err != nil {
 		s.internal(w, r, err)
@@ -224,8 +299,14 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrNotFound):
 		s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
 		return
-	case errors.Is(err, store.ErrConflict):
-		s.fail(w, r, http.StatusConflict, "deployment_in_progress", "the environments of "+app.Name+" changed meanwhile; read the app and try again")
+	case errors.Is(err, deploy.ErrNotInEnvironment):
+		s.envNotInApp(w, r, app, env)
+		return
+	case errors.Is(err, deploy.ErrPrimaryEnvironment):
+		s.primaryEnvironment(w, r, app, env)
+		return
+	case errors.Is(err, deploy.ErrAppChanged), errors.Is(err, store.ErrConflict):
+		s.appChanged(w, r, app.Name)
 		return
 	case errors.Is(err, deploy.ErrDeploymentInProgress):
 		s.fail(w, r, http.StatusConflict, "deployment_in_progress", err.Error())
@@ -237,89 +318,141 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusConflict, "migration_in_progress", "the traffic gateway holds the app's writes (a migration is switching it); remove the environment once the migration is done")
 		return
 	case errors.Is(err, deploy.ErrGitOps):
-		s.githubUnreachable(w, r, err)
+		s.cfg.Log.Warn("gitops", "err", err)
+		s.fail(w, r, http.StatusBadGateway, "github_unreachable", "could not remove the environment's files from the gitops repository; it is out of the traffic gateway already, so try again")
 		return
 	case errors.Is(err, deploy.ErrGateway):
 		s.cfg.Log.Warn("gateway", "err", err)
-		s.fail(w, r, http.StatusBadGateway, "gateway_unreachable", "could not take the environment out of the traffic gateway; its gitops files are already removed, so try again")
+		s.fail(w, r, http.StatusBadGateway, "gateway_unreachable", "could not take the environment out of the traffic gateway; nothing else changed, so try again")
 		return
 	default:
 		s.internal(w, r, err)
 		return
 	}
+
+	// The environment is removed. What follows only adds to the answer:
+	// a failure is logged and the answer is still 202.
 	if s.d.DBRoutes != nil {
 		s.d.DBRoutes.Changed(app.Name)
 	}
-	app, err = s.d.Store.GetApp(ctx, app.Name)
-	if err != nil {
-		s.internal(w, r, err)
-		return
+	if fresh, err := s.d.Store.GetApp(ctx, app.Name); err == nil {
+		app = fresh
+	} else {
+		s.cfg.Log.Warn("read the app after removing an environment", "app", app.Name, "err", err)
+		app.Environments = slices.DeleteFunc(slices.Clone(app.Environments), func(e string) bool { return e == env })
 	}
 	noteAudit(r, "environments", app.Environments)
 	out := apiv1.AppEnvironmentRemoved{}
 	// The primary's file gets peerPresent false again with a deployment.
-	list, err := s.d.Store.ListInstanceDeployments(ctx, app.Name, 0)
-	if err != nil {
-		s.internal(w, r, err)
-		return
-	}
-	if last := lastHealthy(list); last != nil {
+	if list, err := s.d.Store.ListInstanceDeployments(ctx, app.Name, 0); err != nil {
+		s.cfg.Log.Error("list deployments after removing an environment; the next deployment rewrites the files", "app", app.Name, "err", err)
+	} else if last := lastHealthy(list); last != nil {
 		specJSON := last.Spec
 		if len(specJSON) == 0 && app.SpecCommit == last.Commit {
 			specJSON = app.Spec
 		}
-		d, ok := s.environmentDeployment(ctx, w, r, app, *last, specJSON)
-		if !ok {
-			return
+		if d, err := s.queueEnvironmentDeployment(ctx, r, app, *last, specJSON); err != nil {
+			s.cfg.Log.Error("queue the deployment after removing an environment; the next deployment rewrites the files", "app", app.Name, "err", err)
+		} else {
+			dj := deploymentJSON(d)
+			out.Deployment = &dj
 		}
-		dj := deploymentJSON(d)
-		out.Deployment = &dj
 	}
-	if out.App, ok = s.appViewNow(ctx, w, r, app); !ok {
-		return
-	}
+	out.App = s.appViewAfter(ctx, app)
 	writeJSON(w, http.StatusAccepted, out)
 }
 
-// environmentDeployment stores and queues a deployment of app's default
-// instance to all of its environments that repeats last (trigger
-// environment, no build), and answers the error itself when it cannot.
-func (s *Server) environmentDeployment(ctx context.Context, w http.ResponseWriter, r *http.Request, app store.App, last store.Deployment, spec []byte) (store.Deployment, bool) {
+// filesWithoutGateway returns a deployment of the app (all, any instance)
+// that went to env healthy with an s3 resource and no public service, or
+// nil. Such an instance may have written files to its bucket in env without
+// the traffic gateway ever sending it a request, so removing env, which
+// deletes that bucket, is refused (ADR 0037). A deployment that recorded no
+// platform.yaml is judged by the app's.
+func filesWithoutGateway(app store.App, all []store.Deployment, env string) *store.Deployment {
+	for i, d := range all {
+		if envStatus(d, env) != deploy.EnvHealthy {
+			continue
+		}
+		raw := cmpOrBytes(d.Spec, app.Spec)
+		var spec appspec.Spec
+		if json.Unmarshal(raw, &spec) != nil {
+			continue
+		}
+		_, public := publicSpecService(spec)
+		if !public && slices.ContainsFunc(spec.Resources, func(res appspec.Resource) bool { return res.Type == appspec.TypeS3 }) {
+			return &all[i]
+		}
+	}
+	return nil
+}
+
+// cmpOrBytes returns a, or b when a is empty.
+func cmpOrBytes(a, b []byte) []byte {
+	if len(a) > 0 {
+		return a
+	}
+	return b
+}
+
+// envNotInApp answers 404 env_not_found for an environment the app is not in.
+func (s *Server) envNotInApp(w http.ResponseWriter, r *http.Request, app store.App, env string) {
+	s.fail(w, r, http.StatusNotFound, "env_not_found", fmt.Sprintf("app %s is not in environment %q (it is in %s)", app.Name, env, strings.Join(app.Environments, ", ")))
+}
+
+// primaryEnvironment answers 409 primary_environment.
+func (s *Server) primaryEnvironment(w http.ResponseWriter, r *http.Request, app store.App, env string) {
+	s.fail(w, r, http.StatusConflict, "primary_environment", fmt.Sprintf("%s is app %s's first environment, where its database was born primary; it goes only with the app (DELETE /v1/apps/%s)", env, app.Name, app.Name))
+}
+
+// appChanged answers 409 app_changed: the app's environments or branches
+// changed while the request was handled, and nothing was changed.
+func (s *Server) appChanged(w http.ResponseWriter, r *http.Request, app string) {
+	s.fail(w, r, http.StatusConflict, "app_changed", fmt.Sprintf("the environments or branches of %s changed meanwhile; read the app and try again", app))
+}
+
+// queueEnvironmentDeployment stores and queues a deployment of app's
+// default instance to all of its environments that repeats last (trigger
+// environment, no build).
+func (s *Server) queueEnvironmentDeployment(ctx context.Context, r *http.Request, app store.App, last store.Deployment, spec []byte) (store.Deployment, error) {
 	d := newDeployment(app, defaultInstance(app), last.Ref, last.Commit, apiv1.DeploymentTriggerEnvironment, actor(r), storeTime())
 	d.Images, d.Spec = last.Images, spec
 	if err := s.d.Store.CreateDeployment(ctx, d); err != nil {
-		switch {
-		case errors.Is(err, store.ErrNotFound):
-			s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
-		default:
-			s.internal(w, r, err)
-		}
-		return store.Deployment{}, false
+		return store.Deployment{}, err
 	}
 	noteAudit(r, "deployment", d.ID)
 	s.enqueue(ctx, d.ID)
-	return d, true
+	return d, nil
 }
 
-// appViewNow is the app as GET /v1/apps/{name} shows it, without readiness,
-// read now; it answers the error itself.
-func (s *Server) appViewNow(ctx context.Context, w http.ResponseWriter, r *http.Request, app store.App) (apiv1.App, bool) {
+// appViewAfter is the app as GET /v1/apps/{name} shows it, without
+// readiness, read now, for the answer to a change that already happened:
+// when its records cannot be read it logs that and returns the app with
+// what the store row says.
+func (s *Server) appViewAfter(ctx context.Context, app store.App) apiv1.App {
 	branches, deps, db, err := s.appRecords(ctx, app)
 	if err == nil {
 		var view apiv1.App
 		if view, err = s.appView(ctx, app, branches, deps, db); err == nil {
-			return view, true
+			return view
 		}
 	}
-	s.internal(w, r, err)
-	return apiv1.App{}, false
+	s.cfg.Log.Warn("read the app for an answer; answering with less", "app", app.Name, "err", err)
+	deploy := s.appDeploy(app, nil, nil, nil)
+	return registeredOnly(app.Name, &deploy)
 }
 
-// newestTo is the newest deployment of list (newest first) that lists env,
-// or nil.
+// newestTo is the newest deployment of list (newest first) that is going
+// to env or went there, or nil: an unfinished one that lists env, or a
+// finished one that got to env (its status there is not pending). A
+// finished deployment that stopped before it wrote env's files, such as a
+// failed build, says nothing about env and is passed over.
 func newestTo(list []store.Deployment, env string) *store.Deployment {
 	for i, d := range list {
-		if slices.ContainsFunc(d.Environments, func(e store.DeploymentEnvironment) bool { return e.Env == env }) {
+		st := envStatus(d, env)
+		if st == "" {
+			continue
+		}
+		if !store.DeploymentFinished(d.Status) || st != deploy.EnvPending {
 			return &list[i]
 		}
 	}
