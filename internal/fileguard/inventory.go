@@ -87,7 +87,7 @@ func streamListing(ctx context.Context, source string, execute command, visit fu
 	defer reader.Close()
 	done := make(chan error, 1)
 	go func() {
-		err := execute(ctx, &boundedWriter{writer, maxListingBytes}, "lsjson", source, "--recursive", "--files-only", "--no-modtime")
+		err := execute(ctx, &boundedWriter{writer, maxListingBytes}, "lsjson", source, "--recursive", "--files-only", "--no-modtime", "--no-mimetype")
 		_ = writer.CloseWithError(err)
 		done <- err
 	}()
