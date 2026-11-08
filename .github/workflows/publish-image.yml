@@ -106,18 +106,20 @@ jobs:
           echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
 
+      # Its own cache: ci's go-race cache holds -race artifacts that these
+      # CGO_ENABLED=0 builds cannot reuse, and is several times larger.
       # A self-hosted runner keeps ~/go between jobs; restoring over it races with parallel jobs.
-      - name: Restore Go cache from main
+      - name: Restore Go cache from the last publish
         if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@v4
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ env.SOURCE_SHA }}
+          key: go-publish-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ env.SOURCE_SHA }}
           restore-keys: |
-            go-race-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-race-${{ runner.os }}-
+            go-publish-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-publish-${{ runner.os }}-
 
       - name: Go toolchain
         id: go
@@ -142,6 +144,15 @@ jobs:
             mkdir -p deploy/docker/bin/onprem-agent
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "deploy/docker/bin/onprem-agent/$arch" ./cmd/onprem-agent
           done
+
+      - name: Save Go cache
+        if: runner.environment == 'github-hosted' && env.IMAGE_FLAVOR == 'default'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-publish-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ env.SOURCE_SHA }}
 
       - name: AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
