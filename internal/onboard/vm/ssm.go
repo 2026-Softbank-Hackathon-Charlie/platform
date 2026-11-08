@@ -100,9 +100,15 @@ func (r *Runner) Wait(ctx context.Context, instance, commandID, step string) (St
 	for {
 		out, err := r.SSM.GetCommandInvocation(ctx, in)
 		var missing *ssmtypes.InvocationDoesNotExist
+		var noPlugin *ssmtypes.InvalidPluginName
 		switch {
 		case errors.As(err, &missing):
 			// Not delivered yet.
+		case step != "" && errors.As(err, &noPlugin):
+			// The instance has the command but has not registered this step
+			// yet: SSM answers InvalidPluginName for a step of a
+			// multi-step document right after SendCommand. A step name that
+			// is really wrong ends at the timeout below.
 		case err != nil:
 			return StepResult{}, fmt.Errorf("ssm: read %s step %q: %s", commandID, step, apiErrorCode(err))
 		default:
