@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,6 +37,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/leader"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/job"
@@ -71,6 +73,11 @@ func main() {
 	stateDir := flag.String("state-dir", envOr("PLATFORM_STATE_DIR", filepath.Join(".hopcharlie", "runs")), "engine run state directory")
 	insecure := flag.Bool("insecure-no-auth", false, "run without tokens or administrators; every caller is the operator \"dev\" (local development only)")
 	drain := flag.Duration("shutdown-wait", 15*time.Minute, "how long to wait for active migrations on shutdown")
+	// Rolling updates (ADR 0065): the address other API processes forward the
+	// leader's requests to, and how long a stopping process keeps serving so
+	// that the load balancer has stopped sending it requests.
+	leaderAddr := flag.String("leader-addr", os.Getenv("PLATFORM_LEADER_ADDR"), "host:port other API processes reach this one at (default localhost and the -addr port)")
+	shutdownDelay := flag.Duration("shutdown-delay", 0, "how long to keep serving after a shutdown signal, while the load balancer stops sending requests")
 	hashPw := flag.Bool("hash-password", false, "read a password from stdin, print its bcrypt hash for PLATFORM_ADMINS and exit")
 	flag.Parse()
 
@@ -435,22 +442,16 @@ func main() {
 		log.Warn("source retention enabled; source database deletion ends immediate rollback, PVCs retained", "period", period)
 	}
 	runner := runs.New(runCtx, rcfg)
-	if n, err := planSvc.RecoverStarting(ctx); err != nil {
-		fatal("recover plans", "err", err)
-	} else if n > 0 {
-		log.Warn("released plans left in starting by a previous crash", "count", n)
-	}
-	if n, err := runner.Recover(ctx); err != nil {
-		fatal("recover runs", "err", err)
-	} else if n > 0 {
-		log.Warn("marked runs interrupted by the previous shutdown; resume them to continue", "count", n)
-	}
+	// Only the leader runs background work (ADR 0065); lead starts it.
+	// loopsCtx ends when the leader hands over; loops waits for them.
+	loopsCtx, cancelLoops := context.WithCancel(ctx)
+	defer cancelLoops()
+	var loops sync.WaitGroup
+	var leaderWork []func()
 
 	deps := api.Deps{Plans: planSvc, Runs: runner, Store: st, Envs: envSvc, EnvNotFound: envs.ErrNotFound}
 	if rcfg.Retention != nil {
-		retentionCtx, stopRetention := context.WithCancel(runCtx)
-		defer stopRetention()
-		go runner.RunRetention(retentionCtx)
+		leaderWork = append(leaderWork, func() { loops.Go(func() { runner.RunRetention(loopsCtx) }) })
 	}
 	deps.Apps = appCat
 	deps.OnpremConnector = onpremConnector
@@ -563,14 +564,14 @@ func main() {
 	if gw != nil {
 		deps.Gateway = gw
 	}
-	go agents.RunSweeper(runCtx, agentIdle, log)
+	leaderWork = append(leaderWork, func() { loops.Go(func() { agents.RunSweeper(loopsCtx, agentIdle, log) }) })
 	// Optional (ADR 0030): the management cluster's routes to registered apps' databases.
 	dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log)
 	if err != nil {
 		fatal("PLATFORM_APP_DB_ROUTE_*", "err", err)
 	} else if dbRoutes != nil {
 		deps.DBRoutes = dbRoutes
-		go dbRoutes.Run(runCtx)
+		leaderWork = append(leaderWork, func() { loops.Go(func() { dbRoutes.Run(loopsCtx) }) })
 	}
 	// Optional: the GitHub App that apps are registered and deployed from.
 	gh, err := github.FromEnv(os.Getenv)
@@ -628,9 +629,11 @@ func main() {
 		fatal("deployments", "err", err)
 	}
 	if deployer != nil {
-		if err := deployer.Start(deployCtx); err != nil {
-			fatal("start deployments", "err", err)
-		}
+		leaderWork = append(leaderWork, func() {
+			if err := deployer.Start(deployCtx); err != nil {
+				fatal("start deployments", "err", err)
+			}
+		})
 		deps.Deployer, deps.Remover = deployer, deployer
 		deps.Backends = deployer.BackendURLs()
 	}
@@ -680,11 +683,17 @@ func main() {
 		f := r.Remote
 		onboardRemote.Store(&f)
 		// From the rows, also after a restart; steps outlive requests.
-		go r.Run(runCtx)
+		leaderWork = append(leaderWork, func() { loops.Go(func() { r.Run(loopsCtx) }) })
 	}
+	if *leaderAddr == "" {
+		_, port, _ := net.SplitHostPort(*addr)
+		*leaderAddr = net.JoinHostPort("localhost", port)
+	}
+	gate := &leader.Gate{Self: *leaderAddr, Log: log,
+		LeaderAddr: func(ctx context.Context) (string, error) { return st.LeaderAddr(ctx, leaderName) }}
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           apiServer,
+		Handler:           gate.Wrap(apiServer),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -698,22 +707,103 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+	// Reads are served at once; the background work and the leader's
+	// requests wait for leadership, which a stopping process hands over.
+	campaignCtx, cancelCampaign := context.WithCancel(ctx)
+	var leadMu sync.Mutex // lead and handOver do not interleave
+	var held store.Leadership
+	campaignDone := make(chan struct{})
+	go func() {
+		defer close(campaignDone)
+		l, err := leader.Campaign(campaignCtx, func(ctx context.Context) (store.Leadership, error) {
+			return st.TryLeadership(ctx, leaderName, *leaderAddr)
+		}, time.Second, log)
+		if err != nil {
+			return // stopping before it led
+		}
+		leadMu.Lock()
+		defer leadMu.Unlock()
+		held = l
+		lead(ctx, log, fatal, planSvc, runner, leaderWork)
+		gate.Activate()
+		log.Info("leading", "addr", *leaderAddr)
+		go leader.Watch(campaignCtx, l, 2*time.Second, func(err error) {
+			// Another process may lead by now: stop all work at once (ADR 0065).
+			log.Error("leadership lost; exiting so that only the new leader works", "err", err)
+			os.Exit(1)
+		})
+	}()
+
 	<-sig.Done()
 	stop() // a second signal now kills the process
+	stopping := time.Now()
+	cancelCampaign()
+	<-campaignDone
+	leadMu.Lock()
+	if held != nil {
+		handOver(ctx, log, gate, runner, *drain, cancelRuns, cancelLoops, &loops, deployer, cancelDeploy)
+		held.Release()
+		log.Info("leadership released")
+	}
+	leadMu.Unlock()
 
-	log.Info("shutting down", "activeRuns", runner.Active(), "interruptedWaiting", runner.InterruptWaiting())
+	// The load balancer may still send requests for a while: serve them (the
+	// leader's ones now go to the new leader) before closing the listener.
+	time.Sleep(time.Until(stopping.Add(*shutdownDelay)))
 	shCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	_ = srv.Shutdown(shCtx)
 	cancel()
+}
+
+// leaderName is the API's leadership in the platform database (ADR 0065).
+const leaderName = "api"
+
+// lead starts the leader's work: what a previous leader left behind is
+// recovered first, then the runs it handed over resume, then the loops start.
+func lead(ctx context.Context, log *slog.Logger, fatal func(string, ...any), planSvc *plans.Service, runner *runs.Runner, work []func()) {
+	if n, err := planSvc.RecoverStarting(ctx); err != nil {
+		fatal("recover plans", "err", err)
+	} else if n > 0 {
+		log.Warn("released plans left in starting by a previous crash", "count", n)
+	}
+	if n, err := runner.Recover(ctx); err != nil {
+		fatal("recover runs", "err", err)
+	} else if n > 0 {
+		log.Warn("marked runs interrupted by the previous shutdown; resume them to continue", "count", n)
+	}
+	if n, err := runner.ResumeHandedOff(ctx, planSvc.Load); err != nil {
+		log.Error("could not list handed-over runs; resume them by hand", "err", err)
+	} else if n > 0 {
+		log.Info("resumed runs the previous leader handed over", "count", n)
+	}
+	for _, start := range work {
+		start()
+	}
+}
+
+// handOver stops the leader's work so that another process can take it
+// (ADR 0065): no new leader requests here, waiting runs stop, running ones
+// stop before their next step unless they are inside the write hold, loops
+// and deployments stop. Runs still active after drain are cancelled (the
+// engine rolls back before promotion, halts after).
+func handOver(ctx context.Context, log *slog.Logger, gate *leader.Gate, runner *runs.Runner, drain time.Duration,
+	cancelRuns, cancelLoops context.CancelFunc, loops *sync.WaitGroup, deployer *deploy.Executor, cancelDeploy context.CancelFunc) {
+	gate.Deactivate()
+	log.Info("handing over", "activeRuns", runner.Active(), "interruptedWaiting", runner.HandOff())
+	cancelLoops()
 	if deployer != nil {
-		cancelDeploy() // unfinished deployments resume after the restart
+		cancelDeploy() // unfinished deployments resume on the next leader
 		waitDeploy, cancelWaitDeploy := context.WithTimeout(ctx, 30*time.Second)
-		_ = deployer.Wait(waitDeploy)
+		if err := deployer.Wait(waitDeploy); err != nil {
+			log.Warn("deployments still stopping after 30s; handing over anyway")
+		}
 		cancelWaitDeploy()
 	}
+	loopsDone := make(chan struct{})
+	go func() { loops.Wait(); close(loopsDone) }()
 
 	// Let active migrations finish instead of interrupting a switchover.
-	waitCtx, cancelWait := context.WithTimeout(ctx, *drain)
+	waitCtx, cancelWait := context.WithTimeout(ctx, drain)
 	defer cancelWait()
 	if err := runner.Wait(waitCtx); err != nil {
 		log.Warn("migrations still active; cancelling (engine rolls back before promotion, halts after)", "activeRuns", runner.Active())
@@ -721,6 +811,11 @@ func main() {
 		final, cancelFinal := context.WithTimeout(ctx, 3*time.Minute)
 		defer cancelFinal()
 		_ = runner.Wait(final)
+	}
+	select {
+	case <-loopsDone:
+	case <-time.After(30 * time.Second):
+		log.Warn("background loops still stopping after 30s; handing over anyway")
 	}
 }
 

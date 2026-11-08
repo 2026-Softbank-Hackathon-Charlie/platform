@@ -92,6 +92,13 @@ var phaseRank = map[apiv1.RunPhase]int{
 }
 
 var syncSteps = []string{engine.StepPrecheck, engine.StepPrepare, engine.StepPresync, engine.StepDelta}
+
+// HandoffReason is the status reason of a run that stopped because its
+// server handed leadership to another one (HandOff); the new leader resumes
+// exactly these runs (ResumeHandedOff).
+const HandoffReason = "the platform is handing this run to a new server, which resumes it"
+
+var errHandoff = errors.New("stopped for a handoff to a new server")
 var errClusterLeaseLost = errors.New("cluster lease lost; operator reconciliation required")
 
 // Config configures a Runner.
@@ -186,6 +193,7 @@ type Runner struct {
 
 	stopOnce sync.Once
 	stopCh   chan struct{} // closed by InterruptWaiting: runs stop waiting (canary, switch approval, observe)
+	handoff  atomic.Bool   // set by HandOff: runs stop where a new leader can resume them (ADR 0065)
 
 	autoRollback AutoRollbackFunc // guarded by mu; see SetAutoRollback
 }
@@ -555,6 +563,10 @@ func (r *Runner) runSteps(ctx context.Context, l *live, steps []string) error {
 		if stepSucceeded(l.eng, step) {
 			continue
 		}
+		if r.handoff.Load() && handOffBefore(l.eng, step) {
+			l.markInterrupted()
+			return errHandoff
+		}
 		if step == engine.StepVerify {
 			r.writeWritten(ctx, l)
 		}
@@ -565,6 +577,22 @@ func (r *Runner) runSteps(ctx context.Context, l *live, steps []string) error {
 		}
 	}
 	return nil
+}
+
+// handOffBefore reports whether a run may stop for a handoff before step:
+// only while nothing is held, demoted or promoted, that is before the fence
+// starts the write hold. From the fence on, the run goes on to the end of
+// its steps on this server (ADR 0065).
+func handOffBefore(e Engine, step string) bool {
+	if !slices.Contains(syncSteps, step) && step != engine.StepFence {
+		return false
+	}
+	st := e.State()
+	if st.WritesHeld || st.SourceDemoted || st.PromoteRequested || st.SourceFenced {
+		return false
+	}
+	f := st.Steps[engine.StepFence]
+	return f == nil || f.Status == engine.StatusPending
 }
 
 // syncEngine copies the engine state into the run document and asks the
@@ -637,6 +665,8 @@ func (r *Runner) ended(l *live, err error) {
 		switch {
 		case aborted:
 			status = apiv1.RunStatusAborted
+		case interrupted && r.handoff.Load():
+			status, reason = apiv1.RunStatusInterrupted, HandoffReason
 		case interrupted || r.ctx.Err() != nil:
 			status, reason = apiv1.RunStatusInterrupted, "the platform shut down during the run; resume it to continue"
 		default:
@@ -1184,6 +1214,50 @@ func (r *Runner) InterruptWaiting() int {
 	}
 	r.stopOnce.Do(func() { close(r.stopCh) })
 	return n
+}
+
+// HandOff prepares this server to give its runs to a new leader (ADR 0065):
+// waiting runs (switch approval, canary) stop at once, running ones stop
+// before their next step while nothing is held yet, and runs past the fence
+// go on to their end. The runs it stops end interrupted with HandoffReason.
+// Wait then returns once every run has stopped or ended. It returns how
+// many runs were waiting.
+func (r *Runner) HandOff() int {
+	r.handoff.Store(true)
+	return r.InterruptWaiting()
+}
+
+// ResumeHandedOff resumes the runs an earlier leader stopped for a handoff
+// (HandoffReason), loading each one's plan with load. Call it once this
+// server leads, after Recover. A run that cannot resume stays interrupted
+// for an operator; it returns how many resumed.
+func (r *Runner) ResumeHandedOff(ctx context.Context, load func(ctx context.Context, planRef string) (*plan.Plan, error)) (int, error) {
+	rows, err := r.cfg.Store.ListRunsByStatus(ctx, string(apiv1.RunStatusInterrupted))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, row := range rows {
+		var doc apiv1.Run
+		if err := json.Unmarshal(row.Doc, &doc); err != nil {
+			r.cfg.Log.Warn("handed-off run unreadable; resume it by hand", "run", row.RunID, "err", err)
+			continue
+		}
+		if doc.StatusReason == nil || *doc.StatusReason != HandoffReason {
+			continue
+		}
+		p, err := load(ctx, doc.PlanRef)
+		if err == nil {
+			_, err = r.Resume(ctx, row.RunID, "platform-handoff", p)
+		}
+		if err != nil {
+			r.cfg.Log.Warn("handed-off run did not resume; resume it by hand", "run", row.RunID, "err", err)
+			continue
+		}
+		r.cfg.Log.Info("resumed handed-off run", "run", row.RunID)
+		n++
+	}
+	return n, nil
 }
 
 // Recover marks runs that were active when the server stopped as interrupted.
