@@ -660,3 +660,51 @@ func TestDeleteDoesNotUndoAStartedCutover(t *testing.T) {
 		t.Fatalf("cutover: %v", err)
 	}
 }
+
+// TestResumeCheckingAfterTheTestAppWasRemoved: an onboarding that failed in
+// checking removed its test app with its deployments; resume used the
+// stored deployment id and failed with "not found: deployment ...". It now
+// starts the check over with a new test app and its full attempts.
+func TestResumeCheckingAfterTheTestAppWasRemoved(t *testing.T) {
+	w := newWorld(t)
+	w.testFails = 2
+	r := w.runner()
+	id := start(t, w, r)
+	w.hopaiStatus = "succeeded"
+	r.Advance(ctx, id)
+	r.Advance(ctx, id)
+	o := want(t, r, id, apiv1.OnboardingStateFailed)
+	if *o.FailedState != apiv1.OnboardingStateChecking || o.Check == nil || o.Check.DeploymentId == nil {
+		t.Fatalf("failed %+v", o)
+	}
+	delete(w.deployStatus, *o.Check.DeploymentId) // removed with the test app
+	before := len(w.done())
+	if _, err := r.Resume(ctx, id, "op"); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	o = want(t, r, id, apiv1.OnboardingStateAwaitingApproval)
+	if o.Check.Attempts != 1 || !slices.Contains(w.done()[before:], "deploy test "+id+" hopcharlie/onboard") {
+		t.Fatalf("check %+v after %v", o.Check, w.done()[before:])
+	}
+}
+
+// TestCheckingStartsOverWhenTheDeploymentIsGone: a stored test deployment
+// that no longer exists is deployed again, not a failure.
+func TestCheckingStartsOverWhenTheDeploymentIsGone(t *testing.T) {
+	w := newWorld(t)
+	r := w.runner()
+	id := start(t, w, r)
+	if _, err := r.update(ctx, id, nil, func(x *rec) (string, error) {
+		gone := "dep_d9155c512f68"
+		x.doc.Internal.Branch = "hopcharlie/onboard"
+		x.doc.Check = &apiv1.OnboardingCheck{App: id, Attempts: 1, DeploymentId: &gone, Result: apiv1.OnboardingCheckResultRunning}
+		return store.OnboardingChecking, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.Advance(ctx, id)
+	if o := want(t, r, id, apiv1.OnboardingStateAwaitingApproval); o.Check.Attempts != 1 {
+		t.Fatalf("attempts %d", o.Check.Attempts)
+	}
+}

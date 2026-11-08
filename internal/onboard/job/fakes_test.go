@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -262,7 +263,11 @@ func (w *world) Redeploy(context.Context, string, string) (string, error) {
 	return w.newDeployment(store.DeployHealthy), nil
 }
 func (w *world) Deployment(_ context.Context, id string) (string, string, error) {
-	return w.deployStatus[id], "msg", nil
+	s, ok := w.deployStatus[id]
+	if !ok {
+		return "", "", fmt.Errorf("%w: deployment %s", store.ErrNotFound, id)
+	}
+	return s, "msg", nil
 }
 func (w *world) DeploymentLog(context.Context, string) ([]byte, error) { return []byte("boom"), nil }
 func (w *world) Remove(_ context.Context, app string, keepGateway bool) error {

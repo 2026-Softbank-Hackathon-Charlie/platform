@@ -287,6 +287,17 @@ func (r *Runner) checking(ctx context.Context, x *rec) (bool, error) {
 		return err == nil, err
 	}
 	status, msg, err := r.cfg.Apps.Deployment(ctx, *c.DeploymentId)
+	if errors.Is(err, store.ErrNotFound) {
+		// Gone with its test app: deploy the test app again.
+		_, err := r.update(ctx, x.row.ID, []string{store.OnboardingChecking}, func(x *rec) (string, error) {
+			if x.doc.Check != nil {
+				x.doc.Check.DeploymentId = nil
+				x.doc.Check.Attempts = max(x.doc.Check.Attempts-1, 0)
+			}
+			return "", nil
+		})
+		return err == nil, err
+	}
 	if err != nil {
 		return false, err
 	}
@@ -701,6 +712,14 @@ func (r *Runner) registering(ctx context.Context, x *rec) (bool, error) {
 		}
 	}
 	status, msg, err := r.cfg.Apps.Deployment(ctx, x.doc.Internal.Deployment)
+	if errors.Is(err, store.ErrNotFound) {
+		// Gone: queue the first deployment again.
+		_, err := r.update(ctx, x.row.ID, nil, func(x *rec) (string, error) {
+			x.doc.Internal.Deployment = ""
+			return "", nil
+		})
+		return err == nil, err
+	}
 	if err != nil {
 		return false, err
 	}
