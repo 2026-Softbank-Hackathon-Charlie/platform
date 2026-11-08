@@ -126,3 +126,37 @@ func TestExpiredAnalysisAndMissingRunnerNeverInventAI(t *testing.T) {
 		t.Fatal("expired callback accepted")
 	}
 }
+
+func TestIncompleteBuildFactsCannotBecomeAnAIStayOrMove(t *testing.T) {
+	now := time.Now().UTC()
+	candidates := Build([]Application{{Name: "docker-doom", Current: str("gke"), Environments: []string{"gke", "eks"}}}, []Environment{{Name: "gke", Ready: true, ObservedAt: now}, {Name: "eks", Ready: true, ObservedAt: now}}, nil, now)
+	r := &fakeRunner{request: make(chan Launch, 1)}
+	s := New(func(context.Context) ([]Candidate, error) { return candidates, nil }, r, func() time.Time { return now })
+	s.Trigger(context.Background(), "viewer")
+	launch := <-r.request
+	var input Input
+	if err := json.Unmarshal(launch.Input, &input); err != nil {
+		t.Fatal(err)
+	}
+	c := input.Candidates[0]
+	result := Result{Nonce: launch.Nonce, SnapshotID: input.SnapshotID, Status: "ready", Model: "sandbox-model", Recommendations: []Selection{{ID: c.ID, Action: "insufficient", Reasons: c.Reasons}}}
+	for _, action := range []string{"stay", "move"} {
+		result.Recommendations[0].Action = action
+		if !errors.Is(s.Complete(launch.ID, result), ErrConflict) {
+			t.Fatalf("accepted %s without comparison evidence", action)
+		}
+	}
+	result.Recommendations[0].Action = "insufficient"
+	result.Recommendations[0].Reasons = []string{"AWS m7i.large 참고 $0.1239"}
+	if !errors.Is(s.Complete(launch.ID, result), ErrConflict) {
+		t.Fatal("accepted reference price as a decision")
+	}
+	result.Recommendations[0].Reasons = c.Reasons
+	if err := s.Complete(launch.ID, result); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Status().Recommendations[0]
+	if got.Action != "insufficient" || len(got.Reasons) != 1 || got.Reasons[0] != c.Reasons[0] || got.EstimatedMonthlySavingsUSD != nil || r.calls.Load() != 1 {
+		t.Fatalf("lost primary decision evidence: %+v", got)
+	}
+}
