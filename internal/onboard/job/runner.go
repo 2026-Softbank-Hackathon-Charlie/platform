@@ -442,6 +442,11 @@ func (r *Runner) Resume(ctx context.Context, id, actor string) (apiv1.Onboarding
 			if to == store.OnboardingPatching {
 				x.doc.Internal.HopaiJob = ""
 			}
+			if to == store.OnboardingPatching || to == store.OnboardingChecking {
+				// The failed check removed its test app and deployments: the
+				// check starts over with a new one and its full attempts.
+				x.doc.Check, x.doc.Internal.CheckLog = nil, ""
+			}
 			return to, nil
 		case x.doc.Internal.Waiting:
 			x.doc.Internal.Waiting = false

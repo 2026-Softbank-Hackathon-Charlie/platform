@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -400,6 +401,14 @@ func (r *Runner) postRun(ctx context.Context, x *rec) (bool, error) {
 	}
 	if !x.postRunDone("redeployed") {
 		status, msg, err := r.cfg.Apps.Deployment(ctx, x.doc.Internal.Deployment)
+		if errors.Is(err, store.ErrNotFound) {
+			// Gone: redeploy again.
+			_, err := r.update(ctx, x.row.ID, []string{store.OnboardingCuttingOver}, func(x *rec) (string, error) {
+				x.doc.Internal.PostRun = slices.DeleteFunc(x.doc.Internal.PostRun, func(s string) bool { return s == "redeploy" })
+				return "", nil
+			})
+			return err == nil, err
+		}
 		if err != nil {
 			return false, err
 		}
