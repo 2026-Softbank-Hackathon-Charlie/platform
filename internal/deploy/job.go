@@ -180,6 +180,18 @@ func (j *job) locked(ctx context.Context, f func() error) error {
 
 // --- building ---
 
+// CheckAppName gives spec the name of app when app is an onboarding's check
+// app (onb-<hex>, ADR 0042): it deploys the PR branch's platform.yaml, which
+// names the real app, under the onboarding's own name, so its namespace,
+// bucket, database and images are the check app's and never the real app's.
+// POST /v1/apps never registers that name, so every other app keeps the
+// strict check that its platform.yaml names it.
+func CheckAppName(app string, spec *appspec.Spec) {
+	if spec != nil && onboard.ID.MatchString(app) {
+		spec.Name = app
+	}
+}
+
 // spec reads and checks platform.yaml at the deployment's commit and makes it
 // the instance's spec when this is the instance's newest deployment.
 func (j *job) spec(ctx context.Context, app store.App, branch *store.AppBranch) (appspec.Spec, error) {
@@ -195,6 +207,7 @@ func (j *job) spec(ctx context.Context, app store.App, branch *store.AppBranch) 
 		}
 		return appspec.Spec{}, fmt.Errorf("platform.yaml at %s is invalid: %s", short(j.d.Commit), strings.Join(msgs, "; "))
 	}
+	CheckAppName(app.Name, spec)
 	if spec.Name != app.Name {
 		return appspec.Spec{}, fmt.Errorf("platform.yaml at %s names the app %q, but it is registered as %q", short(j.d.Commit), spec.Name, app.Name)
 	}

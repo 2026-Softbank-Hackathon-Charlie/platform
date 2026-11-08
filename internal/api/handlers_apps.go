@@ -805,6 +805,9 @@ func (s *Server) appSpecAt(ctx context.Context, w http.ResponseWriter, r *http.R
 		s.githubUnreachable(w, r, err)
 		return nil
 	}
+	if v.Valid {
+		deploy.CheckAppName(app.Name, spec)
+	}
 	if v.Valid && spec.Name != app.Name {
 		v.Valid = false
 		v.Errors = append(v.Errors, apiv1.AppSpecFieldError{Path: "name", Message: fmt.Sprintf("is %q, but the app is registered as %q; register the new name as a new app", spec.Name, app.Name)})

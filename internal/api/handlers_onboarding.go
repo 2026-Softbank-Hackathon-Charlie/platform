@@ -265,9 +265,11 @@ func (s *Server) onboardingGuard(w http.ResponseWriter, r *http.Request, app str
 	return false
 }
 
-// onboardingName refuses the test apps' names for POST /v1/apps.
+// onboardingName refuses the test apps' names for POST /v1/apps, with the
+// onboarding API on or off: a deployment takes any platform.yaml for such a
+// name (deploy.CheckAppName).
 func (s *Server) onboardingName(w http.ResponseWriter, r *http.Request, app string) bool {
-	if s.cfg.Onboarding && strings.HasPrefix(app, onboard.IDPrefix) {
+	if strings.HasPrefix(app, onboard.IDPrefix) {
 		s.fail(w, r, http.StatusConflict, "app_exists", fmt.Sprintf("names starting with %s are kept for onboardings' test apps", onboard.IDPrefix))
 		return true
 	}
