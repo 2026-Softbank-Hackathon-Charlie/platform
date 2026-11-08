@@ -2,15 +2,19 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
-// Removing a member of a three-environment database group (ADR 0063).
+// Removing a member of a three-environment database group (ADR 0064).
 
 func member(env, primary, source string, ext ...string) *cnpg.Status {
 	st := &cnpg.Status{Phase: cnpg.HealthyPhase, Instances: 1, ReadyInstances: 1, Self: "shop-db-" + env, ReplicaPrimary: "shop-db-" + primary, ReplicaSource: "shop-db-" + source}
@@ -137,7 +141,13 @@ func TestRemoveGroupMemberRefusals(t *testing.T) {
 		{"primary cannot follow the third", "eks", func(f *envFixture) {
 			f.clusters.status["gke"] = member("gke", "gke", "eks", "gke", "eks")
 		}, 409, "db_topology_unready"},
-		{"rewire fails", "eks", func(f *envFixture) { f.clusters.rewireErr = errors.New("admission denied") }, 502, "db_topology_unreachable"},
+		{"rewire fails", "eks", func(f *envFixture) { f.clusters.rewireErr = errors.New("connection reset") }, 502, "db_topology_unreachable"},
+		{"rewire test fails", "eks", func(f *envFixture) {
+			f.clusters.rewireErr = apierrors.NewInvalid(schema.GroupKind{Group: "postgresql.cnpg.io", Kind: "Cluster"}, "shop-db", field.ErrorList{field.Invalid(field.NewPath("metadata", "resourceVersion"), "1", "test failed")})
+		}, 409, "db_topology_changed"},
+		{"rewire refused by policy", "eks", func(f *envFixture) {
+			f.clusters.rewireErr = fmt.Errorf("rewire: %w", apierrors.NewInvalid(schema.GroupKind{Group: "postgresql.cnpg.io", Kind: "Cluster"}, "shop-db", field.ErrorList{field.Forbidden(field.NewPath(""), "ValidatingAdmissionPolicy 'hopcharlie-platform-migration' denied request")}))
+		}, 502, "db_topology_denied"},
 		{"no cluster access", "eks", func(f *envFixture) { f.api.d.DBRewire = nil }, 503, "db_topology_unknown"},
 		{"first environment", "gke", func(f *envFixture) {}, 409, "primary_environment"},
 	} {
@@ -152,5 +162,22 @@ func TestRemoveGroupMemberRefusals(t *testing.T) {
 				t.Fatalf("changed on refusal: removed %v, rewired %v, environments %v", f.rm.removed, f.clusters.rewired, f.environments())
 			}
 		})
+	}
+}
+
+// TestRemoveGroupMemberRechecksUnderTheLocks: what changed while the
+// removal waited for the instance locks stops it before anything changes.
+func TestRemoveGroupMemberRechecksUnderTheLocks(t *testing.T) {
+	f := groupFixture(t)
+	f.rm.beforeCheck = func() {
+		f.clusters.mu.Lock()
+		f.clusters.status["onprem"] = member("onprem", "onprem", "gke", "onprem", "gke", "eks")
+		f.clusters.mu.Unlock()
+	}
+	if code, b := f.removeEnv("onprem"); code != 409 || errCode(t, b) != "write_backend" {
+		t.Fatalf("remove a member promoted meanwhile: %d %s", code, b)
+	}
+	if !slices.Equal(f.environments(), []string{"gke", "eks", "onprem"}) {
+		t.Fatalf("environments %v", f.environments())
 	}
 }

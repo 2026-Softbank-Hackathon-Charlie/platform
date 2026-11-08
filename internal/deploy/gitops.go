@@ -187,6 +187,8 @@ type DBTopology struct {
 	Primary, Peer string
 	PeerAbsent    bool
 	// Members extends the original pair; nil preserves the legacy values.
+	// Two members (a pair left from a group of three, ADR 0064) may have
+	// PeerAbsent.
 	Members []string
 	// External is the source outside the platform of an onboarded app's
 	// database (ADR 0042, see PostgresValues); nil for every other pair.
@@ -303,7 +305,7 @@ func Render(f File) ([]byte, error) {
 			return nil, fmt.Errorf("render %s: a database topology needs the sealed app account and CA", FilePath(f.Instance, f.Env))
 		case t.Primary == t.Peer || !slices.Contains(members, f.Env):
 			return nil, fmt.Errorf("render %s: database topology %s/%s does not fit environment %s", FilePath(f.Instance, f.Env), t.Primary, t.Peer, f.Env)
-		case len(t.Members) > 0 && (len(members) < 2 || len(members) > 3 || t.PeerAbsent || !slices.Contains(members, t.Primary) || !slices.Contains(members, t.Peer) || slices.Contains(members, "") || len(slices.Compact(slices.Sorted(slices.Values(members)))) != len(members)):
+		case len(t.Members) > 0 && (len(members) < 2 || len(members) > 3 || (t.PeerAbsent && len(members) != 2) || !slices.Contains(members, t.Primary) || !slices.Contains(members, t.Peer) || slices.Contains(members, "") || len(slices.Compact(slices.Sorted(slices.Values(members)))) != len(members)):
 			return nil, fmt.Errorf("render %s: invalid database group membership", FilePath(f.Instance, f.Env))
 		case t.PeerAbsent && f.Env != t.Primary:
 			return nil, fmt.Errorf("render %s: the peer %s of the database topology is not one of the app's environments, so only the primary's file is rendered", FilePath(f.Instance, f.Env), t.Peer)

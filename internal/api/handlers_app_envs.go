@@ -17,6 +17,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // Adding and removing an environment of a registered app (ADR 0043).
@@ -266,6 +267,12 @@ func (s *Server) environmentCleanedUp(ctx context.Context, w http.ResponseWriter
 	return true
 }
 
+// What the removal reads again under the instance locks found changed.
+var (
+	errRemovalMigrating = errors.New("a migration of the app started")
+	errRemovalPrimary   = errors.New("the removed member's database is a primary")
+)
+
 // DELETE /v1/apps/{name}/environments/{env}
 func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 	name, env := r.PathValue("name"), r.PathValue("env")
@@ -291,11 +298,12 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		s.primaryEnvironment(w, r, app, env)
 		return
 	}
-	// A member of a three-environment database group (ADR 0063): the two
+	// A member of a three-environment database group (ADR 0064): the two
 	// that remain hold every write, which prepareGroupRemoval reads from
 	// the live replication topology, so a member that was a migration's
 	// source or target before may go too.
 	group := db.App != "" && len(app.Environments) > 2
+	cluster := "" // the group's CNPG Cluster, read again under the locks
 	instances, err := s.instanceNames(ctx, app)
 	if err != nil {
 		s.internal(w, r, err)
@@ -346,13 +354,41 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, http.StatusConflict, "migration_in_progress", fmt.Sprintf("the onboarding of %s has not cut over to its database yet; remove the environment once it is done", app.Name))
 			return
 		}
-		if !s.prepareGroupRemoval(ctx, w, r, app, env) {
+		var ok bool
+		if cluster, ok = s.prepareGroupRemoval(ctx, w, r, app, env); !ok {
 			return
 		}
 	}
-	err = s.d.Remover.RemoveEnvironment(ctx, app.Name, env)
+	// Under the instance locks, before anything changes: a migration that
+	// started since the checks above, or the removed member's database
+	// promoted meanwhile, stops the removal (ADR 0064).
+	recheck := func(cctx context.Context) error {
+		busy, err := s.migrationBusy(cctx, app.Name, instances)
+		if err != nil {
+			return err
+		}
+		if busy != "" {
+			return fmt.Errorf("%w: %s", errRemovalMigrating, busy)
+		}
+		if cluster == "" {
+			return nil
+		}
+		rctx, cancel := context.WithTimeout(cctx, DBClusterTimeout)
+		defer cancel()
+		if st, err := s.d.DBCluster(rctx, env, deploy.Namespace(app.Name), cluster); err == nil && st != nil && st.IsPrimary() {
+			return fmt.Errorf("%w: the database of %s in %s is a primary now", errRemovalPrimary, app.Name, env)
+		}
+		return nil
+	}
+	err = s.d.Remover.RemoveEnvironment(ctx, app.Name, env, recheck)
 	switch {
 	case err == nil:
+	case errors.Is(err, errRemovalMigrating):
+		s.fail(w, r, http.StatusConflict, "migration_in_progress", err.Error()+"; remove the environment once the migration is done")
+		return
+	case errors.Is(err, errRemovalPrimary):
+		s.fail(w, r, http.StatusConflict, "write_backend", err.Error()+"; migrate it to another environment first")
+		return
 	case errors.Is(err, store.ErrNotFound):
 		s.fail(w, r, http.StatusNotFound, "app_not_found", "app not found")
 		return
@@ -421,7 +457,7 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 
 // prepareGroupRemoval checks the replication of the members of app's
 // three-environment database group that remain without env, and makes them
-// the pair the files render after the removal (ADR 0063). It answers and
+// the pair the files render after the removal (ADR 0064). It answers and
 // returns false unless each remaining Cluster is read and healthy, one of
 // them is the designated primary (replica.primary is its self), the other
 // streams directly from it (its replica.primary and replica.source are the
@@ -437,15 +473,15 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 // replica.source, which the re-rendered file would otherwise leave. Nothing
 // else is changed here, so a refusal changes nothing and a failed change of
 // the source is sent again.
-func (s *Server) prepareGroupRemoval(ctx context.Context, w http.ResponseWriter, r *http.Request, app store.App, env string) bool {
+func (s *Server) prepareGroupRemoval(ctx context.Context, w http.ResponseWriter, r *http.Request, app store.App, env string) (string, bool) {
 	if s.d.DBCluster == nil || s.d.DBRewire == nil {
 		s.fail(w, r, http.StatusServiceUnavailable, "db_topology_unknown", "this server cannot read or change the database Clusters in the workload clusters, so it cannot check the replication of the members that remain")
-		return false
+		return "", false
 	}
 	list, err := s.d.Store.ListInstanceDeployments(ctx, app.Name, 0)
 	if err != nil {
 		s.internal(w, r, err)
-		return false
+		return "", false
 	}
 	cluster := ""
 	if last := lastHealthy(list); last != nil {
@@ -456,15 +492,15 @@ func (s *Server) prepareGroupRemoval(ctx context.Context, w http.ResponseWriter,
 		var spec appspec.Spec
 		if err := json.Unmarshal(specJSON, &spec); err != nil {
 			s.internal(w, r, fmt.Errorf("the recorded platform.yaml of %s: %w", last.ID, err))
-			return false
+			return "", false
 		}
 		if i := slices.IndexFunc(spec.Resources, func(res appspec.Resource) bool { return res.Type == appspec.TypePostgres }); i >= 0 {
 			cluster = deploy.ClusterName(app.Name, spec.Resources[i].Name)
 		}
 	}
-	unready := func(msg string) bool {
+	unready := func(msg string) (string, bool) {
 		s.fail(w, r, http.StatusConflict, "db_topology_unready", msg+"; nothing was changed")
-		return false
+		return "", false
 	}
 	if cluster == "" {
 		return unready(fmt.Sprintf("%s has no healthy deployment with a postgres resource, so the database Clusters of its group are unknown", app.Name))
@@ -491,14 +527,18 @@ func (s *Server) prepareGroupRemoval(ctx context.Context, w http.ResponseWriter,
 		case m == env:
 			if errs[i] == nil && st != nil && st.IsPrimary() {
 				s.fail(w, r, http.StatusConflict, "write_backend", fmt.Sprintf("the database of %s in %s is a primary; migrate it to another environment first", app.Name, env))
-				return false
+				return "", false
 			}
 		case errs[i] != nil || st == nil:
 			s.cfg.Log.Warn("database group removal: read a Cluster", "app", app.Name, "env", m, "err", errs[i])
 			s.fail(w, r, http.StatusBadGateway, "db_topology_unknown", fmt.Sprintf("could not read Cluster %s/%s in %s, which remains in the group; nothing was changed, try again", ns, cluster, m))
-			return false
+			return "", false
 		case !st.Healthy():
 			return unready(fmt.Sprintf("Cluster %s in %s is not healthy (%s, %d of %d instances ready)", cluster, m, st.Phase, st.ReadyInstances, st.Instances))
+		// Remaining members count as the primary only when designated
+		// explicitly (replica.primary is self): every member of a group is
+		// drawn with replica.primary. The removed member is refused for
+		// IsPrimary, which also takes an empty replica.primary for one.
 		case st.ReplicaPrimary == st.Self:
 			if primary >= 0 {
 				return unready(fmt.Sprintf("both %s and %s are database primaries", members[primary], m))
@@ -516,7 +556,7 @@ func (s *Server) prepareGroupRemoval(ctx context.Context, w http.ResponseWriter,
 		return unready(fmt.Sprintf("the database in %s follows %s through %s, not the primary %s directly", members[standby], rp.ReplicaPrimary, rp.ReplicaSource, p.Self))
 	}
 	if p.ReplicaSource == rp.Self {
-		return true
+		return cluster, true
 	}
 	if !p.HasExternalCluster(rp.Self) {
 		return unready(fmt.Sprintf("the primary %s has no externalCluster %s to follow once demoted", p.Self, rp.Self))
@@ -525,12 +565,23 @@ func (s *Server) prepareGroupRemoval(ctx context.Context, w http.ResponseWriter,
 	defer cancel()
 	if err := s.d.DBRewire(cctx, members[primary], ns, cluster, p, rp.Self); err != nil {
 		s.cfg.Log.Warn("database group removal: set the primary's replica.source", "app", app.Name, "env", members[primary], "source", rp.Self, "err", err)
-		s.fail(w, r, http.StatusBadGateway, "db_topology_unreachable", fmt.Sprintf("could not set replica.source of the primary in %s to %s; nothing else was changed, try again", members[primary], rp.Self))
-		return false
+		switch {
+		case strings.Contains(err.Error(), "ValidatingAdmissionPolicy") || apierrors.IsForbidden(err):
+			// The workload cluster's policy or RBAC refused it: an infra
+			// matter (infra ADR 0078), not something a retry changes.
+			s.fail(w, r, http.StatusBadGateway, "db_topology_denied", fmt.Sprintf("the workload cluster of %s refused to set replica.source of the primary to %s; nothing else was changed", members[primary], rp.Self))
+		case apierrors.IsConflict(err) || apierrors.IsInvalid(err) || apierrors.IsNotFound(err):
+			// A test of the conditional patch failed: the Cluster changed
+			// since it was read.
+			s.fail(w, r, http.StatusConflict, "db_topology_changed", fmt.Sprintf("Cluster %s in %s changed while the removal read it; nothing was changed, try again", cluster, members[primary]))
+		default:
+			s.fail(w, r, http.StatusBadGateway, "db_topology_unreachable", fmt.Sprintf("could not set replica.source of the primary in %s to %s; nothing else was changed, try again", members[primary], rp.Self))
+		}
+		return "", false
 	}
 	noteAudit(r, "replicaSource", rp.Self)
 	s.cfg.Log.Info("database group removal: the primary follows the remaining replica once demoted", "app", app.Name, "env", members[primary], "from", p.ReplicaSource, "to", rp.Self)
-	return true
+	return cluster, true
 }
 
 // filesWithoutGateway returns a deployment of the app (all, any instance)

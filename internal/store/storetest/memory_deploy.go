@@ -112,14 +112,14 @@ func (m *memory) GetAppDatabase(_ context.Context, app string) (store.AppDatabas
 	return d.Clean(), nil // Clean copies the byte slices
 }
 
-func (m *memory) RemoveDatabaseMember(_ context.Context, app, env, peer string) (store.AppDatabase, error) {
+func (m *memory) RemoveDatabaseMember(_ context.Context, app, env, peer string, group bool) (store.AppDatabase, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d, ok := m.deploy.databases[app]
 	if !ok {
 		return store.AppDatabase{}, fmt.Errorf("%w: database pair of app %s", store.ErrNotFound, app)
 	}
-	d, err := d.RemoveMember(env, peer)
+	d, err := d.RemoveMember(env, peer, group)
 	if err != nil {
 		return store.AppDatabase{}, err
 	}

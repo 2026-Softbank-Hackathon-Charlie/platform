@@ -2227,7 +2227,7 @@ paths:
         files to its bucket there without any request from the gateway, and
         the removal deletes that bucket.
 
-        A member of a three-environment database group (ADR 0063) is
+        A member of a three-environment database group (ADR 0064) is
         judged by the live replication instead of the migration runs: the
         two Clusters that remain must be read, healthy, one the designated
         primary and the other streaming directly from it, and the removed
@@ -2236,8 +2236,11 @@ paths:
         removed member once demoted, its `replica.source` is set to the
         remaining member first. The removal makes the two that remain the
         database pair (the peer is the remaining member besides the first
-        environment), and an environment removed from the group gets a new
-        backup path when it is added again.
+        environment), whose files keep `dbTopology.members` with the two, and
+        an environment removed from the group gets a new backup path when it
+        is added again. A migration that starts, or the removed member's
+        database turning primary, while the removal waits for the app's
+        locks stops it before anything changes.
 
         Once the environment is removed the answer is 202 even when what it
         reads for the answer fails: `app` then has only what the app's record
@@ -2261,6 +2264,9 @@ paths:
         db_topology_unready (409: the remaining two are not one healthy
         primary and a replica streaming from it), write_backend (409: the
         removed environment's database is a primary),
+        db_topology_changed (409: the primary's Cluster changed while it was
+        read; nothing changed), db_topology_denied (502: the workload
+        cluster's policy or RBAC refused the change of replica.source),
         db_topology_unreachable (502: setting the primary's replica.source
         failed; nothing else changed), app_changed (409: the app's
         branches changed while the removal waited; nothing changed, read the

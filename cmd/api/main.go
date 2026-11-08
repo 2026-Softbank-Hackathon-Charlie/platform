@@ -559,7 +559,7 @@ func main() {
 	workloads := workloadClients(envSvc)
 	deps.DBCluster = dbClusterReader(workloads)
 	// Removing a member of a three-environment database group sets the
-	// primary's replica.source to the member that remains (ADR 0063).
+	// primary's replica.source to the member that remains (ADR 0064).
 	deps.DBRewire = dbSourceRewirer(workloads)
 	// Adding an environment back waits until its earlier workloads are gone.
 	deps.WorkloadResidue = workloadResidue(workloads)

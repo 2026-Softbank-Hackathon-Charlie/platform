@@ -741,7 +741,7 @@ var (
 // instance in one commit, records env leaving the app's database group
 // (store.RemoveDatabaseMember: a member added back gets a new backup path,
 // and the remaining member of a three-environment group becomes the peer
-// when env was the peer, ADR 0063), and then sets the app's environments
+// when env was the peer, ADR 0064), and then sets the app's environments
 // to the others. The gateway goes first so that no
 // request is sent to an environment whose workloads are going. The
 // ApplicationSet deletes the Applications <instance>-<env> with what they
@@ -755,8 +755,12 @@ var (
 // changed meanwhile ErrAppChanged; nothing is changed then. An environment
 // added meanwhile does not stop it: it keeps the added one. The caller
 // checks the rest (migrations, which environment was ever written, and for
-// a three-environment database group the replication topology, ADR 0063).
-func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) error {
+// a three-environment database group the replication topology, ADR 0064).
+// check, when not nil, runs under the locks before anything changes, for
+// what the caller checked before them and may have changed meanwhile (a
+// migration run started, the removed member's database promoted); its
+// error is returned as it is, and nothing is changed then.
+func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string, check func(context.Context) error) error {
 	app, err := e.cfg.Store.GetApp(ctx, name)
 	if err != nil {
 		return err
@@ -797,6 +801,11 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 	for _, d := range list {
 		if !store.DeploymentFinished(d.Status) {
 			return fmt.Errorf("%w: deployment %s of %s is %s", ErrDeploymentInProgress, d.ID, d.Instance, d.Status)
+		}
+	}
+	if check != nil {
+		if err := check(ctx); err != nil {
+			return err
 		}
 	}
 	if e.cfg.Gateway != nil {
@@ -860,7 +869,7 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 	// The member's database leaves its WAL in the backup bucket, so a
 	// member added back archives under a new path (ADR 0043). The peer of
 	// a three-environment group is the one that remains besides the
-	// primary's, so the two left are the pair the files render (ADR 0063).
+	// primary's, so the two left are the pair the files render (ADR 0064).
 	db, err := e.cfg.Store.GetAppDatabase(ctx, name)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -875,7 +884,7 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 				}
 			}
 		}
-		row, err := e.cfg.Store.RemoveDatabaseMember(ctx, name, env, peer)
+		row, err := e.cfg.Store.RemoveDatabaseMember(ctx, name, env, peer, len(app.Environments) > 2)
 		if err != nil {
 			return fmt.Errorf("record %s leaving the database group of %s: %w", env, name, err)
 		}

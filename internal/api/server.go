@@ -222,7 +222,7 @@ type Deps struct {
 	DBCluster DBClusterReader
 	// DBRewire changes only spec.replica.source of the current primary of
 	// a three-environment database group, for the removal of one of its
-	// members (ADR 0063); nil answers 503 db_topology_unknown to it.
+	// members (ADR 0064); nil answers 503 db_topology_unknown to it.
 	DBRewire DBSourceRewirer
 	// WorkloadResidue says what is left in a namespace of an environment's
 	// workload cluster, for whether an environment removed from an app is

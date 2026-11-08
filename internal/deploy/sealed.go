@@ -87,7 +87,7 @@ func BackupPath(registered time.Time) string { return registered.UTC().Format("2
 // environment was removed from the app before gets BackupPath with its
 // Generation, "-1" after the first removal: the database that was there
 // left its WAL under the old path, and a new replica needs an empty one
-// (ADR 0043, 0063). Every other path is BackupPath.
+// (ADR 0043, 0064). Every other path is BackupPath.
 func (d *sealedDatabase) backupPath(registered time.Time, env string) string {
 	if d == nil || d.row.Generation(env) == 0 {
 		return BackupPath(registered)
@@ -281,6 +281,11 @@ func (d *sealedDatabase) topology(env string, appEnvs []string) (*DBTopology, er
 		t.Members = slices.Clone(appEnvs)
 	} else if env != d.row.PrimaryEnv && env != d.row.PeerEnv {
 		return nil, fmt.Errorf("the original database pair of %s does not include %s", d.row.App, env)
+	} else if d.row.ExplicitMembers {
+		// A pair left from a group of three keeps the members label, under
+		// which Argo CD owns the Clusters' externalClusters (ADR 0064, infra
+		// ADR 0098): without it the list would be ignored on one side only.
+		t.Members = []string{d.row.PrimaryEnv, d.row.PeerEnv}
 	}
 	return t, nil
 }

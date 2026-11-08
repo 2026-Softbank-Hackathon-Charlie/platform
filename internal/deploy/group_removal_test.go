@@ -10,9 +10,10 @@ import (
 
 // TestRemoveGroupPeerMovesThePeer: removing the peer of a three-environment
 // database group leaves the primary and the third as the pair the files
-// render (no members), keeps the third's backup path, and gives the
+// render with the two as explicit members (so the Clusters keep the label
+// under which Argo CD owns externalClusters), keeps the third's backup path, and gives the
 // removed environment a new path when it is added back as the third
-// member (ADR 0063).
+// member (ADR 0064).
 func TestRemoveGroupPeerMovesThePeer(t *testing.T) {
 	se := newStorageEnv(t)
 	se.ctrl["onprem"], se.drvs["onprem"] = newController(t), newFakeDriver()
@@ -60,7 +61,7 @@ func TestRemoveGroupPeerMovesThePeer(t *testing.T) {
 		check(env, "eks", []string{"gke", "eks", "onprem"}, base)
 	}
 
-	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); err != nil {
 		t.Fatal(err)
 	}
 	row, _ := se.store.GetAppDatabase(ctx, "shop")
@@ -75,7 +76,7 @@ func TestRemoveGroupPeerMovesThePeer(t *testing.T) {
 	}
 	to("gke", "onprem")
 	for _, env := range []string{"gke", "onprem"} {
-		check(env, "onprem", nil, base)
+		check(env, "onprem", []string{"gke", "onprem"}, base)
 	}
 
 	// eks comes back as the third member, under a new path.
@@ -85,7 +86,7 @@ func TestRemoveGroupPeerMovesThePeer(t *testing.T) {
 	check("eks", "onprem", []string{"gke", "onprem", "eks"}, base+"-1")
 
 	// The third goes: the peer stays, and its own path is new next time.
-	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); err != nil {
 		t.Fatal(err)
 	}
 	row, _ = se.store.GetAppDatabase(ctx, "shop")
@@ -94,4 +95,20 @@ func TestRemoveGroupPeerMovesThePeer(t *testing.T) {
 	}
 	to("gke", "onprem", "eks")
 	check("eks", "onprem", []string{"gke", "onprem", "eks"}, base+"-2")
+
+	// Back to two, then the peer goes too: the primary's file keeps the
+	// two members with peerPresent false.
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); err != nil {
+		t.Fatal(err)
+	}
+	to("gke", "onprem")
+	check("onprem", "onprem", []string{"gke", "onprem"}, base)
+	if err := ex.RemoveEnvironment(ctx, "shop", "onprem", nil); err != nil {
+		t.Fatal(err)
+	}
+	to("gke")
+	f, _ := se.topology("shop", "gke")
+	if tp := f.Values.DBTopology; tp == nil || !slices.Equal(tp.Members, []string{"gke", "onprem"}) || tp.PeerPresent == nil || *tp.PeerPresent {
+		t.Fatalf("gke alone: %+v", f.Values.DBTopology)
+	}
 }

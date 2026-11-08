@@ -626,36 +626,36 @@ func testAppDatabase(t *testing.T, s store.Store) {
 	must(t, s.SetAppDatabaseSourceKind(ctx, "blog", store.DBSourceExternal, store.DBSourcePeer))
 
 	// RemoveDatabaseMember counts up the removals of each member and moves
-	// the peer (ADR 0043, 0063).
-	if _, err := s.RemoveDatabaseMember(ctx, "nothing", "gke", ""); !errors.Is(err, store.ErrNotFound) {
+	// the peer (ADR 0043, 0064).
+	if _, err := s.RemoveDatabaseMember(ctx, "nothing", "gke", "", false); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("RemoveDatabaseMember of no pair = %v, want ErrNotFound", err)
 	}
 	for _, bad := range [][2]string{{"eks", ""}, {"gke", "eks"}, {"gke", "gke"}, {"onprem", "aks"}, {"", ""}} {
-		if _, err := s.RemoveDatabaseMember(ctx, "blog", bad[0], bad[1]); !errors.Is(err, store.ErrConflict) {
+		if _, err := s.RemoveDatabaseMember(ctx, "blog", bad[0], bad[1], true); !errors.Is(err, store.ErrConflict) {
 			t.Fatalf("RemoveDatabaseMember(blog, %q, %q) = %v, want ErrConflict", bad[0], bad[1], err)
 		}
 	}
 	for want := 1; want <= 2; want++ {
-		d, err := s.RemoveDatabaseMember(ctx, "blog", "gke", "")
+		d, err := s.RemoveDatabaseMember(ctx, "blog", "gke", "", false)
 		must(t, err)
 		if d.Generation("gke") != want || d.PeerGeneration != want || d.PeerEnv != "gke" {
 			t.Fatalf("RemoveDatabaseMember #%d: generation %d, peer %s/%d", want, d.Generation("gke"), d.PeerEnv, d.PeerGeneration)
 		}
 	}
-	if _, err := s.RemoveDatabaseMember(ctx, "blog", "onprem", ""); err != nil {
+	if _, err := s.RemoveDatabaseMember(ctx, "blog", "onprem", "", false); err != nil {
 		t.Fatal(err)
 	}
-	moved, err := s.RemoveDatabaseMember(ctx, "blog", "gke", "onprem")
+	moved, err := s.RemoveDatabaseMember(ctx, "blog", "gke", "onprem", true)
 	must(t, err)
 	stored, err := s.GetAppDatabase(ctx, "blog")
 	must(t, err)
 	for _, x := range []store.AppDatabase{moved, stored} {
-		if x.PeerEnv != "onprem" || x.PeerGeneration != 1 || x.Generation("gke") != 3 || x.Generation("onprem") != 1 || x.Generation("eks") != 0 ||
+		if x.PeerEnv != "onprem" || x.PeerGeneration != 1 || !x.ExplicitMembers || x.Generation("gke") != 3 || x.Generation("onprem") != 1 || x.Generation("eks") != 0 ||
 			!maps.Equal(x.MemberGenerations, map[string]int{"gke": 3, "onprem": 1}) {
 			t.Fatalf("blog after moving the peer: %s/%d %v", x.PeerEnv, x.PeerGeneration, x.MemberGenerations)
 		}
 	}
-	if d, err := s.GetAppDatabase(ctx, "moimroom-mig"); err != nil || d.PeerGeneration != 0 || d.MemberGenerations != nil {
+	if d, err := s.GetAppDatabase(ctx, "moimroom-mig"); err != nil || d.PeerGeneration != 0 || d.MemberGenerations != nil || d.ExplicitMembers {
 		t.Fatalf("the other pair's generations: %d %v, %v; want none", d.PeerGeneration, d.MemberGenerations, err)
 	}
 
