@@ -46,7 +46,7 @@ func TestTransferPoolsKeepFullInspectionAndTargetProof(t *testing.T) {
 				if args[0] == "lsjson" {
 					continue
 				}
-				for flag, want := range map[string]string{"--checkers": "16", "--buffer-size": "1Mi", "--multi-thread-streams": "0"} {
+				for flag, want := range map[string]string{"--checkers": "64", "--buffer-size": "1Mi", "--multi-thread-streams": "0"} {
 					i := slices.Index(args, flag)
 					if i < 0 || i+1 >= len(args) || args[i+1] != want {
 						t.Fatalf("%s: missing bounded %s=%s", args[0], flag, want)
@@ -54,7 +54,7 @@ func TestTransferPoolsKeepFullInspectionAndTargetProof(t *testing.T) {
 				}
 				if args[0] != "check" {
 					i := slices.Index(args, "--transfers")
-					if i < 0 || i+1 >= len(args) || args[i+1] != "16" || !slices.Contains(args, "--ignore-times") {
+					if i < 0 || i+1 >= len(args) || args[i+1] != "64" || !slices.Contains(args, "--ignore-times") {
 						t.Fatal("transfer must send the full inspected snapshot with a bounded pool")
 					}
 				}
