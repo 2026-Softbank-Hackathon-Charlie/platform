@@ -72,7 +72,14 @@ type backend struct {
 	name  string
 	url   *url.URL
 	proxy *httputil.ReverseProxy
-	stats backendStats
+	// dial is the "host:port" every connection to the backend goes to
+	// instead of its URL's host (AppSpec.Dial, ADR 0042); empty dials the
+	// URL. With it, transport and health are the backend's own, whose
+	// DialContext connects there while TLS and Host keep the URL's name.
+	dial      string
+	transport *http.Transport
+	health    *http.Client
+	stats     backendStats
 
 	healthy   atomic.Bool
 	hmu       sync.Mutex
@@ -207,8 +214,11 @@ func (rt *router) newBackends(bcs []BackendConfig, old map[string]*backend) ([]*
 			return nil, nil, fmt.Errorf("backend %q listed twice", bc.Name)
 		}
 		b := old[bc.Name]
-		if b == nil || b.url.String() != bc.URL.String() {
-			b = &backend{name: bc.Name, url: bc.URL}
+		if b == nil || b.url.String() != bc.URL.String() || b.dial != bc.Dial {
+			b = &backend{name: bc.Name, url: bc.URL, dial: bc.Dial}
+			if bc.Dial != "" {
+				b.transport, b.health = rt.g.dialTransports(bc.Dial)
+			}
 			// Unknown until the first check; assume healthy so start-up does
 			// not push every read onto the write backend.
 			b.healthy.Store(true)
@@ -216,6 +226,13 @@ func (rt *router) newBackends(bcs []BackendConfig, old map[string]*backend) ([]*
 		}
 		list = append(list, b)
 		byName[b.name] = b
+	}
+	// A dialled backend that was replaced or dropped closes its own idle
+	// connections; requests in flight on it finish.
+	for name, b := range old {
+		if b.transport != nil && byName[name] != b {
+			b.transport.CloseIdleConnections()
+		}
 	}
 	return list, byName, nil
 }
@@ -275,6 +292,9 @@ func (g *Gateway) restoreApp(name string, pa persistedApp) error {
 	}
 	bcs, err := parseBackendMap(pa.Backends)
 	if err != nil {
+		return err
+	}
+	if bcs, err = withDial(bcs, pa.Dial); err != nil {
 		return err
 	}
 	rt, err := g.newRouter(name, bcs, g.log.With("app", name), g.prom.apps.view(prometheus.Labels{"app": name}))
@@ -978,7 +998,7 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 				pr.Out.Header.Set("X-Forwarded-Proto", proto)
 			}
 		},
-		Transport:     g.cfg.Transport,
+		Transport:     b.roundTripper(g.cfg.Transport),
 		FlushInterval: -1, // stream SSE and chunked responses as they come
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Set(headerBackend, b.name)
@@ -1164,6 +1184,9 @@ func (rt *router) checkBackend(ctx context.Context, client *http.Client, b *back
 	parsed, _ := url.ParseRequestURI(path)
 	u := b.url.JoinPath(parsed.EscapedPath())
 	u.RawQuery = parsed.RawQuery
+	if b.health != nil {
+		client = b.health
+	}
 	err := probe(ctx, client, u.String())
 	if ctx.Err() != nil {
 		return // shutting down; keep the last real result
@@ -1198,6 +1221,49 @@ func (g *Gateway) recycleConns() {
 	if t, ok := g.cfg.Transport.(interface{ CloseIdleConnections() }); ok {
 		t.CloseIdleConnections()
 	}
+	for _, rt := range g.routers() {
+		rt.mu.Lock()
+		backends := rt.backends
+		rt.mu.Unlock()
+		for _, b := range backends {
+			if b.transport != nil {
+				b.transport.CloseIdleConnections()
+			}
+		}
+	}
+}
+
+// roundTripper is what the backend's proxy sends with: its own transport
+// when it has a dial address, else the gateway's.
+func (b *backend) roundTripper(shared http.RoundTripper) http.RoundTripper {
+	if b.transport != nil {
+		return b.transport
+	}
+	return shared
+}
+
+// dialTransports returns a proxy transport and a health check client that
+// connect to addr whatever the request's host. They clone the gateway's
+// transports when those are *http.Transport (the default), so TLS settings
+// stay; the TLS server name and the Host header still come from the URL,
+// as http.Transport takes them from the request, not from the connection.
+func (g *Gateway) dialTransports(addr string) (*http.Transport, *http.Client) {
+	clone := func(rt http.RoundTripper) *http.Transport {
+		if t, ok := rt.(*http.Transport); ok {
+			return t.Clone()
+		}
+		return http.DefaultTransport.(*http.Transport).Clone()
+	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	dial := func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, addr)
+	}
+	proxy := clone(g.cfg.Transport)
+	proxy.Proxy, proxy.DialContext, proxy.DialTLSContext = nil, dial, nil
+	health := clone(g.cfg.HealthTransport)
+	health.Proxy, health.DialContext, health.DialTLSContext = nil, dial, nil
+	return proxy, &http.Client{Transport: health, Timeout: healthTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 // probeError describes a failed health check. A name that does not resolve

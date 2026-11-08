@@ -57,8 +57,9 @@ histogram_quantile(0.95,
 연결한다. 실제 DB·스토리지 readiness 여부는 이 경로를 구현한 앱의 책임이다.
 
 `dial`(백엔드 이름에서 `host:port`로 가는 맵)은 ADR 0042의 계약이다. 백엔드 URL의 호스트를
-TLS 이름과 Host로 두고 그 주소로 접속한다. 아직 구현하지 않아서 비어 있지 않으면 400
-`dial_not_supported`다.
+TLS 이름과 Host로 두고 그 주소로 접속한다. 프록시와 헬스 체크 둘 다 백엔드별 `DialContext`를 쓰고,
+상태 파일에 남으며, 주소가 바뀌면 다른 백엔드로 본다. 백엔드가 아닌 이름이나 `host:port`가 아닌 값은
+400 `invalid_dial`이다.
 
 ## 관리자 요청 본문과 제어 잠금
 

@@ -148,6 +148,9 @@ type Config struct {
 	// Secrets decrypts the app secrets (PLATFORM_SECRETS_KEY); nil fails
 	// the deployments of an app that has secrets.
 	Secrets *secrets.Cipher
+	// CuttingOver reports whether the app's onboarding is cutting over
+	// (ADR 0042), when a deployment must not write its files. Nil: never.
+	CuttingOver func(ctx context.Context, app string) (bool, error)
 	// Sealer returns the sealer of an environment's cluster; nil (or an
 	// error) fails a deployment that has something to seal there.
 	Sealer func(env string) (*sealing.Sealer, error)
@@ -278,6 +281,9 @@ func (e *Executor) Start(ctx context.Context) error {
 // Enqueue takes a stored deployment: it supersedes the older unfinished
 // deployments of its instance that it covers and queues it. It returns at
 // once.
+// BackendURLs is how the executor finds gateway backend URLs.
+func (e *Executor) BackendURLs() Backends { return e.cfg.Backends }
+
 func (e *Executor) Enqueue(ctx context.Context, deploymentID string) error {
 	return e.take(ctx, deploymentID)
 }
@@ -571,6 +577,21 @@ const removeAppAttempts = 3
 // store.ErrNotFound; a gateway that holds the writes of one of the instances
 // is ErrWritesHeld, and the app is then kept.
 func (e *Executor) RemoveApp(ctx context.Context, name string) error {
+	return e.removeApp(ctx, name, false)
+}
+
+// RemoveAppKeepingGateway is RemoveApp that leaves the gateway app of the
+// default instance as it is: an onboarding deleted after its name moved to
+// the gateway keeps it routed to the source (ADR 0042, DELETE).
+func (e *Executor) RemoveAppKeepingGateway(ctx context.Context, name string) error {
+	return e.removeApp(ctx, name, true)
+}
+
+func (e *Executor) removeApp(ctx context.Context, name string, keepGateway bool) error {
+	keep := ""
+	if keepGateway {
+		keep = name // the default instance
+	}
 	if _, err := e.cfg.Store.GetApp(ctx, name); err != nil {
 		return err
 	}
@@ -587,7 +608,7 @@ func (e *Executor) RemoveApp(ctx context.Context, name string) error {
 			return err
 		}
 		changed := false
-		err = e.removeInstances(ctx, instances, "delete app "+name, func() error {
+		err = e.removeInstancesKeeping(ctx, instances, "delete app "+name, keep, func() error {
 			// An instance added meanwhile is not locked or removed yet.
 			now, err := e.instances(ctx, name)
 			if err != nil {
@@ -649,6 +670,12 @@ func (e *Executor) supersedeAll(ctx context.Context, list []store.Deployment, ms
 // then finds itself deleted. A gateway that holds an instance's writes is
 // ErrWritesHeld, and forget is not called.
 func (e *Executor) removeInstances(ctx context.Context, instances []string, message string, forget func() error) error {
+	return e.removeInstancesKeeping(ctx, instances, message, "", forget)
+}
+
+// removeInstancesKeeping is removeInstances that leaves the gateway app of
+// the instance keep ("" for none).
+func (e *Executor) removeInstancesKeeping(ctx context.Context, instances []string, message, keep string, forget func() error) error {
 	// One lock order for every caller, and each lock once.
 	instances = slices.Compact(slices.Sorted(slices.Values(instances)))
 	dirs := make([]string, len(instances))
@@ -670,6 +697,9 @@ func (e *Executor) removeInstances(ctx context.Context, instances []string, mess
 	}
 	if e.cfg.Gateway != nil {
 		for _, in := range instances {
+			if in == keep {
+				continue
+			}
 			err := e.cfg.Gateway.DeleteApp(ctx, in)
 			var ae *gateway.APIError
 			switch {
@@ -804,8 +834,9 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 			if hidden := hiddenPasswords(&cur, map[string]string{env: ""}); len(hidden) > 0 {
 				return fmt.Errorf("%w: the gateway hides the password in the URL of the %s backend of %s, and sending that URL back would replace the password; set it again without a password in its URL, then remove the environment again", ErrGateway, strings.Join(hidden, ", "), in)
 			}
-			next := gateway.AppSpec{Backends: maps.Clone(cur.Backends), WriteBackend: cur.WriteBackend}
+			next := gateway.AppSpec{Backends: maps.Clone(cur.Backends), WriteBackend: cur.WriteBackend, Dial: maps.Clone(cur.Dial)}
 			delete(next.Backends, env)
+			delete(next.Dial, env)
 			if weights := positive(cur.ReadWeights); len(weights) > 0 {
 				delete(weights, env)
 				next.ReadWeights = weights

@@ -3,8 +3,7 @@
 // contract the other parts are built against: the names the platform
 // gives what it makes, the hopai Job's input and the plan it hands the
 // migration engine. The job that drives an onboarding through its states
-// comes with the implementation; until then the API answers 501 behind
-// PLATFORM_ONBOARDING=1 and nothing here runs.
+// is internal/onboard/job, behind PLATFORM_ONBOARDING=1.
 //
 // What the other parts read elsewhere:
 //
@@ -212,3 +211,7 @@ func TailscaleContainer(app string) string { return "hopcharlie-ts-" + app }
 
 // TailscaleVolume is the named volume of the Tailscale container's state.
 func TailscaleVolume(app string) string { return TailscaleContainer(app) + "-state" }
+
+// AppName matches an app name (pkg/appspec): the label of an onboarding's
+// service URL.
+var AppName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`)

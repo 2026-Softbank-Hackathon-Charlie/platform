@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"maps"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -47,6 +49,9 @@ const (
 type BackendConfig struct {
 	Name string
 	URL  *url.URL
+	// Dial is the "host:port" to connect to instead of URL's host
+	// (AppSpec.Dial); empty dials URL.
+	Dial string
 }
 
 // Config configures a Gateway.
@@ -170,6 +175,26 @@ func parseBackendMap(m map[string]string) ([]BackendConfig, error) {
 		out = append(out, bc)
 	}
 	return out, nil
+}
+
+// withDial sets the dial address of bcs from dial (AppSpec.Dial): every key
+// must name one of bcs and every value be a host:port.
+func withDial(bcs []BackendConfig, dial map[string]string) ([]BackendConfig, error) {
+	for name, addr := range dial {
+		i := slices.IndexFunc(bcs, func(bc BackendConfig) bool { return bc.Name == name })
+		if i < 0 {
+			return nil, fmt.Errorf("dial names backend %q, which is not one of the backends", name)
+		}
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil || host == "" || port == "" || strings.ContainsAny(addr, "/@?# ") {
+			return nil, fmt.Errorf("dial address of backend %s: %q must be host:port", name, addr)
+		}
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("dial address of backend %s: %q has no valid port", name, addr)
+		}
+		bcs[i].Dial = addr
+	}
+	return bcs, nil
 }
 
 func parseBackend(name, raw string) (BackendConfig, error) {

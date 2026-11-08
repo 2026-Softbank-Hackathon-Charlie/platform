@@ -19,6 +19,12 @@ import (
 
 // AppRemover removes a registered app's workloads and records
 // (deploy.Executor.RemoveApp).
+// GatewayKeepingRemover is the AppRemover that can leave an app's gateway
+// app (deploy.Executor.RemoveAppKeepingGateway, ADR 0042).
+type GatewayKeepingRemover interface {
+	RemoveAppKeepingGateway(ctx context.Context, name string) error
+}
+
 type AppRemover interface {
 	// RemoveApp supersedes the app's unfinished deployments, commits the
 	// removal of apps/<name>/ and of every added branch's apps/<instance>/

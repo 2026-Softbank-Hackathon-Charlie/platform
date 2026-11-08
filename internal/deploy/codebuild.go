@@ -87,7 +87,7 @@ env:
             || aws ecr create-repository --repository-name "$repository" --image-scanning-configuration scanOnPush=true >/dev/null
           image="${REGISTRY}/${repository}:${COMMIT}"
           echo "building ${name} from ${context}/${dockerfile}"
-          docker build -t "$image" -f "${context}/${dockerfile}" "$context"
+          DOCKER_BUILDKIT=1 docker build -t "$image" -f "${context}/${dockerfile}" "$context"
           docker push "$image"
           digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$image")"
           export "DIGEST_${i}=${digest#*@}"

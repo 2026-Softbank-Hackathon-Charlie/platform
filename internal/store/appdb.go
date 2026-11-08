@@ -56,6 +56,10 @@ type AppDatabase struct {
 	ReplicationPasswordNonce      []byte
 	ReplicationPasswordCiphertext []byte
 	Reindex                       []string
+	// Parameters are the PostgreSQL parameters every database of the app
+	// is drawn with (deploy values.postgres.parameters, ADR 0042); nil for
+	// every other app.
+	Parameters map[string]string
 }
 
 // AppDatabase source kinds (ADR 0042).
@@ -79,6 +83,15 @@ func (d AppDatabase) Clean() AppDatabase {
 	d.ReplicationPasswordNonce = bytes.Clone(d.ReplicationPasswordNonce)
 	d.ReplicationPasswordCiphertext = bytes.Clone(d.ReplicationPasswordCiphertext)
 	d.Reindex = cleanList(d.Reindex)
+	if len(d.Parameters) == 0 {
+		d.Parameters = nil
+	} else {
+		p := make(map[string]string, len(d.Parameters))
+		for k, v := range d.Parameters {
+			p[CleanText(k)] = CleanText(v)
+		}
+		d.Parameters = p
+	}
 	return d
 }
 

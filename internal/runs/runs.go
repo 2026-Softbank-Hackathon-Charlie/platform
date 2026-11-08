@@ -28,6 +28,7 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine"
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -106,6 +107,14 @@ type Config struct {
 	// FileSyncer installs the server-owned content guard on every normal launch,
 	// including resumes. Reverse rollback runs preserve their recovery exemption.
 	FileSyncer func(*plan.Plan) engine.FileSyncer
+	// External gives the engine the adapter of a plan's external source
+	// (ADR 0042; engine ADR 0017). Nil, or nil for a plan, lets the engine
+	// connect with the plan's expanded source DSN.
+	External func(*plan.Plan) engine.ExternalSource
+	// SourceRemote is the rclone remote variables of an external source's
+	// bucket (an onboarding's legacy remote, ADR 0042), given only to that
+	// run's file copies. Nil refuses an external plan with files.
+	SourceRemote func(*plan.Plan) []string
 	// Traffic is the gateway admin client. Nil means no gateway: canary is
 	// refused and request counts are not measured.
 	Traffic Traffic
@@ -323,8 +332,10 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		}
 	}
 	var retirement *retention.Job
-	// An app without a database (ADR 0049) leaves no source database to retire.
-	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil && !plans.NoDatabase(p) {
+	// An app without a database (ADR 0049) leaves no source database to
+	// retire, and an external source is no CNPG Cluster; the onboarding
+	// decommissions it (ADR 0042).
+	if runID == "" && r.cfg.Retention != nil && doc.RollbackOf == nil && !plans.NoDatabase(p) && !p.Source.External() {
 		if r.cfg.RetentionPeriod < time.Minute || r.cfg.RetentionPeriod > 30*24*time.Hour || r.cfg.RetentionPlan == nil {
 			return apiv1.Run{}, fmt.Errorf("%w: invalid source retention configuration", ErrInvalid)
 		}
@@ -338,7 +349,20 @@ func (r *Runner) launch(ctx context.Context, p *plan.Plan, runID string, doc api
 		retirement = &j
 	}
 	opts := engine.Options{StateDir: r.cfg.StateDir, RunID: runID, Emit: l.emitEngine}
-	if p.Files != nil && r.cfg.FileSyncer != nil && (doc.RollbackOf == nil || *doc.RollbackOf == "") {
+	if p.Source.External() && r.cfg.External != nil {
+		opts.External = r.cfg.External(p)
+	}
+	switch {
+	case p.Files != nil && p.Source.External():
+		// An onboarding's source bucket is the app's own, outside the
+		// platform, reached through its legacy remote, which only this
+		// run's rclone gets (ADR 0042): with or without the residency
+		// gate, whose policy has no rules for it.
+		if r.cfg.SourceRemote == nil {
+			return apiv1.Run{}, fmt.Errorf("%w: the plan copies an external source's files, and this server has no source remote for it", ErrEngineInit)
+		}
+		opts.Files = fileguard.NewPlain(r.cfg.SourceRemote(p))
+	case p.Files != nil && r.cfg.FileSyncer != nil && (doc.RollbackOf == nil || *doc.RollbackOf == ""):
 		opts.Files = r.cfg.FileSyncer(p)
 		if opts.Files == nil {
 			return apiv1.Run{}, ErrEngineInit
@@ -1684,6 +1708,11 @@ func clusterKeys(p *plan.Plan) []string {
 		return []string{"gateway:" + strings.TrimRight(p.Gateway.URL, "/")}
 	}
 	k := func(e plan.Endpoint) string { return e.Context + "/" + e.Namespace + "/" + e.Cluster }
+	if p.Source.External() {
+		// An external source (ADR 0042) has no Cluster: it is the target
+		// app's own source, so the key is that app's.
+		return []string{"external/" + p.Source.Name + "/" + p.Target.Namespace, k(p.Target)}
+	}
 	return []string{k(p.Source), k(p.Target)}
 }
 

@@ -352,4 +352,6 @@ VM이 SSM 관리 대상(SSM agent와 인스턴스 프로필)이어야 한다는 
 - 온보딩한 앱은 기본 인스턴스 하나만 있고, 경로 이름과 네임스페이스는 앱 이름이다(ADR 0015). `internal/dbroute`에 환경 템플릿과 별도로 `legacy` 경로 템플릿이 필요하고, `Reconcile`은 이 경로를 환경이 없는 경로로 보고 지우면 안 된다.
 - `DELETE`가 hopai Job을 멈추려면 플랫폼에 그 네임스페이스의 Job 삭제 RBAC가 필요하다. 없으면 Job의 `activeDeadlineSeconds`가 지날 때까지 기다린다.
 - `cutting_over` 동안 그 앱의 배포를 멈춘다. ApplicationSet이 `RespectIgnoreDifferences`로 sync해도 배포가 gitops 파일을 다시 쓰면 replicas 0이 엔진이 늘린 값을 되돌릴 수 있기 때문이다.
+- 구현에서 정한 것: 온보딩 전환 Plan에는 레지던시 게이트를 돌리지 않고 `external_source`로 남긴다. 게이트 정책은 원본 CNPG 클러스터(env, namespace, cluster)와 등록된 버킷을 요구하는데, 외부 원본에는 둘 다 없기 때문이다(원본 버킷은 앱 자신의 것이다). 위 "레지던시" 행을 대신한다.
+- 전환 run의 파일 복사는 레지던시 게이트 유무와 상관없이 `fileguard.Plain`으로 한다. 이 복사는 서버의 원격 설정에 그 run에만 주는 `legacy` 원격 변수를 더해 rclone을 실행하고, `*_PGPASSWORD`는 넘기지 않는다.
 - migration-engine ADR 0017의 예시는 원본 비밀번호 변수로 `LEGACY_PGPASSWORD`를 쓰도록 엔진 PR에서 맞춘다.

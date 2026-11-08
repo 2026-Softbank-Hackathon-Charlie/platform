@@ -21,6 +21,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/job"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/apiv1"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec"
@@ -121,6 +122,9 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	noteAudit(r, "app", spec.Name)
 	if slices.Contains(reservedAppNames, spec.Name) {
 		s.fail(w, r, http.StatusConflict, "app_exists", fmt.Sprintf("the platform serves %s.%s itself; rename the app in %s", spec.Name, s.cfg.AppDomain, appspec.FileName))
+		return
+	}
+	if s.onboardingName(w, r, spec.Name) {
 		return
 	}
 	if slices.Contains(reservedNamespaces, spec.Name) {
@@ -894,7 +898,16 @@ func (s *Server) createPushToken(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusForbidden, "repo_not_imported", msg)
 		return
 	}
-	if !slices.Contains(repo.Topics, github.ImportedTopic) {
+	onboarding := false
+	if s.cfg.Onboarding {
+		// An onboarding in patching or checking may push its branch (ADR 0042 "2.").
+		if onboarding, err = job.PushAllowed(ctx, s.d.Store, repo.FullName); err != nil {
+			s.internal(w, r, err)
+			return
+		}
+		noteAudit(r, "onboarding", onboarding)
+	}
+	if !onboarding && !slices.Contains(repo.Topics, github.ImportedTopic) {
 		s.fail(w, r, http.StatusForbidden, "repo_not_imported", fmt.Sprintf("%s has no topic %s; push tokens are only for copies imported with scripts/import-repo.sh", repo.FullName, github.ImportedTopic))
 		return
 	}

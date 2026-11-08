@@ -71,6 +71,10 @@ type Policy struct {
 	// any other value could copy the server's own files or send them to
 	// storage the team does not own. Empty rejects every plan with files.
 	Buckets []string
+
+	// onboarding is set only for an onboarding's own cutover plan
+	// (withOnboarding): it allows target.app and the external source.
+	onboarding *OnboardingScope
 }
 
 // StatelessEnv is a registered app without a database in one environment
@@ -400,9 +404,16 @@ func (p Policy) checkParsed(pl *plan.Plan, hosts dbHosts) error {
 			return err
 		}
 	}
+	if p.onboarding != nil {
+		return p.onboarding.check(pl, hosts)
+	}
+	if pl.Source.External() {
+		return fmt.Errorf("source.kind external is only an onboarding's own plan (ADR 0042)")
+	}
 	if pl.Target.App != nil {
 		// Cold mode (ADR 0012 of the engine) scales a workload and sends smoke
 		// requests to a URL from the plan; the policy has no rules for those yet.
+		// An onboarding's own plan is the exception (ADR 0042).
 		return fmt.Errorf("target.app is not accepted by this server yet")
 	}
 	return nil

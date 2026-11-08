@@ -190,13 +190,18 @@ func (r *Runner) List(ctx context.Context, app string) ([]Run, error) {
 	for i := range list.Items {
 		out = append(out, runOf(&list.Items[i]))
 	}
+	sortRuns(out)
+	return out, nil
+}
+
+// sortRuns orders runs newest first.
+func sortRuns(out []Run) {
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].CreatedAt.After(out[j].CreatedAt)
 		}
 		return out[i].Name > out[j].Name
 	})
-	return out, nil
 }
 
 func runOf(j *batchv1.Job) Run {

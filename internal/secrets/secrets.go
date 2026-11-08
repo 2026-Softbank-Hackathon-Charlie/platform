@@ -333,6 +333,33 @@ func (c *Cipher) OpenDatabase(d store.AppDatabase) (password, caKey string, err 
 	return password, caKey, nil
 }
 
+// SealDatabaseField encrypts another field of app's database row than
+// DatabaseRow seals, such as DatabaseReplicationPassword (ADR 0042), with
+// the same additional data ("app_databases", app, field, "").
+func (c *Cipher) SealDatabaseField(app, field, value string) (nonce, ciphertext []byte, err error) {
+	nonce = make([]byte, c.aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, nil, err
+	}
+	return nonce, c.aead.Seal(nil, nonce, []byte(value), databaseData(app, field)), nil
+}
+
+// OpenDatabaseField decrypts what SealDatabaseField sealed for d's app,
+// checking d's key like OpenDatabase.
+func (c *Cipher) OpenDatabaseField(d store.AppDatabase, field string, nonce, ciphertext []byte) (string, error) {
+	if d.KeyCheck != c.keyCheck {
+		return "", fmt.Errorf("database pair of %s: %w", d.App, ErrKeyMismatch)
+	}
+	if len(nonce) != c.aead.NonceSize() {
+		return "", fmt.Errorf("database pair of %s: stored %s nonce has %d bytes", d.App, field, len(nonce))
+	}
+	out, err := c.aead.Open(nil, nonce, ciphertext, databaseData(d.App, field))
+	if err != nil {
+		return "", fmt.Errorf("database pair of %s: the %s does not decrypt with the secrets key", d.App, field)
+	}
+	return string(out), nil
+}
+
 // onboardingData binds an onboarding's ciphertext to its id and field:
 // ("onboardings", id, field, ""), like databaseData's with the table's name.
 func onboardingData(id, field string) []byte {

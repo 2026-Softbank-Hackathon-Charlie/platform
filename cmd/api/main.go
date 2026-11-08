@@ -19,10 +19,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg"
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun"
@@ -36,6 +38,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/job"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
@@ -254,6 +257,14 @@ func main() {
 	runCtx, cancelRuns := context.WithCancel(ctx)
 	defer cancelRuns()
 	rcfg := runs.Config{StateDir: *stateDir, Store: st, Log: log, ClusterLease: st.TryClusterLease}
+	// An onboarding's cutover copies its source bucket through the legacy
+	// remote only its run gets (ADR 0042), once the onboarding runner exists.
+	rcfg.SourceRemote = func(p *plan.Plan) []string {
+		if f := onboardRemote.Load(); f != nil {
+			return (*f)(p)
+		}
+		return nil
+	}
 	if gw != nil {
 		rcfg.Traffic = gw
 		// A plan's gateway.url is the root or an app's scope (plans.Policy):
@@ -343,6 +354,7 @@ func main() {
 		}
 		planSvc.SetResidencyGate(g)
 		rcfg.FileSyncer = g.FileSyncer
+
 		bucketInspector = g
 		log.Info("residency gate enabled", "policyDigest", g.PolicyDigest())
 	} else {
@@ -553,7 +565,8 @@ func main() {
 	}
 	go agents.RunSweeper(runCtx, agentIdle, log)
 	// Optional (ADR 0030): the management cluster's routes to registered apps' databases.
-	if dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log); err != nil {
+	dbRoutes, err := dbroute.FromEnv(os.Getenv, envSvc.Names(), st, log)
+	if err != nil {
 		fatal("PLATFORM_APP_DB_ROUTE_*", "err", err)
 	} else if dbRoutes != nil {
 		deps.DBRoutes = dbRoutes
@@ -593,8 +606,10 @@ func main() {
 		},
 		Secrets: secretsKey,
 		Sealer:  envSvc.Sealer,
-		Storage: envSvc.Storage,
-		Envs:    envSvc.Names(),
+		// A deployment waits while its app's onboarding cuts over (ADR 0042).
+		CuttingOver: job.CuttingOver(st),
+		Storage:     envSvc.Storage,
+		Envs:        envSvc.Names(),
 		StorageDriver: func(env string) string {
 			if c, ok := envSvc.Config(env); ok && c.Storage != nil {
 				return c.Storage.Driver
@@ -617,6 +632,10 @@ func main() {
 			fatal("start deployments", "err", err)
 		}
 		deps.Deployer, deps.Remover = deployer, deployer
+		deps.Backends = deployer.BackendURLs()
+	}
+	if onboarding {
+		deps.Onboarding = onboardingConfig(ctx, log, envSvc, secretsKey, gh, aiRuns, gw, dbRoutes, planSvc, runner, workloads)
 	}
 	var recommendationCosts *recommend.CostBook
 	if path := os.Getenv("PLATFORM_RECOMMENDATION_COST_FILE"); path != "" {
@@ -638,27 +657,34 @@ func main() {
 		}
 		recommendationResidency = &parsed
 	}
-	srv := &http.Server{
-		Addr: *addr,
-		Handler: api.New(api.Config{
-			RecommendationCosts:     recommendationCosts,
-			RecommendationResidency: recommendationResidency,
-			WrittenTokens:           writtenTokens,
-			Tokens:                  tokens,
-			Insecure:                *insecure,
-			Admins:                  admins,
-			ConsoleURL:              os.Getenv("PLATFORM_CONSOLE_URL"),
-			OnpremPublicURL:         os.Getenv("PLATFORM_ONPREM_PUBLIC_URL"),
-			CORSOrigins:             splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
-			Log:                     log,
+	apiServer := api.New(api.Config{
+		RecommendationCosts:     recommendationCosts,
+		RecommendationResidency: recommendationResidency,
+		WrittenTokens:           writtenTokens,
+		Tokens:                  tokens,
+		Insecure:                *insecure,
+		Admins:                  admins,
+		ConsoleURL:              os.Getenv("PLATFORM_CONSOLE_URL"),
+		OnpremPublicURL:         os.Getenv("PLATFORM_ONPREM_PUBLIC_URL"),
+		CORSOrigins:             splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
+		Log:                     log,
 
-			GitHubWebhookSecret: webhookSecret,
-			AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
-			GitOpsRepo:          os.Getenv("PLATFORM_GITOPS_REPO"),
-			AppDBTopology:       appDBTopology,
-			AppDBEnvs:           appDBEnvs,
-			Onboarding:          onboarding,
-		}, deps),
+		GitHubWebhookSecret: webhookSecret,
+		AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
+		GitOpsRepo:          os.Getenv("PLATFORM_GITOPS_REPO"),
+		AppDBTopology:       appDBTopology,
+		AppDBEnvs:           appDBEnvs,
+		Onboarding:          onboarding,
+	}, deps)
+	if r := apiServer.Onboardings(); r != nil {
+		f := r.Remote
+		onboardRemote.Store(&f)
+		// From the rows, also after a restart; steps outlive requests.
+		go r.Run(runCtx)
+	}
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           apiServer,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -697,6 +723,10 @@ func main() {
 		_ = runner.Wait(final)
 	}
 }
+
+// onboardRemote is the onboarding runner's Remote once it exists: the
+// legacy rclone remote of an onboarding's cutover run (runs.Config.SourceRemote).
+var onboardRemote atomic.Pointer[func(*plan.Plan) []string]
 
 // residencyGate loads the reviewed residency policy. Every environment it
 // names must be registered, or a typo would silently deny every migration.

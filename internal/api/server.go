@@ -24,6 +24,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/job"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
@@ -223,6 +224,12 @@ type Deps struct {
 	// workload cluster, for whether an environment removed from an app is
 	// gone before it is added again (ADR 0043); nil means it cannot tell.
 	WorkloadResidue WorkloadResidue
+	// Onboarding is the onboarding runner's ports (ADR 0042); its Store and
+	// Apps are the server's. Nil with Config.Onboarding answers 501.
+	Onboarding *job.Config
+	// Backends resolves gateway backend URLs, for the onboarding's gateway
+	// app and smoke URL (deploy.Config.Backends).
+	Backends deploy.Backends
 }
 
 // WorkloadResidue returns one object still in namespace in env's workload
@@ -293,6 +300,8 @@ type Server struct {
 	loginSlots chan struct{}      // one token per bcrypt comparison in progress
 
 	ready readinessCache // what the readiness of database pairs read (ADR 0043)
+
+	onb *job.Runner // nil without the onboarding API (ADR 0042)
 }
 
 // New wires the routes.
@@ -377,12 +386,12 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/auth/device/{userCode}", operator, s.getDeviceLogin)
 	s.route("POST /v1/auth/device/{userCode}/approve", operator, s.approveDeviceLogin)
 	s.route("POST /v1/auth/device/{userCode}/deny", operator, s.denyDeviceLogin)
-	s.route("POST /v1/plans", agent, s.submitPlan)
+	s.route("POST /v1/plans", agent, s.guardPlan(s.submitPlan))
 	s.route("GET /v1/plans", viewer, s.listPlans)
 	s.route("GET /v1/plans/{ref}", viewer, s.getPlan)
 	s.route("POST /v1/plans/{ref}/approve", operator, s.approvePlan)
 	s.route("POST /v1/plans/{ref}/reject", operator, s.rejectPlan)
-	s.route("POST /v1/migrations", operator, s.startMigration)
+	s.route("POST /v1/migrations", operator, s.guardPlan(s.startMigration))
 	s.route("GET /v1/migrations", viewer, s.listMigrations)
 	s.route("GET /v1/migrations/{runId}", viewer, s.getMigration)
 	s.route("GET /v1/migrations/{runId}/retention", viewer, s.sourceRetention)
@@ -401,7 +410,7 @@ func New(cfg Config, d Deps) *Server {
 	s.route("PUT /v1/plans/{ref}/attachments/{name}", agent, s.putPlanAttachment)
 	s.route("GET /v1/plans/{ref}/attachments/{name}", viewer, s.getPlanAttachment)
 	s.route("GET /v1/apps", viewer, s.listApps)
-	s.route("POST /v1/plans/draft", agent, s.draftPlan)
+	s.route("POST /v1/plans/draft", agent, s.guardPlan(s.draftPlan))
 	s.route("GET /v1/ai-activity", viewer, s.getAIActivity)
 	s.route("GET /v1/apps/{name}/observability", viewer, s.getAppObservability)
 	s.route("GET /v1/apps/{name}/ai-services", viewer, s.getAIServices)
@@ -438,9 +447,9 @@ func New(cfg Config, d Deps) *Server {
 	// GitHub signs the webhook instead of sending a token; the handler
 	// checks the signature and writes its own audit entries.
 	s.route("POST /v1/webhooks/github", "", s.githubWebhook)
-	s.route("DELETE /v1/apps/{name}", operator, s.deleteApp)
-	s.route("POST /v1/apps/{name}/environments", operator, s.addAppEnvironment)
-	s.route("DELETE /v1/apps/{name}/environments/{env}", operator, s.removeAppEnvironment)
+	s.route("DELETE /v1/apps/{name}", operator, s.guardApp(s.deleteApp))
+	s.route("POST /v1/apps/{name}/environments", operator, s.guardApp(s.addAppEnvironment))
+	s.route("DELETE /v1/apps/{name}/environments/{env}", operator, s.guardApp(s.removeAppEnvironment))
 	s.route("POST /v1/apps/{name}/instances", operator, s.createAppInstance)
 	s.route("DELETE /v1/apps/{name}/instances/{instance}", operator, s.deleteAppInstance)
 	s.route("POST /v1/apps/{name}/deployments", operator, s.createDeployment)

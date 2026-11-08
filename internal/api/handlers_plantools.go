@@ -373,6 +373,11 @@ func (s *Server) startRollback(ctx context.Context, id, who, reason string, auto
 	if orig.Status != apiv1.RunStatusSucceeded {
 		return out, &rollbackFailure{failConflict, fmt.Errorf("run is %s; only a succeeded run can be rolled back", orig.Status)}
 	}
+	// An onboarding's cutover has no way back: the source does not follow
+	// the promoted target (ADR 0042 "5.").
+	if p, err := s.d.Store.GetPlan(ctx, orig.PlanRef); err == nil && p.SubmittedRole == plans.OnboardingRole {
+		return out, &rollbackFailure{failConflict, fmt.Errorf("run %s is an onboarding's cutover, which is not rolled back", id)}
+	}
 	list, err := s.d.Runs.List(ctx)
 	if err != nil {
 		return out, &rollbackFailure{failInternal, err}
