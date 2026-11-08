@@ -180,7 +180,7 @@ func downloadInventory(ctx context.Context, source string, s *snapshot, execute 
 	if s.inventory.count == 0 {
 		return nil
 	}
-	if execute(ctx, io.Discard, "copy", source, s.dir, "--files-from-raw", paths, "--ignore-times", "--no-traverse", "--transfers", "16", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0", "--max-backlog", "256", "--max-transfer", fmt.Sprintf("%dB", MaxTotalBytes), "--cutoff-mode", "HARD", "--retries", "1", "--low-level-retries", "1") != nil {
+	if execute(ctx, io.Discard, "copy", source, s.dir, "--files-from-raw", paths, "--ignore-times", "--no-traverse", "--transfers", "64", "--checkers", "64", "--buffer-size", "1Mi", "--multi-thread-streams", "0", "--max-backlog", "256", "--max-transfer", fmt.Sprintf("%dB", MaxTotalBytes), "--cutoff-mode", "HARD", "--retries", "1", "--low-level-retries", "1") != nil {
 		return ErrRead
 	}
 	return s.inventory.walk(func(o object) error {
@@ -300,10 +300,20 @@ func (s *Syncer) prepare(ctx context.Context, src, dst string) (*snapshot, error
 	if s == nil || s.before == nil || s.authorize == nil || src != s.source || dst != s.target {
 		return nil, ErrDenied
 	}
-	if err := s.before(ctx); err != nil {
+	// The policy pre-check reads the source database over the network; run it
+	// alongside the private staging download. Nothing is uploaded unless both
+	// it and authorize pass, and a denied staging snapshot is closed.
+	beforeErr := make(chan error, 1)
+	go func() { beforeErr <- s.before(ctx) }()
+	shot, err := takeCached(ctx, src, s.reviews, s.binary, s.execute, newClassificationMemo(s.cache, s.cacheBinding, s.reviews, s.binary))
+	if e := <-beforeErr; e != nil {
+		if shot != nil {
+			if ce := shot.close(); ce != nil {
+				return nil, ce
+			}
+		}
 		return nil, ErrDenied
 	}
-	shot, err := takeCached(ctx, src, s.reviews, s.binary, s.execute, newClassificationMemo(s.cache, s.cacheBinding, s.reviews, s.binary))
 	if err != nil {
 		return nil, err
 	}
@@ -366,10 +376,10 @@ func (s *Syncer) transfer(ctx context.Context, op, src, dst string) (result file
 		return result, err
 	}
 	// Ignore size/mtime shortcuts: every object sent comes from inspected bytes.
-	if err = timing.execute(s.execute, "upload")(ctx, io.Discard, op, shot.dir, dst, "--ignore-times", "--transfers", "16", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0"); err != nil {
+	if err = timing.execute(s.execute, "upload")(ctx, io.Discard, op, shot.dir, dst, "--ignore-times", "--transfers", "64", "--checkers", "64", "--buffer-size", "1Mi", "--multi-thread-streams", "0"); err != nil {
 		return result, ErrTransfer
 	}
-	if err = timing.execute(s.execute, "targetCheck")(ctx, io.Discard, "check", shot.dir, dst, "--download", "--one-way", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0"); err != nil {
+	if err = timing.execute(s.execute, "targetCheck")(ctx, io.Discard, "check", shot.dir, dst, "--download", "--one-way", "--checkers", "64", "--buffer-size", "1Mi", "--multi-thread-streams", "0"); err != nil {
 		return result, ErrTransfer
 	}
 	return result, nil
@@ -390,7 +400,7 @@ func (s *Syncer) Check(ctx context.Context, src, dst string) (result files.Check
 	if err != nil {
 		return result, err
 	}
-	if err = timing.execute(s.execute, "targetCheck")(ctx, io.Discard, "check", shot.dir, dst, "--download", "--one-way", "--checkers", "16", "--buffer-size", "1Mi", "--multi-thread-streams", "0"); err != nil {
+	if err = timing.execute(s.execute, "targetCheck")(ctx, io.Discard, "check", shot.dir, dst, "--download", "--one-way", "--checkers", "64", "--buffer-size", "1Mi", "--multi-thread-streams", "0"); err != nil {
 		return result, ErrTransfer
 	}
 	return files.CheckResult{OK: true, Matching: shot.report.Objects}, nil
