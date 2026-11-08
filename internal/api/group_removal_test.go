@@ -148,6 +148,11 @@ func TestRemoveGroupMemberRefusals(t *testing.T) {
 		{"rewire refused by policy", "eks", func(f *envFixture) {
 			f.clusters.rewireErr = fmt.Errorf("rewire: %w", apierrors.NewInvalid(schema.GroupKind{Group: "postgresql.cnpg.io", Kind: "Cluster"}, "shop-db", field.ErrorList{field.Forbidden(field.NewPath(""), "ValidatingAdmissionPolicy 'hopcharlie-platform-migration' denied request")}))
 		}, 502, "db_topology_denied"},
+		// The executor refuses under the locks before the check that changes
+		// the primary's replica.source: eks still has a read weight.
+		{"gateway still routes to it", "eks", func(f *envFixture) {
+			f.rm.err = fmt.Errorf("%w: the traffic gateway sends the requests of shop to eks", deploy.ErrEnvironmentInUse)
+		}, 409, "write_backend"},
 		{"no cluster access", "eks", func(f *envFixture) { f.api.d.DBRewire = nil }, 503, "db_topology_unknown"},
 		{"first environment", "gke", func(f *envFixture) {}, 409, "primary_environment"},
 	} {

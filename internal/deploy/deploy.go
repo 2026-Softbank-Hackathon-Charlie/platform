@@ -803,17 +803,14 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string, chec
 			return fmt.Errorf("%w: deployment %s of %s is %s", ErrDeploymentInProgress, d.ID, d.Instance, d.Status)
 		}
 	}
-	if check != nil {
-		if err := check(ctx); err != nil {
-			return err
-		}
-	}
+	// Every refusal comes before check, which may change a live database
+	// Cluster (ADR 0064), and before the gateway is changed.
+	routes := map[string]gateway.AppInfo{}
 	if e.cfg.Gateway != nil {
 		all, err := e.cfg.Gateway.Apps(ctx)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrGateway, err)
 		}
-		routes := map[string]gateway.AppInfo{}
 		for _, a := range all.Apps {
 			if !a.Default && slices.Contains(instances, a.Name) {
 				routes[a.Name] = a
@@ -828,16 +825,26 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string, chec
 			case cur.WriteBackend == env || cur.ReadWeights[env] > 0:
 				return fmt.Errorf("%w: the traffic gateway sends the requests of %s to %s", ErrEnvironmentInUse, in, env)
 			}
+			if !ok || cur.Backends[env] == "" {
+				continue
+			}
+			if hidden := hiddenPasswords(&cur, map[string]string{env: ""}); len(hidden) > 0 {
+				return fmt.Errorf("%w: the gateway hides the password in the URL of the %s backend of %s, and sending that URL back would replace the password; set it again without a password in its URL, then remove the environment again", ErrGateway, strings.Join(hidden, ", "), in)
+			}
 		}
+	}
+	if check != nil {
+		if err := check(ctx); err != nil {
+			return err
+		}
+	}
+	if e.cfg.Gateway != nil {
 		// The weight 0 backends go first: no request is sent to an
 		// environment whose files are already gone.
 		for _, in := range instances {
 			cur, ok := routes[in]
 			if !ok || cur.Backends[env] == "" {
 				continue
-			}
-			if hidden := hiddenPasswords(&cur, map[string]string{env: ""}); len(hidden) > 0 {
-				return fmt.Errorf("%w: the gateway hides the password in the URL of the %s backend of %s, and sending that URL back would replace the password; set it again without a password in its URL, then remove the environment again", ErrGateway, strings.Join(hidden, ", "), in)
 			}
 			next := gateway.AppSpec{Backends: maps.Clone(cur.Backends), WriteBackend: cur.WriteBackend, Dial: maps.Clone(cur.Dial)}
 			delete(next.Backends, env)

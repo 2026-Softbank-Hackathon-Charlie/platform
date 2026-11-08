@@ -38,8 +38,8 @@ ADR 0044는 세 환경 DB 그룹의 환경 제거를 409 `db_group_removal_unsup
 
 ### 순서
 
-1. (API, 위 검사 뒤) primary의 `replica.source`가 남는 replica가 아니면 남는 replica로 바꾼다. 엔진의 `cnpg.Client.RewireSource`를 그대로 쓴다. UID, resourceVersion, self, primary를 test하는 JSON patch라 읽은 뒤 바뀐 Cluster는 바꾸지 않는다. 이때 Cluster는 아직 레이블 `"3"`을 가지므로 admission 정책이 허용한다. 실패하면 502 `db_topology_unreachable`이고 다른 것은 바뀌지 않았다. 같은 요청을 다시 보내면 다시 읽고 이미 바뀌었으면 건너뛴다. 이 변경은 primary가 지금 하는 일을 바꾸지 않고, 세 멤버일 때도 엔진이 이전 직전에 하는 것과 같다. 그래서 이 단계 뒤 다른 단계가 실패해도 그룹은 그대로 안전하다.
-2. (실행, 인스턴스 잠금 안) 각 인스턴스의 게이트웨이 앱에서 그 환경 백엔드를 뺀다(ADR 0043과 같다).
+1. (실행, 인스턴스 잠금 안) 실행은 먼저 거절할 것을 모두 본다: 브랜치 변경, 끝나지 않은 배포, 게이트웨이의 쓰기 붙잡기, 그 환경으로 가는 쓰기와 읽기, 비밀번호가 가려진 백엔드. 그다음 API가 넘긴 확인이 진행 중인 이전과 빼는 멤버의 primary 여부를 다시 보고, 마지막으로 primary Cluster를 다시 읽어 `replica.source`가 남는 replica가 아니면 남는 replica로 바꾼다. 이것이 첫 라이브 변경이다. 엔진의 `cnpg.Client.RewireSource`를 그대로 쓴다. UID, resourceVersion, self, primary를 test하는 JSON patch라 읽은 뒤 바뀐 Cluster는 바꾸지 않는다. 이때 Cluster는 아직 레이블 `"3"`을 가지므로 admission 정책이 허용한다. 이 변경은 primary가 지금 하는 일을 바꾸지 않고, 세 멤버일 때도 엔진이 이전 직전에 하는 것과 같다. 그래서 이 단계 뒤 다른 단계가 실패해도 그룹은 그대로 안전하다. API의 앞선 검사는 아무것도 바꾸지 않는다.
+2. (실행) 각 인스턴스의 게이트웨이 앱에서 그 환경 백엔드를 뺀다(ADR 0043과 같다).
 3. 모든 인스턴스의 `apps/<instance>/<env>.yaml`을 한 커밋으로 지우고 ApplicationSet을 refresh한다. Argo CD가 그 환경의 Application과 네임스페이스, DB, PVC, tailnet ingress를 지운다.
 4. `store.RemoveDatabaseMember(app, env, peer)`로 그룹 행을 한 트랜잭션에서 바꾼다. 그 환경의 세대를 하나 올린다. 그 환경이 `PeerEnv`였고 환경이 셋이면 남는 다른 환경(첫 환경이 아닌 쪽)을 새 `PeerEnv`로 하고 그 환경의 세대는 그대로 둔다. `PrimaryEnv`는 바뀌지 않는다.
 5. `SetAppEnvironments`로 환경 목록에서 뺀다(ADR 0043과 같다).
@@ -63,7 +63,7 @@ infra ADR 0098은 ApplicationSet의 jq를 `select(.metadata.labels["hopcharlie.d
 
 ## 실패와 다시 하기
 
-- 1의 검사나 source 변경에서 끝나면 아무것도 지우지 않았다.
+- API 검사와 실행의 거절(1의 source 변경 전)에서 끝나면 아무것도 바뀌지 않았다. source 변경 자체가 실패하면 502 `db_topology_unreachable`이고 다른 것은 바뀌지 않았다. 같은 요청을 다시 보내면 다시 읽고 이미 바뀌었으면 건너뛴다.
 - 실행은 인스턴스 잠금을 잡은 뒤 아무것도 바꾸기 전에 두 가지를 다시 본다. 앱의 이전 run이 진행 중이거나 게이트웨이가 쓰기를 붙잡고 있으면 409 `migration_in_progress`, 빼는 환경의 Cluster가 그 사이 primary가 됐으면 409 `write_backend`다. 1의 검사와 잠금 사이에 시작된 이전이 이것으로 막힌다. 잠금을 잡은 뒤 시작되는 이전은 막지 못하지만, 엔진의 precheck가 그 시점 상태로 다시 판단한다.
 - source 변경의 조건부 patch가 test에서 실패하면(읽은 뒤 Cluster가 바뀜) 409 `db_topology_changed`, admission 정책이나 RBAC가 거절하면 502 `db_topology_denied`(인프라 문제라 다시 보내도 같다), 그 밖의 실패는 502 `db_topology_unreachable`이다. kind에서 오래된 resourceVersion의 test는 422 Invalid로 돌아왔다.
 - 2, 3이 실패하면 ADR 0043처럼 502 `gateway_unreachable`, `github_unreachable`이고 같은 요청을 다시 보낸다. 다시 보내면 1의 검사를 다시 하고, source는 이미 맞으므로 바꾸지 않는다.

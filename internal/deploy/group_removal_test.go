@@ -2,9 +2,11 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 )
 
@@ -110,5 +112,34 @@ func TestRemoveGroupPeerMovesThePeer(t *testing.T) {
 	f, _ := se.topology("shop", "gke")
 	if tp := f.Values.DBTopology; tp == nil || !slices.Equal(tp.Members, []string{"gke", "onprem"}) || tp.PeerPresent == nil || *tp.PeerPresent {
 		t.Fatalf("gke alone: %+v", f.Values.DBTopology)
+	}
+}
+
+// TestRemoveEnvironmentRefusesBeforeTheCheck: the gateway's refusals come
+// before check, which may change a live database Cluster (ADR 0064), so a
+// refused removal changes nothing.
+func TestRemoveEnvironmentRefusesBeforeTheCheck(t *testing.T) {
+	for name, info := range map[string]gateway.AppInfo{
+		"read weight":  {Name: "shop", Backends: map[string]string{"gke": "http://g", "eks": "http://e"}, WriteBackend: "gke", ReadWeights: map[string]int{"gke": 80, "eks": 20}},
+		"write":        {Name: "shop", Backends: map[string]string{"gke": "http://g", "eks": "http://e"}, WriteBackend: "eks"},
+		"writes held":  {Name: "shop", Backends: map[string]string{"gke": "http://g", "eks": "http://e"}, WriteBackend: "gke", WritesHeld: true},
+		"hidden token": {Name: "shop", Backends: map[string]string{"gke": "http://u:xxxxx@g", "eks": "http://e"}, WriteBackend: "gke"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			te := newTestEnv(t)
+			te.register("shop", "gke", "eks")
+			ex := te.start()
+			te.gw.mu.Lock()
+			te.gw.apps["shop"] = info
+			te.gw.mu.Unlock()
+			checked := false
+			err := ex.RemoveEnvironment(context.Background(), "shop", "eks", func(context.Context) error { checked = true; return nil })
+			if err == nil || checked {
+				t.Fatalf("err %v, check ran %v", err, checked)
+			}
+			if !errors.Is(err, ErrEnvironmentInUse) && !errors.Is(err, ErrWritesHeld) && !errors.Is(err, ErrGateway) {
+				t.Fatalf("err %v", err)
+			}
+		})
 	}
 }
