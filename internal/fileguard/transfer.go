@@ -300,10 +300,20 @@ func (s *Syncer) prepare(ctx context.Context, src, dst string) (*snapshot, error
 	if s == nil || s.before == nil || s.authorize == nil || src != s.source || dst != s.target {
 		return nil, ErrDenied
 	}
-	if err := s.before(ctx); err != nil {
+	// The policy pre-check reads the source database over the network; run it
+	// alongside the private staging download. Nothing is uploaded unless both
+	// it and authorize pass, and a denied staging snapshot is closed.
+	beforeErr := make(chan error, 1)
+	go func() { beforeErr <- s.before(ctx) }()
+	shot, err := takeCached(ctx, src, s.reviews, s.binary, s.execute, newClassificationMemo(s.cache, s.cacheBinding, s.reviews, s.binary))
+	if e := <-beforeErr; e != nil {
+		if shot != nil {
+			if ce := shot.close(); ce != nil {
+				return nil, ce
+			}
+		}
 		return nil, ErrDenied
 	}
-	shot, err := takeCached(ctx, src, s.reviews, s.binary, s.execute, newClassificationMemo(s.cache, s.cacheBinding, s.reviews, s.binary))
 	if err != nil {
 		return nil, err
 	}
