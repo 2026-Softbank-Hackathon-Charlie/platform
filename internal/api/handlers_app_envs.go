@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
@@ -289,10 +291,11 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		s.primaryEnvironment(w, r, app, env)
 		return
 	}
-	if db.App != "" && len(app.Environments) > 2 {
-		s.fail(w, r, http.StatusConflict, "db_group_removal_unsupported", "removing a member of a three-environment database group requires replica topology and backup generation reconciliation; no resources were removed")
-		return
-	}
+	// A member of a three-environment database group (ADR 0063): the two
+	// that remain hold every write, which prepareGroupRemoval reads from
+	// the live replication topology, so a member that was a migration's
+	// source or target before may go too.
+	group := db.App != "" && len(app.Environments) > 2
 	instances, err := s.instanceNames(ctx, app)
 	if err != nil {
 		s.internal(w, r, err)
@@ -304,7 +307,7 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, run := range runs {
-		if run.Status == apiv1.RunStatusFailed || run.Status == apiv1.RunStatusAborted {
+		if group || run.Status == apiv1.RunStatusFailed || run.Status == apiv1.RunStatusAborted {
 			continue // stopped before anything irreversible
 		}
 		if run.Source.Env == env || run.Target.Env == env {
@@ -337,6 +340,15 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 	if s.d.Remover == nil {
 		s.fail(w, r, http.StatusServiceUnavailable, "github_not_configured", "this server has no deployer (PLATFORM_DEPLOY_BUILDER), so it cannot remove the environment's files from the gitops repository")
 		return
+	}
+	if group {
+		if db.SourceKind == store.DBSourceExternal {
+			s.fail(w, r, http.StatusConflict, "migration_in_progress", fmt.Sprintf("the onboarding of %s has not cut over to its database yet; remove the environment once it is done", app.Name))
+			return
+		}
+		if !s.prepareGroupRemoval(ctx, w, r, app, env) {
+			return
+		}
 	}
 	err = s.d.Remover.RemoveEnvironment(ctx, app.Name, env)
 	switch {
@@ -405,6 +417,120 @@ func (s *Server) removeAppEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	out.App = s.appViewAfter(ctx, app)
 	writeJSON(w, http.StatusAccepted, out)
+}
+
+// prepareGroupRemoval checks the replication of the members of app's
+// three-environment database group that remain without env, and makes them
+// the pair the files render after the removal (ADR 0063). It answers and
+// returns false unless each remaining Cluster is read and healthy, one of
+// them is the designated primary (replica.primary is its self), the other
+// streams directly from it (its replica.primary and replica.source are the
+// primary), and env's Cluster, when it can be read, is not a primary. An
+// env whose Cluster cannot be read is no reason to refuse: the gateway
+// sends it nothing (the executor checks that), and its database is
+// deleted. The primary's replica.source, which it follows once demoted and
+// which the engine requires to be the target of the next migration, is
+// then set to the other remaining member when it is not that already,
+// before any file changes: while the Cluster keeps the three-member label
+// the workload admission policy lets the platform change that field (infra
+// ADR 0078), and CNPG refuses an externalClusters list without the
+// replica.source, which the re-rendered file would otherwise leave. Nothing
+// else is changed here, so a refusal changes nothing and a failed change of
+// the source is sent again.
+func (s *Server) prepareGroupRemoval(ctx context.Context, w http.ResponseWriter, r *http.Request, app store.App, env string) bool {
+	if s.d.DBCluster == nil || s.d.DBRewire == nil {
+		s.fail(w, r, http.StatusServiceUnavailable, "db_topology_unknown", "this server cannot read or change the database Clusters in the workload clusters, so it cannot check the replication of the members that remain")
+		return false
+	}
+	list, err := s.d.Store.ListInstanceDeployments(ctx, app.Name, 0)
+	if err != nil {
+		s.internal(w, r, err)
+		return false
+	}
+	cluster := ""
+	if last := lastHealthy(list); last != nil {
+		specJSON := last.Spec
+		if len(specJSON) == 0 && app.SpecCommit == last.Commit {
+			specJSON = app.Spec
+		}
+		var spec appspec.Spec
+		if err := json.Unmarshal(specJSON, &spec); err != nil {
+			s.internal(w, r, fmt.Errorf("the recorded platform.yaml of %s: %w", last.ID, err))
+			return false
+		}
+		if i := slices.IndexFunc(spec.Resources, func(res appspec.Resource) bool { return res.Type == appspec.TypePostgres }); i >= 0 {
+			cluster = deploy.ClusterName(app.Name, spec.Resources[i].Name)
+		}
+	}
+	unready := func(msg string) bool {
+		s.fail(w, r, http.StatusConflict, "db_topology_unready", msg+"; nothing was changed")
+		return false
+	}
+	if cluster == "" {
+		return unready(fmt.Sprintf("%s has no healthy deployment with a postgres resource, so the database Clusters of its group are unknown", app.Name))
+	}
+	ns := deploy.Namespace(app.Name)
+	members := slices.Clone(app.Environments)
+	status := make([]*cnpg.Status, len(members))
+	errs := make([]error, len(members))
+	var wg sync.WaitGroup
+	for i, m := range members {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, DBClusterTimeout)
+			defer cancel()
+			status[i], errs[i] = s.d.DBCluster(cctx, m, ns, cluster)
+		}()
+	}
+	wg.Wait()
+	primary, standby := -1, -1
+	for i, m := range members {
+		st := status[i]
+		switch {
+		case m == env:
+			if errs[i] == nil && st != nil && st.IsPrimary() {
+				s.fail(w, r, http.StatusConflict, "write_backend", fmt.Sprintf("the database of %s in %s is a primary; migrate it to another environment first", app.Name, env))
+				return false
+			}
+		case errs[i] != nil || st == nil:
+			s.cfg.Log.Warn("database group removal: read a Cluster", "app", app.Name, "env", m, "err", errs[i])
+			s.fail(w, r, http.StatusBadGateway, "db_topology_unknown", fmt.Sprintf("could not read Cluster %s/%s in %s, which remains in the group; nothing was changed, try again", ns, cluster, m))
+			return false
+		case !st.Healthy():
+			return unready(fmt.Sprintf("Cluster %s in %s is not healthy (%s, %d of %d instances ready)", cluster, m, st.Phase, st.ReadyInstances, st.Instances))
+		case st.ReplicaPrimary == st.Self:
+			if primary >= 0 {
+				return unready(fmt.Sprintf("both %s and %s are database primaries", members[primary], m))
+			}
+			primary = i
+		default:
+			standby = i
+		}
+	}
+	if primary < 0 || standby < 0 {
+		return unready(fmt.Sprintf("the members of %s that remain without %s are not one designated primary and one replica", app.Name, env))
+	}
+	p, rp := status[primary], status[standby]
+	if rp.ReplicaPrimary != p.Self || rp.ReplicaSource != p.Self {
+		return unready(fmt.Sprintf("the database in %s follows %s through %s, not the primary %s directly", members[standby], rp.ReplicaPrimary, rp.ReplicaSource, p.Self))
+	}
+	if p.ReplicaSource == rp.Self {
+		return true
+	}
+	if !p.HasExternalCluster(rp.Self) {
+		return unready(fmt.Sprintf("the primary %s has no externalCluster %s to follow once demoted", p.Self, rp.Self))
+	}
+	cctx, cancel := context.WithTimeout(ctx, DBClusterTimeout)
+	defer cancel()
+	if err := s.d.DBRewire(cctx, members[primary], ns, cluster, p, rp.Self); err != nil {
+		s.cfg.Log.Warn("database group removal: set the primary's replica.source", "app", app.Name, "env", members[primary], "source", rp.Self, "err", err)
+		s.fail(w, r, http.StatusBadGateway, "db_topology_unreachable", fmt.Sprintf("could not set replica.source of the primary in %s to %s; nothing else was changed, try again", members[primary], rp.Self))
+		return false
+	}
+	noteAudit(r, "replicaSource", rp.Self)
+	s.cfg.Log.Info("database group removal: the primary follows the remaining replica once demoted", "app", app.Name, "env", members[primary], "from", p.ReplicaSource, "to", rp.Self)
+	return true
 }
 
 // filesWithoutGateway returns a deployment of the app (all, any instance)

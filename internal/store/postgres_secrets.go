@@ -219,18 +219,21 @@ func (s *Postgres) DeleteInstanceStorage(ctx context.Context, instance, env stri
 }
 
 const appDatabaseColumns = `app, primary_env, peer_env, key_version, key_check, password_nonce, password_ciphertext, ca_cert, ca_key_nonce, ca_key_ciphertext, created_at, peer_generation,
-	source_kind, image, database, owner, storage_size, external_host, replication_password_nonce, replication_password_ciphertext, reindex, parameters`
+	source_kind, image, database, owner, storage_size, external_host, replication_password_nonce, replication_password_ciphertext, reindex, parameters, member_generations`
 
 func scanAppDatabase(row pgx.Row) (AppDatabase, error) {
 	var d AppDatabase
 	if err := row.Scan(&d.App, &d.PrimaryEnv, &d.PeerEnv, &d.KeyVersion, &d.KeyCheck, &d.PasswordNonce, &d.PasswordCiphertext,
 		&d.CACert, &d.CAKeyNonce, &d.CAKeyCiphertext, &d.CreatedAt, &d.PeerGeneration,
 		&d.SourceKind, &d.Image, &d.Database, &d.Owner, &d.StorageSize, &d.ExternalHost,
-		&d.ReplicationPasswordNonce, &d.ReplicationPasswordCiphertext, &d.Reindex, &d.Parameters); err != nil {
+		&d.ReplicationPasswordNonce, &d.ReplicationPasswordCiphertext, &d.Reindex, &d.Parameters, &d.MemberGenerations); err != nil {
 		return AppDatabase{}, err
 	}
 	if len(d.Parameters) == 0 {
 		d.Parameters = nil
+	}
+	if len(d.MemberGenerations) == 0 {
+		d.MemberGenerations = nil
 	}
 	d.CreatedAt = d.CreatedAt.UTC()
 	if len(d.Reindex) == 0 {
@@ -281,16 +284,34 @@ func (s *Postgres) SetAppDatabaseReplicationPassword(ctx context.Context, app st
 	return nil
 }
 
-func (s *Postgres) NextPeerGeneration(ctx context.Context, app string) (int, error) {
+func (s *Postgres) RemoveDatabaseMember(ctx context.Context, app, env, peer string) (AppDatabase, error) {
 	if !Clean(app) {
-		return 0, fmt.Errorf("%w: database pair of app %q", ErrNotFound, app)
+		return AppDatabase{}, fmt.Errorf("%w: database pair of app %q", ErrNotFound, app)
 	}
-	var gen int
-	err := s.pool.QueryRow(ctx, `UPDATE app_databases SET peer_generation = peer_generation + 1 WHERE app = $1 RETURNING peer_generation`, app).Scan(&gen)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return AppDatabase{}, err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+	d, err := scanAppDatabase(tx.QueryRow(ctx, `SELECT `+appDatabaseColumns+` FROM app_databases WHERE app = $1 FOR UPDATE`, app))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, fmt.Errorf("%w: database pair of app %s", ErrNotFound, app)
+		return AppDatabase{}, fmt.Errorf("%w: database pair of app %s", ErrNotFound, app)
 	}
-	return gen, err
+	if err != nil {
+		return AppDatabase{}, err
+	}
+	d, err = d.RemoveMember(env, peer)
+	if err != nil {
+		return AppDatabase{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE app_databases SET peer_env = $2, peer_generation = $3, member_generations = $4 WHERE app = $1`,
+		app, d.PeerEnv, d.PeerGeneration, d.MemberGenerations); err != nil {
+		return AppDatabase{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return AppDatabase{}, err
+	}
+	return d, nil
 }
 
 func (s *Postgres) ListAppDatabases(ctx context.Context) ([]AppDatabase, error) {

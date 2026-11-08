@@ -46,6 +46,26 @@ type fakeClusters struct {
 	status map[string]*cnpg.Status
 	err    map[string]error
 	asked  []string
+	// rewired are the replica.source changes, "env:source"; rewireErr
+	// fails them.
+	rewired   []string
+	rewireErr error
+}
+
+// rewire sets the replica.source of env's Cluster, as DBRewire.
+func (f *fakeClusters) rewire(_ context.Context, env, _, _ string, expected *cnpg.Status, source string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rewireErr != nil {
+		return f.rewireErr
+	}
+	st, ok := f.status[env]
+	if !ok || expected == nil || st.Self != expected.Self || st.ReplicaSource != expected.ReplicaSource {
+		return fmt.Errorf("rewire %s: the Cluster changed", env)
+	}
+	f.rewired = append(f.rewired, env+":"+source)
+	st.ReplicaSource = source
+	return nil
 }
 
 func (f *fakeClusters) read(_ context.Context, env, namespace, name string) (*cnpg.Status, error) {
@@ -96,6 +116,7 @@ func newEnvFixture(t *testing.T, opts ...option) *envFixture {
 		func(_ *harness, _ *runs.Config, d *Deps) {
 			d.Gateway = f.gw
 			d.DBCluster = f.clusters.read
+			d.DBRewire = f.clusters.rewire
 			d.SealingConfigured = func(env string) bool { return f.sealing[env] }
 			d.WorkloadResidue = f.readResidue
 		}}

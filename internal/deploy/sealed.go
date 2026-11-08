@@ -83,16 +83,16 @@ func BackupInstance(app string) string { return app + backupSuffix }
 func BackupPath(registered time.Time) string { return registered.UTC().Format("20060102T150405Z") }
 
 // backupPath is the path in env's backup bucket of the app registered at
-// registered, whose database pair is d (nil without one). The peer of a
-// pair whose peer environment was removed from the app before gets
-// BackupPath with the pair's PeerGeneration, "-1" after the first removal:
-// the database that was there left its WAL under the old path, and a new
-// replica needs an empty one (ADR 0043). Every other path is BackupPath.
+// registered, whose database group is d (nil without one). A member whose
+// environment was removed from the app before gets BackupPath with its
+// Generation, "-1" after the first removal: the database that was there
+// left its WAL under the old path, and a new replica needs an empty one
+// (ADR 0043, 0063). Every other path is BackupPath.
 func (d *sealedDatabase) backupPath(registered time.Time, env string) string {
-	if d == nil || env != d.row.PeerEnv || d.row.PeerGeneration == 0 {
+	if d == nil || d.row.Generation(env) == 0 {
 		return BackupPath(registered)
 	}
-	return fmt.Sprintf("%s-%d", BackupPath(registered), d.row.PeerGeneration)
+	return fmt.Sprintf("%s-%d", BackupPath(registered), d.row.Generation(env))
 }
 
 // checksumKeyID is where the bucket's key id goes in the checksum input. A

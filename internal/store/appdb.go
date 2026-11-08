@@ -2,6 +2,8 @@ package store
 
 import (
 	"bytes"
+	"fmt"
+	"maps"
 	"time"
 )
 
@@ -29,7 +31,13 @@ type AppDatabase struct {
 	// 0043). The peer's backup path has it once it is not 0, so a peer
 	// added back archives to a new, empty path.
 	PeerGeneration int
-	CreatedAt      time.Time
+	// MemberGenerations counts the removals of each environment of the
+	// database group from the app (ADR 0063), for the backup path of a
+	// member added back. An environment not in it has Generation 0, but
+	// PeerEnv, whose generation is PeerGeneration then. RemoveDatabaseMember
+	// keeps PeerGeneration equal to the generation of PeerEnv.
+	MemberGenerations map[string]int
+	CreatedAt         time.Time
 
 	// SourceKind is DBSourcePeer for a pair born on the platform, or
 	// DBSourceExternal for an onboarded app's database (ADR 0042), born in
@@ -92,7 +100,29 @@ func (d AppDatabase) Clean() AppDatabase {
 		}
 		d.Parameters = p
 	}
+	if len(d.MemberGenerations) == 0 {
+		d.MemberGenerations = nil
+	} else {
+		g := make(map[string]int, len(d.MemberGenerations))
+		for k, v := range d.MemberGenerations {
+			g[CleanText(k)] = v
+		}
+		d.MemberGenerations = g
+	}
 	return d
+}
+
+// Generation is the number of times env was removed from the app of the
+// database group d (ADR 0043, 0063): its MemberGenerations entry, or
+// PeerGeneration for PeerEnv without one, or 0.
+func (d AppDatabase) Generation(env string) int {
+	if g, ok := d.MemberGenerations[env]; ok {
+		return g
+	}
+	if env == d.PeerEnv {
+		return d.PeerGeneration
+	}
+	return 0
 }
 
 // cleanList returns l's strings passed through CleanText in a new slice,
@@ -106,4 +136,29 @@ func cleanList(l []string) []string {
 		out[i] = CleanText(v)
 	}
 	return out
+}
+
+// RemoveMember returns d after env left the app of its database group, as
+// Store.RemoveDatabaseMember stores it (ADR 0063): the Generation of env
+// one more, and with peer other than "" peer as PeerEnv with its
+// Generation kept. PeerGeneration is the Generation of PeerEnv after it.
+// ErrConflict when env is PrimaryEnv, peer is PrimaryEnv or env, or peer
+// is given for an env that is not PeerEnv.
+func (d AppDatabase) RemoveMember(env, peer string) (AppDatabase, error) {
+	switch {
+	case env == "" || env == d.PrimaryEnv:
+		return d, fmt.Errorf("%w: %q is not a removable member of the database group of %s", ErrConflict, env, d.App)
+	case peer != "" && (peer == d.PrimaryEnv || peer == env || env != d.PeerEnv):
+		return d, fmt.Errorf("%w: %s cannot become the peer of the database group of %s in place of %s", ErrConflict, peer, d.App, env)
+	}
+	gens := make(map[string]int, len(d.MemberGenerations)+2)
+	maps.Copy(gens, d.MemberGenerations)
+	gens[env] = d.Generation(env) + 1
+	if peer != "" {
+		gens[peer] = d.Generation(peer)
+		d.PeerEnv = peer
+	}
+	d.MemberGenerations = gens
+	d.PeerGeneration = d.Generation(d.PeerEnv)
+	return d, nil
 }

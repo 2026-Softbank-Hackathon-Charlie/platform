@@ -220,6 +220,10 @@ type Deps struct {
 	// for the readiness of a database pair (ADR 0043); nil leaves the
 	// readiness at cluster_unreadable.
 	DBCluster DBClusterReader
+	// DBRewire changes only spec.replica.source of the current primary of
+	// a three-environment database group, for the removal of one of its
+	// members (ADR 0063); nil answers 503 db_topology_unknown to it.
+	DBRewire DBSourceRewirer
 	// WorkloadResidue says what is left in a namespace of an environment's
 	// workload cluster, for whether an environment removed from an app is
 	// gone before it is added again (ADR 0043); nil means it cannot tell.

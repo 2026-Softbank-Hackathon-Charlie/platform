@@ -113,9 +113,10 @@ func (te *testEnv) environmentDeployment(d store.Deployment, envs ...string) sto
 type topologyFile struct {
 	Values struct {
 		DBTopology *struct {
-			Primary     string `json:"primary"`
-			Peer        string `json:"peer"`
-			PeerPresent *bool  `json:"peerPresent"`
+			Primary     string   `json:"primary"`
+			Peer        string   `json:"peer"`
+			PeerPresent *bool    `json:"peerPresent"`
+			Members     []string `json:"members"`
 		} `json:"dbTopology"`
 		SealedSecrets struct {
 			PGApp map[string]string `json:"pgApp"`
