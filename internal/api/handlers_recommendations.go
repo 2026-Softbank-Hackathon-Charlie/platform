@@ -137,15 +137,14 @@ func (s *Server) loadRecommendationCandidates(ctx context.Context) ([]recommend.
 		}
 		applications = append(applications, app)
 	}
-	references := map[string]string{}
 	sources := map[string]recommend.Source{}
 	for _, e := range envs {
 		if e.Provider == string(apiv1.ProviderAws) {
-			summary, source := s.recommendationPrices.Reference(ctx, e.Region, now)
-			references[e.Name], sources[e.Name] = summary, source
+			_, source := s.recommendationPrices.Reference(ctx, e.Region, now)
+			sources[e.Name] = source
 		}
 	}
-	candidates := recommend.Build(applications, envs, s.cfg.RecommendationCosts, references, now)
+	candidates := recommend.Build(applications, envs, s.cfg.RecommendationCosts, now)
 	for i := range candidates {
 		for _, name := range []*string{candidates[i].Source, candidates[i].Target} {
 			if name != nil && sources[*name].URL != "" {

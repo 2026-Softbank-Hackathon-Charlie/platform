@@ -124,7 +124,7 @@ func (p *Prices) fetch(ctx context.Context, endpoint, expectedLocation string, n
 			if err != nil || price <= 0 || price > 100 || math.IsInf(price, 0) || math.IsNaN(price) {
 				return priceEntry{}, errors.New("price invalid")
 			}
-			source := Source{Title: "AWS m7i.large Linux 종량제 공시 · 컴퓨트만, 총비용 아님", URL: endpoint, ObservedAt: &data.Manifest.Published}
+			source := Source{Title: fmt.Sprintf("참고용 AWS %s m7i.large Linux $%.4f/시간 · 컴퓨트만, 앱 인스턴스 미확인", expectedLocation, price), URL: endpoint, ObservedAt: &data.Manifest.Published}
 			entry := priceEntry{until: now.Add(24 * time.Hour), summary: fmt.Sprintf("AWS m7i.large 참고 단가는 시간당 $%.4f이며 별도 비용은 포함하지 않습니다.", price), source: source, price: price, publication: data.Manifest.Published}
 			found = &entry
 		}

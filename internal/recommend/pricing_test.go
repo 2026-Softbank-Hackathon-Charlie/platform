@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type priceTransport func(*http.Request) (*http.Response, error)
@@ -31,6 +32,14 @@ func TestPublicPricesCacheAndExactRegion(t *testing.T) {
 	summary, source := p.Reference(context.Background(), "ap-northeast-2", now)
 	if summary == "" || source.ObservedAt == nil || !strings.Contains(summary, "별도 비용은 포함하지 않습니다") {
 		t.Fatal("valid compute-only public reference missing")
+	}
+	for _, part := range []string{"참고용", "Asia Pacific (Seoul)", "m7i.large Linux", "$0.1200/시간", "컴퓨트만", "앱 인스턴스 미확인"} {
+		if !strings.Contains(source.Title, part) {
+			t.Fatalf("missing price assumption %q: %s", part, source.Title)
+		}
+	}
+	if utf8.RuneCountInString(source.Title) > 120 {
+		t.Fatal("reference title exceeds API/CLI contract")
 	}
 	p.Reference(context.Background(), "ap-northeast-2", now.Add(time.Hour))
 	if calls != 1 {

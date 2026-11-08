@@ -36,7 +36,7 @@ func TestBuildRequiresComparableFullCostsAndPreservesCountryRestriction(t *testi
 			b := *book
 			b.Quotes = slices.Clone(book.Quotes)
 			tc.change(&a, e, &b)
-			items := Build([]Application{a}, e, &b, nil, now)
+			items := Build([]Application{a}, e, &b, now)
 			found := false
 			for _, c := range items {
 				if c.Target != nil && *c.Target == "onprem" {
@@ -55,12 +55,12 @@ func TestBuildRequiresComparableFullCostsAndPreservesCountryRestriction(t *testi
 		})
 	}
 	app.Countries = []string{"KR"}
-	for _, c := range Build([]Application{app}, envs, book, nil, now) {
+	for _, c := range Build([]Application{app}, envs, book, now) {
 		if c.Target != nil && *c.Target == "eks" && (slices.Contains(c.AllowedActions, "move") || c.EstimatedMonthlySavingsUSD != nil) {
 			t.Fatal("cheap JP quote overrode KR-only data")
 		}
 	}
-	for _, c := range Build([]Application{app}, envs, nil, map[string]string{"eks": "reference compute rate"}, now) {
+	for _, c := range Build([]Application{app}, envs, nil, now) {
 		if slices.Contains(c.AllowedActions, "move") || c.EstimatedMonthlySavingsUSD != nil {
 			t.Fatal("public unit rate invented workload saving")
 		}
@@ -71,8 +71,75 @@ func TestLongRegisteredNamesStillProduceProducerCompatibleCandidateIDs(t *testin
 	now := time.Now().UTC()
 	source, target := strings.Repeat("s", 63), strings.Repeat("t", 63)
 	app := Application{Name: strings.Repeat("a", 63), Current: &source, Environments: []string{source, target}}
-	items := Build([]Application{app}, []Environment{{Name: source}, {Name: target}}, nil, nil, now)
+	items := Build([]Application{app}, []Environment{{Name: source}, {Name: target}}, nil, now)
 	if len(items) != 1 || !candidateLabel.MatchString(items[0].ID) || validateCandidates(items) != nil {
 		t.Fatal("long registered names broke the AI producer contract")
+	}
+}
+
+func TestDecisionReasonsCannotBeReplacedByReferencePrices(t *testing.T) {
+	now := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	app := Application{Name: "docker-doom", Revision: "current", Current: str("gke"), Environments: []string{"gke", "eks"}}
+	envs := []Environment{{Name: "gke", Provider: "gcp", Region: "asia-northeast3", Ready: true, ObservedAt: now}, {Name: "eks", Provider: "aws", Region: "ap-northeast-2", Ready: true, ObservedAt: now}}
+	quote := func(e Environment, price float64) CostQuote {
+		return CostQuote{App: app.Name, Environment: e.Name, Region: e.Region, WorkloadRevision: app.Revision, MonthlyUSD: price, PeriodHours: 730, ObservedAt: now, IncludesStorage: true, IncludesDataTransfer: true, IncludesOperations: true, CommitmentReviewed: true, CapacityReviewed: true, ResidencyReviewed: true}
+	}
+	for _, tc := range []struct {
+		name     string
+		book     *CostBook
+		actions  []string
+		contains []string
+	}{
+		{"unknown workload cost", nil, []string{"insufficient"}, nil},
+		{"cheaper target", &CostBook{Version: 1, Quotes: []CostQuote{quote(envs[0], 100), quote(envs[1], 40)}}, []string{"move", "insufficient"}, []string{"$100.00", "$40.00", "$60.00"}},
+		{"cheaper source", &CostBook{Version: 1, Quotes: []CostQuote{quote(envs[0], 40), quote(envs[1], 100)}}, []string{"stay", "insufficient"}, []string{"$40.00", "$100.00", "이점이 없습니다"}},
+		{"max allowed cost", &CostBook{Version: 1, Quotes: []CostQuote{quote(envs[0], 1e9), quote(envs[1], 0)}}, []string{"move", "insufficient"}, []string{"$1000000000.00", "$0.00"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Build([]Application{app}, envs, tc.book, now)[0]
+			if !slices.Equal(c.AllowedActions, tc.actions) || len(c.Reasons) != 1 {
+				t.Fatalf("ambiguous action/evidence: %v %v", c.AllowedActions, c.Reasons)
+			}
+			if tc.book == nil {
+				if !strings.Contains(c.Reasons[0], "미확인") || !strings.Contains(c.Reasons[0], "보류") || c.EstimatedMonthlySavingsUSD != nil {
+					t.Fatal("unknown facts became a recommendation")
+				}
+			} else {
+				for _, part := range tc.contains {
+					if !strings.Contains(c.Reasons[0], part) {
+						t.Fatalf("missing comparison %q: %v", part, c.Reasons)
+					}
+				}
+			}
+			if strings.Contains(strings.Join(c.Reasons, " "), "m7i.large") || validateCandidates([]Candidate{c}) != nil {
+				t.Fatal("reference price leaked into decision or broke producer input")
+			}
+		})
+	}
+}
+
+func TestIncompleteCandidatesCanOnlyDeferWithTheirActualBlocker(t *testing.T) {
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name, missing, reason string
+		app                   Application
+		envs                  []Environment
+	}{
+		{"unknown source", "current_environment_unobserved", "출발지", Application{Name: "hello", Environments: []string{"gke", "eks"}}, nil},
+		{"no registered destination", "target_environment_unregistered", "다른 환경", Application{Name: "hello", Current: str("gke"), Environments: []string{"gke"}}, []Environment{{Name: "gke"}}},
+		{"moving", "migration_in_progress", "진행 중", Application{Name: "moimroom", Current: str("gke"), Environments: []string{"gke", "eks"}, Moving: true}, []Environment{{Name: "gke"}, {Name: "eks"}}},
+		{"restricted country", "destination_country_restricted", "보관 정책", Application{Name: "moimroom", Current: str("gke"), Environments: []string{"gke", "eks"}, Countries: []string{"KR"}}, []Environment{{Name: "gke", Country: "KR"}, {Name: "eks", Country: "JP"}}},
+		{"unobserved readiness", "environment_readiness_unknown", "준비 상태", Application{Name: "moimroom", Current: str("onprem"), Environments: []string{"onprem", "eks"}}, []Environment{{Name: "onprem"}, {Name: "eks"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidates := Build([]Application{tc.app}, tc.envs, nil, now)
+			if len(candidates) != 1 {
+				t.Fatalf("missing candidate: %v", candidates)
+			}
+			c := candidates[0]
+			if !slices.Equal(c.AllowedActions, []string{"insufficient"}) || !slices.Contains(c.Missing, tc.missing) || len(c.Reasons) != 1 || !strings.Contains(c.Reasons[0], tc.reason) || c.EstimatedMonthlySavingsUSD != nil || validateCandidates(candidates) != nil {
+				t.Fatalf("misleading deferred decision: %+v", c)
+			}
+		})
 	}
 }

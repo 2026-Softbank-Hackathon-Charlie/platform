@@ -117,7 +117,7 @@ func candidateID(app, source, target string) string {
 // Build constructs candidate facts; only the sandbox AI chooses/ranks them.
 // Readiness is not equivalent to spare memory or successful migration parity.
 // All move recommendations still enter the normal Plan/preflight/approval flow.
-func Build(apps []Application, envs []Environment, book *CostBook, reference map[string]string, now time.Time) []Candidate {
+func Build(apps []Application, envs []Environment, book *CostBook, now time.Time) []Candidate {
 	sort.Slice(apps, func(i, j int) bool { return apps[i].Name < apps[j].Name })
 	known := map[string]Environment{}
 	for _, e := range envs {
@@ -138,7 +138,7 @@ func Build(apps []Application, envs []Environment, book *CostBook, reference map
 			}
 		}
 		if app.Current == nil || !slices.Contains(app.Environments, *app.Current) {
-			out = append(out, Candidate{Item: Item{ID: candidateID(app.Name, "unknown", ""), App: app.Name, Title: app.Name + " 실행 위치 확인", Reasons: []string{"현재 쓰기 경로를 확인한 뒤 이전 위치를 비교합니다."}, Missing: []string{"current_environment_unobserved"}, Sources: []Source{}}, AllowedActions: []string{"stay", "insufficient"}})
+			out = append(out, Candidate{Item: Item{ID: candidateID(app.Name, "unknown", ""), App: app.Name, Title: app.Name + " 이전 판단 보류", Reasons: []string{"현재 쓰기 경로가 확인되지 않아 이전 출발지를 정할 수 없습니다."}, Missing: []string{"current_environment_unobserved"}, Sources: []Source{}}, AllowedActions: []string{"insufficient"}})
 			continue
 		}
 		source, ok := known[*app.Current]
@@ -156,58 +156,60 @@ func Build(apps []Application, envs []Environment, book *CostBook, reference map
 			if !exists {
 				continue
 			}
-			item := Item{ID: candidateID(app.Name, source.Name, name), App: app.Name, Source: str(source.Name), Target: str(name), Title: app.Name + " 이전 조건 비교", Reasons: []string{}, Missing: []string{}, Sources: policySources(source.Provider, target.Provider, now)}
-			actions := []string{"stay", "insufficient"}
-			ready := recentEnvironment(source, now) && recentEnvironment(target, now) && !app.Moving
+			item := Item{ID: candidateID(app.Name, source.Name, name), App: app.Name, Source: str(source.Name), Target: str(name), Title: app.Name + " 이전 판단 보류", Reasons: []string{}, Missing: []string{}, Sources: policySources(source.Provider, target.Provider, now)}
+			actions := []string{"insufficient"}
+			ready := recentEnvironment(source, now) && recentEnvironment(target, now)
 			if app.Moving {
-				item.Reasons = append(item.Reasons, "진행 중인 이전이 끝난 뒤 다음 위치를 검토합니다.")
 				item.Missing = append(item.Missing, "migration_in_progress")
 			} else if !ready {
-				item.Reasons = append(item.Reasons, "현재·대상 환경의 최신 준비 상태를 먼저 확인합니다.")
 				item.Missing = append(item.Missing, "environment_readiness_unknown")
-			} else {
-				item.Reasons = append(item.Reasons, "등록된 대상 환경이 응답합니다. 자원 여유는 별도 확인이 필요합니다.")
 			}
 			from, fromOK := estimate(book, app, source, now)
 			to, toOK := estimate(book, app, target, now)
+			comparable := fromOK && toOK && from.PeriodHours == to.PeriodHours
 			countryDenied := app.Countries != nil && !slices.Contains(app.Countries, target.Country)
 			if countryDenied {
-				item.Reasons = append(item.Reasons, "등록 데이터 정책상 대상 국가로의 반출을 허용하지 않습니다.")
 				item.Missing = append(item.Missing, "destination_country_restricted")
 			}
-			if ready && !countryDenied && fromOK && toOK && from.PeriodHours == to.PeriodHours {
+			if !comparable {
+				item.Missing = append(item.Missing, "comparable_total_cost_estimates", "capacity_preflight_required", "data_policy_preflight_required")
+			}
+			// Every selectable reason explains this candidate's actual decision.
+			// One primary reason prevents the AI from selecting only a checklist
+			// or a public VM price instead of the workload comparison.
+			switch {
+			case app.Moving:
+				item.Reasons = []string{"이 앱의 이전이 진행 중이므로 다음 이전 판단을 보류합니다."}
+			case countryDenied:
+				item.Reasons = []string{"대상 국가가 이 앱의 등록 데이터 보관 정책을 벗어나 이전을 추천하지 않습니다."}
+			case !ready:
+				item.Reasons = []string{"현재 또는 대상 환경의 최신 준비 상태가 확인되지 않아 이전 판단을 보류합니다."}
+			case !comparable:
+				item.Reasons = []string{"이 앱의 현재·대상 총비용, 대상 자원 여유와 데이터 반출 정책이 미확인이라 이전 판단을 보류합니다."}
+			default:
+				item.Title = app.Name + " 총비용 견적 비교"
 				if from.MonthlyUSD > to.MonthlyUSD {
 					saving := from.MonthlyUSD - to.MonthlyUSD
 					item.EstimatedMonthlySavingsUSD = &saving
-					item.Title = app.Name + " 비용 견적 비교"
-					item.Reasons = append(item.Reasons, fmt.Sprintf("같은 운영시간의 입력 총비용 견적은 대상이 월 $%.2f 낮습니다.", saving))
-					actions = append(actions, "move")
+					item.Reasons = []string{fmt.Sprintf("같은 앱·운영시간의 입력 총비용은 현재 월 $%.2f → 대상 월 $%.2f로, 월 $%.2f 낮습니다.", from.MonthlyUSD, to.MonthlyUSD, saving)}
+					actions = []string{"move", "insufficient"}
 				} else {
-					item.Reasons = append(item.Reasons, "입력된 총비용 견적상 현재 환경을 유지하는 편이 유리합니다.")
+					item.Reasons = []string{fmt.Sprintf("같은 앱·운영시간의 입력 총비용은 현재 월 $%.2f ≤ 대상 월 $%.2f로, 비용상 이전 이점이 없습니다.", from.MonthlyUSD, to.MonthlyUSD)}
+					actions = []string{"stay", "insufficient"}
 				}
+			}
+			if comparable {
 				observed := from.ObservedAt
 				if to.ObservedAt.Before(observed) {
 					observed = to.ObservedAt
 				}
 				item.Sources = append(item.Sources, Source{Title: "운영자가 입력한 앱 전체 비용·용량·정책 검토 견적", URL: "https://console.hopcharlie.dev/", ObservedAt: &observed})
-			} else {
-				item.Reasons = append(item.Reasons, "약정·스토리지·데이터 반출을 포함한 총비용 견적을 확인합니다.")
-				item.Missing = append(item.Missing, "comparable_total_cost_estimates", "capacity_preflight_required", "data_policy_preflight_required")
-			}
-			if target.Provider == "onprem" {
-				item.Reasons = append(item.Reasons, "온프레미스 전력·장비 상각·운영비를 함께 비교합니다.")
-			}
-			if app.Persistent {
-				item.Reasons = append(item.Reasons, "데이터 보관 위치·파일 분류가 허용하는 경로인지 검증해야 합니다.")
-			}
-			if value := reference[target.Name]; value != "" && len(item.Reasons) < 6 {
-				item.Reasons = append(item.Reasons, value)
 			}
 			out = append(out, Candidate{Item: item, AllowedActions: actions})
 			count++
 		}
 		if count == 0 && len(out) < MaxCandidates {
-			out = append(out, Candidate{Item: Item{ID: candidateID(app.Name, *app.Current, "stay"), App: app.Name, Source: app.Current, Title: app.Name + " 현재 위치 유지", Reasons: []string{"아직 비교할 등록 대상 환경이 없습니다."}, Missing: []string{"target_environment_unregistered"}, Sources: []Source{}}, AllowedActions: []string{"stay", "insufficient"}})
+			out = append(out, Candidate{Item: Item{ID: candidateID(app.Name, *app.Current, "stay"), App: app.Name, Source: app.Current, Title: app.Name + " 이전 판단 보류", Reasons: []string{"이 앱에 등록된 다른 환경이 없어 이전 대상을 비교할 수 없습니다."}, Missing: []string{"target_environment_unregistered"}, Sources: []Source{}}, AllowedActions: []string{"insufficient"}})
 		}
 	}
 	return out
