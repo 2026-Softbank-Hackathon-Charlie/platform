@@ -1,0 +1,23 @@
+{
+  "observedAt": "2026-11-07T19:17:17.627878+00:00",
+  "kind": "production-public-readonly",
+  "installerExecuted": false,
+  "source": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+  "probes": [
+    {
+      "path": "/healthz",
+      "http": 200,
+      "bytes": 16,
+      "result": "PASS"
+    },
+    {
+      "path": "/v1/onprem/installer.sh",
+      "http": 200,
+      "bytes": 8348,
+      "sha256": "0b043d419d3ece41ad96dd8880c3de663199612b00fb425da60792b42bc119f1",
+      "expectedSHA256": "0b043d419d3ece41ad96dd8880c3de663199612b00fb425da60792b42bc119f1",
+      "supportsInstallK3s": true,
+      "result": "PASS"
+    }
+  ]
+}

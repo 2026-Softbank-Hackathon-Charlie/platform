@@ -103,11 +103,14 @@ type holdGen struct {
 // router is one app: its backends, routing, hold and stats. Apps share
 // nothing else, so holding one app's writes never delays another's.
 type router struct {
-	ai      *aiState // guarded by mu
-	g       *Gateway
-	name    string
-	log     *slog.Logger
-	metrics *routerMetrics
+	ai                *aiState       // guarded by mu
+	canary            *AICanaryState // guarded by mu; dedicated AI route only
+	follow            *aiFollower    // the AI demo app with AIFollow; nil otherwise
+	qualityGeneration uint64         // newer evidence revocations, even when stage is 0%
+	g                 *Gateway
+	name              string
+	log               *slog.Logger
+	metrics           *routerMetrics
 
 	inflightReads atomic.Int64
 
@@ -180,6 +183,9 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, err
 	}
 	g.router = def
+	if cfg.AIFollow != nil {
+		def.follow = newAIFollower(def, *cfg.AIFollow)
+	}
 	g.admin = g.adminMux()
 	if err := g.restore(); err != nil {
 		return nil, err
@@ -268,6 +274,9 @@ func (g *Gateway) restore() error {
 		}
 	}
 	// Fail at start, not mid-cutover, when the state file cannot be written.
+	if err := g.initializeAIQuality(st); err != nil {
+		return err
+	}
 	if err := g.trySave(); err != nil {
 		return fmt.Errorf("write state file: %w", err)
 	}
@@ -388,8 +397,29 @@ func (g *Gateway) shuttingDown() bool {
 
 // Close persists the final state. Call it after the servers have stopped; a
 // hold in progress stays recorded as held.
-func (g *Gateway) Close() {
-	g.save()
+func (g *Gateway) Close() error {
+	err := g.trySave()
+	if err != nil {
+		g.log.Error("persist gateway state", "file", g.cfg.StateFile, "err", err)
+	}
+	return err
+}
+
+// HoldAfterOwnerLoss is called before serving requests after an unclean
+// exclusive owner exit. Persist holds for EVERY app. This does not prove old
+// backend writes have finished; the host must also reject control mutations
+// until an operator verifies/fences that unknown work.
+func (g *Gateway) HoldAfterOwnerLoss() error {
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
+	for _, rt := range g.routers() {
+		rt.mu.Lock()
+		if !rt.held {
+			rt.startHoldLocked(time.Now())
+		}
+		rt.mu.Unlock()
+	}
+	return g.trySave()
 }
 
 // serveProxy sends a request to the app its Host names (see routerFor).
@@ -958,6 +988,7 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 			if rt.aiEnabled() {
 				pr.Out.Header.Del("Authorization")
 				pr.Out.Header.Del("X-Hop-Backend")
+				stripAIMetadata(pr.Out.Header)
 				pr.Out.Header.Del("Cookie")
 				pr.Out.Header.Set("X-Request-Id", pr.In.Header.Get("X-Request-Id"))
 				pr.Out.Trailer = nil
@@ -973,6 +1004,11 @@ func (rt *router) newProxy(b *backend) *httputil.ReverseProxy {
 			resp.Header.Set(headerBackend, b.name)
 			if rt.aiEnabled() {
 				resp.Header.Set("X-Hop-Backend", b.name)
+				rt.setAIMetadata(resp.Header, b.name)
+				stripAIMetadata(resp.Trailer)
+				if resp.Body != nil {
+					resp.Body = &aiMetadataBody{ReadCloser: resp.Body, response: resp}
+				}
 				resp.Header.Set("Cache-Control", "no-store")
 				resp.Trailer.Del("X-Hop-Backend")
 			}
@@ -1090,6 +1126,13 @@ func (w *statusWriter) status() int {
 // the time of each round, and closes idle proxy connections every
 // ConnRecycle, until ctx ends.
 func (g *Gateway) Run(ctx context.Context) {
+	if f := g.router.follow; f != nil {
+		go func() {
+			f.run(ctx)
+			f.stopOnce.Do(func() { close(f.stopped) })
+		}()
+	}
+	go g.runAIQuality(ctx)
 	go func() {
 		t := time.NewTicker(g.cfg.ConnRecycle)
 		defer t.Stop()

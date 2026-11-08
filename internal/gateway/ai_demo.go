@@ -15,7 +15,10 @@ import (
 )
 
 // AIDemoConfig enables the bounded native chat contract on the default app.
-type AIDemoConfig struct{ App, Token string }
+type AIDemoConfig struct {
+	App, Token string
+	Placements map[string]AIPlacement
+}
 
 type aiRequestKey struct{}
 type aiRequest struct {
@@ -35,6 +38,9 @@ var aiRequestID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 func (c *Config) checkAI() error {
 	if c.AIDemo == nil {
+		if c.AIFollow != nil {
+			return errors.New("AI follow requires the AI demo (-ai-app)")
+		}
 		return nil
 	}
 	if c.AIDemo.App != c.DefaultApp || strings.TrimSpace(c.AIDemo.Token) == "" || strings.TrimSpace(c.AdminToken) == "" {
@@ -53,7 +59,12 @@ func (c *Config) checkAI() error {
 	if !names["gcp"] || !names["laptop"] {
 		return errors.New("AI demo requires gcp and laptop")
 	}
-	return nil
+	for name, p := range c.AIDemo.Placements {
+		if !names[name] || !validAIPlacement(p) {
+			return errors.New("invalid AI backend placement metadata")
+		}
+	}
+	return c.checkAIFollow()
 }
 
 func (rt *router) aiEnabled() bool { return rt.g.cfg.AIDemo != nil && rt.g.cfg.AIDemo.App == rt.name }
@@ -181,7 +192,7 @@ func (rt *router) serveAI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "AI routing unavailable")
 		return
 	}
-	b := rt.byName[rt.writeBackend]
+	b := rt.aiBackendLocked(id, time.Now())
 	if b == nil || (b.name != "gcp" && b.name != "laptop") {
 		rt.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, "bad_configuration", "AI backend unavailable")

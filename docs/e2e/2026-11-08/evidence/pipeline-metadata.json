@@ -1,0 +1,324 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-11-07T19:15:36.4037619Z",
+  "task": "disposable migration pipeline E2E",
+  "tested_source_sha": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+  "engine_module_sha": "3ede4a44f3b1",
+  "existing_ci": {
+    "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42403155675",
+    "conclusion": "success",
+    "full_pipeline_executed": false,
+    "actual_scope": [
+      "Go race tests with disposable PostgreSQL store",
+      "minio-tag package tests with HTTP fixtures, not a real MinIO service",
+      "onpremkind registration admission and HTTP proof"
+    ],
+    "status": "completed",
+    "run_id": 42403155675
+  },
+  "runner_patch": {
+    "ci_run_id": 42404005958,
+    "local_checks": [
+      "23 Python script unit tests passed; oversized output red then green",
+      "workflow YAML and shell snippets parsed",
+      "cleanup shell query-failure and unlabelled exact-name store residual scenarios fail closed with valid JSON",
+      "git diff --check passed"
+    ],
+    "pr": 154,
+    "head_sha": "9fecb153c77da381a9e62a00677b47b9091bbb3e",
+    "state": "merged",
+    "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/pull/154",
+    "merge_sha": "078cea9193e218b0314987668f7db6f96c7baedf"
+  },
+  "full_pipeline": {
+    "cleanup": {
+      "kind_nodes_remaining": 0,
+      "fixture_stores_remaining": 0,
+      "cleanup_status": "verified"
+    },
+    "status": "completed",
+    "actual_scenarios_executed": [
+      {
+        "name": "lost-response",
+        "passed": true,
+        "fault_injected": true,
+        "writes_ok": 931,
+        "writes_failed": 0,
+        "first_attempt_failed": 149,
+        "recovered_writes": 149,
+        "retry_attempts": 155
+      },
+      {
+        "name": "canary-fault",
+        "passed": true,
+        "fault_injected": true,
+        "run_status": "rolled_back",
+        "writes_ok": 5560,
+        "writes_failed": 0,
+        "first_attempt_failed": 0,
+        "recovered_writes": 0,
+        "retry_attempts": 0,
+        "rechecked_writes": 5560,
+        "acknowledged_writes": 5560
+      },
+      {
+        "name": "observe-rollback",
+        "passed": true,
+        "fault_injected": true,
+        "run_status": "succeeded",
+        "writes_ok": 1417,
+        "writes_failed": 0,
+        "first_attempt_failed": 0,
+        "recovered_writes": 0,
+        "retry_attempts": 0,
+        "rechecked_writes": 1417,
+        "acknowledged_writes": 1417
+      },
+      {
+        "name": "migrate",
+        "passed": true,
+        "fault_injected": false,
+        "run_status": "succeeded",
+        "verified": true,
+        "missing_rows": 0,
+        "missing_writes": 0,
+        "checked_writes": 2794,
+        "writes_ok": 3217,
+        "writes_failed": 0,
+        "first_attempt_failed": 0,
+        "recovered_writes": 0,
+        "retry_attempts": 0,
+        "rechecked_writes": 3217,
+        "acknowledged_writes": 3217
+      }
+    ],
+    "services": [
+      "platform API",
+      "approved Plan",
+      "in-process migration engine",
+      "CNPG primary and replica",
+      "PostgreSQL platform store",
+      "HTTP gateway",
+      "concurrent write and read load"
+    ],
+    "planned_scenarios": [
+      "lost-response",
+      "canary-fault",
+      "observe-rollback",
+      "migrate"
+    ],
+    "run_id": 42404334635,
+    "job_id": 128498673645,
+    "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42404334635",
+    "created_at": "2026-11-07T19:03:34Z",
+    "fixture_versions": {
+      "cnpg_operator": "1.25.1",
+      "cnpg_postgresql": "ghcr.io/cloudnative-pg/postgresql:17.4",
+      "kind_node": "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5",
+      "platform_store": "postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b",
+      "kind": "v0.33.0"
+    },
+    "structured_evidence": {
+      "schema_version": 1,
+      "pipeline_passed": true,
+      "exit_code": 0,
+      "last_stage": "second app by host name",
+      "scenarios": [
+        {
+          "name": "lost-response",
+          "passed": true,
+          "fault_injected": true,
+          "writes_ok": 931,
+          "writes_failed": 0,
+          "first_attempt_failed": 149,
+          "recovered_writes": 149,
+          "retry_attempts": 155
+        },
+        {
+          "name": "canary-fault",
+          "passed": true,
+          "fault_injected": true,
+          "run_status": "rolled_back",
+          "writes_ok": 5560,
+          "writes_failed": 0,
+          "first_attempt_failed": 0,
+          "recovered_writes": 0,
+          "retry_attempts": 0,
+          "rechecked_writes": 5560,
+          "acknowledged_writes": 5560
+        },
+        {
+          "name": "observe-rollback",
+          "passed": true,
+          "fault_injected": true,
+          "run_status": "succeeded",
+          "writes_ok": 1417,
+          "writes_failed": 0,
+          "first_attempt_failed": 0,
+          "recovered_writes": 0,
+          "retry_attempts": 0,
+          "rechecked_writes": 1417,
+          "acknowledged_writes": 1417
+        },
+        {
+          "name": "migrate",
+          "passed": true,
+          "fault_injected": false,
+          "run_status": "succeeded",
+          "verified": true,
+          "missing_rows": 0,
+          "missing_writes": 0,
+          "checked_writes": 2794,
+          "writes_ok": 3217,
+          "writes_failed": 0,
+          "first_attempt_failed": 0,
+          "recovered_writes": 0,
+          "retry_attempts": 0,
+          "rechecked_writes": 3217,
+          "acknowledged_writes": 3217
+        }
+      ],
+      "failure_assertions": 0,
+      "private_output_sha256": "ef9e165d8c898d3520b65a91b29a9608f887691a13cef5f5f644018acb62a7e2",
+      "unverified": [
+        "cross-cluster or public-cloud networking",
+        "rclone and MinIO file migration",
+        "moimroom application migration",
+        "production rollout",
+        "opt-in gateway HA"
+      ],
+      "output_truncated": false,
+      "private_output_hash_scope": "complete",
+      "started_at": "2026-11-07T19:03:50.368489+00:00",
+      "completed_at": "2026-11-07T19:11:13.369321+00:00",
+      "tested_sha": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "github_run_id": "42404334635",
+      "github_run_attempt": "1"
+    },
+    "writes_ok_total": 11125,
+    "writes_failed_total": 0,
+    "artifact_directory": "C:/Users/82105/Desktop/develop/softbank/.tmp/pipeline-run-42404334635/disposable-pipeline-a89634a66bd7bac45efdc3facf556e6feadcb3b2-1",
+    "conclusion": "success",
+    "numerical_scope_limit": "allowlist artifact does not export lag, held-write duration, read-error counters or reverse run id; do not invent these metrics"
+  },
+  "unexecuted": [
+    {
+      "scenario": "combined moimroom DB and MinIO application migration",
+      "reason": "existing moimroom driver submits fixture as agent without mandatory rehearsal; app checkout/module-read permission compatibility unresolved"
+    },
+    {
+      "scenario": "production migration and cloud network",
+      "reason": "outside disposable runner authorization"
+    },
+    {
+      "scenario": "opt-in gateway HA",
+      "reason": "baseline script does not enable this feature"
+    }
+  ],
+  "safety": {
+    "credentials_exported": false,
+    "live_cloud_fault_injection": false,
+    "raw_logs_exported": false,
+    "production_resources_accessed": false
+  },
+  "minio_job_patch": {
+    "remote_status": "completed/success",
+    "state": "merged",
+    "scenarios_required": 10,
+    "pr": 156,
+    "local_checks": [
+      "Python25 tests pass",
+      "2-job YAML and shell parse pass",
+      "MinIO cleanup fake query-failure and unlabelled exact-name leftover fail closed with valid JSON"
+    ],
+    "fixture_test_pr": 155,
+    "head_sha": "dbbb242e53b31936f3e01ea7bbfc2f58ab8aa898",
+    "merge_sha": "d1d69f3d9473ac8bcf29944fc65cde2d40afa635"
+  },
+  "minio_remote": {
+    "run_id": 42405180308,
+    "job_id": 128501222912,
+    "skipped_migration_job_id": 128501224073,
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42405180308",
+    "workflow_sha": "d1d69f3d9473ac8bcf29944fc65cde2d40afa635",
+    "tested_sha": "a934eb1daea3fdbc853be80e9617d4e0df889944",
+    "suites": "minio",
+    "fixture_image": "docker.io/pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:2b36182f3479c58b5cba920f20479738ee85ce218de0596a244f9a1368268db9",
+    "rclone_version": "1.60.1-DEV",
+    "structured_evidence": {
+      "schema_version": 1,
+      "pipeline_passed": true,
+      "exit_code": 0,
+      "scenarios": [
+        {
+          "name": "forward_copy",
+          "passed": true
+        },
+        {
+          "name": "reverse_copy_cache_reuse",
+          "passed": true
+        },
+        {
+          "name": "same_size_source_change",
+          "passed": true
+        },
+        {
+          "name": "target_corruption_detected",
+          "passed": true
+        },
+        {
+          "name": "target_corruption_repaired",
+          "passed": true
+        },
+        {
+          "name": "object_add_delete",
+          "passed": true
+        },
+        {
+          "name": "authorization_rechecked",
+          "passed": true
+        },
+        {
+          "name": "metadata_rechecked",
+          "passed": true
+        },
+        {
+          "name": "cancelled_no_upload",
+          "passed": true
+        },
+        {
+          "name": "fixture_bucket_cleanup",
+          "passed": true
+        }
+      ],
+      "private_output_sha256": "f1deab10ee6cb9f7763dc99fd1a7abdd68575d5fa68b1200494a3e0aaeaf5500",
+      "unverified": [
+        "database and file migration in a single run",
+        "moimroom application migration",
+        "public-cloud endpoints",
+        "production rollout"
+      ],
+      "suite": "minio",
+      "rclone_version": "1.60.1-DEV",
+      "output_truncated": false,
+      "private_output_hash_scope": "complete",
+      "started_at": "2026-11-07T19:14:26.641665+00:00",
+      "completed_at": "2026-11-07T19:14:54.739009+00:00",
+      "tested_sha": "a934eb1daea3fdbc853be80e9617d4e0df889944",
+      "github_run_id": "42405180308",
+      "github_run_attempt": "1"
+    },
+    "cleanup": {
+      "fixture_containers_remaining": 0,
+      "cleanup_status": "verified"
+    },
+    "artifact_directory": "C:/Users/82105/Desktop/develop/softbank/.tmp/pipeline-run-42405180308/disposable-minio-a934eb1daea3fdbc853be80e9617d4e0df889944-1",
+    "production_go_and_module_diff_from_baseline": "git diff --exit-code a89634a..a934eb1, Go excluding _test.go + go.mod/go.sum: 0",
+    "production_resources_accessed": false,
+    "raw_logs_exported": false
+  },
+  "overall_scope": "4 real single-kind CNPG/API/gateway migration scenarios and 10 independent real MinIO/rclone fileguard scenarios passed. This is not a combined DB+file application migration, cross-cloud migration, production rollout, or opt-in gateway HA proof.",
+  "completed_at": "2026-11-07T19:15:36.4182954Z"
+}

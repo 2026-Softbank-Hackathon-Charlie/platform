@@ -30,6 +30,8 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/recommend"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security"
@@ -85,6 +87,8 @@ type GitHub interface {
 
 // Config configures the API.
 type Config struct {
+	RecommendationCosts     *recommend.CostBook
+	RecommendationResidency *residency.Config
 	// OnpremPublicURL is a trusted HTTPS origin used in bootstrap commands.
 	// It never comes from Host or X-Forwarded-* request headers.
 	OnpremPublicURL string
@@ -134,10 +138,15 @@ const DefaultConsoleURL = "https://console.hopcharlie.dev"
 
 // Deps are the services behind the API.
 type Deps struct {
-	Plans *plans.Service
-	Runs  *runs.Runner
-	Store store.Store // audit log, idempotency keys, apps from GitHub and their deployments
-	Envs  Envs
+	// Recommendations optionally overrides the bounded recommendation service.
+	Recommendations *recommend.Service
+	// OnpremConnector performs device-bound registration and server-side checks.
+	// Nil disables issuing grants that could not complete a real connection.
+	OnpremConnector *onprem.Connector
+	Plans           *plans.Service
+	Runs            *runs.Runner
+	Store           store.Store // audit log, idempotency keys, apps from GitHub and their deployments
+	Envs            Envs
 	// Traffic is nil when no gateway is configured.
 	Traffic Traffic
 	// TrafficApp returns the gateway client of one app's scope
@@ -187,6 +196,10 @@ type Deps struct {
 	// ClickHouse (aiobs.Client); nil answers GET /v1/apps/{name}/observability 503
 	// observability_not_configured.
 	AppObs AppObserver
+	// AIServices reads app-scoped AI dependency spans, independently of hopai.
+	AIServices AIServicesReader
+	// LLMObservability reads only app-bound Langfuse generation metadata.
+	LLMObservability LLMObserver
 	// AIRuns starts the AI runner as a Job (airun.Runner); nil answers the
 	// /v1/ai-runs endpoints 503 ai_runner_not_configured.
 	AIRuns AIRunner
@@ -270,9 +283,12 @@ type SourceMeasurer interface {
 
 // Server is the HTTP handler.
 type Server struct {
+	recommendations                *recommend.Service
+	recommendationPrices           *recommend.Prices
 	enrollments                    *onprem.Service
 	enrollmentIP, enrollmentGlobal *auth.LoginLimiter
 	enrollmentSlots                chan struct{}
+	onpremAdmissionSlots           chan struct{}
 	cfg                            Config
 	d                              Deps
 	mux                            *http.ServeMux
@@ -312,13 +328,26 @@ func New(cfg Config, d Deps) *Server {
 	s := &Server{cfg: cfg, d: d, mux: http.NewServeMux(), now: storeTime,
 		logins:     auth.NewLoginLimiter(loginMaxFailures, loginWindow, loginMaxUsernames),
 		loginSlots: make(chan struct{}, loginConcurrency)}
+	s.recommendationPrices = recommend.NewPrices()
+	s.recommendations = d.Recommendations
+	if s.recommendations == nil {
+		var starter recommend.Starter
+		if runner, ok := d.AIRuns.(*airun.Runner); ok && runner != nil && runner.SupportsRecommendations() {
+			starter = runner
+		}
+		s.recommendations = recommend.New(s.loadRecommendationCandidates, starter, func() time.Time { return s.now() })
+	}
 	if s.cfg.OnpremPublicURL == "" {
 		s.cfg.OnpremPublicURL = "https://api.hopcharlie.dev"
 	}
 	s.enrollments = &onprem.Service{Store: d.Store, Origin: s.cfg.OnpremPublicURL, Now: func() time.Time { return s.now() }}
+	if d.OnpremConnector != nil {
+		s.enrollments.Registrar = d.OnpremConnector
+	}
 	s.enrollmentIP = auth.NewLoginLimiter(20, time.Minute, 1024)
 	s.enrollmentGlobal = auth.NewLoginLimiter(120, time.Minute, 1)
 	s.enrollmentSlots = make(chan struct{}, 16)
+	s.onpremAdmissionSlots = make(chan struct{}, 64)
 	if d.Runs != nil {
 		// The observe phase rolls back through the same path as the endpoint.
 		d.Runs.SetAutoRollback(s.autoRollback)
@@ -328,6 +357,11 @@ func New(cfg Config, d Deps) *Server {
 	s.route("GET /v1/onprem/enrollments/{id}", operator, s.getOnpremEnrollment)
 	s.route("POST /v1/onprem/enrollments/{id}/revoke", operator, s.revokeOnpremEnrollment)
 	s.route("POST /v1/onprem/enrollments/{id}/claim", "", s.claimOnpremEnrollment)
+	s.route("GET /v1/onprem/enrollments/{id}/bootstrap.yaml", "", s.onpremBootstrap)
+	s.route("GET /v1/onprem/enrollments/{id}/connection/status", "", s.onpremConnectionStatus)
+	s.route("POST /v1/onprem/enrollments/{id}/connection", "", s.onpremConnection)
+	s.route("GET /v1/onprem/agent.bin", "", s.onpremAgentBinary)
+	s.route("POST /v1/onprem/admission/cluster-secret", "", s.onpremSecretAdmission)
 	s.route("GET /v1/onprem/installer.sh", "", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
@@ -379,7 +413,12 @@ func New(cfg Config, d Deps) *Server {
 	s.route("POST /v1/plans/draft", agent, s.guardPlan(s.draftPlan))
 	s.route("GET /v1/ai-activity", viewer, s.getAIActivity)
 	s.route("GET /v1/apps/{name}/observability", viewer, s.getAppObservability)
+	s.route("GET /v1/apps/{name}/ai-services", viewer, s.getAIServices)
+	s.route("GET /v1/apps/{name}/llm-observability", viewer, s.getLLMObservability)
 	s.route("GET /v1/ai-runs", viewer, s.listAIRuns)
+	s.route("GET /v1/migration-recommendations", viewer, s.getMigrationRecommendations)
+	s.route("GET /v1/migration-recommendations/status", viewer, s.getMigrationRecommendationStatus)
+	s.route("POST /v1/migration-recommendations/{id}/result", agent, s.completeMigrationRecommendation)
 	s.route("POST /v1/ai-runs", operator, s.startAIRun)
 	s.route("POST /v1/residency/buckets/inspect", agent, s.inspectBucket)
 	s.route("POST /v1/migrations/{runId}/rollback", operator, s.rollbackMigration)
@@ -678,6 +717,12 @@ func (s *Server) planError(w http.ResponseWriter, r *http.Request, err error) {
 		s.fail(w, r, http.StatusBadRequest, "invalid_plan", err.Error())
 	case errors.Is(err, plans.ErrWrongStatus):
 		s.fail(w, r, http.StatusConflict, "plan_state_conflict", err.Error())
+	case errors.Is(err, plans.ErrObservabilityUnverified):
+		var denied *plans.ObservabilityDenied
+		if errors.As(err, &denied) {
+			noteParity(r, denied.Check)
+		}
+		s.fail(w, r, http.StatusConflict, "observability_unverified", err.Error())
 	case errors.Is(err, plans.ErrRehearsal):
 		s.fail(w, r, http.StatusConflict, "rehearsal_required", err.Error())
 	case errors.Is(err, plans.ErrResidencyDenied):
@@ -746,9 +791,9 @@ func noteVersion(r *http.Request, c plans.VersionCheck) {
 func noteParity(r *http.Request, c plans.ParityCheck) {
 	switch {
 	case c.Report != nil:
-		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "passed": c.Report.Passed, "results": paritygate.Lines(*c.Report), "binding": c.Binding, "configDigest": c.Report.ConfigDigest, "baselineStatus": c.Report.BaselineStatus, "observedAt": c.Report.ObservedAt, "expiresAt": c.Report.ExpiresAt})
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "observabilityEnforced": c.ObservabilityEnforced, "passed": c.Report.Passed, "results": paritygate.Lines(*c.Report), "binding": c.Binding, "configDigest": c.Report.ConfigDigest, "baselineStatus": c.Report.BaselineStatus, "observedAt": c.Report.ObservedAt, "expiresAt": c.Report.ExpiresAt})
 	case c.Outcome != "":
-		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "binding": c.Binding})
+		noteAudit(r, "parity", map[string]any{"outcome": c.Outcome, "mode": "audit", "observabilityEnforced": c.ObservabilityEnforced, "binding": c.Binding})
 	}
 }
 

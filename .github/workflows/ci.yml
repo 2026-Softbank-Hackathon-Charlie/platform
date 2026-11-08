@@ -100,6 +100,13 @@ jobs:
           go generate ./pkg/apiv1/...
           git diff --exit-code -- pkg/apiv1
 
+      - name: Preserve generated API contract for review when generation differs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-api-contract
+          path: pkg/apiv1
+
       # test/charts runs helm lint and helm template on deploy/charts and
       # deploy/argocd; pinned so its results do not change with the runner.
       - uses: azure/setup-helm@v4
@@ -147,6 +154,45 @@ jobs:
       - name: Remove PostgreSQL
         if: always()
         run: docker rm -f -v "$PG_CONTAINER" >/dev/null 2>&1 || true
+
+  onprem-cluster:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Private module access for disposable fixture
+        env:
+          TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
+        run: |
+          test -n "$TOKEN"
+          export GIT_CONFIG_GLOBAL="$RUNNER_TEMP/onprem-gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
+      - name: Compile real cluster tests before provisioning
+        run: go test -tags onpremkind -run '^$' ./internal/onprem
+      - name: Install verified kind binary
+        run: |
+          curl --fail --location --retry 3 -o "$RUNNER_TEMP/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          echo 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  '"$RUNNER_TEMP/kind" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/kind"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Create isolated onprem registration cluster
+        run: kind create cluster --name onprem-registration --image kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0 --kubeconfig "$RUNNER_TEMP/onprem-registration.kubeconfig" --wait 120s
+      - name: Real admission, delegated credentials and HTTP proof
+        env:
+          HOPCHARLIE_ONPREM_TEST_KUBECONFIG: ${{ runner.temp }}/onprem-registration.kubeconfig
+        run: go test -race -tags onpremkind -run 'Test.*DisposableKind|Test.*Real.*Bootstrap' -timeout 10m -v ./internal/onprem
+      - name: Remove disposable registration cluster
+        if: always()
+        run: kind delete cluster --name onprem-registration
 
   shell:
     runs-on: ubuntu-24.04

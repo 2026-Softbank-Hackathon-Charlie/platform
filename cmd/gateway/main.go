@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs"
 )
 
 func main() {
@@ -34,6 +36,7 @@ func main() {
 	backends := flag.String("backends", os.Getenv("GATEWAY_BACKENDS"), "backends as name=url,... e.g. gke=http://shop.gke.ts.net,eks=http://shop.eks.ts.net")
 	initial := flag.String("initial-backend", os.Getenv("GATEWAY_INITIAL_BACKEND"), "write backend when there is no state file (default: first backend)")
 	stateFile := flag.String("state-file", envOr("GATEWAY_STATE_FILE", filepath.Join(".hopcharlie", "gateway-state.json")), "routing and hold state, kept across restarts")
+	exclusiveState := flag.Bool("exclusive-state", false, "Linux same-node pod failover: all replicas share one local state PVC; one file-lock owner serves through Unix-socket relays")
 	appDomain := flag.String("app-domain", os.Getenv("GATEWAY_APP_DOMAIN"), "route Host <app>.<domain> to the app registered as <app> (PUT /apps/<app>), 404 for an unknown <app>; other hosts go to the default app. Empty sends every request to the default app")
 	defaultApp := flag.String("default-app", envOr("GATEWAY_DEFAULT_APP", gateway.DefaultAppName), "name of the app that -backends serve: <name>.<app-domain> and /apps/<name> reach it")
 	drain := flag.Duration("drain-timeout", gateway.DefaultDrainTimeout, "how long a hold waits for in-flight writes")
@@ -49,6 +52,12 @@ func main() {
 	connRecycle := flag.Duration("conn-recycle", gateway.DefaultConnRecycle, "how often idle backend connections are closed, so the next request resolves the backend's name again")
 	insecure := flag.Bool("insecure-no-auth", false, "run the admin API without GATEWAY_ADMIN_TOKEN (local development only)")
 	aiApp := flag.String("ai-app", "", "enable bounded AI demo on this dedicated default app (requires AI_GATEWAY_TOKEN)")
+	aiFollowApp := flag.String("ai-follow-app", os.Getenv("AI_FOLLOW_APP"), "make the -ai-app route follow this app's write backend on a traffic gateway (with -ai-follow-url and -ai-follow-map; reads the traffic gateway's unauthenticated /metrics)")
+	aiFollowURL := flag.String("ai-follow-url", os.Getenv("AI_FOLLOW_URL"), "traffic gateway admin base URL for -ai-follow-app, e.g. http://hopcharlie-gateway.charlie-platform.svc.cluster.local:9901")
+	aiFollowMap := flag.String("ai-follow-map", os.Getenv("AI_FOLLOW_MAP"), "followed app backend to AI backend, e.g. onprem=laptop,gke=gcp,eks=gcp")
+	aiFollowInterval := flag.Duration("ai-follow-interval", gateway.DefaultAIFollowInterval, "how often -ai-follow-app's state is read (AI_FOLLOW_INTERVAL; at least 500ms)")
+	aiQualityPolicy := flag.String("ai-quality-policy", os.Getenv("AI_QUALITY_POLICY_FILE"), "operator-owned paired quality policy file; enables guarded native AI canary")
+	aiQualityLangfuse := flag.String("ai-quality-langfuse-config", os.Getenv("AI_QUALITY_LANGFUSE_CONFIG_FILE"), "operator-owned Langfuse evaluation-project binding with mounted key file references")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -65,9 +74,35 @@ func main() {
 	var aiCfg *gateway.AIDemoConfig
 	if *aiApp != "" {
 		aiCfg = &gateway.AIDemoConfig{App: *aiApp, Token: os.Getenv("AI_GATEWAY_TOKEN")}
+		aiCfg.Placements, err = gateway.ParseAIPlacements(os.Getenv("AI_GATEWAY_PLACEMENTS"))
+		if err != nil {
+			log.Error("invalid AI_GATEWAY_PLACEMENTS")
+			os.Exit(2)
+		}
 	}
-	gw, err := gateway.New(gateway.Config{
+	followCfg, err := aiFollowConfig(*aiFollowApp, *aiFollowURL, *aiFollowMap, *aiFollowInterval)
+	if err != nil {
+		log.Error("invalid AI follow configuration", "err", err)
+		os.Exit(2)
+	}
+	var qualityCfg *gateway.AIQualityConfig
+	if *aiQualityPolicy != "" || *aiQualityLangfuse != "" {
+		policy, err := gateway.LoadAIQualityPolicy(*aiQualityPolicy)
+		if err != nil {
+			log.Error("invalid AI quality policy", "reason", err.Error())
+			os.Exit(2)
+		}
+		provider, err := llmobs.Load(*aiQualityLangfuse)
+		if err != nil {
+			log.Error("invalid AI quality Langfuse binding", "reason", err.Error())
+			os.Exit(2)
+		}
+		qualityCfg = &gateway.AIQualityConfig{Policy: policy, Provider: provider}
+	}
+	cfg := gateway.Config{
 		AIDemo:               aiCfg,
+		AIFollow:             followCfg,
+		AIQuality:            qualityCfg,
 		Backends:             bs,
 		InitialBackend:       *initial,
 		StateFile:            *stateFile,
@@ -86,7 +121,17 @@ func main() {
 		HealthPath:           *healthPath,
 		ConnRecycle:          *connRecycle,
 		Log:                  log,
-	})
+	}
+	if *exclusiveState {
+		sig, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := runExclusive(sig, cfg, *listen, *adminAddr, log); err != nil {
+			log.Error("exclusive gateway stopped", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+	gw, err := gateway.New(cfg)
 	if err != nil {
 		log.Error("start gateway", "err", err)
 		os.Exit(1)
@@ -138,6 +183,28 @@ func shutdown(log *slog.Logger, gw *gateway.Gateway, public, admin *http.Server,
 		}
 		cancel()
 	}
+}
+
+// aiFollowConfig builds the AI follow config. Everything unset turns the
+// feature off; gateway.New validates the rest.
+func aiFollowConfig(app, rawURL, rawMap string, interval time.Duration) (*gateway.AIFollowConfig, error) {
+	if app == "" && rawURL == "" && rawMap == "" {
+		return nil, nil
+	}
+	explicit := false
+	flag.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "ai-follow-interval" })
+	if v := os.Getenv("AI_FOLLOW_INTERVAL"); v != "" && !explicit {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("AI_FOLLOW_INTERVAL: %w", err)
+		}
+		interval = d
+	}
+	m, err := gateway.ParseAIFollowMap(rawMap)
+	if err != nil {
+		return nil, fmt.Errorf("-ai-follow-map / AI_FOLLOW_MAP: %w", err)
+	}
+	return &gateway.AIFollowConfig{App: app, URL: rawURL, Map: m, Interval: interval}, nil
 }
 
 func envOr(k, def string) string {

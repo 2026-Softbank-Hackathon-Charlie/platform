@@ -36,8 +36,10 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/job"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy"
@@ -47,6 +49,7 @@ import (
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/reach"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency"
+	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/recommend"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs"
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets"
@@ -151,6 +154,20 @@ func main() {
 	envSvc, err := envs.New(envCfg, envs.Options{})
 	if err != nil {
 		fatal("environments", "err", err)
+	}
+	onpremConnector, err := onprem.FromEnv(ctx, os.Getenv, st, secretsKey, envSvc)
+	if err != nil {
+		log.Error("onprem registration is disabled until its configuration is corrected", "err", err)
+		onpremConnector = nil
+	}
+	if onpremConnector != nil {
+		go func() {
+			restoreCtx, cancelRestore := context.WithTimeout(ctx, 60*time.Second)
+			if err := onpremConnector.Restore(restoreCtx); err != nil {
+				log.Warn("onprem environment restore is pending; device registration will retry", "err", err)
+			}
+			cancelRestore()
+		}()
 	}
 	// What each environment can take: sealing needs the cluster's
 	// sealed-secrets certificate, buckets need a storage driver (ADR 0016).
@@ -358,15 +375,17 @@ func main() {
 	}
 
 	// Optional: record a parity report (target RBAC for the app's service
-	// account, Prometheus scrape health) on every new run's start. Audit mode
-	// only: the report goes to the audit log and never stops a run.
+	// account, Prometheus scrape health) on every new run's start. The overall
+	// report is audit-only; an explicit app signal requirement may enforce.
+	var configuredParity *paritygate.Gate
 	if path := os.Getenv("PLATFORM_PARITY_FILE"); path != "" {
 		g, err := parityGate(path, envSvc)
 		if err != nil {
 			fatal("PLATFORM_PARITY_FILE", "err", err)
 		}
 		planSvc.SetParityGate(g)
-		log.Info("parity recording enabled (audit only, never blocks)")
+		configuredParity = g
+		log.Info("parity recording enabled; required observability signals enforce only when explicitly configured per app")
 	} else {
 		log.Info("PLATFORM_PARITY_FILE is not set: no parity report is recorded")
 	}
@@ -434,6 +453,10 @@ func main() {
 		go runner.RunRetention(retentionCtx)
 	}
 	deps.Apps = appCat
+	deps.OnpremConnector = onpremConnector
+	if appCat != nil {
+		appCat.SetEnvironmentSource(envSvc.Configs)
+	}
 	deps.Buckets = bucketInspector
 	// Draft plans can carry the source's numbers (POST /v1/plans/draft with
 	// sourceStats), measured like the capacity gate does, on request only.
@@ -486,6 +509,16 @@ func main() {
 	} else {
 		log.Info("PLATFORM_AIRUN_JOB_TEMPLATE is not set: the console cannot start the AI runner; run hopai by hand")
 	}
+	// Read-only Langfuse access is opt-in. Mounted key files never reach the browser.
+	if path := os.Getenv("PLATFORM_LANGFUSE_CONFIG"); path != "" {
+		reader, err := llmobs.Load(path)
+		if err != nil {
+			log.Error("Langfuse observation configuration is unavailable", "err", err)
+			deps.LLMObservability = llmobs.InvalidConfiguration()
+		} else {
+			deps.LLMObservability = reader
+		}
+	}
 	// Optional: read what the AI runner did from the observability stack's
 	// ClickHouse (the HyperDX store) so the console's migration map can show the
 	// real calls. A read-only ClickHouse user is expected; the password comes
@@ -508,6 +541,10 @@ func main() {
 			} else {
 				deps.AIActivity = c
 				deps.AppObs = c
+				deps.AIServices = c
+				if configuredParity != nil {
+					configuredParity.SetSignalReader(c)
+				}
 				log.Info("AI activity enabled", "table", c.Table)
 			}
 		}
@@ -600,15 +637,37 @@ func main() {
 	if onboarding {
 		deps.Onboarding = onboardingConfig(ctx, log, envSvc, secretsKey, gh, aiRuns, gw, dbRoutes, planSvc, runner, workloads)
 	}
+	var recommendationCosts *recommend.CostBook
+	if path := os.Getenv("PLATFORM_RECOMMENDATION_COST_FILE"); path != "" {
+		var err error
+		recommendationCosts, err = recommend.LoadCosts(path)
+		if err != nil {
+			fatal("PLATFORM_RECOMMENDATION_COST_FILE", "err", err)
+		}
+	}
+	var recommendationResidency *residency.Config
+	if path := os.Getenv("PLATFORM_RESIDENCY_POLICY_FILE"); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			fatal("cannot read recommendation policy")
+		}
+		parsed, err := residency.ParseConfig(raw)
+		if err != nil {
+			fatal("invalid recommendation policy")
+		}
+		recommendationResidency = &parsed
+	}
 	apiServer := api.New(api.Config{
-		WrittenTokens:   writtenTokens,
-		Tokens:          tokens,
-		Insecure:        *insecure,
-		Admins:          admins,
-		ConsoleURL:      os.Getenv("PLATFORM_CONSOLE_URL"),
-		OnpremPublicURL: os.Getenv("PLATFORM_ONPREM_PUBLIC_URL"),
-		CORSOrigins:     splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
-		Log:             log,
+		RecommendationCosts:     recommendationCosts,
+		RecommendationResidency: recommendationResidency,
+		WrittenTokens:           writtenTokens,
+		Tokens:                  tokens,
+		Insecure:                *insecure,
+		Admins:                  admins,
+		ConsoleURL:              os.Getenv("PLATFORM_CONSOLE_URL"),
+		OnpremPublicURL:         os.Getenv("PLATFORM_ONPREM_PUBLIC_URL"),
+		CORSOrigins:             splitList(os.Getenv("PLATFORM_CORS_ORIGINS")),
+		Log:                     log,
 
 		GitHubWebhookSecret: webhookSecret,
 		AppDomain:           os.Getenv("PLATFORM_APP_DOMAIN"),
@@ -620,7 +679,6 @@ func main() {
 	if r := apiServer.Onboardings(); r != nil {
 		f := r.Remote
 		onboardRemote.Store(&f)
-		// From the rows, also after a restart; steps outlive requests.
 		// From the rows, also after a restart; steps outlive requests.
 		go r.Run(runCtx)
 	}
@@ -739,22 +797,30 @@ func envOr(k, def string) string {
 // time.
 func workloadClients(envSvc *envs.Service) func(env string) (dynamic.Interface, error) {
 	var mu sync.Mutex
-	clients := map[string]dynamic.Interface{}
+	type cachedWorkload struct {
+		client dynamic.Interface
+		token  string
+	}
+	clients := map[string]cachedWorkload{}
 	return func(env string) (dynamic.Interface, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		if dyn, ok := clients[env]; ok {
-			return dyn, nil
-		}
 		c, known := envSvc.Config(env)
 		if !known {
 			return nil, errors.New("environment " + env + " is not in PLATFORM_ENVS_FILE")
+		}
+		token := ""
+		if c.RESTConfig != nil {
+			token = c.RESTConfig.BearerToken
+		}
+		if cached, ok := clients[env]; ok && cached.token == token {
+			return cached.client, nil
 		}
 		_, d, err := envs.NewReadClients(c, api.DBClusterTimeout)
 		if err != nil {
 			return nil, err
 		}
-		clients[env] = d
+		clients[env] = cachedWorkload{client: d, token: token}
 		return d, nil
 	}
 }

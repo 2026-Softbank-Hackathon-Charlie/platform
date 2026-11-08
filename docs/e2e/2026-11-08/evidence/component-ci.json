@@ -1,0 +1,3971 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-07T18:57:46.161008+00:00",
+  "collectionScope": "read_existing_GitHub_CI_metadata_and_allowlisted_log_markers_only",
+  "newProductionRuns": 0,
+  "newPaidModelCalls": 0,
+  "artifactContainsRawLogs": false,
+  "collectorExplicitlyStoredRawLogs": false,
+  "platformFinalRef": {
+    "sha": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+    "mainCI": [
+      {
+        "conclusion": "success",
+        "createdAt": "2026-11-07T18:49:04Z",
+        "databaseId": 42403155675,
+        "event": "push",
+        "headSha": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+        "status": "completed",
+        "updatedAt": "2026-11-07T18:54:20Z",
+        "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42403155675",
+        "workflowName": "ci",
+        "jobs": [
+          {
+            "databaseId": 128495097967,
+            "name": "shell",
+            "status": "completed",
+            "conclusion": "success",
+            "startedAt": "2026-11-07T18:49:07Z",
+            "completedAt": "2026-11-07T18:49:12Z",
+            "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42403155675/job/128495097967",
+            "steps": [
+              {
+                "name": "Run actions/checkout@v5",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:08Z",
+                "completedAt": "2026-11-07T18:49:09Z"
+              },
+              {
+                "name": "bash -n",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:09Z",
+                "completedAt": "2026-11-07T18:49:09Z"
+              },
+              {
+                "name": "Terraform handoff compatibility (fake tools, no AWS)",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:09Z",
+                "completedAt": "2026-11-07T18:49:09Z"
+              },
+              {
+                "name": "Infra pin helper tests",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:09Z",
+                "completedAt": "2026-11-07T18:49:09Z"
+              }
+            ],
+            "executionMarkers": {
+              "checkedOutCommits": [
+                {
+                  "sha": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+                  "observedAt": "2026-11-07T18:49:09.4245349Z"
+                }
+              ],
+              "tests": [],
+              "packagePasses": [],
+              "services": [],
+              "cleanup": []
+            },
+            "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+            "cleanupObserved": null,
+            "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+          },
+          {
+            "databaseId": 128495098108,
+            "name": "go",
+            "status": "completed",
+            "conclusion": "success",
+            "startedAt": "2026-11-07T18:49:06Z",
+            "completedAt": "2026-11-07T18:54:20Z",
+            "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42403155675/job/128495098108",
+            "steps": [
+              {
+                "name": "Start PostgreSQL",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:08Z",
+                "completedAt": "2026-11-07T18:49:08Z"
+              },
+              {
+                "name": "Run actions/checkout@v5",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:08Z",
+                "completedAt": "2026-11-07T18:49:10Z"
+              },
+              {
+                "name": "Private modules",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:10Z",
+                "completedAt": "2026-11-07T18:49:10Z"
+              },
+              {
+                "name": "Restore Go cache from main",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:10Z",
+                "completedAt": "2026-11-07T18:49:57Z"
+              },
+              {
+                "name": "Go toolchain",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:57Z",
+                "completedAt": "2026-11-07T18:49:58Z"
+              },
+              {
+                "name": "Run actions/setup-go@v6",
+                "status": "completed",
+                "conclusion": "skipped",
+                "startedAt": "2026-11-07T18:49:58Z",
+                "completedAt": "2026-11-07T18:49:58Z"
+              },
+              {
+                "name": "Vet",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:58Z",
+                "completedAt": "2026-11-07T18:50:05Z"
+              },
+              {
+                "name": "Formatting",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:50:05Z",
+                "completedAt": "2026-11-07T18:50:05Z"
+              },
+              {
+                "name": "Generated API types match api/openapi.yaml",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:50:05Z",
+                "completedAt": "2026-11-07T18:50:06Z"
+              },
+              {
+                "name": "Preserve generated API contract for review when generation differs",
+                "status": "completed",
+                "conclusion": "skipped",
+                "startedAt": "2026-11-07T18:50:06Z",
+                "completedAt": "2026-11-07T18:50:06Z"
+              },
+              {
+                "name": "Run azure/setup-helm@v4",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:50:06Z",
+                "completedAt": "2026-11-07T18:50:07Z"
+              },
+              {
+                "name": "Test (race, PostgreSQL)",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:50:07Z",
+                "completedAt": "2026-11-07T18:53:47Z"
+              },
+              {
+                "name": "Test the minio driver (-tags minio)",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:53:47Z",
+                "completedAt": "2026-11-07T18:53:57Z"
+              },
+              {
+                "name": "Save Go cache",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:53:57Z",
+                "completedAt": "2026-11-07T18:54:17Z"
+              },
+              {
+                "name": "Remove PostgreSQL",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:54:17Z",
+                "completedAt": "2026-11-07T18:54:18Z"
+              }
+            ],
+            "executionMarkers": {
+              "checkedOutCommits": [
+                {
+                  "sha": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+                  "observedAt": "2026-11-07T18:49:10.6522268Z"
+                }
+              ],
+              "tests": [],
+              "packagePasses": [
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/api",
+                  "execution": "8.715s",
+                  "observedAt": "2026-11-07T18:50:28.4955931Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/gateway",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:50:28.4995368Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/onprem-agent",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:50:28.4996393Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:50:28.5025113Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:50:28.5055321Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun",
+                  "execution": "2.309s",
+                  "observedAt": "2026-11-07T18:50:28.5065362Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api",
+                  "execution": "199.586s",
+                  "observedAt": "2026-11-07T18:53:47.2810479Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps",
+                  "execution": "1.242s",
+                  "observedAt": "2026-11-07T18:53:47.2825415Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2826093Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute",
+                  "execution": "1.889s",
+                  "observedAt": "2026-11-07T18:53:47.2826777Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy",
+                  "execution": "23.642s",
+                  "observedAt": "2026-11-07T18:53:47.2827445Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs",
+                  "execution": "2.110s",
+                  "observedAt": "2026-11-07T18:53:47.2828082Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2828744Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2829438Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2830065Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2831049Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmquality",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2831743Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard",
+                  "execution": "1.363s",
+                  "observedAt": "2026-11-07T18:53:47.2832483Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/connect",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2832983Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/discover",
+                  "execution": "1.139s",
+                  "observedAt": "2026-11-07T18:53:47.2833705Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/vm",
+                  "execution": "4.850s",
+                  "observedAt": "2026-11-07T18:53:47.2834616Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                  "execution": "1.272s",
+                  "observedAt": "2026-11-07T18:53:47.2835310Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans",
+                  "execution": "1.150s",
+                  "observedAt": "2026-11-07T18:53:47.2836323Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/bucketprobe",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2837939Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2838821Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2839684Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2840521Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/inventory",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2841423Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/parity",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2842294Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate",
+                  "execution": "1.465s",
+                  "observedAt": "2026-11-07T18:53:47.2843154Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2844037Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2845065Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/reach",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2845914Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2846766Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/recommend",
+                  "execution": "1.232s",
+                  "observedAt": "2026-11-07T18:53:47.2847563Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2848309Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2849012Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2849699Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2850510Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security",
+                  "execution": "8.140s",
+                  "observedAt": "2026-11-07T18:53:47.2851003Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2851466Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store",
+                  "execution": "26.949s",
+                  "observedAt": "2026-11-07T18:53:47.2851912Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2852427Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec",
+                  "execution": "2.180s",
+                  "observedAt": "2026-11-07T18:53:47.2853361Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/client",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2853786Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/onboard/facts",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2854224Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/test/charts",
+                  "execution": "6.533s",
+                  "observedAt": "2026-11-07T18:53:47.2854832Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/test/onprem-admission-webhook",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:47.2859830Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/tools/apidoc",
+                  "execution": "1.511s",
+                  "observedAt": "2026-11-07T18:53:47.2860322Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage",
+                  "execution": "(cached)",
+                  "observedAt": "2026-11-07T18:53:52.8187879Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs",
+                  "execution": "2.027s",
+                  "observedAt": "2026-11-07T18:53:57.8539342Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps",
+                  "execution": "1.177s",
+                  "observedAt": "2026-11-07T18:53:57.8539951Z"
+                }
+              ],
+              "services": [
+                {
+                  "marker": "postgres_ready_accepting_connections",
+                  "observedAt": "2026-11-07T18:50:14.2423406Z"
+                }
+              ],
+              "cleanup": []
+            },
+            "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+            "cleanupObserved": null,
+            "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+          },
+          {
+            "databaseId": 128495098123,
+            "name": "onprem-cluster",
+            "status": "completed",
+            "conclusion": "success",
+            "startedAt": "2026-11-07T18:49:06Z",
+            "completedAt": "2026-11-07T18:50:29Z",
+            "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42403155675/job/128495098123",
+            "steps": [
+              {
+                "name": "Run actions/checkout@v5",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:08Z",
+                "completedAt": "2026-11-07T18:49:09Z"
+              },
+              {
+                "name": "Run actions/setup-go@v6",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:09Z",
+                "completedAt": "2026-11-07T18:49:24Z"
+              },
+              {
+                "name": "Private module access for disposable fixture",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:24Z",
+                "completedAt": "2026-11-07T18:49:24Z"
+              },
+              {
+                "name": "Compile real cluster tests before provisioning",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:24Z",
+                "completedAt": "2026-11-07T18:49:26Z"
+              },
+              {
+                "name": "Install verified kind binary",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:26Z",
+                "completedAt": "2026-11-07T18:49:27Z"
+              },
+              {
+                "name": "Create isolated onprem registration cluster",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:49:27Z",
+                "completedAt": "2026-11-07T18:50:08Z"
+              },
+              {
+                "name": "Real admission, delegated credentials and HTTP proof",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:50:08Z",
+                "completedAt": "2026-11-07T18:50:23Z"
+              },
+              {
+                "name": "Remove disposable registration cluster",
+                "status": "completed",
+                "conclusion": "success",
+                "startedAt": "2026-11-07T18:50:23Z",
+                "completedAt": "2026-11-07T18:50:26Z"
+              }
+            ],
+            "executionMarkers": {
+              "checkedOutCommits": [
+                {
+                  "sha": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+                  "observedAt": "2026-11-07T18:49:09.1117712Z"
+                }
+              ],
+              "tests": [
+                {
+                  "test": "TestRealBootstrapOnDisposableKind",
+                  "status": "pass",
+                  "seconds": 9.31,
+                  "observedAt": "2026-11-07T18:50:22.5384507Z"
+                },
+                {
+                  "test": "TestUnconditionalSecretUpdateOnDisposableKind",
+                  "status": "pass",
+                  "seconds": 0.03,
+                  "observedAt": "2026-11-07T18:50:22.5655257Z"
+                }
+              ],
+              "packagePasses": [
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                  "execution": "0.012s [no tests to run]",
+                  "observedAt": "2026-11-07T18:49:26.8215170Z"
+                },
+                {
+                  "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                  "execution": "10.392s",
+                  "observedAt": "2026-11-07T18:50:23.5719317Z"
+                }
+              ],
+              "services": [],
+              "cleanup": [
+                {
+                  "marker": "kind_deleted_nodes",
+                  "observedAt": "2026-11-07T18:50:26.3533292Z"
+                }
+              ]
+            },
+            "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+            "cleanupObserved": true
+          }
+        ]
+      }
+    ],
+    "linkedEngineVersion": "v0.0.0-20261107172936-3ede4a44f3b1",
+    "goModSource": {
+      "path": "go.mod",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "3148aab270bd9ad47b13618a8d93677bbb07317fc8d1a5706ac7cc46c6821e97",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/go.mod"
+    }
+  },
+  "pullRequests": [
+    {
+      "headRefOid": "cf6d8b08c9dc379a8899d4f6553d1dba1bf5fd53",
+      "mergedAt": "2026-11-07T18:49:02Z",
+      "number": 153,
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/pull/153",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "mergeSha": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "runs": [
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T18:43:04Z",
+          "databaseId": 42402659002,
+          "event": "pull_request",
+          "headSha": "cf6d8b08c9dc379a8899d4f6553d1dba1bf5fd53",
+          "status": "completed",
+          "updatedAt": "2026-11-07T18:48:27Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42402659002",
+          "workflowName": "ci",
+          "jobs": [
+            {
+              "databaseId": 128493648516,
+              "name": "onprem-cluster",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:43:18Z",
+              "completedAt": "2026-11-07T18:44:46Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42402659002/job/128493648516",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:20Z",
+                  "completedAt": "2026-11-07T18:43:21Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:21Z",
+                  "completedAt": "2026-11-07T18:43:38Z"
+                },
+                {
+                  "name": "Private module access for disposable fixture",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:38Z",
+                  "completedAt": "2026-11-07T18:43:38Z"
+                },
+                {
+                  "name": "Compile real cluster tests before provisioning",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:38Z",
+                  "completedAt": "2026-11-07T18:43:41Z"
+                },
+                {
+                  "name": "Install verified kind binary",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:41Z",
+                  "completedAt": "2026-11-07T18:43:41Z"
+                },
+                {
+                  "name": "Create isolated onprem registration cluster",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:41Z",
+                  "completedAt": "2026-11-07T18:44:23Z"
+                },
+                {
+                  "name": "Real admission, delegated credentials and HTTP proof",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:44:23Z",
+                  "completedAt": "2026-11-07T18:44:39Z"
+                },
+                {
+                  "name": "Remove disposable registration cluster",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:44:39Z",
+                  "completedAt": "2026-11-07T18:44:42Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "5af0526125106d355e60d540b00d7b1a6a11aeed",
+                    "observedAt": "2026-11-07T18:43:21.6908339Z"
+                  }
+                ],
+                "tests": [
+                  {
+                    "test": "TestRealBootstrapOnDisposableKind",
+                    "status": "pass",
+                    "seconds": 10.17,
+                    "observedAt": "2026-11-07T18:44:38.0352467Z"
+                  },
+                  {
+                    "test": "TestUnconditionalSecretUpdateOnDisposableKind",
+                    "status": "pass",
+                    "seconds": 0.01,
+                    "observedAt": "2026-11-07T18:44:38.0494413Z"
+                  }
+                ],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                    "execution": "0.014s [no tests to run]",
+                    "observedAt": "2026-11-07T18:43:41.5902360Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                    "execution": "11.240s",
+                    "observedAt": "2026-11-07T18:44:39.0567690Z"
+                  }
+                ],
+                "services": [],
+                "cleanup": [
+                  {
+                    "marker": "kind_deleted_nodes",
+                    "observedAt": "2026-11-07T18:44:42.4699451Z"
+                  }
+                ]
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": true
+            },
+            {
+              "databaseId": 128493648758,
+              "name": "go",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:43:19Z",
+              "completedAt": "2026-11-07T18:48:26Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42402659002/job/128493648758",
+              "steps": [
+                {
+                  "name": "Start PostgreSQL",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:22Z",
+                  "completedAt": "2026-11-07T18:43:22Z"
+                },
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:22Z",
+                  "completedAt": "2026-11-07T18:43:23Z"
+                },
+                {
+                  "name": "Private modules",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:23Z",
+                  "completedAt": "2026-11-07T18:43:23Z"
+                },
+                {
+                  "name": "Restore Go cache from main",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:23Z",
+                  "completedAt": "2026-11-07T18:44:17Z"
+                },
+                {
+                  "name": "Go toolchain",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:44:17Z",
+                  "completedAt": "2026-11-07T18:44:18Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T18:44:18Z",
+                  "completedAt": "2026-11-07T18:44:18Z"
+                },
+                {
+                  "name": "Vet",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:44:18Z",
+                  "completedAt": "2026-11-07T18:44:25Z"
+                },
+                {
+                  "name": "Formatting",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:44:25Z",
+                  "completedAt": "2026-11-07T18:44:26Z"
+                },
+                {
+                  "name": "Generated API types match api/openapi.yaml",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:44:26Z",
+                  "completedAt": "2026-11-07T18:44:26Z"
+                },
+                {
+                  "name": "Preserve generated API contract for review when generation differs",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T18:44:26Z",
+                  "completedAt": "2026-11-07T18:44:26Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:44:26Z",
+                  "completedAt": "2026-11-07T18:44:28Z"
+                },
+                {
+                  "name": "Test (race, PostgreSQL)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:44:28Z",
+                  "completedAt": "2026-11-07T18:48:13Z"
+                },
+                {
+                  "name": "Test the minio driver (-tags minio)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:48:13Z",
+                  "completedAt": "2026-11-07T18:48:23Z"
+                },
+                {
+                  "name": "Save Go cache",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T18:48:23Z",
+                  "completedAt": "2026-11-07T18:48:23Z"
+                },
+                {
+                  "name": "Remove PostgreSQL",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:48:23Z",
+                  "completedAt": "2026-11-07T18:48:24Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "5af0526125106d355e60d540b00d7b1a6a11aeed",
+                    "observedAt": "2026-11-07T18:43:23.2920900Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/api",
+                    "execution": "7.645s",
+                    "observedAt": "2026-11-07T18:44:47.1897471Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/gateway",
+                    "execution": "5.822s",
+                    "observedAt": "2026-11-07T18:44:47.1899695Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/onprem-agent",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:44:47.1922902Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:44:47.1983168Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs",
+                    "execution": "1.061s",
+                    "observedAt": "2026-11-07T18:44:47.2012922Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun",
+                    "execution": "2.300s",
+                    "observedAt": "2026-11-07T18:44:47.2039468Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api",
+                    "execution": "206.389s",
+                    "observedAt": "2026-11-07T18:48:13.2882646Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps",
+                    "execution": "1.331s",
+                    "observedAt": "2026-11-07T18:48:13.2883611Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2884254Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute",
+                    "execution": "2.210s",
+                    "observedAt": "2026-11-07T18:48:13.2892889Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy",
+                    "execution": "25.050s",
+                    "observedAt": "2026-11-07T18:48:13.2893530Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs",
+                    "execution": "2.302s",
+                    "observedAt": "2026-11-07T18:48:13.2894044Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2894471Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway",
+                    "execution": "21.456s",
+                    "observedAt": "2026-11-07T18:48:13.2895058Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2895718Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2896335Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmquality",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2897013Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard",
+                    "execution": "1.367s",
+                    "observedAt": "2026-11-07T18:48:13.2897716Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/connect",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2898413Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/discover",
+                    "execution": "1.152s",
+                    "observedAt": "2026-11-07T18:48:13.2899142Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/vm",
+                    "execution": "9.596s",
+                    "observedAt": "2026-11-07T18:48:13.2899889Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                    "execution": "1.264s",
+                    "observedAt": "2026-11-07T18:48:13.2900537Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans",
+                    "execution": "1.192s",
+                    "observedAt": "2026-11-07T18:48:13.2901621Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/bucketprobe",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2903284Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2904082Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy",
+                    "execution": "1.076s",
+                    "observedAt": "2026-11-07T18:48:13.2904588Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate",
+                    "execution": "2.056s",
+                    "observedAt": "2026-11-07T18:48:13.2905182Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/inventory",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2905924Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/parity",
+                    "execution": "1.025s",
+                    "observedAt": "2026-11-07T18:48:13.2906661Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate",
+                    "execution": "1.450s",
+                    "observedAt": "2026-11-07T18:48:13.2907409Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2908178Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes",
+                    "execution": "1.434s",
+                    "observedAt": "2026-11-07T18:48:13.2908906Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/reach",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2909622Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2910161Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/recommend",
+                    "execution": "1.177s",
+                    "observedAt": "2026-11-07T18:48:13.2910618Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2911215Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs",
+                    "execution": "1.253s",
+                    "observedAt": "2026-11-07T18:48:13.2911841Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2912423Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2913026Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security",
+                    "execution": "9.142s",
+                    "observedAt": "2026-11-07T18:48:13.2913471Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2913872Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store",
+                    "execution": "29.772s",
+                    "observedAt": "2026-11-07T18:48:13.2914271Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2914911Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec",
+                    "execution": "2.144s",
+                    "observedAt": "2026-11-07T18:48:13.2916146Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/client",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2916556Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/onboard/facts",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2917088Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/test/charts",
+                    "execution": "7.268s",
+                    "observedAt": "2026-11-07T18:48:13.2917692Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/test/onprem-admission-webhook",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:13.2923810Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/tools/apidoc",
+                    "execution": "1.805s",
+                    "observedAt": "2026-11-07T18:48:13.2924372Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:48:18.7021318Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs",
+                    "execution": "2.158s",
+                    "observedAt": "2026-11-07T18:48:23.7470148Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps",
+                    "execution": "1.174s",
+                    "observedAt": "2026-11-07T18:48:23.7470946Z"
+                  }
+                ],
+                "services": [
+                  {
+                    "marker": "postgres_ready_accepting_connections",
+                    "observedAt": "2026-11-07T18:44:33.8029495Z"
+                  }
+                ],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            },
+            {
+              "databaseId": 128493648878,
+              "name": "shell",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:43:18Z",
+              "completedAt": "2026-11-07T18:43:24Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42402659002/job/128493648878",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:20Z",
+                  "completedAt": "2026-11-07T18:43:21Z"
+                },
+                {
+                  "name": "bash -n",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:21Z",
+                  "completedAt": "2026-11-07T18:43:21Z"
+                },
+                {
+                  "name": "Terraform handoff compatibility (fake tools, no AWS)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:21Z",
+                  "completedAt": "2026-11-07T18:43:21Z"
+                },
+                {
+                  "name": "Infra pin helper tests",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:43:21Z",
+                  "completedAt": "2026-11-07T18:43:21Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "5af0526125106d355e60d540b00d7b1a6a11aeed",
+                    "observedAt": "2026-11-07T18:43:21.4875649Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [],
+                "services": [],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "headRefOid": "aa8a88f6427326e19468750ee559a0ed603cecb3",
+      "mergedAt": "2026-11-07T18:16:52Z",
+      "number": 149,
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/pull/149",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "mergeSha": "b158ca6cedf3a460faa42038efb45e81f9abf3b4",
+      "runs": [
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T17:58:39Z",
+          "databaseId": 42398930039,
+          "event": "pull_request",
+          "headSha": "aa8a88f6427326e19468750ee559a0ed603cecb3",
+          "status": "completed",
+          "updatedAt": "2026-11-07T18:03:23Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42398930039",
+          "workflowName": "ci",
+          "jobs": [
+            {
+              "databaseId": 128482294825,
+              "name": "go",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T17:58:41Z",
+              "completedAt": "2026-11-07T18:03:23Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42398930039/job/128482294825",
+              "steps": [
+                {
+                  "name": "Start PostgreSQL",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:44Z",
+                  "completedAt": "2026-11-07T17:58:44Z"
+                },
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:44Z",
+                  "completedAt": "2026-11-07T17:58:45Z"
+                },
+                {
+                  "name": "Private modules",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:45Z",
+                  "completedAt": "2026-11-07T17:58:45Z"
+                },
+                {
+                  "name": "Restore Go cache from main",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:45Z",
+                  "completedAt": "2026-11-07T17:59:35Z"
+                },
+                {
+                  "name": "Go toolchain",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:35Z",
+                  "completedAt": "2026-11-07T17:59:35Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T17:59:35Z",
+                  "completedAt": "2026-11-07T17:59:35Z"
+                },
+                {
+                  "name": "Vet",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:35Z",
+                  "completedAt": "2026-11-07T17:59:43Z"
+                },
+                {
+                  "name": "Formatting",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:43Z",
+                  "completedAt": "2026-11-07T17:59:44Z"
+                },
+                {
+                  "name": "Generated API types match api/openapi.yaml",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:44Z",
+                  "completedAt": "2026-11-07T17:59:44Z"
+                },
+                {
+                  "name": "Preserve generated API contract for review when generation differs",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T17:59:44Z",
+                  "completedAt": "2026-11-07T17:59:44Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:44Z",
+                  "completedAt": "2026-11-07T17:59:45Z"
+                },
+                {
+                  "name": "Test (race, PostgreSQL)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:45Z",
+                  "completedAt": "2026-11-07T18:03:10Z"
+                },
+                {
+                  "name": "Test the minio driver (-tags minio)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:03:10Z",
+                  "completedAt": "2026-11-07T18:03:20Z"
+                },
+                {
+                  "name": "Save Go cache",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T18:03:20Z",
+                  "completedAt": "2026-11-07T18:03:20Z"
+                },
+                {
+                  "name": "Remove PostgreSQL",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:03:20Z",
+                  "completedAt": "2026-11-07T18:03:21Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "60f48d481bbe05220803bcce18cd280402a43e5c",
+                    "observedAt": "2026-11-07T17:58:45.6523836Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/api",
+                    "execution": "8.213s",
+                    "observedAt": "2026-11-07T17:59:59.3568898Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/gateway",
+                    "execution": "2.282s",
+                    "observedAt": "2026-11-07T17:59:59.3569938Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/onprem-agent",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T17:59:59.3570941Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T17:59:59.3596481Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T17:59:59.3597655Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T17:59:59.3625933Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api",
+                    "execution": "191.909s",
+                    "observedAt": "2026-11-07T18:03:10.4664932Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps",
+                    "execution": "1.235s",
+                    "observedAt": "2026-11-07T18:03:10.4665749Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4666672Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute",
+                    "execution": "2.047s",
+                    "observedAt": "2026-11-07T18:03:10.4667312Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy",
+                    "execution": "23.794s",
+                    "observedAt": "2026-11-07T18:03:10.4668139Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs",
+                    "execution": "2.148s",
+                    "observedAt": "2026-11-07T18:03:10.4668754Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard",
+                    "execution": "3.281s",
+                    "observedAt": "2026-11-07T18:03:10.4669416Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway",
+                    "execution": "20.463s",
+                    "observedAt": "2026-11-07T18:03:10.4670181Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4670817Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs",
+                    "execution": "1.156s",
+                    "observedAt": "2026-11-07T18:03:10.4671466Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmquality",
+                    "execution": "1.047s",
+                    "observedAt": "2026-11-07T18:03:10.4672127Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard",
+                    "execution": "1.358s",
+                    "observedAt": "2026-11-07T18:03:10.4672795Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/connect",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4673514Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/discover",
+                    "execution": "1.162s",
+                    "observedAt": "2026-11-07T18:03:10.4674244Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/vm",
+                    "execution": "8.347s",
+                    "observedAt": "2026-11-07T18:03:10.4674971Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                    "execution": "1.319s",
+                    "observedAt": "2026-11-07T18:03:10.4675795Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans",
+                    "execution": "1.154s",
+                    "observedAt": "2026-11-07T18:03:10.4676435Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/bucketprobe",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4677790Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4678304Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy",
+                    "execution": "1.069s",
+                    "observedAt": "2026-11-07T18:03:10.4678794Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate",
+                    "execution": "2.010s",
+                    "observedAt": "2026-11-07T18:03:10.4679259Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/inventory",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4679731Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/parity",
+                    "execution": "1.024s",
+                    "observedAt": "2026-11-07T18:03:10.4680219Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate",
+                    "execution": "1.419s",
+                    "observedAt": "2026-11-07T18:03:10.4680715Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4681205Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes",
+                    "execution": "1.293s",
+                    "observedAt": "2026-11-07T18:03:10.4681674Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/reach",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4682130Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4682599Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention",
+                    "execution": "1.136s",
+                    "observedAt": "2026-11-07T18:03:10.4683321Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs",
+                    "execution": "1.232s",
+                    "observedAt": "2026-11-07T18:03:10.4683730Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4684131Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4684538Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security",
+                    "execution": "8.292s",
+                    "observedAt": "2026-11-07T18:03:10.4684942Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4685584Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store",
+                    "execution": "26.619s",
+                    "observedAt": "2026-11-07T18:03:10.4686220Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4686649Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4687493Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/client",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4687879Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/onboard/facts",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:10.4688283Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/test/charts",
+                    "execution": "6.824s",
+                    "observedAt": "2026-11-07T18:03:10.4688690Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/test/onprem-admission-webhook",
+                    "execution": "1.070s",
+                    "observedAt": "2026-11-07T18:03:10.4693011Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/tools/apidoc",
+                    "execution": "1.676s",
+                    "observedAt": "2026-11-07T18:03:10.4693614Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:03:15.7407162Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs",
+                    "execution": "1.904s",
+                    "observedAt": "2026-11-07T18:03:20.5248742Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps",
+                    "execution": "1.174s",
+                    "observedAt": "2026-11-07T18:03:20.5249268Z"
+                  }
+                ],
+                "services": [
+                  {
+                    "marker": "postgres_ready_accepting_connections",
+                    "observedAt": "2026-11-07T17:59:45.4859386Z"
+                  }
+                ],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            },
+            {
+              "databaseId": 128482294835,
+              "name": "onprem-cluster",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T17:58:41Z",
+              "completedAt": "2026-11-07T17:59:57Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42398930039/job/128482294835",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:43Z",
+                  "completedAt": "2026-11-07T17:58:44Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:44Z",
+                  "completedAt": "2026-11-07T17:59:01Z"
+                },
+                {
+                  "name": "Private module access for disposable fixture",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:01Z",
+                  "completedAt": "2026-11-07T17:59:01Z"
+                },
+                {
+                  "name": "Compile real cluster tests before provisioning",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:01Z",
+                  "completedAt": "2026-11-07T17:59:02Z"
+                },
+                {
+                  "name": "Install verified kind binary",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:02Z",
+                  "completedAt": "2026-11-07T17:59:02Z"
+                },
+                {
+                  "name": "Create isolated onprem registration cluster",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:02Z",
+                  "completedAt": "2026-11-07T17:59:50Z"
+                },
+                {
+                  "name": "Real admission, delegated credentials and HTTP proof",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:50Z",
+                  "completedAt": "2026-11-07T17:59:51Z"
+                },
+                {
+                  "name": "Remove disposable registration cluster",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:51Z",
+                  "completedAt": "2026-11-07T17:59:54Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "60f48d481bbe05220803bcce18cd280402a43e5c",
+                    "observedAt": "2026-11-07T17:58:44.4764718Z"
+                  }
+                ],
+                "tests": [
+                  {
+                    "test": "TestRealBootstrapOnDisposableKind",
+                    "status": "pass",
+                    "seconds": 10.21,
+                    "observedAt": "2026-11-07T17:59:51.0474852Z"
+                  },
+                  {
+                    "test": "TestUnconditionalSecretUpdateOnDisposableKind",
+                    "status": "pass",
+                    "seconds": 0.02,
+                    "observedAt": "2026-11-07T17:59:51.0476686Z"
+                  }
+                ],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                    "execution": "(cached) [no tests to run]",
+                    "observedAt": "2026-11-07T17:59:02.2550240Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T17:59:51.0479185Z"
+                  }
+                ],
+                "services": [],
+                "cleanup": [
+                  {
+                    "marker": "kind_deleted_nodes",
+                    "observedAt": "2026-11-07T17:59:53.9992047Z"
+                  }
+                ]
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": true
+            }
+          ]
+        },
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T17:58:39Z",
+          "databaseId": 42398930043,
+          "event": "pull_request",
+          "headSha": "aa8a88f6427326e19468750ee559a0ed603cecb3",
+          "status": "completed",
+          "updatedAt": "2026-11-07T17:59:24Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42398930043",
+          "workflowName": "fileguard",
+          "jobs": [
+            {
+              "databaseId": 128482294596,
+              "name": "real-rclone",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T17:58:41Z",
+              "completedAt": "2026-11-07T17:59:23Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42398930043/job/128482294596",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:43Z",
+                  "completedAt": "2026-11-07T17:58:44Z"
+                },
+                {
+                  "name": "Private module access",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:44Z",
+                  "completedAt": "2026-11-07T17:58:44Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:44Z",
+                  "completedAt": "2026-11-07T17:58:59Z"
+                },
+                {
+                  "name": "Install real rclone",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:58:59Z",
+                  "completedAt": "2026-11-07T17:59:13Z"
+                },
+                {
+                  "name": "Guard regression and real local transfer (race)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:59:13Z",
+                  "completedAt": "2026-11-07T17:59:20Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "60f48d481bbe05220803bcce18cd280402a43e5c",
+                    "observedAt": "2026-11-07T17:58:44.6604482Z"
+                  }
+                ],
+                "tests": [
+                  {
+                    "test": "TestLocalRcloneSuccessfulReturnMigrationStillReadsAndVerifies",
+                    "status": "pass",
+                    "seconds": 0.96,
+                    "observedAt": "2026-11-07T17:59:15.4275041Z"
+                  },
+                  {
+                    "test": "TestRealStagingDiskFull",
+                    "status": "skip",
+                    "seconds": 0.0,
+                    "observedAt": "2026-11-07T17:59:15.4350373Z"
+                  },
+                  {
+                    "test": "TestLocalRcloneAcrossInventoryChunks",
+                    "status": "pass",
+                    "seconds": 0.53,
+                    "observedAt": "2026-11-07T17:59:15.9626619Z"
+                  },
+                  {
+                    "test": "TestLocalRcloneHardLimitBoundaryFailsClosed",
+                    "status": "pass",
+                    "seconds": 0.21,
+                    "observedAt": "2026-11-07T17:59:16.1728854Z"
+                  },
+                  {
+                    "test": "TestLocalRcloneFullSnapshotRepair",
+                    "status": "pass",
+                    "seconds": 0.76,
+                    "observedAt": "2026-11-07T17:59:18.5598185Z"
+                  },
+                  {
+                    "test": "TestLocalRcloneIntegration",
+                    "status": "pass",
+                    "seconds": 0.5,
+                    "observedAt": "2026-11-07T17:59:19.1011106Z"
+                  }
+                ],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard",
+                    "execution": "5.660s",
+                    "observedAt": "2026-11-07T17:59:20.1129980Z"
+                  }
+                ],
+                "services": [
+                  {
+                    "marker": "actual_rclone_binary_version",
+                    "version": "rclone v1.60.1",
+                    "observedAt": "2026-11-07T17:59:13.0089472Z"
+                  }
+                ],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "headRefOid": "7445c00d5f94b76479810db839c46c0c567ba02b",
+      "mergedAt": "2026-11-07T18:36:28Z",
+      "number": 150,
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/pull/150",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "mergeSha": "eead02619e91745ba552ab5d8f8d329dcc94dfc6",
+      "runs": [
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T18:31:47Z",
+          "databaseId": 42401736654,
+          "event": "pull_request",
+          "headSha": "7445c00d5f94b76479810db839c46c0c567ba02b",
+          "status": "completed",
+          "updatedAt": "2026-11-07T18:33:43Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42401736654",
+          "workflowName": "ci",
+          "jobs": [
+            {
+              "databaseId": 128490802139,
+              "name": "go",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:31:49Z",
+              "completedAt": "2026-11-07T18:33:42Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42401736654/job/128490802139",
+              "steps": [
+                {
+                  "name": "Start PostgreSQL",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:31:52Z",
+                  "completedAt": "2026-11-07T18:31:52Z"
+                },
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:31:52Z",
+                  "completedAt": "2026-11-07T18:31:53Z"
+                },
+                {
+                  "name": "Private modules",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:31:53Z",
+                  "completedAt": "2026-11-07T18:31:53Z"
+                },
+                {
+                  "name": "Restore Go cache from main",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:31:53Z",
+                  "completedAt": "2026-11-07T18:32:24Z"
+                },
+                {
+                  "name": "Go toolchain",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:24Z",
+                  "completedAt": "2026-11-07T18:32:27Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T18:32:27Z",
+                  "completedAt": "2026-11-07T18:32:27Z"
+                },
+                {
+                  "name": "Vet",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:27Z",
+                  "completedAt": "2026-11-07T18:32:32Z"
+                },
+                {
+                  "name": "Formatting",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:32Z",
+                  "completedAt": "2026-11-07T18:32:32Z"
+                },
+                {
+                  "name": "Generated API types match api/openapi.yaml",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:32Z",
+                  "completedAt": "2026-11-07T18:32:33Z"
+                },
+                {
+                  "name": "Preserve generated API contract for review when generation differs",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T18:32:33Z",
+                  "completedAt": "2026-11-07T18:32:33Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:33Z",
+                  "completedAt": "2026-11-07T18:32:34Z"
+                },
+                {
+                  "name": "Test (race, PostgreSQL)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:34Z",
+                  "completedAt": "2026-11-07T18:33:31Z"
+                },
+                {
+                  "name": "Test the minio driver (-tags minio)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:33:31Z",
+                  "completedAt": "2026-11-07T18:33:39Z"
+                },
+                {
+                  "name": "Save Go cache",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T18:33:39Z",
+                  "completedAt": "2026-11-07T18:33:39Z"
+                },
+                {
+                  "name": "Remove PostgreSQL",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:33:39Z",
+                  "completedAt": "2026-11-07T18:33:40Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "b8aa7794b47a3b8ef9c5579175bb02ec7d95e1f7",
+                    "observedAt": "2026-11-07T18:31:53.6941044Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/api",
+                    "execution": "9.732s",
+                    "observedAt": "2026-11-07T18:32:50.7928451Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/gateway",
+                    "execution": "5.619s",
+                    "observedAt": "2026-11-07T18:32:50.7929477Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/cmd/onprem-agent",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:50.7931155Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/agentlog",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:50.7932270Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/aiobs",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:50.7933294Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/airun",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:50.7934271Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/api",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:50.7935312Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps",
+                    "execution": "1.388s",
+                    "observedAt": "2026-11-07T18:32:50.7936323Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/auth",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:50.7937326Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/dbroute",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:50.7938361Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/deploy",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:50.7939407Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs",
+                    "execution": "2.582s",
+                    "observedAt": "2026-11-07T18:32:51.2329960Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/fileguard",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:51.2331285Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/gateway",
+                    "execution": "19.002s",
+                    "observedAt": "2026-11-07T18:33:08.9351648Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/github",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9354365Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmobs",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9355453Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/llmquality",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9356572Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard",
+                    "execution": "1.312s",
+                    "observedAt": "2026-11-07T18:33:08.9357675Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/connect",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9358791Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/discover",
+                    "execution": "1.184s",
+                    "observedAt": "2026-11-07T18:33:08.9359944Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onboard/vm",
+                    "execution": "4.568s",
+                    "observedAt": "2026-11-07T18:33:08.9361260Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9362382Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/plans",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9364355Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/bucketprobe",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9366732Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/capacity",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9368008Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/cloudpolicy",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9369206Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/gate",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9370435Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/inventory",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9372028Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/parity",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9373302Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/paritygate",
+                    "execution": "1.570s",
+                    "observedAt": "2026-11-07T18:33:08.9374493Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/pgversion",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9375651Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/probes",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9376890Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/reach",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9378003Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/preflight/residency",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9379172Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/retention",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9380362Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/runs",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9381807Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/sealing",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9382861Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/secrets",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:08.9384165Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/security",
+                    "execution": "11.293s",
+                    "observedAt": "2026-11-07T18:33:11.3477423Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:11.3480380Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store",
+                    "execution": "30.969s",
+                    "observedAt": "2026-11-07T18:33:31.0936865Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store/storetest",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:31.0951826Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/appspec",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:31.0953973Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/client",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:31.0954892Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/pkg/onboard/facts",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:31.0955838Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/test/charts",
+                    "execution": "9.230s",
+                    "observedAt": "2026-11-07T18:33:31.0956801Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/test/onprem-admission-webhook",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:31.0967111Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/tools/apidoc",
+                    "execution": "1.889s",
+                    "observedAt": "2026-11-07T18:33:31.0968479Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/storage",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:33:35.1242416Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/envs",
+                    "execution": "2.110s",
+                    "observedAt": "2026-11-07T18:33:39.5738007Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/apps",
+                    "execution": "1.231s",
+                    "observedAt": "2026-11-07T18:33:39.5738781Z"
+                  }
+                ],
+                "services": [
+                  {
+                    "marker": "postgres_ready_accepting_connections",
+                    "observedAt": "2026-11-07T18:32:34.3387951Z"
+                  }
+                ],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            },
+            {
+              "databaseId": 128490802192,
+              "name": "onprem-cluster",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:31:49Z",
+              "completedAt": "2026-11-07T18:33:03Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/actions/runs/42401736654/job/128490802192",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:31:51Z",
+                  "completedAt": "2026-11-07T18:31:52Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:31:52Z",
+                  "completedAt": "2026-11-07T18:32:10Z"
+                },
+                {
+                  "name": "Private module access for disposable fixture",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:10Z",
+                  "completedAt": "2026-11-07T18:32:10Z"
+                },
+                {
+                  "name": "Compile real cluster tests before provisioning",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:10Z",
+                  "completedAt": "2026-11-07T18:32:10Z"
+                },
+                {
+                  "name": "Install verified kind binary",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:10Z",
+                  "completedAt": "2026-11-07T18:32:11Z"
+                },
+                {
+                  "name": "Create isolated onprem registration cluster",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:11Z",
+                  "completedAt": "2026-11-07T18:32:57Z"
+                },
+                {
+                  "name": "Real admission, delegated credentials and HTTP proof",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:57Z",
+                  "completedAt": "2026-11-07T18:32:57Z"
+                },
+                {
+                  "name": "Remove disposable registration cluster",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:32:57Z",
+                  "completedAt": "2026-11-07T18:33:00Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "b8aa7794b47a3b8ef9c5579175bb02ec7d95e1f7",
+                    "observedAt": "2026-11-07T18:31:52.8964156Z"
+                  }
+                ],
+                "tests": [
+                  {
+                    "test": "TestRealBootstrapOnDisposableKind",
+                    "status": "pass",
+                    "seconds": 9.2,
+                    "observedAt": "2026-11-07T18:32:57.9690641Z"
+                  },
+                  {
+                    "test": "TestUnconditionalSecretUpdateOnDisposableKind",
+                    "status": "pass",
+                    "seconds": 0.02,
+                    "observedAt": "2026-11-07T18:32:57.9692957Z"
+                  }
+                ],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                    "execution": "(cached) [no tests to run]",
+                    "observedAt": "2026-11-07T18:32:10.9143753Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:32:57.9695823Z"
+                  }
+                ],
+                "services": [],
+                "cleanup": [
+                  {
+                    "marker": "kind_deleted_nodes",
+                    "observedAt": "2026-11-07T18:33:00.9394046Z"
+                  }
+                ]
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "headRefOid": "f44094a3c79fbcda27a487d4ee901077b51f786c",
+      "mergedAt": "2026-11-07T17:29:37Z",
+      "number": 30,
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pull/30",
+      "repository": "2026-Softbank-Hackathon-Charlie/migration-engine",
+      "mergeSha": "3ede4a44f3b1ed34417ea018822541aefabeab29",
+      "runs": [
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T17:24:38Z",
+          "databaseId": 42396169241,
+          "event": "pull_request",
+          "headSha": "f44094a3c79fbcda27a487d4ee901077b51f786c",
+          "status": "completed",
+          "updatedAt": "2026-11-07T17:28:39Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/actions/runs/42396169241",
+          "workflowName": "ci",
+          "jobs": [
+            {
+              "databaseId": 128473892075,
+              "name": "cnpg-write-fence",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T17:24:41Z",
+              "completedAt": "2026-11-07T17:28:38Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/actions/runs/42396169241/job/128473892075",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:24:42Z",
+                  "completedAt": "2026-11-07T17:24:43Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:24:43Z",
+                  "completedAt": "2026-11-07T17:24:56Z"
+                },
+                {
+                  "name": "Compile the real CNPG fixture before provisioning",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:24:56Z",
+                  "completedAt": "2026-11-07T17:25:09Z"
+                },
+                {
+                  "name": "Install verified kind binary",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:25:09Z",
+                  "completedAt": "2026-11-07T17:25:09Z"
+                },
+                {
+                  "name": "Real CNPG shutdown checkpoint and source-only admission",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:25:09Z",
+                  "completedAt": "2026-11-07T17:28:30Z"
+                },
+                {
+                  "name": "Report disposable CNPG failure diagnostics",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T17:28:30Z",
+                  "completedAt": "2026-11-07T17:28:30Z"
+                },
+                {
+                  "name": "Remove disposable kind clusters",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:28:30Z",
+                  "completedAt": "2026-11-07T17:28:36Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "e302eb1aaae1a082dcee2251d1708f8caa09da6c",
+                    "observedAt": "2026-11-07T17:24:43.2495659Z"
+                  }
+                ],
+                "tests": [
+                  {
+                    "test": "TestSourceWriteFenceCNPGShutdownCheckpoint",
+                    "status": "pass",
+                    "seconds": 33.33,
+                    "observedAt": "2026-11-07T17:28:30.0917456Z"
+                  }
+                ],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine",
+                    "execution": "0.009s [no tests to run]",
+                    "observedAt": "2026-11-07T17:25:09.0865959Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine",
+                    "execution": "33.342s",
+                    "observedAt": "2026-11-07T17:28:30.0952786Z"
+                  }
+                ],
+                "services": [],
+                "cleanup": [
+                  {
+                    "marker": "kind_deleted_nodes",
+                    "observedAt": "2026-11-07T17:28:33.3803186Z"
+                  },
+                  {
+                    "marker": "kind_deleted_nodes",
+                    "observedAt": "2026-11-07T17:28:36.4939600Z"
+                  }
+                ]
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": true
+            },
+            {
+              "databaseId": 128473892352,
+              "name": "go",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T17:24:41Z",
+              "completedAt": "2026-11-07T17:27:24Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/actions/runs/42396169241/job/128473892352",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:24:42Z",
+                  "completedAt": "2026-11-07T17:24:43Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:24:43Z",
+                  "completedAt": "2026-11-07T17:24:54Z"
+                },
+                {
+                  "name": "Test",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:24:54Z",
+                  "completedAt": "2026-11-07T17:25:55Z"
+                },
+                {
+                  "name": "Vet",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:25:55Z",
+                  "completedAt": "2026-11-07T17:25:56Z"
+                },
+                {
+                  "name": "Build",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:25:56Z",
+                  "completedAt": "2026-11-07T17:26:00Z"
+                },
+                {
+                  "name": "PostgreSQL primary and standby integration",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T17:26:00Z",
+                  "completedAt": "2026-11-07T17:27:22Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "e302eb1aaae1a082dcee2251d1708f8caa09da6c",
+                    "observedAt": "2026-11-07T17:24:43.6146678Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg",
+                    "execution": "1.196s",
+                    "observedAt": "2026-11-07T17:24:59.6740775Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/decommission",
+                    "execution": "2.833s",
+                    "observedAt": "2026-11-07T17:25:04.2007227Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine",
+                    "execution": "53.530s",
+                    "observedAt": "2026-11-07T17:25:55.7437771Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/envcheck",
+                    "execution": "1.059s",
+                    "observedAt": "2026-11-07T17:25:55.7439082Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/files",
+                    "execution": "1.012s",
+                    "observedAt": "2026-11-07T17:25:55.7439913Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/gateway",
+                    "execution": "1.076s",
+                    "observedAt": "2026-11-07T17:25:55.7440759Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/kube",
+                    "execution": "1.045s",
+                    "observedAt": "2026-11-07T17:25:55.7441612Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/loadguard",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T17:25:55.7442472Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/pg",
+                    "execution": "1.022s",
+                    "observedAt": "2026-11-07T17:25:55.7443384Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan",
+                    "execution": "1.021s",
+                    "observedAt": "2026-11-07T17:25:55.7443987Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/verify",
+                    "execution": "1.029s",
+                    "observedAt": "2026-11-07T17:25:55.7444844Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/pg",
+                    "execution": "2.108s",
+                    "observedAt": "2026-11-07T17:26:11.7908830Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/verify",
+                    "execution": "63.242s",
+                    "observedAt": "2026-11-07T17:27:15.6895205Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/pg",
+                    "execution": "5.076s",
+                    "observedAt": "2026-11-07T17:27:21.7664737Z"
+                  }
+                ],
+                "services": [
+                  {
+                    "marker": "docker_compose_primary_healthy",
+                    "observedAt": "2026-11-07T17:26:07.1457631Z"
+                  },
+                  {
+                    "marker": "docker_compose_primary_healthy",
+                    "observedAt": "2026-11-07T17:26:07.7525492Z"
+                  },
+                  {
+                    "marker": "docker_compose_standby_healthy",
+                    "observedAt": "2026-11-07T17:26:08.7524932Z"
+                  }
+                ],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "headRefOid": "17913402a22e0478f83d4c311c8a43a45782947b",
+      "mergedAt": "2026-11-07T18:16:29Z",
+      "number": 31,
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pull/31",
+      "repository": "2026-Softbank-Hackathon-Charlie/migration-engine",
+      "mergeSha": "ba2322bd5e61e8a8da6b59effa16a5fff06a5486",
+      "runs": [
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T18:00:46Z",
+          "databaseId": 42399106551,
+          "event": "pull_request",
+          "headSha": "17913402a22e0478f83d4c311c8a43a45782947b",
+          "status": "completed",
+          "updatedAt": "2026-11-07T18:04:55Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/actions/runs/42399106551",
+          "workflowName": "ci",
+          "jobs": [
+            {
+              "databaseId": 128482824160,
+              "name": "cnpg-write-fence",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:00:48Z",
+              "completedAt": "2026-11-07T18:04:55Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/actions/runs/42399106551/job/128482824160",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:00:50Z",
+                  "completedAt": "2026-11-07T18:00:51Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:00:51Z",
+                  "completedAt": "2026-11-07T18:01:06Z"
+                },
+                {
+                  "name": "Compile the real CNPG fixture before provisioning",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:01:06Z",
+                  "completedAt": "2026-11-07T18:01:18Z"
+                },
+                {
+                  "name": "Install verified kind binary",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:01:18Z",
+                  "completedAt": "2026-11-07T18:01:18Z"
+                },
+                {
+                  "name": "Real CNPG shutdown checkpoint and source-only admission",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:01:18Z",
+                  "completedAt": "2026-11-07T18:04:45Z"
+                },
+                {
+                  "name": "Report disposable CNPG failure diagnostics",
+                  "status": "completed",
+                  "conclusion": "skipped",
+                  "startedAt": "2026-11-07T18:04:45Z",
+                  "completedAt": "2026-11-07T18:04:45Z"
+                },
+                {
+                  "name": "Remove disposable kind clusters",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:04:45Z",
+                  "completedAt": "2026-11-07T18:04:52Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "56c3380d42df723298a05a2434c39d8c0026b32d",
+                    "observedAt": "2026-11-07T18:00:51.5741473Z"
+                  }
+                ],
+                "tests": [
+                  {
+                    "test": "TestSourceWriteFenceCNPGShutdownCheckpoint",
+                    "status": "pass",
+                    "seconds": 33.41,
+                    "observedAt": "2026-11-07T18:04:45.9578581Z"
+                  }
+                ],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine",
+                    "execution": "0.010s [no tests to run]",
+                    "observedAt": "2026-11-07T18:01:18.2257521Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine",
+                    "execution": "33.419s",
+                    "observedAt": "2026-11-07T18:04:45.9627034Z"
+                  }
+                ],
+                "services": [],
+                "cleanup": [
+                  {
+                    "marker": "kind_deleted_nodes",
+                    "observedAt": "2026-11-07T18:04:49.2915195Z"
+                  },
+                  {
+                    "marker": "kind_deleted_nodes",
+                    "observedAt": "2026-11-07T18:04:52.3727550Z"
+                  }
+                ]
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": true
+            },
+            {
+              "databaseId": 128482824349,
+              "name": "go",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:00:49Z",
+              "completedAt": "2026-11-07T18:03:38Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/actions/runs/42399106551/job/128482824349",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:00:50Z",
+                  "completedAt": "2026-11-07T18:00:51Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:00:51Z",
+                  "completedAt": "2026-11-07T18:01:06Z"
+                },
+                {
+                  "name": "Test",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:01:06Z",
+                  "completedAt": "2026-11-07T18:02:07Z"
+                },
+                {
+                  "name": "Vet",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:02:07Z",
+                  "completedAt": "2026-11-07T18:02:09Z"
+                },
+                {
+                  "name": "Build",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:02:09Z",
+                  "completedAt": "2026-11-07T18:02:13Z"
+                },
+                {
+                  "name": "PostgreSQL primary and standby integration",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:02:13Z",
+                  "completedAt": "2026-11-07T18:03:36Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "56c3380d42df723298a05a2434c39d8c0026b32d",
+                    "observedAt": "2026-11-07T18:00:51.8595658Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/cnpg",
+                    "execution": "1.177s",
+                    "observedAt": "2026-11-07T18:01:11.8461056Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/decommission",
+                    "execution": "2.840s",
+                    "observedAt": "2026-11-07T18:01:16.0715329Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/engine",
+                    "execution": "53.743s",
+                    "observedAt": "2026-11-07T18:02:07.8992229Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/envcheck",
+                    "execution": "1.067s",
+                    "observedAt": "2026-11-07T18:02:07.8993793Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/files",
+                    "execution": "1.015s",
+                    "observedAt": "2026-11-07T18:02:07.8995341Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/gateway",
+                    "execution": "1.080s",
+                    "observedAt": "2026-11-07T18:02:07.8996770Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/kube",
+                    "execution": "1.051s",
+                    "observedAt": "2026-11-07T18:02:07.8998207Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/loadguard",
+                    "execution": "(cached)",
+                    "observedAt": "2026-11-07T18:02:07.8999701Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/pg",
+                    "execution": "1.026s",
+                    "observedAt": "2026-11-07T18:02:07.9001320Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/plan",
+                    "execution": "1.026s",
+                    "observedAt": "2026-11-07T18:02:07.9002968Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/verify",
+                    "execution": "1.021s",
+                    "observedAt": "2026-11-07T18:02:07.9004370Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/pg",
+                    "execution": "2.173s",
+                    "observedAt": "2026-11-07T18:02:24.9995989Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/verify",
+                    "execution": "63.786s",
+                    "observedAt": "2026-11-07T18:03:29.4576541Z"
+                  },
+                  {
+                    "package": "github.com/2026-Softbank-Hackathon-Charlie/migration-engine/pkg/pg",
+                    "execution": "5.034s",
+                    "observedAt": "2026-11-07T18:03:35.5841646Z"
+                  }
+                ],
+                "services": [
+                  {
+                    "marker": "docker_compose_primary_healthy",
+                    "observedAt": "2026-11-07T18:02:20.1592535Z"
+                  },
+                  {
+                    "marker": "docker_compose_primary_healthy",
+                    "observedAt": "2026-11-07T18:02:20.7953583Z"
+                  },
+                  {
+                    "marker": "docker_compose_standby_healthy",
+                    "observedAt": "2026-11-07T18:02:21.7948905Z"
+                  }
+                ],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            }
+          ]
+        }
+      ],
+      "changedFiles": [
+        ".github/branch-protection/main.json",
+        "README.md",
+        "docs/adr/0023-require-existing-ci-before-main-merge.md"
+      ],
+      "goCodeChanged": false,
+      "scope": "branch_protection_policy_and_documentation; not a new engine runtime algorithm"
+    },
+    {
+      "headRefOid": "5b905d81b0527113834f549ba44fd5d7b9ab22d8",
+      "mergedAt": "2026-11-07T18:43:29Z",
+      "number": 163,
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/pull/163",
+      "repository": "2026-Softbank-Hackathon-Charlie/infra",
+      "mergeSha": "22285908652de548eed2a1347e980920f76ab30c",
+      "runs": [
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T18:40:09Z",
+          "databaseId": 42402419292,
+          "event": "pull_request",
+          "headSha": "5b905d81b0527113834f549ba44fd5d7b9ab22d8",
+          "status": "completed",
+          "updatedAt": "2026-11-07T18:41:42Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42402419292",
+          "workflowName": "Onprem registration admission",
+          "jobs": [
+            {
+              "databaseId": 128492879217,
+              "name": "admission",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:40:12Z",
+              "completedAt": "2026-11-07T18:41:42Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42402419292/job/128492879217",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:15Z",
+                  "completedAt": "2026-11-07T18:40:16Z"
+                },
+                {
+                  "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:16Z",
+                  "completedAt": "2026-11-07T18:40:16Z"
+                },
+                {
+                  "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:16Z",
+                  "completedAt": "2026-11-07T18:40:17Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:17Z",
+                  "completedAt": "2026-11-07T18:40:30Z"
+                },
+                {
+                  "name": "Compile the real platform admission validator",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:30Z",
+                  "completedAt": "2026-11-07T18:40:32Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4.3.1",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:32Z",
+                  "completedAt": "2026-11-07T18:40:32Z"
+                },
+                {
+                  "name": "Run python3 -m pip install PyYAML==6.0.3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:32Z",
+                  "completedAt": "2026-11-07T18:40:34Z"
+                },
+                {
+                  "name": "Check fixture syntax and chart contracts before provisioning",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:34Z",
+                  "completedAt": "2026-11-07T18:40:34Z"
+                },
+                {
+                  "name": "Install verified kind binary",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:34Z",
+                  "completedAt": "2026-11-07T18:40:34Z"
+                },
+                {
+                  "name": "Create disposable API server (no cloud credentials)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:34Z",
+                  "completedAt": "2026-11-07T18:41:11Z"
+                },
+                {
+                  "name": "Verify rendered RBAC and CEL with real API admission",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:41:11Z",
+                  "completedAt": "2026-11-07T18:41:36Z"
+                },
+                {
+                  "name": "Remove disposable cluster",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:41:36Z",
+                  "completedAt": "2026-11-07T18:41:37Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "eefc123b7ae131b7859a789b8964dac783ad2eec",
+                    "observedAt": "2026-11-07T18:40:16.3205380Z"
+                  },
+                  {
+                    "sha": "aa46cb37e40470fda4c5cbf1e50bd12c9b887b0a",
+                    "observedAt": "2026-11-07T18:40:17.5238373Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [],
+                "services": [],
+                "cleanup": [
+                  {
+                    "marker": "kind_deleted_nodes",
+                    "observedAt": "2026-11-07T18:41:37.2081287Z"
+                  }
+                ]
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": true
+            }
+          ]
+        },
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T18:40:09Z",
+          "databaseId": 42402419366,
+          "event": "pull_request",
+          "headSha": "5b905d81b0527113834f549ba44fd5d7b9ab22d8",
+          "status": "completed",
+          "updatedAt": "2026-11-07T18:41:16Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42402419366",
+          "workflowName": "Charlie infrastructure",
+          "jobs": [
+            {
+              "databaseId": 128492879295,
+              "name": "scripts",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:40:12Z",
+              "completedAt": "2026-11-07T18:40:45Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42402419366/job/128492879295",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:14Z",
+                  "completedAt": "2026-11-07T18:40:15Z"
+                },
+                {
+                  "name": "Read pinned Terraform version",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:15Z",
+                  "completedAt": "2026-11-07T18:40:15Z"
+                },
+                {
+                  "name": "Run hashicorp/setup-terraform@v3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:15Z",
+                  "completedAt": "2026-11-07T18:40:16Z"
+                },
+                {
+                  "name": "Run actions/setup-python@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:16Z",
+                  "completedAt": "2026-11-07T18:40:16Z"
+                },
+                {
+                  "name": "Detect AWS deployment input changes",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:16Z",
+                  "completedAt": "2026-11-07T18:40:16Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4.3.1",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:16Z",
+                  "completedAt": "2026-11-07T18:40:17Z"
+                },
+                {
+                  "name": "Run actions/setup-node@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:17Z",
+                  "completedAt": "2026-11-07T18:40:17Z"
+                },
+                {
+                  "name": "Run python3 -m pip install PyYAML==6.0.3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:17Z",
+                  "completedAt": "2026-11-07T18:40:18Z"
+                },
+                {
+                  "name": "Run make tf-fmt-check ci-test inventory-check config-check",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:18Z",
+                  "completedAt": "2026-11-07T18:40:43Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "eefc123b7ae131b7859a789b8964dac783ad2eec",
+                    "observedAt": "2026-11-07T18:40:15.2792945Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [],
+                "services": [],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            },
+            {
+              "databaseId": 128492879432,
+              "name": "helm",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:40:12Z",
+              "completedAt": "2026-11-07T18:41:10Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42402419366/job/128492879432",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:14Z",
+                  "completedAt": "2026-11-07T18:40:15Z"
+                },
+                {
+                  "name": "Run actions/setup-python@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:15Z",
+                  "completedAt": "2026-11-07T18:40:15Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4.3.1",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:15Z",
+                  "completedAt": "2026-11-07T18:40:16Z"
+                },
+                {
+                  "name": "Run python3 -m pip install PyYAML==6.0.3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:16Z",
+                  "completedAt": "2026-11-07T18:40:17Z"
+                },
+                {
+                  "name": "Run make helm-check",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:40:17Z",
+                  "completedAt": "2026-11-07T18:41:07Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "eefc123b7ae131b7859a789b8964dac783ad2eec",
+                    "observedAt": "2026-11-07T18:40:15.2812066Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [],
+                "services": [],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "headRefOid": "062a17fd7607c48928636522d73eb2884e58fb62",
+      "mergedAt": "2026-11-07T18:35:02Z",
+      "number": 165,
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/pull/165",
+      "repository": "2026-Softbank-Hackathon-Charlie/infra",
+      "mergeSha": "85aa46f384e4a79731cccbf4efea07c335b84e2b",
+      "runs": [
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T18:21:38Z",
+          "databaseId": 42400894999,
+          "event": "pull_request",
+          "headSha": "062a17fd7607c48928636522d73eb2884e58fb62",
+          "status": "completed",
+          "updatedAt": "2026-11-07T18:24:08Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42400894999",
+          "workflowName": "Onprem registration admission",
+          "jobs": [
+            {
+              "databaseId": 128488189728,
+              "name": "admission",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:21:41Z",
+              "completedAt": "2026-11-07T18:24:08Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42400894999/job/128488189728",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:43Z",
+                  "completedAt": "2026-11-07T18:21:45Z"
+                },
+                {
+                  "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:45Z",
+                  "completedAt": "2026-11-07T18:21:45Z"
+                },
+                {
+                  "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:45Z",
+                  "completedAt": "2026-11-07T18:21:46Z"
+                },
+                {
+                  "name": "Run actions/setup-go@v6",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:46Z",
+                  "completedAt": "2026-11-07T18:21:54Z"
+                },
+                {
+                  "name": "Compile the real platform admission validator",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:54Z",
+                  "completedAt": "2026-11-07T18:22:52Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4.3.1",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:22:52Z",
+                  "completedAt": "2026-11-07T18:22:53Z"
+                },
+                {
+                  "name": "Run python3 -m pip install PyYAML==6.0.3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:22:53Z",
+                  "completedAt": "2026-11-07T18:22:55Z"
+                },
+                {
+                  "name": "Check fixture syntax and chart contracts before provisioning",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:22:55Z",
+                  "completedAt": "2026-11-07T18:22:56Z"
+                },
+                {
+                  "name": "Install verified kind binary",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:22:56Z",
+                  "completedAt": "2026-11-07T18:22:56Z"
+                },
+                {
+                  "name": "Create disposable API server (no cloud credentials)",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:22:56Z",
+                  "completedAt": "2026-11-07T18:23:38Z"
+                },
+                {
+                  "name": "Verify rendered RBAC and CEL with real API admission",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:23:38Z",
+                  "completedAt": "2026-11-07T18:24:00Z"
+                },
+                {
+                  "name": "Remove disposable cluster",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:24:00Z",
+                  "completedAt": "2026-11-07T18:24:02Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "d8916fa32d452ce4140915591b52b9d524a41cc1",
+                    "observedAt": "2026-11-07T18:21:45.1487222Z"
+                  },
+                  {
+                    "sha": "aa46cb37e40470fda4c5cbf1e50bd12c9b887b0a",
+                    "observedAt": "2026-11-07T18:21:46.4977502Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [],
+                "services": [],
+                "cleanup": [
+                  {
+                    "marker": "kind_deleted_nodes",
+                    "observedAt": "2026-11-07T18:24:02.0257489Z"
+                  }
+                ]
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": true
+            }
+          ]
+        },
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T18:21:38Z",
+          "databaseId": 42400895002,
+          "event": "pull_request",
+          "headSha": "062a17fd7607c48928636522d73eb2884e58fb62",
+          "status": "completed",
+          "updatedAt": "2026-11-07T18:22:41Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42400895002",
+          "workflowName": "Charlie infrastructure",
+          "jobs": [
+            {
+              "databaseId": 128488189667,
+              "name": "scripts",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:21:40Z",
+              "completedAt": "2026-11-07T18:22:18Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42400895002/job/128488189667",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:43Z",
+                  "completedAt": "2026-11-07T18:21:44Z"
+                },
+                {
+                  "name": "Read pinned Terraform version",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:44Z",
+                  "completedAt": "2026-11-07T18:21:44Z"
+                },
+                {
+                  "name": "Run hashicorp/setup-terraform@v3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:44Z",
+                  "completedAt": "2026-11-07T18:21:45Z"
+                },
+                {
+                  "name": "Run actions/setup-python@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:45Z",
+                  "completedAt": "2026-11-07T18:21:45Z"
+                },
+                {
+                  "name": "Detect AWS deployment input changes",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:45Z",
+                  "completedAt": "2026-11-07T18:21:45Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4.3.1",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:45Z",
+                  "completedAt": "2026-11-07T18:21:46Z"
+                },
+                {
+                  "name": "Run actions/setup-node@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:46Z",
+                  "completedAt": "2026-11-07T18:21:47Z"
+                },
+                {
+                  "name": "Run python3 -m pip install PyYAML==6.0.3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:47Z",
+                  "completedAt": "2026-11-07T18:21:48Z"
+                },
+                {
+                  "name": "Run make tf-fmt-check ci-test inventory-check config-check",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:48Z",
+                  "completedAt": "2026-11-07T18:22:15Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "d8916fa32d452ce4140915591b52b9d524a41cc1",
+                    "observedAt": "2026-11-07T18:21:44.5112161Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [],
+                "services": [],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            },
+            {
+              "databaseId": 128488189853,
+              "name": "helm",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:21:40Z",
+              "completedAt": "2026-11-07T18:22:34Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42400895002/job/128488189853",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:42Z",
+                  "completedAt": "2026-11-07T18:21:42Z"
+                },
+                {
+                  "name": "Run actions/setup-python@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:42Z",
+                  "completedAt": "2026-11-07T18:21:42Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4.3.1",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:42Z",
+                  "completedAt": "2026-11-07T18:21:43Z"
+                },
+                {
+                  "name": "Run python3 -m pip install PyYAML==6.0.3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:43Z",
+                  "completedAt": "2026-11-07T18:21:44Z"
+                },
+                {
+                  "name": "Run make helm-check",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:21:44Z",
+                  "completedAt": "2026-11-07T18:22:32Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "d8916fa32d452ce4140915591b52b9d524a41cc1",
+                    "observedAt": "2026-11-07T18:21:42.7452462Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [],
+                "services": [],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "headRefOid": "1121537a7999b6d3b4d43e0d4c9a25671fce64d6",
+      "mergedAt": "2026-11-07T18:35:05Z",
+      "number": 166,
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/pull/166",
+      "repository": "2026-Softbank-Hackathon-Charlie/infra",
+      "mergeSha": "f705e99f81a0888d890c92254c2fd822a907c62c",
+      "runs": [
+        {
+          "conclusion": "success",
+          "createdAt": "2026-11-07T18:28:44Z",
+          "databaseId": 42401481033,
+          "event": "pull_request",
+          "headSha": "1121537a7999b6d3b4d43e0d4c9a25671fce64d6",
+          "status": "completed",
+          "updatedAt": "2026-11-07T18:29:44Z",
+          "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42401481033",
+          "workflowName": "Charlie infrastructure",
+          "jobs": [
+            {
+              "databaseId": 128489997737,
+              "name": "helm",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:28:46Z",
+              "completedAt": "2026-11-07T18:29:33Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42401481033/job/128489997737",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:48Z",
+                  "completedAt": "2026-11-07T18:28:49Z"
+                },
+                {
+                  "name": "Run actions/setup-python@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:49Z",
+                  "completedAt": "2026-11-07T18:28:49Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4.3.1",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:49Z",
+                  "completedAt": "2026-11-07T18:28:50Z"
+                },
+                {
+                  "name": "Run python3 -m pip install PyYAML==6.0.3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:50Z",
+                  "completedAt": "2026-11-07T18:28:51Z"
+                },
+                {
+                  "name": "Run make helm-check",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:51Z",
+                  "completedAt": "2026-11-07T18:29:31Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "f806d8d95ff47e0ab96b1fc5798dfac1dabfffc3",
+                    "observedAt": "2026-11-07T18:28:49.1814781Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [],
+                "services": [],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            },
+            {
+              "databaseId": 128489997989,
+              "name": "scripts",
+              "status": "completed",
+              "conclusion": "success",
+              "startedAt": "2026-11-07T18:28:46Z",
+              "completedAt": "2026-11-07T18:29:29Z",
+              "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/actions/runs/42401481033/job/128489997989",
+              "steps": [
+                {
+                  "name": "Run actions/checkout@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:49Z",
+                  "completedAt": "2026-11-07T18:28:50Z"
+                },
+                {
+                  "name": "Read pinned Terraform version",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:50Z",
+                  "completedAt": "2026-11-07T18:28:50Z"
+                },
+                {
+                  "name": "Run hashicorp/setup-terraform@v3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:50Z",
+                  "completedAt": "2026-11-07T18:28:52Z"
+                },
+                {
+                  "name": "Run actions/setup-python@v5",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:52Z",
+                  "completedAt": "2026-11-07T18:28:52Z"
+                },
+                {
+                  "name": "Detect AWS deployment input changes",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:52Z",
+                  "completedAt": "2026-11-07T18:28:52Z"
+                },
+                {
+                  "name": "Run azure/setup-helm@v4.3.1",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:52Z",
+                  "completedAt": "2026-11-07T18:28:53Z"
+                },
+                {
+                  "name": "Run actions/setup-node@v4",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:53Z",
+                  "completedAt": "2026-11-07T18:28:54Z"
+                },
+                {
+                  "name": "Run python3 -m pip install PyYAML==6.0.3",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:54Z",
+                  "completedAt": "2026-11-07T18:28:56Z"
+                },
+                {
+                  "name": "Run make tf-fmt-check ci-test inventory-check config-check",
+                  "status": "completed",
+                  "conclusion": "success",
+                  "startedAt": "2026-11-07T18:28:56Z",
+                  "completedAt": "2026-11-07T18:29:26Z"
+                }
+              ],
+              "executionMarkers": {
+                "checkedOutCommits": [
+                  {
+                    "sha": "f806d8d95ff47e0ab96b1fc5798dfac1dabfffc3",
+                    "observedAt": "2026-11-07T18:28:50.7453655Z"
+                  }
+                ],
+                "tests": [],
+                "packagePasses": [],
+                "services": [],
+                "cleanup": []
+              },
+              "logInspection": "allowlisted_markers_extracted_raw_log_discarded",
+              "cleanupObserved": null,
+              "cleanupLimitation": "No allowlisted deletion marker observed; successful cleanup step or implicit t.TempDir/runner teardown is not asserted as deletion proof."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "sourceBindings": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "805b081d2868b8110b5048eb836f5dd71425193162872a9f7b69b7e42679dd2f",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/.github/workflows/ci.yml",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [],
+      "conditionalSkipPresent": false,
+      "scriptReferences": [
+        "test/tf-handoff.sh"
+      ],
+      "testInvocations": [
+        "go test -race ./...",
+        "go test -race -tags minio ./internal/storage/... ./internal/envs/... ./internal/apps/..."
+      ]
+    },
+    {
+      "path": ".github/workflows/fileguard.yml",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "b2d946a6b4bf3c4998881ad2fe9db3a9342ab147496c8032754a1b023fdd66da",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/.github/workflows/fileguard.yml",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [],
+      "conditionalSkipPresent": false,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": "cmd/gateway/exclusive_linux_test.go",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "00618d80c34152018da8b2925239992cec07853c8f50a39f65ef5b31d040ad23",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/cmd/gateway/exclusive_linux_test.go",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [
+        "TestExclusiveProcessFailover",
+        "TestOwnerMarkerRemainsOnUncleanState",
+        "TestExclusiveUnknownInflightWriteCannotBeReleased",
+        "TestExclusiveLockStableAcrossStateRename"
+      ],
+      "conditionalSkipPresent": false,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": "internal/store/postgres_test.go",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "5a821194dd97518f087e8f1a1914d395bd7009efff4da3c453e5387af25bcae9",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/internal/store/postgres_test.go",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [
+        "TestPostgresConformance",
+        "TestOpenTwiceIsNoop",
+        "TestOpenConcurrent",
+        "TestMigrationPlanRevisionCountsExistingAttachments"
+      ],
+      "conditionalSkipPresent": true,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": "internal/onprem/kind_registration_test.go",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "8b242f6299cff0f6d0f1b2f52e4702be0e3dacbf0adca5bd77f59d72f5c21ddf",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/internal/onprem/kind_registration_test.go",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [
+        "TestRealBootstrapOnDisposableKind"
+      ],
+      "conditionalSkipPresent": true,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": "internal/onprem/kube_runtime_test.go",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "8b3223091609339c5fb21504ee37fb7302005fd7fec6efe8b3c2b9f9beab48e1",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/internal/onprem/kube_runtime_test.go",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [
+        "TestManagementAdmissionReadinessRequiresEveryPolicy",
+        "TestManagementAdmissionReadinessUsesOnlyDryRuns",
+        "TestKubeRuntimeNeverReadsArgoCredentials",
+        "TestKubeRuntimeRejectsCredentialReadPermissions",
+        "TestUnconditionalSecretUpdateOnDisposableKind",
+        "TestKubeRuntimeObservesAdmissionAndHTTPProof",
+        "TestKubeRuntimeRouteOwnershipAndEndpoint",
+        "TestKubeRuntimePublishRestoresAndRefreshesCredentials",
+        "TestKubeRuntimeInspectPinsUIDAndRejectsArbitraryEndpoint",
+        "TestKubeRuntimeCreatesRestrictedOwnedProbe"
+      ],
+      "conditionalSkipPresent": true,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": "internal/fileguard/cache_test.go",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "554a11f89db01a43406c4a6e45a04e854b9ccd0a48399907d411ca25daacb1be",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/internal/fileguard/cache_test.go",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [
+        "TestContentCacheConcurrentAccessAndCopiesAreIsolated",
+        "TestLocalRcloneSuccessfulReturnMigrationStillReadsAndVerifies",
+        "TestContentCacheReusesOnlyExactBytesAndPolicyScope",
+        "TestContentCacheStillInspectsCurrentObjectPath",
+        "TestCachedArchivesConsumeExpansionAndMemberBudgets",
+        "TestContentCacheEvictsAndNeverCachesFailures"
+      ],
+      "conditionalSkipPresent": true,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": "internal/fileguard/disk_linux_test.go",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "d53ab86850a085471ab2e14fcae04b78b68456ff752cb5928763c4ca60ebb53f",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/internal/fileguard/disk_linux_test.go",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [
+        "TestRealStagingDiskFull"
+      ],
+      "conditionalSkipPresent": true,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": "internal/fileguard/cold_benchmark_linux_test.go",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "ede72561f01eb4326e2c6ec1e38f45056a825ed02f4bb69a26f5465f617a6ab4",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/internal/fileguard/cold_benchmark_linux_test.go",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [],
+      "conditionalSkipPresent": true,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": "test/e2e/run.sh",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "0c30b07468a7853d4e01d966f0560ad0f207ad83071306764a0a626a7f6157b7",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/test/e2e/run.sh",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [],
+      "conditionalSkipPresent": false,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": "test/e2e/moimroom/run.sh",
+      "ref": "a89634a66bd7bac45efdc3facf556e6feadcb3b2",
+      "sha256": "b4bc732bf7148cf55cd150b42984146cd3203481a30730f1e887895336b88b9e",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/platform/blob/a89634a66bd7bac45efdc3facf556e6feadcb3b2/test/e2e/moimroom/run.sh",
+      "repository": "2026-Softbank-Hackathon-Charlie/platform",
+      "declaredTestNames": [],
+      "conditionalSkipPresent": false,
+      "scriptReferences": [],
+      "testInvocations": []
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "ref": "ba2322bd5e61e8a8da6b59effa16a5fff06a5486",
+      "sha256": "08a2cf313bbba99ccd1f06d4cce24f1aac8679beadd063c009eae2acd8722108",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/blob/ba2322bd5e61e8a8da6b59effa16a5fff06a5486/.github/workflows/ci.yml",
+      "repository": "2026-Softbank-Hackathon-Charlie/migration-engine",
+      "declaredTestNames": [],
+      "conditionalSkipPresent": false,
+      "scriptReferences": [
+        "test/cross-cluster-rehearsal/run.sh",
+        "test/integration/run.sh"
+      ],
+      "testInvocations": []
+    },
+    {
+      "path": "test/integration/run.sh",
+      "ref": "ba2322bd5e61e8a8da6b59effa16a5fff06a5486",
+      "sha256": "d474f8fa6da0c0da6f9843f4f0858eb21466668f6d45b7b2dc85f3805655a156",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/blob/ba2322bd5e61e8a8da6b59effa16a5fff06a5486/test/integration/run.sh",
+      "repository": "2026-Softbank-Hackathon-Charlie/migration-engine",
+      "declaredTestNames": [],
+      "conditionalSkipPresent": false,
+      "scriptReferences": [],
+      "testInvocations": [
+        "go test -tags integration -count=1 -p 1 \"$@\" ./pkg/pg/... ./pkg/verify/...",
+        "go test -tags integration,writefence -count=1 \"$@\" -run '^TestSourceHBAWriteFence$' ./pkg/pg/..."
+      ]
+    },
+    {
+      "path": "test/cross-cluster-rehearsal/run.sh",
+      "ref": "ba2322bd5e61e8a8da6b59effa16a5fff06a5486",
+      "sha256": "b3fc56f47de4add0a35da070edb4e4bd4b715f127dd464f57a93407473f9276f",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/migration-engine/blob/ba2322bd5e61e8a8da6b59effa16a5fff06a5486/test/cross-cluster-rehearsal/run.sh",
+      "repository": "2026-Softbank-Hackathon-Charlie/migration-engine",
+      "declaredTestNames": [],
+      "conditionalSkipPresent": false,
+      "scriptReferences": [],
+      "testInvocations": [
+        "go test -tags cnpgfence -count=1 -timeout 15m -run '^TestSourceWriteFenceCNPGShutdownCheckpoint$' -v ./pkg/engine"
+      ]
+    },
+    {
+      "path": ".github/workflows/onprem-admission.yml",
+      "ref": "5b905d81b0527113834f549ba44fd5d7b9ab22d8",
+      "sha256": "c350ef674e005c3e9e3fd36a2c35dbd9d5928cc16773d4fdbc7658278fcc3965",
+      "url": "https://github.com/2026-Softbank-Hackathon-Charlie/infra/blob/5b905d81b0527113834f549ba44fd5d7b9ab22d8/.github/workflows/onprem-admission.yml",
+      "repository": "2026-Softbank-Hackathon-Charlie/infra",
+      "declaredTestNames": [],
+      "conditionalSkipPresent": false,
+      "scriptReferences": [
+        "scripts/test-onprem-admission.py"
+      ],
+      "testInvocations": []
+    }
+  ],
+  "coverageInterpretation": [
+    {
+      "component": "PostgreSQL primary/streaming standby/HBA fence",
+      "classification": "actual_disposable_Docker_services",
+      "script": "migration-engine:test/integration/run.sh",
+      "conditions": "go job explicitly executes integration tags with disposable DSNs; trap compose down output is suppressed, so no cleanup claim without marker"
+    },
+    {
+      "component": "CNPG write fence/cross-cluster checkpoint",
+      "classification": "actual_two_disposable_kind_clusters_and_CNPG",
+      "script": "migration-engine:test/cross-cluster-rehearsal/run.sh",
+      "conditions": "CI SOURCE_WRITE_FENCE_REHEARSAL=1 selects only TestSourceWriteFenceCNPGShutdownCheckpoint and exits before generic forward/back migration scenarios; cloud/onprem are fixture names, not AWS/GCP/laptop"
+    },
+    {
+      "component": "Gateway pod owner failover",
+      "classification": "actual_two_independent_HTTP_processes_on_one_local_filesystem",
+      "script": "platform:cmd/gateway/exclusive_linux_test.go",
+      "conditions": "included in go test -race ./... on Linux; real SIGTERM/SIGKILL, streaming/Upgrade and unknown remote commit gates; no per-test verbose marker in generic go job unless present; no production activation/node/region HA claim"
+    },
+    {
+      "component": "File snapshot transfer and return-migration cache",
+      "classification": "actual_local_rclone_in_dedicated_fileguard_job",
+      "script": "platform:internal/fileguard/cache_test.go",
+      "conditions": "real-rclone installs rclone then runs -race -count=1 -v; exact PASS/SKIP markers retained; default ci go package green alone does not prove rclone because tests can Skip when binary missing"
+    },
+    {
+      "component": "MinIO storage driver build/test",
+      "classification": "minio_build_tag_driver_tests_not_real_MinIO_service_proof",
+      "script": "platform:.github/workflows/ci.yml",
+      "conditions": "minio-tag job verifies driver code compilation/unit tests; no actual MinIO service startup or full file pipeline is inferred"
+    },
+    {
+      "component": "Onprem credential admission",
+      "classification": "actual_disposable_kind_API_with_rendered_RBAC_CEL_and_pinned_platform_webhook",
+      "script": "infra:scripts/test-onprem-admission.py",
+      "conditions": "uses a pinned platform validator checkout; distinct from latest platform main and real enrolled laptop"
+    },
+    {
+      "component": "Infra chart/parity/observability preparation",
+      "classification": "static_Helm_render_and_local_fixture_tests",
+      "script": "infra:make helm-check / make ci-test",
+      "conditions": "green proves manifest and contract validation, not deployed collectors, live credentials, Terraform apply or operational onprem telemetry"
+    }
+  ],
+  "fullPipelineGap": {
+    "existingScripts": [
+      "platform:test/e2e/run.sh",
+      "platform:test/e2e/moimroom/run.sh",
+      "platform:test/e2e/deploy/run.sh",
+      "migration-engine:test/rehearsal/run.sh"
+    ],
+    "executedByCollectedWorkflows": false,
+    "fullScriptNewExecutionPerformed": false,
+    "coordinator": "/root/isolated_pipeline_e2e owns compatibility audit and a possible minimal manual-only disposable workflow",
+    "limitation": "Component CI successes must not be combined into a claim that a current full API-to-engine-to-PG-to-gateway-to-MinIO/rclone pipeline or a live cloud/onprem migration ran successfully."
+  },
+  "limitations": [
+    "GitHub run headSha, mergeSha and checkout markers are recorded separately; PR merge-ref checkout can differ from PR head.",
+    "Individual tests are marked observed only when verbose PASS/SKIP markers exist. Source membership plus package green is weaker evidence and retains skip conditions.",
+    "Cleanup is verified only from allowlisted deletion output; implicit cleanup or a green step alone is not claimed.",
+    "engine31 changes policy/docs; platform links engine30 3ede code. Content cache is in platform149, not engine31.",
+    "No production endpoints, cloud IAM/Secrets, real-model quality judges, production fault injection or live migrations were accessed or executed by this collection."
+  ]
+}

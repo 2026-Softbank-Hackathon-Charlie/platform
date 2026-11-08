@@ -1,0 +1,42 @@
+name: fileguard
+
+on:
+  pull_request:
+    paths:
+      - internal/fileguard/**
+      - .github/workflows/fileguard.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fileguard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-rclone:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
+    steps:
+      - uses: actions/checkout@v5
+      - name: Private module access
+        env:
+          TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
+        run: |
+          test -n "$TOKEN"
+          export GIT_CONFIG_GLOBAL="$RUNNER_TEMP/gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install real rclone
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends rclone
+          rclone version
+      - name: Guard regression and real local transfer (race)
+        run: go test -race -count=1 -v ./internal/fileguard

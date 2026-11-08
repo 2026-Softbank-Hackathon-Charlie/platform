@@ -96,6 +96,15 @@ func TestRedeployEnvironments(t *testing.T) {
 	h := newHarness(t, withApps(""), withGitHub(gh, dep))
 	first := h.registerShop() // to gke and eks
 	h.finishDeployment(first.Id, store.DeployHealthy)
+	// This test needs a strictly later deployment. On coarse system clocks
+	// two HTTP requests can share created_at, whose tie-breaker is random ID.
+	deadline := time.Now().Add(5 * time.Second)
+	for !storeTime().After(first.CreatedAt) {
+		if time.Now().After(deadline) {
+			t.Fatal("clock did not advance past first deployment")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	code, b := h.do("POST", "/v1/apps/shop/deployments", opToken, map[string]any{"environments": []string{"gke"}})
 	if code != 202 {
 		t.Fatalf("deploy to gke: %d %s", code, b)
@@ -110,7 +119,7 @@ func TestRedeployEnvironments(t *testing.T) {
 	}
 	d := decode[apiv1.Deployment](t, b)
 	if len(d.Environments) != 1 || d.Environments[0].Env != "gke" || d.Commit != gkeOnly.Commit {
-		t.Fatalf("redeploy went to %+v", d.Environments)
+		t.Fatalf("redeploy went to %+v (first=%s, later=%s)", d.Environments, first.CreatedAt.Format(time.RFC3339Nano), gkeOnly.CreatedAt.Format(time.RFC3339Nano))
 	}
 	if a := h.lastAudit(); !strings.Contains(string(a.Detail), `"environments":["gke"]`) {
 		t.Fatalf("audit %s", a.Detail)

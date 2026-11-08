@@ -266,6 +266,10 @@ func scan(ctx context.Context, dir string, objects []object, reviews []Review, b
 }
 
 func scanEach(ctx context.Context, dir string, walk objectWalk, reviews []Review, binary string, outputs ...io.Writer) (Report, error) {
+	return scanEachCached(ctx, dir, walk, reviews, binary, nil, outputs...)
+}
+
+func scanEachCached(ctx context.Context, dir string, walk objectWalk, reviews []Review, binary string, memo *classificationMemo, outputs ...io.Writer) (Report, error) {
 	if binary != "" && !preflight.ValidContentReview(Review{SHA256: strings.Repeat("0", 64), Label: binary}) {
 		return Report{}, ErrOptions
 	}
@@ -297,7 +301,7 @@ func scanEach(ctx context.Context, dir string, walk objectWalk, reviews []Review
 		}
 		h := sha256.Sum256(b)
 		digest := hex.EncodeToString(h[:])
-		ls, err := s.inspectDigest(ctx, b, 0, digest)
+		ls, err := memo.inspect(ctx, &s, b, digest)
 		if err != nil {
 			return err
 		}

@@ -56,7 +56,11 @@ type BackendConfig struct {
 
 // Config configures a Gateway.
 type Config struct {
-	AIDemo *AIDemoConfig // opt-in native chat contract on the default app
+	AIDemo    *AIDemoConfig    // opt-in native chat contract on the default app
+	AIQuality *AIQualityConfig // opt-in paired quality gate for the native AI route
+	// AIFollow makes the AI demo route follow another app's write backend on
+	// a traffic gateway. Nil (the default) leaves the route to POST /v1/route.
+	AIFollow *AIFollowConfig
 	// Backends in a stable order; reads are picked in this order.
 	Backends []BackendConfig
 	// InitialBackend receives writes when there is no state file yet. Empty
@@ -262,6 +266,7 @@ func (c *Config) setDefaults() {
 	if c.HealthPath == "" {
 		c.HealthPath = DefaultHealthPath
 	}
+	c.setAIFollowDefaults()
 	if c.DefaultApp == "" {
 		c.DefaultApp = DefaultAppName
 	}

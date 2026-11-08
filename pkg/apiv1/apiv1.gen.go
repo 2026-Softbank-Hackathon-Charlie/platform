@@ -55,6 +55,96 @@ func (e AIRunStatus) Valid() bool {
 	}
 }
 
+// Defines values for AIServiceObservationActivityState.
+const (
+	AIServiceObservationActivityStateActive  AIServiceObservationActivityState = "active"
+	AIServiceObservationActivityStateIdle    AIServiceObservationActivityState = "idle"
+	AIServiceObservationActivityStateUnknown AIServiceObservationActivityState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the AIServiceObservationActivityState enum.
+func (e AIServiceObservationActivityState) Valid() bool {
+	switch e {
+	case AIServiceObservationActivityStateActive:
+		return true
+	case AIServiceObservationActivityStateIdle:
+		return true
+	case AIServiceObservationActivityStateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AIServiceObservationKind.
+const (
+	AIServiceObservationKindExternal   AIServiceObservationKind = "external"
+	AIServiceObservationKindManaged    AIServiceObservationKind = "managed"
+	AIServiceObservationKindSelfHosted AIServiceObservationKind = "self_hosted"
+	AIServiceObservationKindUnknown    AIServiceObservationKind = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the AIServiceObservationKind enum.
+func (e AIServiceObservationKind) Valid() bool {
+	switch e {
+	case AIServiceObservationKindExternal:
+		return true
+	case AIServiceObservationKindManaged:
+		return true
+	case AIServiceObservationKindSelfHosted:
+		return true
+	case AIServiceObservationKindUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AIServiceObservationLocationAccelerator.
+const (
+	AIServiceObservationLocationAcceleratorCpu     AIServiceObservationLocationAccelerator = "cpu"
+	AIServiceObservationLocationAcceleratorGpu     AIServiceObservationLocationAccelerator = "gpu"
+	AIServiceObservationLocationAcceleratorUnknown AIServiceObservationLocationAccelerator = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the AIServiceObservationLocationAccelerator enum.
+func (e AIServiceObservationLocationAccelerator) Valid() bool {
+	switch e {
+	case AIServiceObservationLocationAcceleratorCpu:
+		return true
+	case AIServiceObservationLocationAcceleratorGpu:
+		return true
+	case AIServiceObservationLocationAcceleratorUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AIServiceTopologySourcesStatus.
+const (
+	AIServiceTopologySourcesStatusNotConfigured AIServiceTopologySourcesStatus = "not_configured"
+	AIServiceTopologySourcesStatusObserved      AIServiceTopologySourcesStatus = "observed"
+	AIServiceTopologySourcesStatusUnavailable   AIServiceTopologySourcesStatus = "unavailable"
+	AIServiceTopologySourcesStatusUnobserved    AIServiceTopologySourcesStatus = "unobserved"
+)
+
+// Valid indicates whether the value is a known member of the AIServiceTopologySourcesStatus enum.
+func (e AIServiceTopologySourcesStatus) Valid() bool {
+	switch e {
+	case AIServiceTopologySourcesStatusNotConfigured:
+		return true
+	case AIServiceTopologySourcesStatusObserved:
+		return true
+	case AIServiceTopologySourcesStatusUnavailable:
+		return true
+	case AIServiceTopologySourcesStatusUnobserved:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AgentEventType.
 const (
 	AgentEventTypeBlocked    AgentEventType = "blocked"
@@ -469,6 +559,225 @@ func (e EnginePlanEndpointKind) Valid() bool {
 	case EnginePlanEndpointKindExternal:
 		return true
 	case EnginePlanEndpointKindNone:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LLMObservabilitySampleLimit.
+const (
+	LLMObservabilitySampleLimitN100 LLMObservabilitySampleLimit = 100
+)
+
+// Valid indicates whether the value is a known member of the LLMObservabilitySampleLimit enum.
+func (e LLMObservabilitySampleLimit) Valid() bool {
+	switch e {
+	case LLMObservabilitySampleLimitN100:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LLMObservabilitySourceName.
+const (
+	LLMObservabilitySourceNameLangfuse LLMObservabilitySourceName = "langfuse"
+)
+
+// Valid indicates whether the value is a known member of the LLMObservabilitySourceName enum.
+func (e LLMObservabilitySourceName) Valid() bool {
+	switch e {
+	case LLMObservabilitySourceNameLangfuse:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LLMObservabilitySourceStatus.
+const (
+	LLMObservabilitySourceStatusNotConfigured LLMObservabilitySourceStatus = "not_configured"
+	LLMObservabilitySourceStatusObserved      LLMObservabilitySourceStatus = "observed"
+	LLMObservabilitySourceStatusScopeUnmapped LLMObservabilitySourceStatus = "scope_unmapped"
+	LLMObservabilitySourceStatusUnavailable   LLMObservabilitySourceStatus = "unavailable"
+	LLMObservabilitySourceStatusUnobserved    LLMObservabilitySourceStatus = "unobserved"
+	LLMObservabilitySourceStatusUnsupported   LLMObservabilitySourceStatus = "unsupported"
+)
+
+// Valid indicates whether the value is a known member of the LLMObservabilitySourceStatus enum.
+func (e LLMObservabilitySourceStatus) Valid() bool {
+	switch e {
+	case LLMObservabilitySourceStatusNotConfigured:
+		return true
+	case LLMObservabilitySourceStatusObserved:
+		return true
+	case LLMObservabilitySourceStatusScopeUnmapped:
+		return true
+	case LLMObservabilitySourceStatusUnavailable:
+		return true
+	case LLMObservabilitySourceStatusUnobserved:
+		return true
+	case LLMObservabilitySourceStatusUnsupported:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LLMObservationLevel.
+const (
+	LLMObservationLevelDEBUG   LLMObservationLevel = "DEBUG"
+	LLMObservationLevelDEFAULT LLMObservationLevel = "DEFAULT"
+	LLMObservationLevelERROR   LLMObservationLevel = "ERROR"
+	LLMObservationLevelWARNING LLMObservationLevel = "WARNING"
+)
+
+// Valid indicates whether the value is a known member of the LLMObservationLevel enum.
+func (e LLMObservationLevel) Valid() bool {
+	switch e {
+	case LLMObservationLevelDEBUG:
+		return true
+	case LLMObservationLevelDEFAULT:
+		return true
+	case LLMObservationLevelERROR:
+		return true
+	case LLMObservationLevelWARNING:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationAction.
+const (
+	MigrationRecommendationActionInsufficient MigrationRecommendationAction = "insufficient"
+	MigrationRecommendationActionMove         MigrationRecommendationAction = "move"
+	MigrationRecommendationActionStay         MigrationRecommendationAction = "stay"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationAction enum.
+func (e MigrationRecommendationAction) Valid() bool {
+	switch e {
+	case MigrationRecommendationActionInsufficient:
+		return true
+	case MigrationRecommendationActionMove:
+		return true
+	case MigrationRecommendationActionStay:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationResultErrorCode.
+const (
+	MigrationRecommendationResultErrorCodeAiUnavailable MigrationRecommendationResultErrorCode = "ai_unavailable"
+	MigrationRecommendationResultErrorCodeInvalidInput  MigrationRecommendationResultErrorCode = "invalid_input"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationResultErrorCode enum.
+func (e MigrationRecommendationResultErrorCode) Valid() bool {
+	switch e {
+	case MigrationRecommendationResultErrorCodeAiUnavailable:
+		return true
+	case MigrationRecommendationResultErrorCodeInvalidInput:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationResultRecommendationsAction.
+const (
+	MigrationRecommendationResultRecommendationsActionInsufficient MigrationRecommendationResultRecommendationsAction = "insufficient"
+	MigrationRecommendationResultRecommendationsActionMove         MigrationRecommendationResultRecommendationsAction = "move"
+	MigrationRecommendationResultRecommendationsActionStay         MigrationRecommendationResultRecommendationsAction = "stay"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationResultRecommendationsAction enum.
+func (e MigrationRecommendationResultRecommendationsAction) Valid() bool {
+	switch e {
+	case MigrationRecommendationResultRecommendationsActionInsufficient:
+		return true
+	case MigrationRecommendationResultRecommendationsActionMove:
+		return true
+	case MigrationRecommendationResultRecommendationsActionStay:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationResultStatus.
+const (
+	MigrationRecommendationResultStatusReady       MigrationRecommendationResultStatus = "ready"
+	MigrationRecommendationResultStatusUnavailable MigrationRecommendationResultStatus = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationResultStatus enum.
+func (e MigrationRecommendationResultStatus) Valid() bool {
+	switch e {
+	case MigrationRecommendationResultStatusReady:
+		return true
+	case MigrationRecommendationResultStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationsCacheStatus.
+const (
+	MigrationRecommendationsCacheStatusCached MigrationRecommendationsCacheStatus = "cached"
+	MigrationRecommendationsCacheStatusFresh  MigrationRecommendationsCacheStatus = "fresh"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationsCacheStatus enum.
+func (e MigrationRecommendationsCacheStatus) Valid() bool {
+	switch e {
+	case MigrationRecommendationsCacheStatusCached:
+		return true
+	case MigrationRecommendationsCacheStatusFresh:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationsStatus.
+const (
+	MigrationRecommendationsStatusGenerating    MigrationRecommendationsStatus = "generating"
+	MigrationRecommendationsStatusNotConfigured MigrationRecommendationsStatus = "not_configured"
+	MigrationRecommendationsStatusReady         MigrationRecommendationsStatus = "ready"
+	MigrationRecommendationsStatusUnavailable   MigrationRecommendationsStatus = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationsStatus enum.
+func (e MigrationRecommendationsStatus) Valid() bool {
+	switch e {
+	case MigrationRecommendationsStatusGenerating:
+		return true
+	case MigrationRecommendationsStatusNotConfigured:
+		return true
+	case MigrationRecommendationsStatusReady:
+		return true
+	case MigrationRecommendationsStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MigrationRecommendationsTtlSeconds.
+const (
+	MigrationRecommendationsTtlSecondsN900 MigrationRecommendationsTtlSeconds = 900
+)
+
+// Valid indicates whether the value is a known member of the MigrationRecommendationsTtlSeconds enum.
+func (e MigrationRecommendationsTtlSeconds) Valid() bool {
+	switch e {
+	case MigrationRecommendationsTtlSecondsN900:
 		return true
 	default:
 		return false
@@ -1771,6 +2080,42 @@ func (e StreamAgentEventsParamsFormat) Valid() bool {
 	}
 }
 
+// Defines values for GetOnpremAgentBinaryParamsArch.
+const (
+	GetOnpremAgentBinaryParamsArchAmd64 GetOnpremAgentBinaryParamsArch = "amd64"
+	GetOnpremAgentBinaryParamsArchArm64 GetOnpremAgentBinaryParamsArch = "arm64"
+)
+
+// Valid indicates whether the value is a known member of the GetOnpremAgentBinaryParamsArch enum.
+func (e GetOnpremAgentBinaryParamsArch) Valid() bool {
+	switch e {
+	case GetOnpremAgentBinaryParamsArchAmd64:
+		return true
+	case GetOnpremAgentBinaryParamsArchArm64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetOnpremBootstrapParamsArch.
+const (
+	GetOnpremBootstrapParamsArchAmd64 GetOnpremBootstrapParamsArch = "amd64"
+	GetOnpremBootstrapParamsArchArm64 GetOnpremBootstrapParamsArch = "arm64"
+)
+
+// Valid indicates whether the value is a known member of the GetOnpremBootstrapParamsArch enum.
+func (e GetOnpremBootstrapParamsArch) Valid() bool {
+	switch e {
+	case GetOnpremBootstrapParamsArchAmd64:
+		return true
+	case GetOnpremBootstrapParamsArchArm64:
+		return true
+	default:
+		return false
+	}
+}
+
 // AIActivity defines model for AIActivity.
 type AIActivity struct {
 	Events  []AIActivityEvent `json:"events"`
@@ -1859,6 +2204,68 @@ type AIRunRequest struct {
 	// Example: eks
 	Target string `json:"target"`
 }
+
+// AIServiceObservation defines model for AIServiceObservation.
+type AIServiceObservation struct {
+	Activity struct {
+		LastSeen *time.Time `json:"lastSeen,omitempty"`
+
+		// Requests Observed exported client-span count in the window, not an estimate of all requests.
+		Requests *int64                            `json:"requests,omitempty"`
+		State    AIServiceObservationActivityState `json:"state"`
+	} `json:"activity"`
+
+	// CallerEnv Empty when the caller deployment was not instrumented.
+	CallerEnv string `json:"callerEnv"`
+	Evidence  []struct {
+		Detail     string    `json:"detail"`
+		ObservedAt time.Time `json:"observedAt"`
+		Source     string    `json:"source"`
+	} `json:"evidence"`
+
+	// Id Route identity for this caller and physical service.
+	Id       string                   `json:"id"`
+	Kind     AIServiceObservationKind `json:"kind"`
+	Location struct {
+		Accelerator AIServiceObservationLocationAccelerator `json:"accelerator"`
+		Environment *string                                 `json:"environment,omitempty"`
+		Provider    *string                                 `json:"provider,omitempty"`
+		Region      *string                                 `json:"region,omitempty"`
+	} `json:"location"`
+	Model *string `json:"model,omitempty"`
+	Name  string  `json:"name"`
+
+	// ServiceId Observed physical-service identity, shared across callers.
+	ServiceId string `json:"serviceId"`
+}
+
+// AIServiceObservationActivityState defines model for AIServiceObservation.Activity.State.
+type AIServiceObservationActivityState string
+
+// AIServiceObservationKind defines model for AIServiceObservation.Kind.
+type AIServiceObservationKind string
+
+// AIServiceObservationLocationAccelerator defines model for AIServiceObservation.Location.Accelerator.
+type AIServiceObservationLocationAccelerator string
+
+// AIServiceTopology defines model for AIServiceTopology.
+type AIServiceTopology struct {
+	App         string                 `json:"app"`
+	GeneratedAt time.Time              `json:"generatedAt"`
+	Services    []AIServiceObservation `json:"services"`
+	Sources     []struct {
+		Message string                         `json:"message"`
+		Name    string                         `json:"name"`
+		Status  AIServiceTopologySourcesStatus `json:"status"`
+	} `json:"sources"`
+	Window struct {
+		From time.Time `json:"from"`
+		To   time.Time `json:"to"`
+	} `json:"window"`
+}
+
+// AIServiceTopologySourcesStatus defines model for AIServiceTopology.Sources.Status.
+type AIServiceTopologySourcesStatus string
 
 // AbortRequest defines model for AbortRequest.
 type AbortRequest struct {
@@ -3560,6 +3967,82 @@ type InstanceSecrets struct {
 	Secrets []AppSecretInfo `json:"secrets"`
 }
 
+// LLMMetrics defines model for LLMMetrics.
+type LLMMetrics struct {
+	// CostUsd Reported Langfuse cost in USD; never estimated by the console.
+	CostUsd       *float32 `json:"costUsd"`
+	InputTokens   *float32 `json:"inputTokens"`
+	LatencyMillis *float32 `json:"latencyMillis"`
+	OutputTokens  *float32 `json:"outputTokens"`
+	TotalTokens   *float32 `json:"totalTokens"`
+}
+
+// LLMObservability defines model for LLMObservability.
+type LLMObservability struct {
+	App          string           `json:"app"`
+	GeneratedAt  time.Time        `json:"generatedAt"`
+	Observations []LLMObservation `json:"observations"`
+	Sample       struct {
+		Limit     LLMObservabilitySampleLimit `json:"limit"`
+		Returned  int                         `json:"returned"`
+		Truncated bool                        `json:"truncated"`
+	} `json:"sample"`
+	Source struct {
+		Name    LLMObservabilitySourceName   `json:"name"`
+		Reason  string                       `json:"reason"`
+		Status  LLMObservabilitySourceStatus `json:"status"`
+		Version *string                      `json:"version,omitempty"`
+	} `json:"source"`
+	Summary *LLMSummary `json:"summary"`
+	Window  struct {
+		From time.Time `json:"from"`
+		To   time.Time `json:"to"`
+	} `json:"window"`
+}
+
+// LLMObservabilitySampleLimit defines model for LLMObservability.Sample.Limit.
+type LLMObservabilitySampleLimit int
+
+// LLMObservabilitySourceName defines model for LLMObservability.Source.Name.
+type LLMObservabilitySourceName string
+
+// LLMObservabilitySourceStatus defines model for LLMObservability.Source.Status.
+type LLMObservabilitySourceStatus string
+
+// LLMObservation defines model for LLMObservation.
+type LLMObservation struct {
+	// CostUsd Reported Langfuse cost in USD; never estimated by the console.
+	CostUsd       *float32             `json:"costUsd"`
+	Id            string               `json:"id"`
+	InputTokens   *float32             `json:"inputTokens"`
+	LatencyMillis *float32             `json:"latencyMillis"`
+	Level         *LLMObservationLevel `json:"level"`
+	Model         *string              `json:"model,omitempty"`
+	OutputTokens  *float32             `json:"outputTokens"`
+	StartTime     time.Time            `json:"startTime"`
+	TotalTokens   *float32             `json:"totalTokens"`
+	TraceId       string               `json:"traceId"`
+
+	// Url Optional credential-free trace link from the trusted server UI base.
+	Url *string `json:"url,omitempty"`
+}
+
+// LLMObservationLevel defines model for LLMObservation.Level.
+type LLMObservationLevel string
+
+// LLMSummary defines model for LLMSummary.
+type LLMSummary struct {
+	// CostUsd Reported Langfuse cost in USD; never estimated by the console.
+	CostUsd       *float32 `json:"costUsd"`
+	Errors        *int     `json:"errors"`
+	Generations   int      `json:"generations"`
+	InputTokens   *float32 `json:"inputTokens"`
+	LatencyMillis *float32 `json:"latencyMillis"`
+	OutputTokens  *float32 `json:"outputTokens"`
+	TotalTokens   *float32 `json:"totalTokens"`
+	Traces        int      `json:"traces"`
+}
+
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
 	Password string `json:"password"`
@@ -3594,6 +4077,80 @@ type MatrixRoute struct {
 	Status *RunStatus `json:"status,omitempty"`
 	Target string     `json:"target"`
 }
+
+// MigrationRecommendation defines model for MigrationRecommendation.
+type MigrationRecommendation struct {
+	Action                     MigrationRecommendationAction   `json:"action"`
+	App                        string                          `json:"app"`
+	EstimatedMonthlySavingsUsd *float64                        `json:"estimatedMonthlySavingsUsd"`
+	Id                         string                          `json:"id"`
+	Missing                    []string                        `json:"missing"`
+	Reasons                    []string                        `json:"reasons"`
+	Source                     *string                         `json:"source"`
+	Sources                    []MigrationRecommendationSource `json:"sources"`
+	Target                     *string                         `json:"target"`
+	Title                      string                          `json:"title"`
+}
+
+// MigrationRecommendationAction defines model for MigrationRecommendation.Action.
+type MigrationRecommendationAction string
+
+// MigrationRecommendationResult defines model for MigrationRecommendationResult.
+type MigrationRecommendationResult struct {
+	ErrorCode       *MigrationRecommendationResultErrorCode `json:"errorCode,omitempty"`
+	Model           *string                                 `json:"model,omitempty"`
+	Nonce           string                                  `json:"nonce"`
+	Recommendations *[]struct {
+		Action  MigrationRecommendationResultRecommendationsAction `json:"action"`
+		Id      string                                             `json:"id"`
+		Reasons []string                                           `json:"reasons"`
+		Title   *string                                            `json:"title,omitempty"`
+	} `json:"recommendations,omitempty"`
+	SessionId  *string                             `json:"sessionId,omitempty"`
+	SnapshotId string                              `json:"snapshotId"`
+	Status     MigrationRecommendationResultStatus `json:"status"`
+}
+
+// MigrationRecommendationResultErrorCode defines model for MigrationRecommendationResult.ErrorCode.
+type MigrationRecommendationResultErrorCode string
+
+// MigrationRecommendationResultRecommendationsAction defines model for MigrationRecommendationResult.Recommendations.Action.
+type MigrationRecommendationResultRecommendationsAction string
+
+// MigrationRecommendationResultStatus defines model for MigrationRecommendationResult.Status.
+type MigrationRecommendationResultStatus string
+
+// MigrationRecommendationSource defines model for MigrationRecommendationSource.
+type MigrationRecommendationSource struct {
+	ObservedAt *time.Time `json:"observedAt"`
+	Title      string     `json:"title"`
+	Url        string     `json:"url"`
+}
+
+// MigrationRecommendations defines model for MigrationRecommendations.
+type MigrationRecommendations struct {
+	Ai struct {
+		Model     *string `json:"model"`
+		SessionId *string `json:"sessionId"`
+		Status    string  `json:"status"`
+	} `json:"ai"`
+	CacheStatus     MigrationRecommendationsCacheStatus `json:"cacheStatus"`
+	GeneratedAt     time.Time                           `json:"generatedAt"`
+	NextCheckAt     *time.Time                          `json:"nextCheckAt"`
+	NextRefreshAt   time.Time                           `json:"nextRefreshAt"`
+	Recommendations []MigrationRecommendation           `json:"recommendations"`
+	Status          MigrationRecommendationsStatus      `json:"status"`
+	TtlSeconds      MigrationRecommendationsTtlSeconds  `json:"ttlSeconds"`
+}
+
+// MigrationRecommendationsCacheStatus defines model for MigrationRecommendations.CacheStatus.
+type MigrationRecommendationsCacheStatus string
+
+// MigrationRecommendationsStatus defines model for MigrationRecommendations.Status.
+type MigrationRecommendationsStatus string
+
+// MigrationRecommendationsTtlSeconds defines model for MigrationRecommendations.TtlSeconds.
+type MigrationRecommendationsTtlSeconds int
 
 // NodeSummary defines model for NodeSummary.
 type NodeSummary struct {
@@ -3999,8 +4556,11 @@ type OnpremEnrollment struct {
 	Environment string                  `json:"environment"`
 	ExpiresAt   time.Time               `json:"expiresAt"`
 	Id          string                  `json:"id"`
-	Status      string                  `json:"status"`
-	UpdatedAt   time.Time               `json:"updatedAt"`
+
+	// Stage Last persisted registration phase.
+	Stage     *string   `json:"stage,omitempty"`
+	Status    string    `json:"status"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // OnpremEnrollmentCheck defines model for OnpremEnrollmentCheck.
@@ -5522,7 +6082,10 @@ type WrittenRecordStats struct {
 	Count      int64                       `json:"count"`
 	Coverage   *WrittenRecordStatsCoverage `json:"coverage,omitempty"`
 	Generation *string                     `json:"generation,omitempty"`
-	LastSeq    *int64                      `json:"lastSeq,omitempty"`
+
+	// LastReceivedAt Server receipt time of the latest valid authenticated application collector batch, including identical retries. Independent of the committed-write timestamp; absent when collector activity has not been observed.
+	LastReceivedAt *time.Time `json:"lastReceivedAt,omitempty"`
+	LastSeq        *int64     `json:"lastSeq,omitempty"`
 
 	// LatestAt the newest record's time; absent when the stream is empty
 	LatestAt *time.Time               `json:"latestAt,omitempty"`
@@ -5648,12 +6211,22 @@ type ListAIRunsParams struct {
 	App *string `form:"app,omitempty" json:"app,omitempty"`
 }
 
+// GetAppAIServicesParams defines parameters for GetAppAIServices.
+type GetAppAIServicesParams struct {
+	Minutes *int `form:"minutes,omitempty" json:"minutes,omitempty"`
+}
+
 // ListDeploymentsParams defines parameters for ListDeployments.
 type ListDeploymentsParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Branch Only the deployments of this branch's instance. It must be a branch the app deploys.
 	Branch *string `form:"branch,omitempty" json:"branch,omitempty"`
+}
+
+// GetAppLLMObservabilityParams defines parameters for GetAppLLMObservability.
+type GetAppLLMObservabilityParams struct {
+	Minutes *int `form:"minutes,omitempty" json:"minutes,omitempty"`
 }
 
 // GetAppObservabilityParams defines parameters for GetAppObservability.
@@ -5711,9 +6284,39 @@ type StreamOnboardingEventsParams struct {
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
+// ValidateOnpremClusterSecretJSONBody defines parameters for ValidateOnpremClusterSecret.
+type ValidateOnpremClusterSecretJSONBody map[string]interface{}
+
+// GetOnpremAgentBinaryParams defines parameters for GetOnpremAgentBinary.
+type GetOnpremAgentBinaryParams struct {
+	Arch GetOnpremAgentBinaryParamsArch `form:"arch" json:"arch"`
+}
+
+// GetOnpremAgentBinaryParamsArch defines parameters for GetOnpremAgentBinary.
+type GetOnpremAgentBinaryParamsArch string
+
 // CreateOnpremEnrollmentParams defines parameters for CreateOnpremEnrollment.
 type CreateOnpremEnrollmentParams struct {
 	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// GetOnpremBootstrapParams defines parameters for GetOnpremBootstrap.
+type GetOnpremBootstrapParams struct {
+	Arch GetOnpremBootstrapParamsArch `form:"arch" json:"arch"`
+}
+
+// GetOnpremBootstrapParamsArch defines parameters for GetOnpremBootstrap.
+type GetOnpremBootstrapParamsArch string
+
+// RegisterOnpremConnectionJSONBody defines parameters for RegisterOnpremConnection.
+type RegisterOnpremConnectionJSONBody struct {
+	ArgoToken string `json:"argoToken"`
+
+	// CaData Base64 encoded PEM CA.
+	CaData         string    `json:"caData"`
+	ClusterUID     string    `json:"clusterUID"`
+	PlatformToken  string    `json:"platformToken"`
+	TokenExpiresAt time.Time `json:"tokenExpiresAt"`
 }
 
 // GetSecurityParams defines parameters for GetSecurity.
@@ -5811,6 +6414,9 @@ type LoginJSONRequestBody = LoginRequest
 // CreatePushTokenJSONRequestBody defines body for CreatePushToken for application/json ContentType.
 type CreatePushTokenJSONRequestBody = PushTokenRequest
 
+// CompleteMigrationRecommendationJSONRequestBody defines body for CompleteMigrationRecommendation for application/json ContentType.
+type CompleteMigrationRecommendationJSONRequestBody = MigrationRecommendationResult
+
 // StartMigrationJSONRequestBody defines body for StartMigration for application/json ContentType.
 type StartMigrationJSONRequestBody = StartMigrationRequest
 
@@ -5829,11 +6435,17 @@ type StartOnboardingJSONRequestBody = OnboardingRequest
 // ApproveOnboardingJSONRequestBody defines body for ApproveOnboarding for application/json ContentType.
 type ApproveOnboardingJSONRequestBody = OnboardingApproveRequest
 
+// ValidateOnpremClusterSecretJSONRequestBody defines body for ValidateOnpremClusterSecret for application/json ContentType.
+type ValidateOnpremClusterSecretJSONRequestBody ValidateOnpremClusterSecretJSONBody
+
 // CreateOnpremEnrollmentJSONRequestBody defines body for CreateOnpremEnrollment for application/json ContentType.
 type CreateOnpremEnrollmentJSONRequestBody = OnpremEnrollmentCreateRequest
 
 // ClaimOnpremEnrollmentJSONRequestBody defines body for ClaimOnpremEnrollment for application/json ContentType.
 type ClaimOnpremEnrollmentJSONRequestBody = OnpremEnrollmentClaimRequest
+
+// RegisterOnpremConnectionJSONRequestBody defines body for RegisterOnpremConnection for application/json ContentType.
+type RegisterOnpremConnectionJSONRequestBody RegisterOnpremConnectionJSONBody
 
 // SubmitPlanJSONRequestBody defines body for SubmitPlan for application/json ContentType.
 type SubmitPlanJSONRequestBody = EnginePlan

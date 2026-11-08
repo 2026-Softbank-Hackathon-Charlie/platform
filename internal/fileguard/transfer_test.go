@@ -193,7 +193,7 @@ func TestTransferFailuresAndLimitsAreClosedAndRedacted(t *testing.T) {
 }
 
 func TestGlobalRcloneFlagsCannotChangeInspectedSet(t *testing.T) {
-	env := []string{"PATH=bin", "RCLONE_FILTER=- *", "RCLONE_DRY_RUN=true", "RCLONE_LINKS=true", "RCLONE_CONFIG=other.conf", "RCLONE_CONFIG_SRC_TYPE=s3", "RCLONE_S3_REGION=region", "RCLONE_GCS_LOCATION=region"}
+	env := []string{"PATH=bin", "RCLONE_FILTER=- *", "RCLONE_DRY_RUN=true", "RCLONE_LINKS=true", "RCLONE_CONFIG=other.conf", "RCLONE_CONFIG_SRC_TYPE=s3", "RCLONE_S3_REGION=region", "RCLONE_GCS_LOCATION=region", "RCLONE_TRANSFERS=999", "RCLONE_CHECKERS=999", "RCLONE_BUFFER_SIZE=1G", "RCLONE_MULTI_THREAD_STREAMS=999"}
 	got := remoteEnvironment(env)
 	want := []string{env[0], env[5], env[6], env[7]}
 	if !slices.Equal(got, want) {

@@ -1,0 +1,18 @@
+# Preparation example only. Replace cluster/service identities and review the
+# source baseline before use. This does not install collectors or emit traffic.
+version: 1
+mode: audit
+environments:
+  gke:
+    telemetry: {clusterName: charlie-dev-gcp-workload, deploymentEnvironment: dev, maxAge: 2m}
+  onprem:
+    telemetry: {clusterName: charlie-dev-onprem-workload, deploymentEnvironment: dev, maxAge: 2m}
+apps:
+  - name: moimroom-mig
+    namespace: moimroom-mig
+    observability:
+      requiredSignals: [logs, traces]
+      serviceNames: [moimroom-mig-web]
+      # Change only after both environments produce fresh matching evidence.
+      enforce: false
+    # Add an operator-reviewed current source baseline as in parity.yaml.

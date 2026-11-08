@@ -2,6 +2,8 @@
 
 HopCharlie 플랫폼 서버입니다. 바이너리 두 개로 이루어져 있습니다.
 
+[2026-11-08 종합 E2E 기록](docs/e2e/2026-11-08/README.md)은 운영 읽기 전용 확인·실제 임시 컴포넌트·fixture 결과와 미검증 범위를 구분합니다.
+
 ```
 platform/
 ├── api/openapi.yaml   API 계약 (서버, CLI, 콘솔이 모두 이 파일을 따른다)
@@ -256,6 +258,7 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 | `GATEWAY_LISTEN` (`-listen`), `GATEWAY_ADMIN_ADDR` (`-admin-addr`) | 사용자 요청 주소(기본 `:8000`), 관리 주소(기본 `:9901`) |
 | `GATEWAY_INITIAL_BACKEND` (`-initial-backend`) | 상태 파일이 없을 때 처음 쓸 환경 (기본: 첫 번째) |
 | `GATEWAY_STATE_FILE` (`-state-file`) | 상태 파일 (기본 `.hopcharlie/gateway-state.json`) |
+| `-exclusive-state` | Linux 동일 노드·동일 로컬 PVC에서 두 트래픽 파드가 Unix socket으로 한 상태 소유자에게 전달. 기본 꺼짐. 비정상 소유자 종료 뒤 쓰기/관리 변경은 운영자 복구까지 503 ([ADR 0061](docs/adr/0061-fence-same-node-gateway-owner-failover.md)) |
 | `GATEWAY_APP_DOMAIN` (`-app-domain`) | 앱 도메인 (예: `hopcharlie.dev`). 비우면(기본) 호스트와 관계없이 모든 요청이 기본 앱으로 감 |
 | `GATEWAY_DEFAULT_APP` (`-default-app`) | `-backends`가 서빙하는 기본 앱의 이름 (기본 `app`, 그래서 `app.hopcharlie.dev`가 기본 앱) |
 | `-max-hold` | 쓰기 하나가 보류 중에 기다리는 최대 시간 (기본 55s). 넘긴 쓰기는 보내지 않고 503 `hold_timeout`(`Retry-After: 1`)으로 답하고 `charlie_gateway_hold_expired_total`에 셈. 보류 자체는 release까지 이어짐. **앞단 프록시의 유휴 타임아웃보다 짧아야 합니다.** 그래야 오래 기다린 쓰기가 프록시의 504가 아니라 다시 시도할 수 있는 이 503을 받습니다. AWS ALB는 기본 60초, Cloudflare 원본 응답 제한은 약 100초입니다. 더 길게 보류하려면 이 값과 프록시 타임아웃을 함께 올립니다 |
@@ -269,6 +272,12 @@ rclone은 경로의 원격 이름 자리에서 저장소 정의를 바로 읽습
 - SIGINT나 SIGTERM을 받으면 대기 중인 쓰기와 그 뒤에 들어온 보류 대상 쓰기에 503 `shutting_down`(`Retry-After: 1`)으로 답하고 환경에는 보내지 않습니다. 사용자 요청 서버가 처리 중인 요청을 끝낸 뒤에 관리 API를 닫습니다.
 - 보류 중이었다면 상태 파일에 보류가 그대로 남고, 다시 시작해도 보류가 이어집니다. 시간이 지나도 저절로 풀리지 않으므로 엔진의 롤백이나 운영자가 release를 불러야 쓰기가 다시 흐릅니다.
 - 설정에서 뺀 환경이 상태 파일에 읽기 비율 0으로 남아 있으면 지우고 시작합니다. 그 환경이 `writeBackend`이거나 읽기 비율이 0보다 크면 시작하지 않습니다.
+
+`-exclusive-state`는 같은 노드의 파드 장애 대응만 제공합니다. 두 파드가 상태를 각각 실행하지 않고, `<state-file>.lock`의 Linux flock 소유자만 상태를 복원하고 `<state-file>.public.sock`/`.admin.sock`으로 요청을 받습니다. 소유자가 없으면 릴레이는 503으로 답하고 쓰기를 재전송하지 않습니다. 잠금 파일은 상태 파일의 atomic rename과 별개이며 삭제하면 안 됩니다. 전용 AI gateway와 조합하는 설정은 거부합니다.
+
+소유자가 SIGKILL 등으로 끝나면 이미 원격 DB에 보낸 쓰기는 여전히 진행 중일 수 있습니다. `.running` 표식이 남은 다음 소유자는 모든 앱의 hold를 저장하고 일반 HTTP 읽기만 복구합니다. 쓰기·WebSocket/Upgrade와 관리 API의 `/healthz` 이외 경로는 `owner_recovery_required` 503, 응답에는 `X-Hopcharlie-Recovery: required`가 붙습니다. `/healthz`의 200은 읽기 제공이 가능하다는 뜻이며 쓰기나 이전 준비가 완료됐다는 뜻이 아닙니다. 상태·metrics를 차단하여 초기화된 통계를 이전 구간의 0건으로 제시하지 않습니다. 자동 release/DB 롤백을 하지 않습니다.
+
+복구는 운영자가 이전 진행 상태·실제 DB primary·기존 쓰기 결과와 DB fence를 확인한 뒤 수행합니다. 모든 공유 PVC gateway 프로세스를 먼저 중지하고, `.running` 표식만 제거한 뒤 재시작합니다. `.lock`과 상태 JSON은 보존합니다. 저장된 앱별 hold는 계속 남으므로 확인한 경로에 대해서만 기존 인증된 release를 실행합니다. 중단·파일 수정·재시작은 운영 변경 승인이 필요한 작업입니다. 노드/EBS/AZ/AWS 진입점 장애와 메모리 쓰기 기록·inflight 요청의 결과 보존은 이 모드로 해결되지 않습니다.
 
 앱마다 따로 라우팅하기 (ADR 0012):
 
@@ -559,6 +568,7 @@ GitHub에서 등록한 앱의 비밀 환경 변수를 운영자가 넣고, 고�
 | `PLATFORM_GKE_IMAGE_CREDENTIAL_CONFIG` | 위 prefix와 함께 필요한 공개 AWS WIF ADC JSON 문자열. `type=external_account`, `credential_source.environment_id=aws1`. API의 GCS용 `GOOGLE_APPLICATION_CREDENTIALS`와 별개 |
 | `PLATFORM_DOCKER_CLONE_URL` | `docker`일 때 저장소 주소의 틀. `{repo}`와 `{token}`을 바꿈 (기본 `https://x-access-token:{token}@github.com/{repo}.git`). 로컬 경로도 됨 |
 | `PLATFORM_DEPLOY_WORKERS` | 동시에 실행하는 배포 수 (기본 2, 최대 32) |
+| `PLATFORM_RECOMMENDATION_COST_FILE` | 선택적인 앱 전체 비용 견적 JSON 파일. 정확한 스펙 commit·환경·지역·동일 운영시간과 24시간 이내의 스토리지·반출·운영·용량·정책 검토가 모두 필요. 없으면 비용 절감을 추정하지 않음. [추천 설정](docs/migration-recommendations.md) |
 | `PLATFORM_GITOPS_MODE` | `github`(기본, GitHub Git Data API) 또는 `git`(git CLI) |
 | `PLATFORM_GITOPS_REPO` | `github` 모드의 gitops 저장소 (기본 `2026-Softbank-Hackathon-Charlie/gitops`). App 설치 토큰으로 쓰고, API 주소는 `PLATFORM_GITHUB_API_URL`. 이 저장소에는 push 토큰을 발급하지 않음(ADR 0023) |
 | `PLATFORM_GITOPS_BRANCH` | gitops 브랜치 (기본 `main`, 두 모드 모두) |

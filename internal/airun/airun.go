@@ -175,7 +175,7 @@ func (r *Runner) Start(ctx context.Context, req Request, actor string) (Run, err
 // List returns the runs, newest first, for app or for every app when app is
 // empty. Jobs the cluster has cleaned up (ttlSecondsAfterFinished) are gone.
 func (r *Runner) List(ctx context.Context, app string) ([]Run, error) {
-	sel := LabelRun + "=true"
+	sel := LabelRun + "=true," + recommendationLabel + "!=true"
 	if app != "" {
 		if !name.MatchString(app) {
 			return nil, fmt.Errorf("%w: %q is not a name", ErrInvalid, app)

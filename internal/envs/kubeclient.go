@@ -63,6 +63,15 @@ func NewReadClients(env EnvConfig, timeout time.Duration) (metadata.Interface, d
 }
 
 func kubeRESTConfig(env EnvConfig, timeout time.Duration) (*rest.Config, error) {
+	if env.RESTConfig != nil {
+		rc := cloneEnvConfig(env).RESTConfig
+		if rc.Insecure {
+			return nil, errors.New("insecure dynamic kube configuration is forbidden")
+		}
+		rc.UserAgent = userAgent
+		rc.Timeout = timeout
+		return rc, nil
+	}
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if env.Kubeconfig != "" {
 		rules.ExplicitPath = env.Kubeconfig

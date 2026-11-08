@@ -260,6 +260,11 @@ func readExclusionConflict(w http.ResponseWriter) {
 	writeError(w, http.StatusConflict, "read_exclusion_conflict", "the source read exclusion belongs to a different lease or changed while draining")
 }
 
+const (
+	readExclusionCode = "read_exclusion_active"
+	readExclusionMsg  = "a source read exclusion is active; restore it with its owner lease before this control change"
+)
+
 func readsExcluded(w http.ResponseWriter) {
-	writeError(w, http.StatusConflict, "read_exclusion_active", "a source read exclusion is active; restore it with its owner lease before this control change")
+	writeError(w, http.StatusConflict, readExclusionCode, readExclusionMsg)
 }

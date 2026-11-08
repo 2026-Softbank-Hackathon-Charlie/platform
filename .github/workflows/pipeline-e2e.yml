@@ -1,0 +1,225 @@
+name: Disposable migration pipeline E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      tested_sha:
+        description: Exact 40-character platform main commit to test
+        required: true
+        type: string
+      suites:
+        description: Disposable suites to run
+        required: true
+        type: choice
+        default: all
+        options: [all, migration, minio]
+
+permissions:
+  contents: read
+
+jobs:
+  migration:
+    if: inputs.suites == 'all' || inputs.suites == 'migration'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
+      GOTOOLCHAIN: auto
+      GOMAXPROCS: '2'
+      GOFLAGS: -p=2
+      TESTED_SHA: ${{ inputs.tested_sha }}
+    steps:
+      - name: Check out trusted workflow tools
+        uses: actions/checkout@v5
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Require a main workflow and exact commit
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - name: Check out exact migration fixture
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tested_sha }}
+          fetch-depth: 0
+          path: subject
+          persist-credentials: false
+      - name: Require tested code to be on main
+        working-directory: subject
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+          git merge-base --is-ancestor "$TESTED_SHA" origin/main
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: subject/go.mod
+          cache-dependency-path: subject/go.sum
+      - name: Private module read access
+        env:
+          TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
+        run: |
+          test -n "$TOKEN"
+          export GIT_CONFIG_GLOBAL="$RUNNER_TEMP/pipeline-gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
+      - name: Check evidence filtering
+        run: python3 -B -m unittest discover -s harness/.github/scripts -p test_pipeline_evidence.py
+      - name: Run all four scenarios with real CNPG, PostgreSQL and HTTP load
+        run: python3 harness/.github/scripts/pipeline-evidence.py --root "$GITHUB_WORKSPACE/subject" --output "$RUNNER_TEMP/pipeline-evidence/migration.json"
+      - name: Remove only disposable fixture resources and verify absence
+        if: always()
+        run: |
+          set -euo pipefail
+          nodes=null
+          stores=null
+          cleanup_status=failed
+          record_cleanup() {
+            mkdir -p "$RUNNER_TEMP/pipeline-evidence"
+            printf '{"kind_nodes_remaining":%s,"fixture_stores_remaining":%s,"cleanup_status":"%s"}\n' "$nodes" "$stores" "$cleanup_status" >"$RUNNER_TEMP/pipeline-evidence/cleanup.json"
+            rm -f "$RUNNER_TEMP/pipeline-gitconfig" "$RUNNER_TEMP/pipeline-cleanup.private"
+          }
+          trap record_cleanup EXIT
+          if [ -f subject/test/e2e/down.sh ]; then
+            (cd subject && bash test/e2e/down.sh) >"$RUNNER_TEMP/pipeline-cleanup.private" 2>&1 || true
+          fi
+          # Fallback also covers cancellation before kind was installed.
+          ids="$(docker ps -aq --filter label=io.x-k8s.kind.cluster=hop-e2e)"
+          if [ -n "$ids" ]; then docker rm -f -v $ids >/dev/null; fi
+          # run.sh creates this exact container with --label hopcharlie-e2e=1.
+          ids="$(docker ps -aq --filter 'name=^hop-e2e-store$' --filter label=hopcharlie-e2e)"
+          if [ -n "$ids" ]; then docker rm -f -v $ids >/dev/null; fi
+          # No label restriction on the final exact-name absence check.
+          observed_nodes="$(docker ps -aq --filter label=io.x-k8s.kind.cluster=hop-e2e | wc -l | tr -d ' ')"
+          nodes="$observed_nodes"
+          observed_stores="$(docker ps -aq --filter 'name=^hop-e2e-store$' | wc -l | tr -d ' ')"
+          stores="$observed_stores"
+          test "$nodes" -eq 0
+          test "$stores" -eq 0
+          cleanup_status=verified
+      - name: Keep structured evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: disposable-pipeline-${{ inputs.tested_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pipeline-evidence/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  minio-files:
+    if: inputs.suites == 'all' || inputs.suites == 'minio'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GOPRIVATE: github.com/2026-Softbank-Hackathon-Charlie
+      GOTOOLCHAIN: auto
+      GOMAXPROCS: '2'
+      GOFLAGS: -p=2
+      TESTED_SHA: ${{ inputs.tested_sha }}
+      MINIO_IMAGE: docker.io/pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:2b36182f3479c58b5cba920f20479738ee85ce218de0596a244f9a1368268db9
+      MINIO_A_CONTAINER: pipeline-minio-a-${{ github.run_id }}-${{ github.run_attempt }}
+      MINIO_B_CONTAINER: pipeline-minio-b-${{ github.run_id }}-${{ github.run_attempt }}
+      FIXTURE_OWNER: pipeline-minio-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Require a main workflow and exact commit
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tested_sha }}
+          fetch-depth: 0
+          path: subject
+          persist-credentials: false
+      - name: Require tested code to be on main
+        working-directory: subject
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+          git merge-base --is-ancestor "$TESTED_SHA" origin/main
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: subject/go.mod
+          cache-dependency-path: subject/go.sum
+      - name: Private module read access
+        env:
+          TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$TOKEN"
+          export GIT_CONFIG_GLOBAL="$RUNNER_TEMP/minio-pipeline-gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${TOKEN}@github.com/2026-Softbank-Hackathon-Charlie/".insteadOf "https://github.com/2026-Softbank-Hackathon-Charlie/"
+      - name: Install rclone and record actual version
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rclone
+          version="$(rclone version)"
+          version="${version%%$'\n'*}"
+          [[ "$version" =~ ^rclone\ v[0-9a-zA-Z.+-]+$ ]]
+          echo "$version"
+          echo "RCLONE_TESTED_VERSION=${version#rclone v}" >> "$GITHUB_ENV"
+      - name: Start two isolated loopback MinIO services
+        run: |
+          set -euo pipefail
+          for name in "$MINIO_A_CONTAINER" "$MINIO_B_CONTAINER"; do
+            docker run -d --name "$name" --label "hopcharlie-fixture=$FIXTURE_OWNER" \
+              -p 127.0.0.1::9000 -e MINIO_ROOT_USER=fileguard-fixture \
+              -e MINIO_ROOT_PASSWORD=fileguard-fixture-password-v1 \
+              "$MINIO_IMAGE" server /data >/dev/null
+          done
+          for fixture in A B; do
+            name_var="MINIO_${fixture}_CONTAINER"
+            address="$(docker port "${!name_var}" 9000/tcp)"
+            [[ "$address" =~ ^127\.0\.0\.1:[0-9]+$ ]]
+            endpoint="http://$address"
+            for attempt in $(seq 1 60); do
+              curl --silent --fail "$endpoint/minio/health/ready" >/dev/null && break
+              sleep 1
+            done
+            curl --silent --fail "$endpoint/minio/health/ready" >/dev/null
+            echo "FILEGUARD_MINIO_${fixture}_ENDPOINT=$endpoint" >> "$GITHUB_ENV"
+          done
+      - name: Check evidence filtering
+        run: python3 -B -m unittest discover -s harness/.github/scripts -p test_pipeline_evidence.py
+      - name: Real rclone forward, reverse, cache invalidation and fail-closed checks
+        env:
+          FILEGUARD_MINIO_FIXTURE: disposable-loopback-v1
+        run: python3 harness/.github/scripts/pipeline-evidence.py --suite minio --root "$GITHUB_WORKSPACE/subject" --output "$RUNNER_TEMP/minio-pipeline-evidence/files.json"
+      - name: Remove owned MinIO fixtures and verify exact-name absence
+        if: always()
+        run: |
+          set -euo pipefail
+          remaining=null
+          cleanup_status=failed
+          record_cleanup() {
+            mkdir -p "$RUNNER_TEMP/minio-pipeline-evidence"
+            printf '{"fixture_containers_remaining":%s,"cleanup_status":"%s"}\n' "$remaining" "$cleanup_status" >"$RUNNER_TEMP/minio-pipeline-evidence/cleanup.json"
+            rm -f "$RUNNER_TEMP/minio-pipeline-gitconfig"
+          }
+          trap record_cleanup EXIT
+          for name in "$MINIO_A_CONTAINER" "$MINIO_B_CONTAINER"; do
+            ids="$(docker ps -aq --filter "name=^${name}$" --filter "label=hopcharlie-fixture=$FIXTURE_OWNER")"
+            if [ -n "$ids" ]; then docker rm -f -v $ids >/dev/null; fi
+          done
+          observed=0
+          for name in "$MINIO_A_CONTAINER" "$MINIO_B_CONTAINER"; do
+            ids="$(docker ps -aq --filter "name=^${name}$")"
+            if [ -n "$ids" ]; then observed=$((observed + 1)); fi
+          done
+          remaining="$observed"
+          test "$remaining" -eq 0
+          cleanup_status=verified
+      - name: Keep structured file evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: disposable-minio-${{ inputs.tested_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/minio-pipeline-evidence/*.json
+          if-no-files-found: error
+          retention-days: 14

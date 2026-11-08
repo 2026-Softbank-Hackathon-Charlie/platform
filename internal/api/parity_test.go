@@ -14,6 +14,30 @@ import (
 
 type recordedParity struct{}
 
+type enforcedObservation struct{ recordedParity }
+
+func (enforcedObservation) ObservabilityDecision(*plan.Plan, *parity.Report) (bool, bool) {
+	return true, false
+}
+
+func TestStartRejectsExplicitMissingObservabilityAndAuditsEvidence(t *testing.T) {
+	h := newHarness(t, func(_ *harness, _ *runs.Config, d *Deps) { d.Plans.SetParityGate(enforcedObservation{}) })
+	ref := h.approved(planJSON("p1", "a", "b", false))
+	code, body := h.do("POST", "/v1/migrations", opToken, apiv1.StartMigrationRequest{PlanRef: ref})
+	if code != 409 || !strings.Contains(string(body), `"code":"observability_unverified"`) {
+		t.Fatalf("missing receiving evidence: %d %s", code, body)
+	}
+	entries := h.auditDetails("POST /v1/migrations")
+	if len(entries) != 1 || !strings.Contains(entries[0], `"observabilityEnforced":true`) || !strings.Contains(entries[0], `"outcome":"observability_blocked"`) || !strings.Contains(entries[0], `"binding"`) {
+		t.Fatalf("missing bound denial audit: %v", entries)
+	}
+	// Denial is a retryable prerequisite failure, not a spent approval or a run.
+	code, body = h.do("POST", "/v1/migrations", opToken, apiv1.StartMigrationRequest{PlanRef: ref})
+	if code != 409 || !strings.Contains(string(body), `"code":"observability_unverified"`) {
+		t.Fatalf("blocked check stranded the reservation: %d %s", code, body)
+	}
+}
+
 func (recordedParity) Check(context.Context, *plan.Plan) (parity.Report, error) {
 	return parity.Report{Passed: false, Results: []parity.Result{
 		{Capability: parity.Identity, Status: parity.Fail, Code: "rbac_mismatch", Checks: []parity.Check{{ID: "no-secrets", Status: parity.Fail, Code: "authorization_mismatch"}}},

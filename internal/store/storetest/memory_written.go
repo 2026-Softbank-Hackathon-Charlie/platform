@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/store"
 )
@@ -14,9 +15,10 @@ import (
 // are guarded by memory.mu, like the rest of the store, so an attachment write
 // and a plan transition are atomic with respect to each other.
 type memoryPlanTools struct {
-	written     []store.WrittenRecord // in Seq order
-	writtenSeq  int64
-	attachments map[[2]string]store.PlanAttachment // by ref and name; nil until the first put
+	collectorActivity map[string]time.Time
+	written           []store.WrittenRecord // in Seq order
+	writtenSeq        int64
+	attachments       map[[2]string]store.PlanAttachment // by ref and name; nil until the first put
 }
 
 func (m *memory) AppendWrittenRecords(_ context.Context, stream string, recs []store.WrittenRecord) error {
@@ -71,10 +73,20 @@ func (m *memory) AppendWrittenRecords(_ context.Context, stream string, recs []s
 		}
 	}
 	for _, r := range added {
+		r.AuthenticatedCollector = false
 		m.tools.writtenSeq++
 		r.Seq, r.Stream = m.tools.writtenSeq, stream
 		r.At, r.ReceivedAt = pgTime(r.At), pgTime(r.ReceivedAt)
 		m.tools.written = append(m.tools.written, r)
+	}
+	if received := store.CollectorReceivedAt(recs); !received.IsZero() {
+		if m.tools.collectorActivity == nil {
+			m.tools.collectorActivity = map[string]time.Time{}
+		}
+		received = pgTime(received)
+		if received.After(m.tools.collectorActivity[stream]) {
+			m.tools.collectorActivity[stream] = received
+		}
 	}
 	return nil
 }
@@ -98,6 +110,9 @@ func (m *memory) WrittenRecordStats(_ context.Context, stream string) (store.Wri
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	st := store.WrittenStats{Scope: "unspecified", Coverage: "reported_records"}
+	if seen, ok := m.tools.collectorActivity[stream]; ok {
+		st.LastReceivedAt = &seen
+	}
 	for _, r := range m.tools.written {
 		if r.Stream != stream {
 			continue

@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,12 +25,20 @@ type Prometheus struct {
 	job    string
 	client http.Client
 	maxAge time.Duration
+	labels map[string]string
 }
 
 // NewPrometheus accepts only a server-owned endpoint and client (including any
 // authentication transport). It disables redirects to avoid forwarding
 // credentials to a different endpoint. It never reads a URL from a plan.
 func NewPrometheus(target parity.Target, endpoint, job string, client *http.Client, maxAge time.Duration) (*Prometheus, error) {
+	return NewPrometheusWithLabels(target, endpoint, job, client, maxAge, nil)
+}
+
+// NewPrometheusWithLabels binds a shared query endpoint to the configured
+// environment/cluster as well as the app namespace and job. Labels are trusted
+// server configuration, never supplied by a migration plan.
+func NewPrometheusWithLabels(target parity.Target, endpoint, job string, client *http.Client, maxAge time.Duration, labels map[string]string) (*Prometheus, error) {
 	u, err := url.Parse(endpoint)
 	if !parity.ValidTarget(target) || err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
 		(u.Scheme != "http" && u.Scheme != "https") || strings.TrimSpace(job) == "" || len(job) > 200 || strings.ContainsAny(job, "\r\n\x00") ||
@@ -45,7 +54,14 @@ func NewPrometheus(target parity.Target, endpoint, job string, client *http.Clie
 	if c.Timeout <= 0 || c.Timeout > 10*time.Second {
 		c.Timeout = 10 * time.Second
 	}
-	return &Prometheus{target: target, url: queryURL, job: job, client: c, maxAge: maxAge}, nil
+	owned := map[string]string{}
+	for key, value := range labels {
+		if (key != "environment" && key != "cluster") || len(value) == 0 || len(value) > 200 || strings.ContainsAny(value, "\r\n\x00") || key == "environment" && value != target.Environment {
+			return nil, ErrInvalidConfig
+		}
+		owned[key] = value
+	}
+	return &Prometheus{target: target, url: queryURL, job: job, client: c, maxAge: maxAge, labels: owned}, nil
 }
 
 func (p *Prometheus) Check(ctx context.Context, target parity.Target) (parity.Result, error) {
@@ -69,7 +85,16 @@ func (p *Prometheus) Check(ctx context.Context, target parity.Target) (parity.Re
 
 func (p *Prometheus) checkMetrics(ctx context.Context, now time.Time) parity.Check {
 	c := parity.Check{ID: "metrics-target", Status: parity.Unknown, Code: "metrics_unavailable"}
-	selector := "up{namespace=" + strconv.Quote(p.target.Namespace) + ",job=" + strconv.Quote(p.job) + "}"
+	selector := "up{namespace=" + strconv.Quote(p.target.Namespace) + ",job=" + strconv.Quote(p.job)
+	keys := make([]string, 0, len(p.labels))
+	for key := range p.labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		selector += "," + key + "=" + strconv.Quote(p.labels[key])
+	}
+	selector += "}"
 	up, err := p.query(ctx, selector, now)
 	if err != nil {
 		return c
@@ -161,6 +186,11 @@ func (p *Prometheus) query(ctx context.Context, query string, now time.Time) (ma
 	for _, sample := range v.Data.Result {
 		if sample.Metric["namespace"] != p.target.Namespace || sample.Metric["job"] != p.job || len(sample.Value) != 2 {
 			return nil, bad
+		}
+		for key, want := range p.labels {
+			if sample.Metric[key] != want {
+				return nil, bad
+			}
 		}
 		var outer float64
 		var value string

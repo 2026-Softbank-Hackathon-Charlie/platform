@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,20 @@ import (
 
 	"github.com/2026-Softbank-Hackathon-Charlie/platform/internal/onprem"
 )
+
+// Only tests may issue a bootstrap without a configured production connector.
+type testEnrollmentRegistrar struct{}
+
+func (testEnrollmentRegistrar) CheckConfiguration(context.Context, string) error { return nil }
+
+func TestOnpremIssuanceFailsClosedWithoutRegistration(t *testing.T) {
+	h := newHarness(t)
+	h.api.enrollments.Registrar = nil
+	status, body := h.do("POST", "/v1/onprem/enrollments", opToken, map[string]any{"environment": "onprem", "installK3s": false}, "Idempotency-Key", "disabled-registration")
+	if status != 503 || strings.Contains(string(body), "installCommand") || strings.Contains(string(body), "onp_") {
+		t.Fatalf("unconfigured registration was issued: HTTP %d", status)
+	}
+}
 
 func TestEnrollmentRealIssuanceAndOneUseHTTP(t *testing.T) {
 	h := newHarness(t)

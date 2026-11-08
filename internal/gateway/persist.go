@@ -16,6 +16,7 @@ import (
 // before there were other apps, so either version reads the other's file for
 // the default app.
 type persistedState struct {
+	AICanary       *AICanaryState    `json:"aiCanary,omitempty"`
 	WriteBackend   string            `json:"writeBackend"`
 	ReadWeights    map[string]int    `json:"readWeights"`
 	WritesHeld     bool              `json:"writesHeld"`
@@ -76,6 +77,10 @@ func (rt *router) persistLocked() persistedApp {
 	if rt.held {
 		hs := rt.heldSince.UTC()
 		pa.HeldSince = &hs
+	}
+	if rt.canary != nil {
+		copy := *rt.canary
+		pa.AICanary = &copy
 	}
 	return pa
 }
@@ -148,5 +153,8 @@ func writeFileAtomic(path string, st persistedState) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncStateDirectory(dir)
 }

@@ -89,11 +89,15 @@ func shopPlan() *plan.Plan {
 
 func newGate(t *testing.T, promURL string, sar SARFactory) *Gate {
 	t.Helper()
-	cfg, err := ParseConfig([]byte(strings.Replace(config, "PROM", promURL, 1)), []string{"gke", "eks"})
+	cfg, err := ParseConfig([]byte(strings.Replace(config, "PROM", strconv.Quote(promURL), 1)), []string{"gke", "eks"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return New(cfg, sar, nil)
+}
+
+func TestProbeFixtureAcceptsIPv6LoopbackURL(t *testing.T) {
+	newGate(t, "http://[::1]:9090", nil)
 }
 
 func result(r parity.Report, c parity.Capability) parity.Result {

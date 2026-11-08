@@ -113,7 +113,7 @@ func (s *Server) appendWrittenRecords(w http.ResponseWriter, r *http.Request) {
 			at = rec.At.UTC()
 		}
 		// Unquoted identifiers are lower case in PostgreSQL, which is what verify looks up.
-		recs[i] = store.WrittenRecord{Table: strings.ToLower(rec.Table), PK: rec.Pk, At: at, ReceivedAt: now, EventID: eventID, Scope: scope, Coverage: coverage, Generation: generation}
+		recs[i] = store.WrittenRecord{AuthenticatedCollector: appCollector, Table: strings.ToLower(rec.Table), PK: rec.Pk, At: at, ReceivedAt: now, EventID: eventID, Scope: scope, Coverage: coverage, Generation: generation}
 	}
 	// A cancelled request may have committed already; stable event IDs make
 	// retry safe. Never retain a cancelled caller while waiting on the stream lock.
@@ -144,7 +144,7 @@ func (s *Server) writtenRecordStats(w http.ResponseWriter, r *http.Request) {
 	}
 	scope := apiv1.WrittenRecordStatsScope(st.Scope)
 	coverage := apiv1.WrittenRecordStatsCoverage(st.Coverage)
-	writeJSON(w, http.StatusOK, apiv1.WrittenRecordStats{Stream: stream, Count: st.Count, LatestAt: st.LatestAt, LastSeq: &st.LastSeq, Scope: &scope, Coverage: &coverage, Generation: &st.Generation})
+	writeJSON(w, http.StatusOK, apiv1.WrittenRecordStats{Stream: stream, Count: st.Count, LatestAt: st.LatestAt, LastReceivedAt: st.LastReceivedAt, LastSeq: &st.LastSeq, Scope: &scope, Coverage: &coverage, Generation: &st.Generation})
 }
 
 // --- plan attachments ---
@@ -214,27 +214,24 @@ func (s *Server) draftPlan(w http.ResponseWriter, r *http.Request) {
 	if p.Source.Kind != nil && *p.Source.Kind == apiv1.EnginePlanEndpointKindNone && !s.statelessBackends(w, r, p) {
 		return
 	}
-	// Automatically bind only recent receipts from this source database. A
-	// retained stream from an old installation must not certify a fresh dataset.
+	// Bind only a live authenticated collector of this dataset. A quiet app's
+	// latest committed write is not a collector heartbeat, and an old stream
+	// must not certify a new source or target installation.
 	if req.WrittenRecordsStream == nil && (p.Source.Kind == nil || *p.Source.Kind != apiv1.EnginePlanEndpointKindNone) { // kind none: no database to bind receipts to
-		stream := "app-" + req.App
-		if plans.StreamName.MatchString(stream) {
-			st, err := s.d.Store.WrittenRecordStats(r.Context(), stream)
+		stream, reason, bindErr := automaticWrittenStream(r.Context(), s.d.Store, req.App, p.Source.Dsn, p.Target.Dsn, time.Now().UTC(), plans.WrittenGeneration)
+		if bindErr != nil {
+			s.internal(w, r, bindErr)
+			return
+		}
+		if stream != "" {
+			req.WrittenRecordsStream = &stream
+			p, err = s.d.Apps.Draft(r.Context(), req)
 			if err != nil {
-				s.internal(w, r, err)
+				s.fail(w, r, 400, "invalid_request", err.Error())
 				return
 			}
-			if st.Count > 0 && st.Scope == "application_commits" && st.Generation != "" && st.LatestAt != nil && st.LatestAt.After(time.Now().Add(-10*time.Minute)) {
-				generation, err := plans.WrittenGeneration(r.Context(), p.Source.Dsn)
-				if err == nil && generation == st.Generation {
-					req.WrittenRecordsStream = &stream
-					p, err = s.d.Apps.Draft(r.Context(), req)
-					if err != nil {
-						s.fail(w, r, 400, "invalid_request", err.Error())
-						return
-					}
-				}
-			}
+		} else {
+			s.cfg.Log.Info("draft: application write verification is not configured", "app", req.App, "reason", reason)
 		}
 	}
 	if req.SourceStats == nil || !*req.SourceStats {
