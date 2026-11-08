@@ -147,3 +147,36 @@ func TestInfoLinesAndIncompleteDisconnect(t *testing.T) {
 		t.Fatal("an incomplete disconnect is done")
 	}
 }
+
+// pluginLateSSM answers InvalidPluginName before the step is registered, as
+// SSM does for a multi-step document right after SendCommand.
+type pluginLateSSM struct{ reads int }
+
+func (f *pluginLateSSM) SendCommand(context.Context, *ssm.SendCommandInput, ...func(*ssm.Options)) (*ssm.SendCommandOutput, error) {
+	return nil, nil
+}
+
+func (f *pluginLateSSM) GetCommandInvocation(_ context.Context, in *ssm.GetCommandInvocationInput, _ ...func(*ssm.Options)) (*ssm.GetCommandInvocationOutput, error) {
+	f.reads++
+	if f.reads <= 2 {
+		return nil, &ssmtypes.InvalidPluginName{}
+	}
+	return &ssm.GetCommandInvocationOutput{Status: ssmtypes.CommandInvocationStatusSuccess, StandardOutputContent: aws.String("ok")}, nil
+}
+
+func TestWaitRetriesStepNotRegisteredYet(t *testing.T) {
+	f := &pluginLateSSM{}
+	r := &Runner{SSM: f, Poll: time.Millisecond}
+	res, err := r.Wait(context.Background(), "i-1", "cmd-1", InspectStep)
+	if err != nil || res.Stdout != "ok" || f.reads != 3 {
+		t.Fatalf("res %+v err %v reads %d", res, err, f.reads)
+	}
+}
+
+func TestWaitInvalidPluginWithoutStepFails(t *testing.T) {
+	f := &pluginLateSSM{}
+	r := &Runner{SSM: f, Poll: time.Millisecond}
+	if _, err := r.Wait(context.Background(), "i-1", "cmd-1", ""); err == nil {
+		t.Fatal("no error")
+	}
+}
