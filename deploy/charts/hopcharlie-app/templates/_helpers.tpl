@@ -235,8 +235,9 @@ the platform must not write.
 {{- fail (printf "values.dbTopology: env %q must be one of primary %q and peer %q, and the other must differ (infra ADR 0063)" $env $t.primary $t.peer) -}}
 {{- end -}}
 {{- $peerPresent := not (and (hasKey $t "peerPresent") (not $t.peerPresent)) -}}
-{{- if and $explicitMembers (not $peerPresent) -}}
-{{- fail "values.dbTopology.members cannot be combined with peerPresent false" -}}
+{{- /* Two explicit members keep their label while the peer is absent (platform ADR 0064, infra ADR 0098). */ -}}
+{{- if and $explicitMembers (not $peerPresent) (ne (len $members) 2) -}}
+{{- fail "values.dbTopology.members cannot be combined with peerPresent false unless it is just primary and peer" -}}
 {{- end -}}
 {{- if and (not $peerPresent) (ne $env $t.primary) -}}
 {{- fail (printf "values.dbTopology.peerPresent false is only for the primary's file (env %q, primary %q; infra ADR 0074)" $env $t.primary) -}}

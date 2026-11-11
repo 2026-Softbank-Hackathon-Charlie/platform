@@ -738,9 +738,11 @@ var (
 // locks of every instance of the app, and only while none of them has an
 // unfinished deployment, it takes env's backend out of every instance's
 // gateway app, commits the removal of apps/<instance>/<env>.yaml of every
-// instance in one commit, counts up the database pair's PeerGeneration when
-// env is its peer (a peer added back gets a new backup path), and then sets
-// the app's environments to the others. The gateway goes first so that no
+// instance in one commit, records env leaving the app's database group
+// (store.RemoveDatabaseMember: a member added back gets a new backup path,
+// and the remaining member of a three-environment group becomes the peer
+// when env was the peer, ADR 0064), and then sets the app's environments
+// to the others. The gateway goes first so that no
 // request is sent to an environment whose workloads are going. The
 // ApplicationSet deletes the Applications <instance>-<env> with what they
 // created, as for a deleted app, and CleanupStorage deletes the instances'
@@ -752,18 +754,16 @@ var (
 // env as the app's first environment ErrPrimaryEnvironment, and branches that
 // changed meanwhile ErrAppChanged; nothing is changed then. An environment
 // added meanwhile does not stop it: it keeps the added one. The caller
-// checks the rest (migrations, which environment was ever written).
-func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) error {
+// checks the rest (migrations, which environment was ever written, and for
+// a three-environment database group the replication topology, ADR 0064).
+// check, when not nil, runs under the locks before anything changes, for
+// what the caller checked before them and may have changed meanwhile (a
+// migration run started, the removed member's database promoted); its
+// error is returned as it is, and nothing is changed then.
+func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string, check func(context.Context) error) error {
 	app, err := e.cfg.Store.GetApp(ctx, name)
 	if err != nil {
 		return err
-	}
-	if len(app.Environments) > 2 {
-		if _, err := e.cfg.Store.GetAppDatabase(ctx, name); err == nil {
-			return fmt.Errorf("%w: removing members of a three-environment database group is unsupported", ErrEnvironmentInUse)
-		} else if !errors.Is(err, store.ErrNotFound) {
-			return err
-		}
 	}
 	switch i := slices.Index(app.Environments, env); {
 	case i < 0:
@@ -803,12 +803,14 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 			return fmt.Errorf("%w: deployment %s of %s is %s", ErrDeploymentInProgress, d.ID, d.Instance, d.Status)
 		}
 	}
+	// Every refusal comes before check, which may change a live database
+	// Cluster (ADR 0064), and before the gateway is changed.
+	routes := map[string]gateway.AppInfo{}
 	if e.cfg.Gateway != nil {
 		all, err := e.cfg.Gateway.Apps(ctx)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrGateway, err)
 		}
-		routes := map[string]gateway.AppInfo{}
 		for _, a := range all.Apps {
 			if !a.Default && slices.Contains(instances, a.Name) {
 				routes[a.Name] = a
@@ -823,16 +825,26 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 			case cur.WriteBackend == env || cur.ReadWeights[env] > 0:
 				return fmt.Errorf("%w: the traffic gateway sends the requests of %s to %s", ErrEnvironmentInUse, in, env)
 			}
+			if !ok || cur.Backends[env] == "" {
+				continue
+			}
+			if hidden := hiddenPasswords(&cur, map[string]string{env: ""}); len(hidden) > 0 {
+				return fmt.Errorf("%w: the gateway hides the password in the URL of the %s backend of %s, and sending that URL back would replace the password; set it again without a password in its URL, then remove the environment again", ErrGateway, strings.Join(hidden, ", "), in)
+			}
 		}
+	}
+	if check != nil {
+		if err := check(ctx); err != nil {
+			return err
+		}
+	}
+	if e.cfg.Gateway != nil {
 		// The weight 0 backends go first: no request is sent to an
 		// environment whose files are already gone.
 		for _, in := range instances {
 			cur, ok := routes[in]
 			if !ok || cur.Backends[env] == "" {
 				continue
-			}
-			if hidden := hiddenPasswords(&cur, map[string]string{env: ""}); len(hidden) > 0 {
-				return fmt.Errorf("%w: the gateway hides the password in the URL of the %s backend of %s, and sending that URL back would replace the password; set it again without a password in its URL, then remove the environment again", ErrGateway, strings.Join(hidden, ", "), in)
 			}
 			next := gateway.AppSpec{Backends: maps.Clone(cur.Backends), WriteBackend: cur.WriteBackend, Dial: maps.Clone(cur.Dial)}
 			delete(next.Backends, env)
@@ -861,19 +873,29 @@ func (e *Executor) RemoveEnvironment(ctx context.Context, name, env string) erro
 	if err := e.cfg.Argo.RefreshApplicationSet(ctx); err != nil && ctx.Err() == nil {
 		e.cfg.Log.Warn("argo cd applicationset refresh after an environment removal", "app", name, "env", env, "err", err)
 	}
-	// The peer's database leaves its WAL in the backup bucket, so a peer
-	// added back archives under a new path (ADR 0043).
+	// The member's database leaves its WAL in the backup bucket, so a
+	// member added back archives under a new path (ADR 0043). The peer of
+	// a three-environment group is the one that remains besides the
+	// primary's, so the two left are the pair the files render (ADR 0064).
 	db, err := e.cfg.Store.GetAppDatabase(ctx, name)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 	case err != nil:
 		return fmt.Errorf("read the database pair of %s: %w", name, err)
-	case db.PeerEnv == env:
-		gen, err := e.cfg.Store.NextPeerGeneration(ctx, name)
-		if err != nil {
-			return fmt.Errorf("count up the peer generation of %s: %w", name, err)
+	case env != db.PrimaryEnv && (env == db.PeerEnv || len(app.Environments) > 2):
+		peer := ""
+		if env == db.PeerEnv && len(app.Environments) > 2 {
+			for _, other := range app.Environments {
+				if other != env && other != db.PrimaryEnv {
+					peer = other
+				}
+			}
 		}
-		e.cfg.Log.Info("database pair peer removed; a peer added back gets a new backup path", "app", name, "env", env, "peerGeneration", gen)
+		row, err := e.cfg.Store.RemoveDatabaseMember(ctx, name, env, peer, len(app.Environments) > 2)
+		if err != nil {
+			return fmt.Errorf("record %s leaving the database group of %s: %w", env, name, err)
+		}
+		e.cfg.Log.Info("database group member removed; a member added back gets a new backup path", "app", name, "env", env, "generation", row.Generation(env), "peer", row.PeerEnv)
 	}
 	// The gateway and the files are changed already, so the store must
 	// follow. An environment added meanwhile (POST environments does not

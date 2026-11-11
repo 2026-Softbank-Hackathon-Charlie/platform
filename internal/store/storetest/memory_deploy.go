@@ -112,16 +112,19 @@ func (m *memory) GetAppDatabase(_ context.Context, app string) (store.AppDatabas
 	return d.Clean(), nil // Clean copies the byte slices
 }
 
-func (m *memory) NextPeerGeneration(_ context.Context, app string) (int, error) {
+func (m *memory) RemoveDatabaseMember(_ context.Context, app, env, peer string, group bool) (store.AppDatabase, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d, ok := m.deploy.databases[app]
 	if !ok {
-		return 0, fmt.Errorf("%w: database pair of app %s", store.ErrNotFound, app)
+		return store.AppDatabase{}, fmt.Errorf("%w: database pair of app %s", store.ErrNotFound, app)
 	}
-	d.PeerGeneration++
+	d, err := d.RemoveMember(env, peer, group)
+	if err != nil {
+		return store.AppDatabase{}, err
+	}
 	m.deploy.databases[app] = d
-	return d.PeerGeneration, nil
+	return d.Clean(), nil
 }
 
 func (m *memory) SetAppDatabaseSourceKind(_ context.Context, app, from, to string) error {

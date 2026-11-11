@@ -558,6 +558,9 @@ func main() {
 	// Clusters with the platform's own workload credentials.
 	workloads := workloadClients(envSvc)
 	deps.DBCluster = dbClusterReader(workloads)
+	// Removing a member of a three-environment database group sets the
+	// primary's replica.source to the member that remains (ADR 0064).
+	deps.DBRewire = dbSourceRewirer(workloads)
 	// Adding an environment back waits until its earlier workloads are gone.
 	deps.WorkloadResidue = workloadResidue(workloads)
 	if gw != nil {
@@ -833,6 +836,20 @@ func dbClusterReader(clients func(string) (dynamic.Interface, error)) api.DBClus
 			return nil, err
 		}
 		return cnpg.New(dyn, namespace, name).Get(ctx)
+	}
+}
+
+// dbSourceRewirer sets replica.source of a CNPG Cluster in an environment's
+// workload cluster with the migration engine's conditional patch; the
+// platform's migration role and the workload admission policy allow it only
+// on a designated three-member primary (infra ADR 0078).
+func dbSourceRewirer(clients func(string) (dynamic.Interface, error)) api.DBSourceRewirer {
+	return func(ctx context.Context, env, namespace, name string, expected *cnpg.Status, source string) error {
+		dyn, err := clients(env)
+		if err != nil {
+			return err
+		}
+		return cnpg.New(dyn, namespace, name).RewireSource(ctx, expected, source)
 	}
 }
 

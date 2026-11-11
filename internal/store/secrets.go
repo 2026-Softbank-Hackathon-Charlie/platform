@@ -149,10 +149,15 @@ type SecretStore interface {
 	// ListAppDatabases returns every app's database pair, by app in byte
 	// order; empty, not nil, when there are none.
 	ListAppDatabases(ctx context.Context) ([]AppDatabase, error)
-	// NextPeerGeneration adds one to the PeerGeneration of app's database
-	// pair and returns the new value (ADR 0043). ErrNotFound when it has
-	// none.
-	NextPeerGeneration(ctx context.Context, app string) (int, error)
+	// RemoveDatabaseMember records that env leaves app's database group
+	// (ADR 0043, 0064): it adds one to the Generation of env, and with a
+	// peer other than "" makes peer the group's PeerEnv, keeping that
+	// environment's Generation. PeerGeneration stays the Generation of
+	// PeerEnv. group (env leaves a group of three environments) sets
+	// ExplicitMembers. It returns the row as stored. ErrNotFound without a group;
+	// ErrConflict when env is PrimaryEnv, or peer is PrimaryEnv or env, or
+	// peer is given for an env that is not PeerEnv.
+	RemoveDatabaseMember(ctx context.Context, app, env, peer string, group bool) (AppDatabase, error)
 	// SetAppDatabaseSourceKind changes the source_kind of app's database
 	// from from to to (ADR 0042: external to peer once the cutover
 	// succeeded). ErrNotFound without a pair, ErrConflict when its kind is

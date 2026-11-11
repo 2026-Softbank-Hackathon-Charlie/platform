@@ -113,9 +113,10 @@ func (te *testEnv) environmentDeployment(d store.Deployment, envs ...string) sto
 type topologyFile struct {
 	Values struct {
 		DBTopology *struct {
-			Primary     string `json:"primary"`
-			Peer        string `json:"peer"`
-			PeerPresent *bool  `json:"peerPresent"`
+			Primary     string   `json:"primary"`
+			Peer        string   `json:"peer"`
+			PeerPresent *bool    `json:"peerPresent"`
+			Members     []string `json:"members"`
 		} `json:"dbTopology"`
 		SealedSecrets struct {
 			PGApp map[string]string `json:"pgApp"`
@@ -290,7 +291,7 @@ func TestRemoveEnvironment(t *testing.T) {
 		}},
 	} {
 		undo := tc.prep()
-		err := ex.RemoveEnvironment(ctx, "shop", tc.env)
+		err := ex.RemoveEnvironment(ctx, "shop", tc.env, nil)
 		undo()
 		if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) || (tc.msg != "" && !strings.Contains(err.Error(), tc.msg)) {
 			t.Fatalf("%s: %v, want %v", name, err, tc.want)
@@ -303,7 +304,7 @@ func TestRemoveEnvironment(t *testing.T) {
 		}
 	}
 
-	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); err != nil {
 		t.Fatal(err)
 	}
 	files, _ := te.git.snapshot()
@@ -320,7 +321,7 @@ func TestRemoveEnvironment(t *testing.T) {
 		t.Fatalf("environments %v", a.Environments)
 	}
 	// Again: the environment is gone, so nothing to do.
-	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err == nil {
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); err == nil {
 		t.Fatal("removed twice")
 	}
 }
@@ -363,7 +364,7 @@ func TestRemoveEnvironmentKeepsTheGatewayRouting(t *testing.T) {
 	te.gw.apps["shop"] = gateway.AppInfo{Name: "shop", Backends: map[string]string{"gke": "http://g", "eks": "http://e", "onprem": "http://o"},
 		WriteBackend: "gke", ReadWeights: map[string]int{"gke": 80, "onprem": 20, "eks": 0}}
 	te.gw.mu.Unlock()
-	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); err != nil {
 		t.Fatal(err)
 	}
 	a, _ := te.gw.app("shop")
@@ -486,7 +487,7 @@ func TestPeerAddedBackGetsANewBackupPath(t *testing.T) {
 		}
 	}
 	addPeer(BackupPath(app.CreatedAt))
-	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); err != nil {
 		t.Fatal(err)
 	}
 	if row, _ := se.store.GetAppDatabase(ctx, "shop"); row.PeerGeneration != 1 {
@@ -511,7 +512,7 @@ func TestRemoveEnvironmentTakesTheGatewayBackendFirst(t *testing.T) {
 	te.git.mu.Lock()
 	te.git.err = errors.New("github down")
 	te.git.mu.Unlock()
-	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); !errors.Is(err, ErrGitOps) {
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); !errors.Is(err, ErrGitOps) {
 		t.Fatalf("err %v, want ErrGitOps", err)
 	}
 	if a, _ := te.gw.app("shop"); a.Backends["eks"] != "" || a.Backends["gke"] == "" {
@@ -523,7 +524,7 @@ func TestRemoveEnvironmentTakesTheGatewayBackendFirst(t *testing.T) {
 	te.git.mu.Lock()
 	te.git.err = nil
 	te.git.mu.Unlock()
-	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if files, _ := te.git.snapshot(); files[FilePath("shop", "eks")] != nil {
@@ -539,11 +540,11 @@ func TestRemoveEnvironmentErrors(t *testing.T) {
 	ex := te.start()
 	ctx := context.Background()
 	for env, want := range map[string]error{"gke": ErrPrimaryEnvironment, "onprem": ErrNotInEnvironment} {
-		if err := ex.RemoveEnvironment(ctx, "shop", env); !errors.Is(err, want) {
+		if err := ex.RemoveEnvironment(ctx, "shop", env, nil); !errors.Is(err, want) {
 			t.Fatalf("%s: %v, want %v", env, err, want)
 		}
 	}
-	if err := ex.RemoveEnvironment(ctx, "nope", "eks"); !errors.Is(err, store.ErrNotFound) {
+	if err := ex.RemoveEnvironment(ctx, "nope", "eks", nil); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown app: %v", err)
 	}
 }
@@ -586,7 +587,7 @@ func TestRemoveEnvironmentFinishesWhenAnotherIsAddedMeanwhile(t *testing.T) {
 	if got := te.wait(d.ID); got.Status != store.DeployHealthy {
 		t.Fatalf("%s %q", got.Status, got.Error)
 	}
-	if err := ex.RemoveEnvironment(ctx, "shop", "eks"); err != nil {
+	if err := ex.RemoveEnvironment(ctx, "shop", "eks", nil); err != nil {
 		t.Fatalf("remove with an environment added meanwhile: %v", err)
 	}
 	if a, _ := te.store.GetApp(ctx, "shop"); !slices.Equal(a.Environments, []string{"gke", "onprem"}) {

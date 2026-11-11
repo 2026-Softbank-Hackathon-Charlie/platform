@@ -49,7 +49,7 @@ type AppRemover interface {
 	// deploy.ErrWritesHeld, deploy.ErrNotInEnvironment,
 	// deploy.ErrPrimaryEnvironment and deploy.ErrAppChanged when it changed
 	// nothing for those reasons; otherwise the same errors as RemoveApp.
-	RemoveEnvironment(ctx context.Context, app, env string) error
+	RemoveEnvironment(ctx context.Context, app, env string, check func(context.Context) error) error
 	// ApplicationExists reports whether Argo CD still has the Application
 	// (deploy.ApplicationName), such as one an environment removal is
 	// deleting.

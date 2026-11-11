@@ -30,9 +30,6 @@ func TestAddThirdDatabaseEnvironment(t *testing.T) {
 		t.Fatalf("adding a member changed the original database credentials or anchors: %v", err)
 	}
 	f.finish(out.Deployment.Id, deploy.EnvHealthy, nil)
-	if code, b := f.do("DELETE", "/v1/apps/shop/environments/onprem", opToken, nil); code != 409 || errCode(t, b) != "db_group_removal_unsupported" {
-		t.Fatalf("unsafe member removal: %d %s", code, b)
-	}
 }
 
 func TestThirdDatabaseEnvironmentRequiresBootstrapPrimary(t *testing.T) {

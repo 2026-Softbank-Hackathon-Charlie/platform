@@ -33,6 +33,13 @@ var ReadinessCacheTTL = 10 * time.Second
 // error that wraps cnpg.ErrNotFound.
 type DBClusterReader func(ctx context.Context, env, namespace, name string) (*cnpg.Status, error)
 
+// DBSourceRewirer sets spec.replica.source of the Cluster read as expected,
+// the healthy designated primary of a database group, to source, one of its
+// externalClusters (migration-engine cnpg.Client.RewireSource: a JSON
+// patch that tests the Cluster's UID, resourceVersion, self and primary, so
+// a Cluster that changed since it was read is not changed).
+type DBSourceRewirer func(ctx context.Context, env, namespace, name string, expected *cnpg.Status, source string) error
+
 // Readiness reasons (apiv1.AppDBReadiness.reason).
 const (
 	readyReason           = "ready"

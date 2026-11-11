@@ -26,6 +26,9 @@ type fakeRemover struct {
 	removed []string
 	// removeEnv, when set, does what RemoveEnvironment does to the store.
 	removeEnv func(app, env string) error
+	// beforeCheck runs under RemoveEnvironment before its check, as a
+	// change made while the removal waited for the locks.
+	beforeCheck func()
 	// applications are the Argo CD Applications that exist; applicationsErr
 	// fails ApplicationExists.
 	applications    map[string]bool
@@ -58,11 +61,19 @@ func (f *fakeRemover) RemoveInstance(_ context.Context, app, branch string) erro
 	return nil
 }
 
-func (f *fakeRemover) RemoveEnvironment(_ context.Context, app, env string) error {
+func (f *fakeRemover) RemoveEnvironment(ctx context.Context, app, env string, check func(context.Context) error) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return f.err
+	}
+	if f.beforeCheck != nil {
+		f.beforeCheck()
+	}
+	if check != nil {
+		if err := check(ctx); err != nil {
+			return err
+		}
 	}
 	f.removed = append(f.removed, app+"/"+env)
 	if f.removeEnv != nil {
